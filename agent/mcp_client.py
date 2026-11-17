@@ -9,30 +9,74 @@ from pathlib import Path
 from typing import Any
 
 
-def load_mcp_servers(cwd: Path | None = None) -> dict[str, dict[str, Any]]:
-    """Discover MCP server definitions from ~/.quartz/mcp.json (and MCP_CONFIG if set)."""
-    del cwd
-    candidates: list[Path] = [
-        Path.home() / ".quartz" / "mcp.json",
-    ]
+def default_mcp_config_path() -> Path:
+    """Return the active MCP config file path (MCP_CONFIG or ~/.quartz/mcp.json)."""
     env_cfg = os.getenv("MCP_CONFIG")
     if env_cfg:
-        candidates.append(Path(env_cfg).expanduser().resolve())
+        return Path(env_cfg).expanduser().resolve()
+    return (Path.home() / ".quartz" / "mcp.json").resolve()
 
-    servers: dict[str, dict[str, Any]] = {}
-    for cfg_path in candidates:
-        if not cfg_path.is_file():
-            continue
+
+def load_raw_mcp_config(config_path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """Read all server entries from the MCP config file without filtering disabled ones."""
+    path = config_path or default_mcp_config_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    mcp_servers = data.get("mcpServers")
+    if not isinstance(mcp_servers, dict):
+        return {}
+    return {str(k): v for k, v in mcp_servers.items() if isinstance(v, dict)}
+
+
+def add_mcp_server(
+    name: str, spec: dict[str, Any], config_path: Path | None = None
+) -> Path:
+    """Add or update an MCP server entry in ~/.quartz/mcp.json (or MCP_CONFIG)."""
+    path = config_path or default_mcp_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data: dict[str, Any] = {}
+    if path.is_file():
         try:
-            data = json.loads(cfg_path.read_text(encoding="utf-8"))
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
         except (OSError, json.JSONDecodeError):
-            continue
-        mcp_servers = data.get("mcpServers")
-        if isinstance(mcp_servers, dict):
-            for name, spec in mcp_servers.items():
-                if isinstance(spec, dict):
-                    servers[str(name)] = spec
-    return servers
+            data = {}
+    mcp_servers = data.setdefault("mcpServers", {})
+    if not isinstance(mcp_servers, dict):
+        mcp_servers = {}
+        data["mcpServers"] = mcp_servers
+    mcp_servers[name] = spec
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def remove_mcp_server(name: str, config_path: Path | None = None) -> bool:
+    """Remove an MCP server entry from ~/.quartz/mcp.json (or MCP_CONFIG)."""
+    path = config_path or default_mcp_config_path()
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    mcp_servers = data.get("mcpServers")
+    if not isinstance(mcp_servers, dict) or name not in mcp_servers:
+        return False
+    del mcp_servers[name]
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
+def load_mcp_servers(cwd: Path | None = None) -> dict[str, dict[str, Any]]:
+    """Discover enabled MCP server definitions from ~/.quartz/mcp.json (and MCP_CONFIG if set)."""
+    del cwd
+    raw = load_raw_mcp_config()
+    return {name: spec for name, spec in raw.items() if spec.get("enabled", True) is not False}
 
 
 def _unwrap_tool_result(result: Any) -> Any:
@@ -118,8 +162,22 @@ class MCPManager:
             elif "url" in spec:
                 from mcp.client.streamable_http import streamable_http_client
 
+                headers: dict[str, str] = {}
+                if isinstance(spec.get("headers"), dict):
+                    headers.update({str(k): str(v) for k, v in spec["headers"].items()})
+                if spec.get("x-api-key"):
+                    headers.setdefault("x-api-key", str(spec["x-api-key"]))
+
+                http_client = None
+                if headers:
+                    import httpx2
+
+                    http_client = await stack.enter_async_context(
+                        httpx2.AsyncClient(headers=headers)
+                    )
+
                 read_stream, write_stream, _ = await stack.enter_async_context(
-                    streamable_http_client(str(spec["url"]))
+                    streamable_http_client(str(spec["url"]), http_client=http_client)
                 )
             else:
                 raise ValueError(f"MCP server {server!r} must define either 'command' or 'url'")

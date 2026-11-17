@@ -6,7 +6,9 @@ import json
 import sys
 from pathlib import Path
 
+from agent.cli import _handle_mcp_cli
 from agent.kernel_client import KernelClient
+from agent.mcp_client import add_mcp_server, load_mcp_servers, remove_mcp_server
 from agent.prompt import build_system_prompt
 
 DEMO_MCP_SERVER = '''
@@ -74,3 +76,21 @@ def test_mcp_in_kernel_and_prompt(tmp_path: Path, monkeypatch) -> None:
         assert "hello, world" in (r4.result or "")
     finally:
         kernel.close()
+
+
+def test_mcp_cli_add_list_remove_and_disabled(tmp_path: Path, monkeypatch) -> None:
+    cfg_path = tmp_path / "mcp.json"
+    monkeypatch.setenv("MCP_CONFIG", str(cfg_path))
+
+    _handle_mcp_cli(["add", "http_srv", "--url", "https://example.com/mcp", "--header", "Authorization=Bearer tok"])
+    _handle_mcp_cli(["add", "stdio_srv", "--env", "FOO=bar", "--", "npx", "-y", "demo-pkg"])
+    _handle_mcp_cli(["add", "off_srv", "--url", "https://off.example/mcp", "--disabled"])
+
+    enabled = load_mcp_servers()
+    assert set(enabled.keys()) == {"http_srv", "stdio_srv"}
+    assert enabled["http_srv"]["headers"] == {"Authorization": "Bearer tok"}
+    assert enabled["stdio_srv"] == {"command": "npx", "args": ["-y", "demo-pkg"], "env": {"FOO": "bar"}}
+
+    assert remove_mcp_server("http_srv", cfg_path) is True
+    assert remove_mcp_server("missing", cfg_path) is False
+    assert set(load_mcp_servers().keys()) == {"stdio_srv"}

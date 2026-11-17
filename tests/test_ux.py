@@ -7,10 +7,10 @@ from pathlib import Path
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
+from agent.cli import format_compact_cell_summary
 from agent.completer import AgentCompleter
 from agent.kernel_client import CellResult, KernelClient
 from agent.loop import TurnUsage, agent_loop
-from main import format_compact_cell_summary
 
 
 def test_slash_command_autocomplete(tmp_path: Path) -> None:
