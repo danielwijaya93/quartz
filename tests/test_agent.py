@@ -83,6 +83,22 @@ def test_kernel_bash_background_event(tmp_path: Path) -> None:
         kernel.close()
 
 
+def test_kernel_wait_for_events_and_running_count(tmp_path: Path) -> None:
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        r = kernel.exec_cell("bg = bash('sleep 0.25 && echo wake_test')")
+        assert r.ok
+        assert kernel.running_bash_count() == 1
+        events = kernel.wait_for_events(timeout=3.0)
+        assert len(events) == 1
+        assert events[0]["event"] == "bash_done"
+        assert "wake_test" in events[0]["tail"]
+        assert kernel.running_bash_count() == 0
+    finally:
+        kernel.close()
+
+
 def test_kernel_bash_timeout(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()

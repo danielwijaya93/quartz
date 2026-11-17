@@ -261,6 +261,7 @@ class KernelWorker:
             "stdout": _truncate(stdout_buf.getvalue(), MAX_OUTPUT_CHARS),
             "stderr": _truncate(stderr_buf.getvalue(), MAX_OUTPUT_CHARS),
             "result": result_repr,
+            "running_bash": sum(1 for h in self._handles if h.running),
         }
 
     def list_vars(self) -> dict[str, str]:
@@ -534,6 +535,9 @@ async def _main() -> None:
             worker._send(res)
         elif msg_type == "list_vars":
             worker._send({"type": "vars_result", "id": req_id, "vars": worker.list_vars()})
+        elif msg_type == "running_bash":
+            count = sum(1 for h in worker._handles if h.running)
+            worker._send({"type": "running_bash_result", "id": req_id, "count": count})
         elif msg_type == "snapshot":
             manifest = worker.snapshot_vars(msg.get("dir", ""))
             worker._send({"type": "snapshot_result", "id": req_id, "manifest": manifest})

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -16,12 +17,15 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
+from rich.text import Text
 
 from agent.compact import compact_messages
 from agent.kernel_client import CellResult, KernelClient
-from agent.loop import agent_loop
+from agent.loop import agent_loop, format_bash_done_events
 from agent.prompt import build_system_prompt
 from agent.session import Session
+
+_WAKEUP_SENTINEL = "__MINIMAL_AGENT_WAKEUP__"
 
 console = Console()
 
@@ -45,7 +49,7 @@ def _render_compaction(summarized: int, kept: int) -> None:
 
 
 def _render_bash_notice(notice: str) -> None:
-    console.print(Panel(notice, title="[bold magenta]harness notice[/bold magenta]", border_style="magenta"))
+    console.print(Panel(Text(notice), title="[bold magenta]harness notice[/bold magenta]", border_style="magenta"))
 
 
 def _build_client() -> tuple[OpenAI, str]:
@@ -68,6 +72,12 @@ def main() -> None:
     parser.add_argument("-c", "--continue", dest="cont", action="store_true", help="Resume the most recent session.")
     parser.add_argument("-r", "--resume", metavar="ID", help="Resume a specific session by ID.")
     parser.add_argument("--fork", action="store_true", help="Fork the resumed session into a new session ID.")
+    parser.add_argument(
+        "--background-wait",
+        type=float,
+        default=600.0,
+        help="Max seconds to wait for background bash() commands in -p mode (0 to disable).",
+    )
     args = parser.parse_args()
 
     cwd = args.cwd.resolve()
@@ -129,6 +139,33 @@ def main() -> None:
             _persist()
             if answer:
                 console.print(Markdown(answer))
+
+            while args.background_wait > 0 and (kernel.has_pending_events() or kernel.running_bash_count() > 0):
+                events = kernel.wait_for_events(timeout=args.background_wait)
+                if not events:
+                    break
+                notice = format_bash_done_events(events)
+                if not notice:
+                    continue
+                _render_bash_notice(notice)
+                messages.append({"role": "user", "content": notice})
+                answer, messages, _ = agent_loop(
+                    client,
+                    model,
+                    system_prompt,
+                    messages,
+                    kernel,
+                    max_context_tokens=max_context_tokens,
+                    compact_reserve_tokens=compact_reserve_tokens,
+                    keep_recent_messages=keep_recent_messages,
+                    on_tool_call=_render_tool_call,
+                    on_tool_result=_render_tool_result,
+                    on_compaction=_render_compaction,
+                    on_bash_notice=_render_bash_notice,
+                )
+                _persist()
+                if answer:
+                    console.print(Markdown(answer))
             return
 
         console.print(
@@ -144,11 +181,69 @@ def main() -> None:
         prompt_session: PromptSession[str] = PromptSession(history=InMemoryHistory())
 
         while True:
-            try:
-                user_input = prompt_session.prompt("\n> ").strip()
-            except (EOFError, KeyboardInterrupt):
-                console.print("\n[dim]Exiting.[/dim]")
-                break
+            if kernel.has_pending_events():
+                user_input = _WAKEUP_SENTINEL
+            else:
+                stop_watcher = threading.Event()
+                watcher_thread: threading.Thread | None = None
+                if kernel.running_bash_count() > 0:
+                    def _watch_wakeup() -> None:
+                        while not stop_watcher.is_set():
+                            with kernel._events_cond:
+                                if not kernel._events:
+                                    kernel._events_cond.wait(timeout=0.25)
+                                if kernel._events:
+                                    app = prompt_session.app
+                                    if app.is_running:
+                                        app.exit(result=_WAKEUP_SENTINEL)
+                                    return
+
+                    watcher_thread = threading.Thread(target=_watch_wakeup, daemon=True)
+                    watcher_thread.start()
+
+                try:
+                    user_input = prompt_session.prompt("\n> ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    console.print("\n[dim]Exiting.[/dim]")
+                    break
+                finally:
+                    stop_watcher.set()
+                    if watcher_thread is not None:
+                        watcher_thread.join(timeout=0.5)
+
+            if user_input == _WAKEUP_SENTINEL:
+                events = kernel.drain_events()
+                notice = format_bash_done_events(events)
+                if not notice:
+                    continue
+                _render_bash_notice(notice)
+                messages.append({"role": "user", "content": notice})
+                try:
+                    answer, messages, tokens = agent_loop(
+                        client,
+                        model,
+                        system_prompt,
+                        messages,
+                        kernel,
+                        max_context_tokens=max_context_tokens,
+                        compact_reserve_tokens=compact_reserve_tokens,
+                        keep_recent_messages=keep_recent_messages,
+                        on_tool_call=_render_tool_call,
+                        on_tool_result=_render_tool_result,
+                        on_compaction=_render_compaction,
+                        on_bash_notice=_render_bash_notice,
+                    )
+                    _persist()
+                    if answer:
+                        console.print(Markdown(answer))
+                    if tokens:
+                        console.print(f"[dim](prompt tokens: {tokens})[/dim]")
+                except KeyboardInterrupt:
+                    kernel.interrupt()
+                    console.print("\n[yellow]Interrupted.[/yellow]")
+                except Exception as exc:
+                    console.print(f"[red]Error: {exc}[/red]")
+                continue
 
             if not user_input:
                 continue

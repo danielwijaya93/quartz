@@ -45,7 +45,7 @@ class KernelClient:
         self._pending: dict[str, queue.Queue[dict[str, Any]]] = {}
         self._pending_lock = threading.Lock()
         self._events: list[dict[str, Any]] = []
-        self._events_lock = threading.Lock()
+        self._events_cond = threading.Condition()
         self._ready_event = threading.Event()
         self._reader_thread: threading.Thread | None = None
 
@@ -100,8 +100,9 @@ class KernelClient:
             if msg_type == "ready":
                 self._ready_event.set()
             elif msg_type == "event":
-                with self._events_lock:
+                with self._events_cond:
                     self._events.append(msg)
+                    self._events_cond.notify_all()
             else:
                 req_id = msg.get("id")
                 if req_id:
@@ -174,8 +175,26 @@ class KernelClient:
             "skipped": list(resp.get("skipped", [])),
         }
 
+    def running_bash_count(self, timeout: float = 5.0) -> int:
+        if self._proc is None or self._proc.poll() is not None:
+            return 0
+        resp = self._request({"type": "running_bash"}, timeout=timeout)
+        return int(resp.get("count", 0))
+
+    def has_pending_events(self) -> bool:
+        with self._events_cond:
+            return bool(self._events)
+
+    def wait_for_events(self, timeout: float | None = None) -> list[dict[str, Any]]:
+        with self._events_cond:
+            if not self._events:
+                self._events_cond.wait(timeout=timeout)
+            events = list(self._events)
+            self._events.clear()
+        return events
+
     def drain_events(self) -> list[dict[str, Any]]:
-        with self._events_lock:
+        with self._events_cond:
             events = list(self._events)
             self._events.clear()
         return events
