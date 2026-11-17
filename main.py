@@ -6,6 +6,7 @@ import argparse
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,23 @@ def _render_tool_result(res: CellResult) -> None:
     style = "green" if res.ok else "red"
     title = "[bold green]out[/bold green]" if res.ok else "[bold red]error[/bold red]"
     console.print(Panel(text, title=title, border_style=style))
+
+
+def format_compact_cell_summary(
+    index: int, code: str, res: CellResult, duration: float
+) -> str:
+    """Format a 1-line collapsible summary chip for an executed ipython cell."""
+    code_lines = [ln.strip() for ln in code.strip().splitlines() if ln.strip()]
+    code_preview = (code_lines[0][:50] + "...") if code_lines and len(code_lines[0]) > 50 else (code_lines[0] if code_lines else "")
+    out_text = res.format_for_model().strip()
+    out_lines = out_text.splitlines() if out_text and out_text != "(ok, no output)" else []
+
+    if res.ok:
+        out_summary = f"{len(out_lines)} lines out" if len(out_lines) > 1 else (out_lines[0][:50] if out_lines else "no output")
+        return f"✔ [#{index}] ipython ({len(code_lines)}L: {code_preview}) → {out_summary} ({duration:.2f}s)"
+    err_lines = [ln.strip() for ln in (res.stderr or out_text).splitlines() if ln.strip()]
+    err_preview = err_lines[-1][:70] if err_lines else "error"
+    return f"✖ [#{index}] ipython ({len(code_lines)}L: {code_preview}) → {err_preview} ({duration:.2f}s)"
 
 
 def _render_compaction(summarized: int, kept: int) -> None:
@@ -109,6 +127,11 @@ def main() -> None:
         default=600.0,
         help="Max seconds to wait for background bash() commands in -p mode (0 to disable).",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Always show full ipython code and output panels instead of compact summaries.",
+    )
     args = parser.parse_args()
 
     cwd = args.cwd.resolve()
@@ -150,6 +173,28 @@ def main() -> None:
         active_session.save_messages(messages, compacted=compacted)
         active_session.save_kernel(kernel)
 
+    cell_history: list[tuple[str, CellResult, float]] = []
+    pending_cell_code: list[str] = []
+    pending_cell_start: list[float] = []
+
+    def _on_tool_call(code: str) -> None:
+        pending_cell_code.append(code)
+        pending_cell_start.append(time.monotonic())
+        if args.verbose:
+            _render_tool_call(code)
+
+    def _on_tool_result(res: CellResult) -> None:
+        code = pending_cell_code.pop() if pending_cell_code else ""
+        started = pending_cell_start.pop() if pending_cell_start else time.monotonic()
+        duration = time.monotonic() - started
+        cell_history.append((code, res, duration))
+        if args.verbose:
+            _render_tool_result(res)
+        else:
+            summary = format_compact_cell_summary(len(cell_history), code, res, duration)
+            style = "dim green" if res.ok else "red"
+            console.print(f"[{style}]{summary}[/{style}]")
+
     try:
         if args.prompt:
             messages.append({"role": "user", "content": args.prompt})
@@ -162,8 +207,8 @@ def main() -> None:
                 max_context_tokens=max_context_tokens,
                 compact_reserve_tokens=compact_reserve_tokens,
                 keep_recent_messages=keep_recent_messages,
-                on_tool_call=_render_tool_call,
-                on_tool_result=_render_tool_result,
+                on_tool_call=_on_tool_call,
+                on_tool_result=_on_tool_result,
                 on_compaction=_render_compaction,
                 on_bash_notice=_render_bash_notice,
             )
@@ -189,8 +234,8 @@ def main() -> None:
                     max_context_tokens=max_context_tokens,
                     compact_reserve_tokens=compact_reserve_tokens,
                     keep_recent_messages=keep_recent_messages,
-                    on_tool_call=_render_tool_call,
-                    on_tool_result=_render_tool_result,
+                    on_tool_call=_on_tool_call,
+                    on_tool_result=_on_tool_result,
                     on_compaction=_render_compaction,
                     on_bash_notice=_render_bash_notice,
                 )
@@ -268,8 +313,8 @@ def main() -> None:
                         max_context_tokens=max_context_tokens,
                         compact_reserve_tokens=compact_reserve_tokens,
                         keep_recent_messages=keep_recent_messages,
-                        on_tool_call=_render_tool_call,
-                        on_tool_result=_render_tool_result,
+                        on_tool_call=_on_tool_call,
+                        on_tool_result=_on_tool_result,
                         on_compaction=_render_compaction,
                         on_bash_notice=_render_bash_notice,
                         usage_stats=usage_stats,
@@ -296,11 +341,29 @@ def main() -> None:
                     "/vars            List live Python variables in the kernel\n"
                     "/session         Show active session ID and file paths\n"
                     "/usage           Show context window usage and cache hit rate\n"
+                    "/expand [n]      Expand a collapsed ipython cell (default: latest)\n"
                     "/compact [focus] Summarize older messages while keeping the kernel alive\n"
                     "/prompt          Show the assembled system prompt\n"
                     "/reset           Clear conversation history, start a new session, and restart the kernel\n"
                     "/exit            Exit"
                 )
+                continue
+            if user_input.startswith("/expand") or user_input == "/last":
+                if not cell_history:
+                    console.print("[dim]No ipython cells executed in this session yet.[/dim]")
+                    continue
+                arg = user_input[len("/expand") :].strip() if user_input.startswith("/expand") else ""
+                try:
+                    idx = int(arg) if arg else len(cell_history)
+                    if not (1 <= idx <= len(cell_history)):
+                        raise ValueError
+                except ValueError:
+                    console.print(f"[red]Invalid cell index. Choose 1..{len(cell_history)}.[/red]")
+                    continue
+                code, res, duration = cell_history[idx - 1]
+                console.print(f"[dim]Cell #{idx} ({duration:.2f}s)[/dim]")
+                _render_tool_call(code)
+                _render_tool_result(res)
                 continue
             if user_input == "/usage":
                 pct = usage_stats.context_pct(max_context_tokens)
@@ -338,6 +401,7 @@ def main() -> None:
                 continue
             if user_input == "/reset":
                 messages.clear()
+                cell_history.clear()
                 kernel.restart()
                 active_session = Session.create(cwd)
                 console.print(
@@ -367,8 +431,8 @@ def main() -> None:
                     max_context_tokens=max_context_tokens,
                     compact_reserve_tokens=compact_reserve_tokens,
                     keep_recent_messages=keep_recent_messages,
-                    on_tool_call=_render_tool_call,
-                    on_tool_result=_render_tool_result,
+                    on_tool_call=_on_tool_call,
+                    on_tool_result=_on_tool_result,
                     on_compaction=_render_compaction,
                     on_bash_notice=_render_bash_notice,
                     usage_stats=usage_stats,

@@ -13,6 +13,7 @@ SLASH_COMMANDS: dict[str, str] = {
     "/vars": "List live Python variables in the kernel",
     "/session": "Show active session ID and file paths",
     "/usage": "Show context window usage and cache hit rate",
+    "/expand": "Expand a collapsed ipython cell (default: latest)",
     "/compact": "Summarize older messages while keeping the kernel alive",
     "/prompt": "Show the assembled system prompt",
     "/reset": "Clear history, start a new session, and restart the kernel",
