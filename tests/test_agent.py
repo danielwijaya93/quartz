@@ -7,7 +7,7 @@ from pathlib import Path
 
 from agent.compact import _find_safe_split_index, format_python_state_notice
 from agent.kernel_client import KernelClient
-from agent.loop import format_bash_done_events
+from agent.loop import TurnUsage, format_bash_done_events
 from agent.prompt import build_system_prompt
 
 
@@ -146,3 +146,30 @@ def test_compaction_safe_split_and_python_state() -> None:
     assert "[python-state]" in notice
     assert "df (DataFrame)" in notice
     assert "helper (function)" in notice
+
+
+def test_turn_usage_telemetry() -> None:
+    class _Details:
+        cached_tokens = 750
+
+    class _Usage:
+        prompt_tokens = 1000
+        completion_tokens = 200
+        prompt_tokens_details = _Details()
+
+    stats = TurnUsage()
+    stats.update(_Usage())
+    assert stats.prompt_tokens == 1000
+    assert stats.cached_tokens == 750
+    assert stats.cache_hit_rate == 0.75
+    assert round(stats.context_pct(10_000), 1) == 10.0
+
+    # Provider without prompt_tokens_details
+    class _BasicUsage:
+        prompt_tokens = 500
+        completion_tokens = 50
+
+    stats.update(_BasicUsage())
+    assert stats.total_prompt_tokens == 1500
+    assert stats.total_cached_tokens == 750
+    assert stats.cache_hit_rate == 0.0

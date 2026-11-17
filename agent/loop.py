@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from collections.abc import Callable
 from typing import Any
@@ -10,6 +11,43 @@ from openai import BadRequestError, OpenAI
 
 from agent.compact import compact_messages
 from agent.kernel_client import CellResult, KernelClient
+
+@dataclasses.dataclass
+class TurnUsage:
+    """Tracks context window usage and prompt cache hit rate across turns."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cached_tokens: int = 0
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_cached_tokens: int = 0
+
+    def update(self, usage: Any) -> None:
+        if usage is None:
+            return
+        pt = int(getattr(usage, "prompt_tokens", 0) or 0)
+        ct = int(getattr(usage, "completion_tokens", 0) or 0)
+        details = getattr(usage, "prompt_tokens_details", None)
+        cached = int(getattr(details, "cached_tokens", 0) or 0) if details is not None else 0
+
+        if pt:
+            self.prompt_tokens = pt
+        if ct:
+            self.completion_tokens = ct
+        self.cached_tokens = cached
+
+        self.total_prompt_tokens += pt
+        self.total_completion_tokens += ct
+        self.total_cached_tokens += cached
+
+    @property
+    def cache_hit_rate(self) -> float:
+        return (self.cached_tokens / self.prompt_tokens) if self.prompt_tokens > 0 else 0.0
+
+    def context_pct(self, max_context_tokens: int) -> float:
+        return (self.prompt_tokens / max_context_tokens * 100.0) if max_context_tokens > 0 else 0.0
+
 
 TOOLS = [
     {
@@ -99,6 +137,7 @@ def agent_loop(
     on_tool_result: Callable[[CellResult], None] | None = None,
     on_compaction: Callable[[int, int], None] | None = None,
     on_bash_notice: Callable[[str], None] | None = None,
+    usage_stats: TurnUsage | None = None,
 ) -> tuple[str, list[dict[str, Any]], int]:
     """Run one turn of the agent loop until the model stops calling tools.
 
@@ -146,6 +185,8 @@ def agent_loop(
 
         if response.usage and response.usage.prompt_tokens:
             last_prompt_tokens = response.usage.prompt_tokens
+        if usage_stats is not None and response.usage is not None:
+            usage_stats.update(response.usage)
 
         assistant_msg = response.choices[0].message
         messages.append(_assistant_msg_to_dict(assistant_msg))

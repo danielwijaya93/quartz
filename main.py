@@ -21,7 +21,7 @@ from rich.text import Text
 
 from agent.compact import compact_messages
 from agent.kernel_client import CellResult, KernelClient
-from agent.loop import agent_loop, format_bash_done_events
+from agent.loop import TurnUsage, agent_loop, format_bash_done_events
 from agent.prompt import build_system_prompt
 from agent.session import Session
 
@@ -50,6 +50,36 @@ def _render_compaction(summarized: int, kept: int) -> None:
 
 def _render_bash_notice(notice: str) -> None:
     console.print(Panel(Text(notice), title="[bold magenta]harness notice[/bold magenta]", border_style="magenta"))
+
+
+def _fmt_k(n: int) -> str:
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
+def _format_turn_footer(usage: TurnUsage, max_context_tokens: int) -> str:
+    pct = usage.context_pct(max_context_tokens)
+    cache_pct = usage.cache_hit_rate * 100.0
+    return f"(ctx: {_fmt_k(usage.prompt_tokens)}/{_fmt_k(max_context_tokens)} ({pct:.1f}%) | cache: {cache_pct:.0f}%)"
+
+
+def _format_toolbar(
+    model: str,
+    session_id: str,
+    usage: TurnUsage,
+    max_context_tokens: int,
+    bg_count: int,
+) -> str:
+    pct = usage.context_pct(max_context_tokens)
+    cache_pct = usage.cache_hit_rate * 100.0
+    parts = [
+        f" {model}",
+        f"session:{session_id}",
+        f"ctx:{_fmt_k(usage.prompt_tokens)}/{_fmt_k(max_context_tokens)} ({pct:.1f}%)",
+        f"cache:{cache_pct:.0f}%",
+    ]
+    if bg_count > 0:
+        parts.append(f"bg:{bg_count}")
+    return " | ".join(parts) + " "
 
 
 def _build_client() -> tuple[OpenAI, str]:
@@ -179,14 +209,16 @@ def main() -> None:
         )
 
         prompt_session: PromptSession[str] = PromptSession(history=InMemoryHistory())
+        usage_stats = TurnUsage()
 
         while True:
+            bg_count = kernel.running_bash_count()
             if kernel.has_pending_events():
                 user_input = _WAKEUP_SENTINEL
             else:
                 stop_watcher = threading.Event()
                 watcher_thread: threading.Thread | None = None
-                if kernel.running_bash_count() > 0:
+                if bg_count > 0:
                     def _watch_wakeup() -> None:
                         while not stop_watcher.is_set():
                             with kernel._events_cond:
@@ -202,7 +234,8 @@ def main() -> None:
                     watcher_thread.start()
 
                 try:
-                    user_input = prompt_session.prompt("\n> ").strip()
+                    toolbar = _format_toolbar(model, active_session.id, usage_stats, max_context_tokens, bg_count)
+                    user_input = prompt_session.prompt("\n> ", bottom_toolbar=toolbar).strip()
                 except (EOFError, KeyboardInterrupt):
                     console.print("\n[dim]Exiting.[/dim]")
                     break
@@ -232,12 +265,13 @@ def main() -> None:
                         on_tool_result=_render_tool_result,
                         on_compaction=_render_compaction,
                         on_bash_notice=_render_bash_notice,
+                        usage_stats=usage_stats,
                     )
                     _persist()
                     if answer:
                         console.print(Markdown(answer))
                     if tokens:
-                        console.print(f"[dim](prompt tokens: {tokens})[/dim]")
+                        console.print(f"[dim]{_format_turn_footer(usage_stats, max_context_tokens)}[/dim]")
                 except KeyboardInterrupt:
                     kernel.interrupt()
                     console.print("\n[yellow]Interrupted.[/yellow]")
@@ -254,10 +288,27 @@ def main() -> None:
                 console.print(
                     "/vars            List live Python variables in the kernel\n"
                     "/session         Show active session ID and file paths\n"
+                    "/usage           Show context window usage and cache hit rate\n"
                     "/compact [focus] Summarize older messages while keeping the kernel alive\n"
                     "/prompt          Show the assembled system prompt\n"
                     "/reset           Clear conversation history, start a new session, and restart the kernel\n"
                     "/exit            Exit"
+                )
+                continue
+            if user_input == "/usage":
+                pct = usage_stats.context_pct(max_context_tokens)
+                cache_pct = usage_stats.cache_hit_rate * 100.0
+                total_cache = (
+                    (usage_stats.total_cached_tokens / usage_stats.total_prompt_tokens * 100.0)
+                    if usage_stats.total_prompt_tokens > 0
+                    else 0.0
+                )
+                console.print(
+                    f"Last context:  {usage_stats.prompt_tokens:,} / {max_context_tokens:,} ({pct:.1f}%)\n"
+                    f"Last cache:    {usage_stats.cached_tokens:,} cached ({cache_pct:.1f}%)\n"
+                    f"Session total: {usage_stats.total_prompt_tokens:,} in / "
+                    f"{usage_stats.total_completion_tokens:,} out / "
+                    f"{usage_stats.total_cached_tokens:,} cached ({total_cache:.1f}%)"
                 )
                 continue
             if user_input == "/session":
@@ -313,12 +364,13 @@ def main() -> None:
                     on_tool_result=_render_tool_result,
                     on_compaction=_render_compaction,
                     on_bash_notice=_render_bash_notice,
+                    usage_stats=usage_stats,
                 )
                 _persist()
                 if answer:
                     console.print(Markdown(answer))
                 if tokens:
-                    console.print(f"[dim](prompt tokens: {tokens})[/dim]")
+                    console.print(f"[dim]{_format_turn_footer(usage_stats, max_context_tokens)}[/dim]")
             except KeyboardInterrupt:
                 kernel.interrupt()
                 console.print("\n[yellow]Interrupted.[/yellow]")
