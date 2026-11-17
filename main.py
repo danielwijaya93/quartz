@@ -12,7 +12,7 @@ from typing import Any
 from dotenv import load_dotenv
 from openai import OpenAI
 from prompt_toolkit import PromptSession
-from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.history import FileHistory
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -20,6 +20,7 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from agent.compact import compact_messages
+from agent.completer import AgentCompleter
 from agent.kernel_client import CellResult, KernelClient
 from agent.loop import TurnUsage, agent_loop, format_bash_done_events
 from agent.prompt import build_system_prompt
@@ -208,7 +209,13 @@ def main() -> None:
             )
         )
 
-        prompt_session: PromptSession[str] = PromptSession(history=InMemoryHistory())
+        history_path = Path.home() / ".minimal-agent" / "history"
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        prompt_session: PromptSession[str] = PromptSession(
+            history=FileHistory(str(history_path)),
+            completer=AgentCompleter(cwd),
+            complete_while_typing=True,
+        )
         usage_stats = TurnUsage()
 
         while True:
