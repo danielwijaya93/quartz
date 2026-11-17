@@ -28,6 +28,13 @@ from rich.text import Text
 
 from agent.compact import compact_messages
 from agent.completer import AgentCompleter
+from agent.google_auth import (
+    auth_file_path,
+    delete_google_credentials,
+    load_google_credentials,
+    login_google_interactive,
+)
+from agent.google_provider import GoogleAntigravityClient
 from agent.kernel_client import CellResult, KernelClient
 from agent.loop import TurnUsage, agent_loop, format_bash_done_events
 from agent.mcp_client import (
@@ -265,17 +272,83 @@ def _format_toolbar(
     return " | ".join(parts) + " "
 
 
-def _build_client() -> tuple[OpenAI, str]:
+def _build_client(provider: str = "auto", model_override: str | None = None) -> tuple[Any, str]:
     api_key = os.getenv("OPENAI_API_KEY")
+    has_google = load_google_credentials() is not None
+    env_model = model_override or os.getenv("MODEL")
+
+    use_google = False
+    if provider == "google":
+        use_google = True
+    elif provider == "auto":
+        if env_model and env_model.startswith("gemini-") and has_google:
+            use_google = True
+        elif not api_key and has_google:
+            use_google = True
+
+    if use_google:
+        if not has_google:
+            console.print("[red]Error: Not logged in to Google. Run `quartz auth login google` first.[/red]")
+            sys.exit(1)
+        model = env_model or "gemini-3-flash"
+        return GoogleAntigravityClient(), model
+
     if not api_key:
         console.print(
-            "[red]Error: OPENAI_API_KEY is not set. Add it to ~/.quartz/.env or .env.[/red]"
+            "[red]Error: No credentials found. Either add OPENAI_API_KEY to ~/.quartz/.env or run `quartz auth login google`.[/red]"
         )
         sys.exit(1)
     base_url = os.getenv("OPENAI_BASE_URL") or None
-    model = os.getenv("MODEL", "gpt-4.1")
+    model = env_model or "gpt-4.1"
     client = OpenAI(api_key=api_key, base_url=base_url)
     return client, model
+
+
+def _handle_auth_cli(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(
+        prog="quartz auth",
+        description="Manage subscription logins in ~/.quartz/auth.json",
+    )
+    sub = parser.add_subparsers(dest="action", required=True)
+
+    login_p = sub.add_parser("login", help="Log in with a subscription provider")
+    login_p.add_argument("provider", choices=["google"], help="Provider to authenticate")
+
+    sub.add_parser("status", help="Show current authentication status")
+
+    logout_p = sub.add_parser("logout", help="Remove stored credentials")
+    logout_p.add_argument("provider", choices=["google"], help="Provider to log out")
+
+    args = parser.parse_args(argv)
+
+    if args.action == "login":
+        try:
+            creds = login_google_interactive()
+        except Exception as exc:
+            console.print(f"[red]Login failed: {exc}[/red]")
+            sys.exit(1)
+        console.print(
+            f"[green]Logged in to Google![/green] Project: [bold]{creds.project_id}[/bold] "
+            f"(saved to {auth_file_path()})"
+        )
+        return
+
+    if args.action == "status":
+        creds = load_google_credentials()
+        if creds is None:
+            console.print(f"[dim]Google: not logged in ({auth_file_path()})[/dim]")
+        else:
+            status = "expired (will auto-refresh)" if creds.is_expired() else "active"
+            console.print(
+                f"[green]Google: logged in[/green] | project: [bold]{creds.project_id}[/bold] | token: {status}"
+            )
+        return
+
+    if args.action == "logout":
+        if delete_google_credentials():
+            console.print("[green]Logged out from Google.[/green]")
+        else:
+            console.print("[dim]No Google credentials found.[/dim]")
 
 
 def _parse_kv_pairs(items: list[str], flag_name: str) -> dict[str, str]:
@@ -404,6 +477,9 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "mcp":
         _handle_mcp_cli(sys.argv[2:])
         return
+    if len(sys.argv) > 1 and sys.argv[1] == "auth":
+        _handle_auth_cli(sys.argv[2:])
+        return
 
     quartz_env = Path.home() / ".quartz" / ".env"
     if quartz_env.is_file():
@@ -423,6 +499,13 @@ def main() -> None:
         help="Max seconds to wait for background bash() commands in -p mode (0 to disable).",
     )
     parser.add_argument(
+        "--provider",
+        choices=["auto", "openai", "google"],
+        default=os.getenv("PROVIDER", "auto"),
+        help="LLM provider backend (default: auto).",
+    )
+    parser.add_argument("--model", help="Override MODEL from environment.")
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Always show full ipython code and output panels instead of compact summaries.",
@@ -434,7 +517,7 @@ def main() -> None:
     compact_reserve_tokens = int(os.getenv("COMPACT_RESERVE_TOKENS", "16384"))
     keep_recent_messages = int(os.getenv("COMPACT_KEEP_RECENT_MESSAGES", "10"))
 
-    client, model = _build_client()
+    client, model = _build_client(provider=args.provider, model_override=args.model)
     system_prompt = build_system_prompt(cwd)
     kernel = KernelClient(cwd=cwd)
     kernel.start()

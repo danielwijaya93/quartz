@@ -218,9 +218,13 @@ def _call_model(
             tc_deltas = getattr(delta, "tool_calls", None) or []
             for tc_delta in tc_deltas:
                 idx = getattr(tc_delta, "index", 0)
-                entry = tool_calls_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                entry = tool_calls_acc.setdefault(
+                    idx, {"id": "", "name": "", "arguments": "", "thought_signature": ""}
+                )
                 if getattr(tc_delta, "id", None):
                     entry["id"] = tc_delta.id
+                if getattr(tc_delta, "thought_signature", None):
+                    entry["thought_signature"] = tc_delta.thought_signature
                 fn = getattr(tc_delta, "function", None)
                 if fn is not None:
                     if getattr(fn, "name", None):
@@ -236,14 +240,17 @@ def _call_model(
         "content": "".join(content_parts) if content_parts else None,
     }
     if tool_calls_acc:
-        assistant_dict["tool_calls"] = [
-            {
+        tc_list: list[dict[str, Any]] = []
+        for _, entry in sorted(tool_calls_acc.items()):
+            tc_obj: dict[str, Any] = {
                 "id": entry["id"],
                 "type": "function",
                 "function": {"name": entry["name"], "arguments": entry["arguments"]},
             }
-            for _, entry in sorted(tool_calls_acc.items())
-        ]
+            if entry["thought_signature"]:
+                tc_obj["thought_signature"] = entry["thought_signature"]
+            tc_list.append(tc_obj)
+        assistant_dict["tool_calls"] = tc_list
     return assistant_dict, usage
 
 
