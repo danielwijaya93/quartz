@@ -96,3 +96,18 @@ def test_session_fork_and_latest(tmp_path: Path) -> None:
         assert r.ok and r.result == "99"
     finally:
         k2.close()
+
+
+def test_session_lazy_create_and_latest_skips_empty(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    s1 = Session.create(tmp_path, sessions_dir=sessions_dir)
+    s1.save_messages([{"role": "user", "content": "real message"}])
+
+    # Creating a new session without saving messages should not write a file
+    s_unused = Session.create(tmp_path, sessions_dir=sessions_dir)
+    assert not s_unused.jsonl_path.exists()
+
+    # Even if an empty meta-only .jsonl exists with newer mtime, latest_id skips it
+    empty_file = sessions_dir / "99999999-999999-empty0.jsonl"
+    empty_file.write_text('{"type": "meta", "id": "empty"}\n', encoding="utf-8")
+    assert Session.latest_id(sessions_dir=sessions_dir) == s1.id

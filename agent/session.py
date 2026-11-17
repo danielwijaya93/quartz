@@ -47,19 +47,32 @@ class Session:
         self.jsonl_path = self.sessions_dir / f"{self.id}.jsonl"
         self.snapshot_dir = self.sessions_dir / f"{self.id}.snapshot"
         self._persisted_count = 0
+        self._pending_meta: dict[str, Any] | None = None
 
     @classmethod
     def create(cls, cwd: Path, sessions_dir: Path | None = None) -> Session:
         session = cls(_new_session_id(), sessions_dir=sessions_dir)
-        session._append_record(
-            {
-                "type": "meta",
-                "id": session.id,
-                "cwd": str(cwd.resolve()),
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            }
-        )
+        session._pending_meta = {
+            "type": "meta",
+            "id": session.id,
+            "cwd": str(cwd.resolve()),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
         return session
+
+    @classmethod
+    def _has_messages(cls, jsonl_path: Path) -> bool:
+        try:
+            for line in jsonl_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                rec = json.loads(line)
+                if rec.get("type") in ("message", "compaction"):
+                    return True
+        except (OSError, json.JSONDecodeError):
+            return False
+        return False
 
     @classmethod
     def latest_id(cls, sessions_dir: Path | None = None) -> str | None:
@@ -67,7 +80,10 @@ class Session:
         if not root.is_dir():
             return None
         files = sorted(root.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-        return files[0].stem if files else None
+        for f in files:
+            if cls._has_messages(f):
+                return f.stem
+        return None
 
     @classmethod
     def load(cls, session_id: str, sessions_dir: Path | None = None) -> tuple[Session, list[dict[str, Any]]]:
@@ -103,11 +119,19 @@ class Session:
             shutil.copytree(src.snapshot_dir, forked.snapshot_dir, dirs_exist_ok=True)
         return forked, messages
 
+    def _ensure_meta_written(self) -> None:
+        if self._pending_meta is not None:
+            self._append_record(self._pending_meta)
+            self._pending_meta = None
+
     def _append_record(self, record: dict[str, Any]) -> None:
         with self.jsonl_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def save_messages(self, messages: list[dict[str, Any]], compacted: bool = False) -> None:
+        if not messages and self._persisted_count == 0:
+            return
+        self._ensure_meta_written()
         if compacted or len(messages) < self._persisted_count:
             self._append_record({"type": "compaction", "messages": messages})
             self._persisted_count = len(messages)

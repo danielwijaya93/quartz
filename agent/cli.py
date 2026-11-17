@@ -355,8 +355,25 @@ def main() -> None:
         restored_notice = active_session.restore_kernel(kernel)
         if restored_notice:
             messages.append({"role": "user", "content": restored_notice})
-            if not args.prompt:
-                console.print(Panel(restored_notice, title="[bold cyan]session restored[/bold cyan]", border_style="cyan"))
+        if not args.prompt:
+            recap_lines = [f"Resumed session [bold]{active_session.id}[/bold] ({len(messages)} messages)"]
+            last_user = next(
+                (m.get("content", "") for m in reversed(messages) if m.get("role") == "user" and not str(m.get("content", "")).startswith("[")),
+                None,
+            )
+            last_asst = next(
+                (m.get("content", "") for m in reversed(messages) if m.get("role") == "assistant" and m.get("content")),
+                None,
+            )
+            if last_user:
+                u_prev = str(last_user).strip().replace("\n", " ")[:140]
+                recap_lines.append(f"[dim]Last user:[/dim] {u_prev}")
+            if last_asst:
+                a_prev = str(last_asst).strip().replace("\n", " ")[:200]
+                recap_lines.append(f"[dim]Last reply:[/dim] {a_prev}")
+            if restored_notice:
+                recap_lines.append(restored_notice.strip())
+            console.print(Panel("\n".join(recap_lines), title="[bold cyan]session restored[/bold cyan]", border_style="cyan"))
     else:
         active_session = Session.create(cwd)
 
@@ -645,8 +662,9 @@ def main() -> None:
             except Exception as exc:
                 console.print(f"[red]Error: {exc}[/red]")
     finally:
-        try:
-            active_session.save_kernel(kernel)
-        except Exception:
-            pass
+        if messages:
+            try:
+                active_session.save_kernel(kernel)
+            except Exception:
+                pass
         kernel.close()
