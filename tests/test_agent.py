@@ -112,18 +112,28 @@ def test_kernel_bash_timeout(tmp_path: Path) -> None:
 
 def test_prompt_discovery(tmp_path: Path) -> None:
     (tmp_path / "AGENTS.md").write_text("Always use pytest.", encoding="utf-8")
-    skill_dir = tmp_path / ".agents" / "skills" / "demo-skill"
+    # Project-local .agents/skills should NOT be scanned; only explicit/global ~/.agents/skills
+    ignored_skill_dir = tmp_path / ".agents" / "skills" / "ignored-skill"
+    ignored_skill_dir.mkdir(parents=True)
+    (ignored_skill_dir / "SKILL.md").write_text(
+        "---\nname: ignored-skill\ndescription: Should not be loaded\n---\n",
+        encoding="utf-8",
+    )
+
+    skills_root = tmp_path / "global_skills"
+    skill_dir = skills_root / "demo-skill"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         "---\nname: demo-skill\ndescription: A demo skill for testing\n---\n\nDetails here.\n",
         encoding="utf-8",
     )
 
-    prompt = build_system_prompt(tmp_path)
+    prompt = build_system_prompt(tmp_path, skills_dir=skills_root)
     assert "You have one tool, `ipython`" in prompt
     assert "Always use pytest." in prompt
     assert "`demo-skill`" in prompt
     assert "A demo skill for testing" in prompt
+    assert "ignored-skill" not in prompt
     assert "Details here." not in prompt
 
 

@@ -10,11 +10,10 @@ from typing import Any
 
 
 def load_mcp_servers(cwd: Path | None = None) -> dict[str, dict[str, Any]]:
-    """Discover MCP server definitions from ~/.minimal-agent/mcp.json, .mcp.json, and MCP_CONFIG."""
-    work_dir = (cwd or Path.cwd()).resolve()
+    """Discover MCP server definitions from ~/.quartz/mcp.json (and MCP_CONFIG if set)."""
+    del cwd
     candidates: list[Path] = [
-        Path.home() / ".minimal-agent" / "mcp.json",
-        work_dir / ".mcp.json",
+        Path.home() / ".quartz" / "mcp.json",
     ]
     env_cfg = os.getenv("MCP_CONFIG")
     if env_cfg:

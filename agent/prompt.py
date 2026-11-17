@@ -10,7 +10,7 @@ from pathlib import Path
 
 from agent.mcp_client import load_mcp_servers
 
-STATIC_SYSTEM_PROMPT = """# Minimal Agent
+STATIC_SYSTEM_PROMPT = """# Quartz
 
 You have one tool, `ipython`: a persistent CPython REPL where top-level `await` works. Every other capability is a Python function in that REPL. Messages that start with `[<kind>]` come from the harness, not from the user.
 
@@ -88,28 +88,28 @@ def _parse_skill_frontmatter(skill_md: Path) -> tuple[str, str] | None:
     return (name, description)
 
 
-def discover_skills(cwd: Path) -> list[tuple[str, str, Path]]:
-    """Discover SKILL.md files from standard skill directories."""
-    search_roots: list[Path] = [Path.home() / ".unharnessed" / "skills"]
-    for directory in _ancestor_dirs(cwd):
-        search_roots.append(directory / ".agents" / "skills")
-        search_roots.append(directory / ".unharnessed" / "skills")
+def discover_skills(skills_dir: Path | None = None) -> list[tuple[str, str, Path]]:
+    """Discover SKILL.md files exclusively from ~/.agents/skills."""
+    root = (skills_dir or (Path.home() / ".agents" / "skills")).expanduser()
+    if not root.is_dir():
+        return []
 
     skills_by_name: dict[str, tuple[str, str, Path]] = {}
-    for root in search_roots:
-        if not root.is_dir():
-            continue
-        for entry in sorted(root.iterdir()):
-            skill_md = entry / "SKILL.md"
-            if entry.is_dir() and skill_md.is_file():
-                parsed = _parse_skill_frontmatter(skill_md)
-                if parsed:
-                    name, desc = parsed
-                    skills_by_name[name] = (name, desc, skill_md)
+    for entry in sorted(root.iterdir()):
+        skill_md = entry / "SKILL.md"
+        if entry.is_dir() and skill_md.is_file():
+            parsed = _parse_skill_frontmatter(skill_md)
+            if parsed:
+                name, desc = parsed
+                skills_by_name[name] = (name, desc, skill_md)
     return list(skills_by_name.values())
 
 
-def build_system_prompt(cwd: Path | None = None) -> str:
+def build_system_prompt(
+    cwd: Path | None = None,
+    *,
+    skills_dir: Path | None = None,
+) -> str:
     """Assemble the static prompt plus dynamic environment, skills, and context files."""
     work_dir = (cwd or Path.cwd()).resolve()
     sections = [STATIC_SYSTEM_PROMPT]
@@ -133,7 +133,7 @@ def build_system_prompt(cwd: Path | None = None) -> str:
             "- `await mcp.call_tool(server, tool, arguments={...})`"
         )
 
-    skills = discover_skills(work_dir)
+    skills = discover_skills(skills_dir=skills_dir)
     if skills:
         lines = ["## Skills\n\nRead a skill's `SKILL.md` in Python when a task matches it:"]
         for name, desc, path in skills:

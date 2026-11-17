@@ -116,9 +116,12 @@ def _build_client() -> tuple[OpenAI, str]:
 
 
 def main() -> None:
-    load_dotenv()
+    quartz_env = Path.home() / ".quartz" / ".env"
+    if quartz_env.is_file():
+        load_dotenv(quartz_env, override=False)
+    load_dotenv(override=False)
 
-    parser = argparse.ArgumentParser(description="Minimal agent with a single persistent Python REPL tool.")
+    parser = argparse.ArgumentParser(description="quartz — minimal coding agent with a persistent Python REPL.")
     parser.add_argument("-p", "--prompt", help="Run a single prompt in headless mode and exit.")
     parser.add_argument("--cwd", type=Path, default=Path.cwd(), help="Working directory for the agent.")
     parser.add_argument("-c", "--continue", dest="cont", action="store_true", help="Resume the most recent session.")
@@ -295,7 +298,7 @@ def main() -> None:
                 "Commands: [cyan]/vars[/cyan], [cyan]/session[/cyan], [cyan]/usage[/cyan], "
                 "[cyan]/expand[/cyan], [cyan]/compact[/cyan], [cyan]/reset[/cyan], [cyan]/exit[/cyan]\n"
                 "[dim]Tip: Use @path for files, Esc+Enter or Ctrl+J for multi-line input, Ctrl+C to interrupt.[/dim]",
-                title="[bold]Minimal Agent (learn-claude-code + Unharnessed)[/bold]",
+                title="[bold]quartz[/bold]",
                 border_style="blue",
             )
         )
@@ -315,7 +318,7 @@ def main() -> None:
             else:
                 buf.validate_and_handle()
 
-        history_path = Path.home() / ".minimal-agent" / "history"
+        history_path = Path.home() / ".quartz" / "history"
         history_path.parent.mkdir(parents=True, exist_ok=True)
         prompt_session: PromptSession[str] = PromptSession(
             history=FileHistory(str(history_path)),

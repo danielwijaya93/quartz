@@ -17,7 +17,7 @@ def default_sessions_dir() -> Path:
     env_dir = os.getenv("SESSION_DIR")
     if env_dir:
         return Path(env_dir).expanduser().resolve()
-    return (Path.home() / ".minimal-agent" / "sessions").resolve()
+    return (Path.home() / ".quartz" / "sessions").resolve()
 
 
 def _new_session_id() -> str:

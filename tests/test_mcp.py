@@ -29,7 +29,7 @@ if __name__ == "__main__":
 '''
 
 
-def _setup_demo_mcp(tmp_path: Path) -> None:
+def _setup_demo_mcp(tmp_path: Path) -> Path:
     server_script = tmp_path / "demo_mcp_server.py"
     server_script.write_text(DEMO_MCP_SERVER, encoding="utf-8")
     mcp_cfg = {
@@ -40,11 +40,14 @@ def _setup_demo_mcp(tmp_path: Path) -> None:
             }
         }
     }
-    (tmp_path / ".mcp.json").write_text(json.dumps(mcp_cfg), encoding="utf-8")
+    cfg_path = tmp_path / "mcp.json"
+    cfg_path.write_text(json.dumps(mcp_cfg), encoding="utf-8")
+    return cfg_path
 
 
-def test_mcp_in_kernel_and_prompt(tmp_path: Path) -> None:
-    _setup_demo_mcp(tmp_path)
+def test_mcp_in_kernel_and_prompt(tmp_path: Path, monkeypatch) -> None:
+    cfg_path = _setup_demo_mcp(tmp_path)
+    monkeypatch.setenv("MCP_CONFIG", str(cfg_path))
 
     prompt = build_system_prompt(tmp_path)
     assert "## MCP Servers" in prompt
