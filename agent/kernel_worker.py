@@ -19,7 +19,10 @@ import sys
 import time
 import traceback
 from collections import deque
+from pathlib import Path
 from typing import Any
+
+from agent.mcp_client import MCPManager
 
 MAX_OUTPUT_CHARS = 128_000
 MAX_REPR_CHARS = 128_000
@@ -158,6 +161,7 @@ class KernelWorker:
 
         self._current_cell_id: str | None = None
         self._handles: list[BashHandle] = []
+        self.mcp = MCPManager(cwd=Path.cwd())
 
         self._namespace: dict[str, Any] = {
             "__name__": "__main__",
@@ -165,6 +169,7 @@ class KernelWorker:
             "bash": self.bash,
             "BashHandle": BashHandle,
             "BashResult": BashResult,
+            "mcp": self.mcp,
         }
         self._reserved_names = set(self._namespace.keys()) | {"_"}
 
@@ -547,7 +552,8 @@ async def _main() -> None:
         elif msg_type == "shutdown":
             break
 
-    # Clean up any still-running background bash processes on shutdown
+    # Clean up any still-running background bash processes and MCP sessions on shutdown
+    await worker.mcp.close()
     for h in worker._handles:
         if h.running:
             h.kill(signal.SIGKILL, grace=0)

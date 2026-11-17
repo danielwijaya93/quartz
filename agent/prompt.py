@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from agent.mcp_client import load_mcp_servers
+
 STATIC_SYSTEM_PROMPT = """# Minimal Agent
 
 You have one tool, `ipython`: a persistent CPython REPL where top-level `await` works. Every other capability is a Python function in that REPL. Messages that start with `[<kind>]` come from the harness, not from the user.
@@ -119,6 +121,17 @@ def build_system_prompt(cwd: Path | None = None) -> str:
         f"- Python: `{sys.version.split()[0]}`"
     )
     sections.append(env_block)
+
+    mcp_servers = load_mcp_servers(work_dir)
+    if mcp_servers:
+        server_list = ", ".join(f"`{name}`" for name in sorted(mcp_servers))
+        sections.append(
+            "## MCP Servers\n\n"
+            f"Configured servers: {server_list}\n"
+            "Call them from Python via the pre-imported `mcp` object:\n"
+            "- `await mcp.search_tools(query)` / `await mcp.list_tools(server=None)`\n"
+            "- `await mcp.call_tool(server, tool, arguments={...})`"
+        )
 
     skills = discover_skills(work_dir)
     if skills:
