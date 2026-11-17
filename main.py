@@ -16,6 +16,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.status import Status
@@ -179,6 +180,8 @@ def main() -> None:
     pending_cell_code: list[str] = []
     pending_cell_start: list[float] = []
     active_status: list[Status] = []
+    active_live: list[Live] = []
+    stream_buf: list[str] = []
     streamed_any = [False]
 
     def _on_status(label: str | None) -> None:
@@ -194,15 +197,33 @@ def main() -> None:
             st.__enter__()
             active_status.append(st)
 
+    def _stop_live() -> None:
+        if active_live:
+            live = active_live.pop()
+            if stream_buf:
+                live.update(Markdown("".join(stream_buf)))
+            live.__exit__(None, None, None)
+        stream_buf.clear()
+
     def _on_text_delta(chunk: str) -> None:
         streamed_any[0] = True
-        sys.stdout.write(chunk)
-        sys.stdout.flush()
+        stream_buf.append(chunk)
+        md = Markdown("".join(stream_buf))
+        if not active_live:
+            live = Live(
+                md,
+                console=console,
+                refresh_per_second=12,
+                vertical_overflow="visible",
+            )
+            live.__enter__()
+            active_live.append(live)
+        else:
+            active_live[-1].update(md)
 
     def _on_tool_call(code: str) -> None:
         if streamed_any[0]:
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+            _stop_live()
             streamed_any[0] = False
         pending_cell_code.append(code)
         pending_cell_start.append(time.monotonic())
@@ -223,6 +244,7 @@ def main() -> None:
 
     def _run_turn(usage_stats: TurnUsage | None = None) -> tuple[str, list[dict[str, Any]], int]:
         streamed_any[0] = False
+        stream_buf.clear()
         try:
             answer, updated_msgs, tokens = agent_loop(
                 client,
@@ -243,10 +265,8 @@ def main() -> None:
             )
         finally:
             _on_status(None)
-        if streamed_any[0]:
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-        elif answer:
+            _stop_live()
+        if not streamed_any[0] and answer:
             console.print(Markdown(answer))
         return answer, updated_msgs, tokens
 
