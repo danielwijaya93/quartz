@@ -48,6 +48,7 @@ class Session:
         self.snapshot_dir = self.sessions_dir / f"{self.id}.snapshot"
         self._persisted_count = 0
         self._pending_meta: dict[str, Any] | None = None
+        self.last_usage: dict[str, int] | None = None
 
     @classmethod
     def create(cls, cwd: Path, sessions_dir: Path | None = None) -> Session:
@@ -61,28 +62,41 @@ class Session:
         return session
 
     @classmethod
-    def _has_messages(cls, jsonl_path: Path) -> bool:
+    def _inspect_session(cls, jsonl_path: Path) -> tuple[bool, str | None]:
+        """Return (has_messages, cwd) from a session JSONL file."""
+        has_msgs = False
+        session_cwd: str | None = None
         try:
             for line in jsonl_path.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
                 if not line:
                     continue
                 rec = json.loads(line)
-                if rec.get("type") in ("message", "compaction"):
-                    return True
+                rec_type = rec.get("type")
+                if rec_type == "meta" and session_cwd is None:
+                    session_cwd = rec.get("cwd")
+                elif rec_type in ("message", "compaction"):
+                    has_msgs = True
         except (OSError, json.JSONDecodeError):
-            return False
-        return False
+            return False, None
+        return has_msgs, session_cwd
 
     @classmethod
-    def latest_id(cls, sessions_dir: Path | None = None) -> str | None:
+    def latest_id(
+        cls, cwd: Path | None = None, sessions_dir: Path | None = None
+    ) -> str | None:
         root = (sessions_dir or default_sessions_dir()).resolve()
         if not root.is_dir():
             return None
+        target_cwd = str(cwd.resolve()) if cwd is not None else None
         files = sorted(root.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
         for f in files:
-            if cls._has_messages(f):
-                return f.stem
+            has_msgs, session_cwd = cls._inspect_session(f)
+            if not has_msgs:
+                continue
+            if target_cwd is not None and session_cwd != target_cwd:
+                continue
+            return f.stem
         return None
 
     @classmethod
@@ -102,6 +116,8 @@ class Session:
                 messages.append(record["message"])
             elif rec_type == "compaction":
                 messages = list(record["messages"])
+            elif rec_type == "usage" and isinstance(record.get("usage"), dict):
+                session.last_usage = {k: int(v) for k, v in record["usage"].items()}
 
         session._persisted_count = len(messages)
         return session, messages
@@ -113,8 +129,11 @@ class Session:
         src, messages = cls.load(source_id, sessions_dir=sessions_dir)
         forked = cls.create(cwd, sessions_dir=src.sessions_dir)
         if messages:
+            forked._ensure_meta_written()
             forked._append_record({"type": "compaction", "messages": messages})
             forked._persisted_count = len(messages)
+        if src.last_usage:
+            forked.save_usage(src.last_usage)
         if src.snapshot_dir.is_dir():
             shutil.copytree(src.snapshot_dir, forked.snapshot_dir, dirs_exist_ok=True)
         return forked, messages
@@ -141,6 +160,11 @@ class Session:
         for msg in new_msgs:
             self._append_record({"type": "message", "message": msg})
         self._persisted_count = len(messages)
+
+    def save_usage(self, usage: dict[str, int]) -> None:
+        self._ensure_meta_written()
+        self.last_usage = dict(usage)
+        self._append_record({"type": "usage", "usage": self.last_usage})
 
     def save_kernel(self, kernel: KernelClient) -> dict[str, Any]:
         return kernel.snapshot(self.snapshot_dir)

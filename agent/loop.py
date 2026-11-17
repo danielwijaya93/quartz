@@ -48,6 +48,29 @@ class TurnUsage:
     def context_pct(self, max_context_tokens: int) -> float:
         return (self.prompt_tokens / max_context_tokens * 100.0) if max_context_tokens > 0 else 0.0
 
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "cached_tokens": self.cached_tokens,
+            "total_prompt_tokens": self.total_prompt_tokens,
+            "total_completion_tokens": self.total_completion_tokens,
+            "total_cached_tokens": self.total_cached_tokens,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, int] | None) -> TurnUsage:
+        if not data:
+            return cls()
+        return cls(
+            prompt_tokens=int(data.get("prompt_tokens", 0)),
+            completion_tokens=int(data.get("completion_tokens", 0)),
+            cached_tokens=int(data.get("cached_tokens", 0)),
+            total_prompt_tokens=int(data.get("total_prompt_tokens", 0)),
+            total_completion_tokens=int(data.get("total_completion_tokens", 0)),
+            total_cached_tokens=int(data.get("total_cached_tokens", 0)),
+        )
+
 
 TOOLS = [
     {
@@ -242,12 +265,13 @@ def agent_loop(
     on_status: Callable[[str | None], None] | None = None,
     on_text_delta: Callable[[str], None] | None = None,
     usage_stats: TurnUsage | None = None,
+    initial_prompt_tokens: int = 0,
 ) -> tuple[str, list[dict[str, Any]], int]:
     """Run one turn of the agent loop until the model stops calling tools.
 
     Returns (final_text, updated_messages, last_prompt_tokens).
     """
-    last_prompt_tokens = 0
+    last_prompt_tokens = initial_prompt_tokens
     compact_threshold = max(4096, max_context_tokens - compact_reserve_tokens)
 
     while True:

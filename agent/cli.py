@@ -131,6 +131,60 @@ def _render_bash_notice(notice: str) -> None:
     console.print(Panel(Text(notice), title="[bold magenta]harness notice[/bold magenta]", border_style="magenta"))
 
 
+def _replay_session(
+    messages: list[dict[str, Any]],
+    cell_history: list[tuple[str, CellResult, float]],
+    *,
+    verbose: bool = False,
+) -> None:
+    """Replay a resumed session's full conversation and tool cells into the terminal."""
+    import json
+
+    tool_outputs: dict[str, str] = {
+        str(m["tool_call_id"]): str(m.get("content", ""))
+        for m in messages
+        if m.get("role") == "tool" and m.get("tool_call_id")
+    }
+
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content") or ""
+
+        if role == "user":
+            text = str(content)
+            if text.startswith("[") and text.endswith("]") or text.startswith("[bash-done") or text.startswith("[compaction-summary]") or text.startswith("[python-state"):
+                _render_bash_notice(text)
+            else:
+                console.print(f"\n[bold]> {text}[/bold]")
+        elif role == "assistant":
+            if content:
+                console.print(Markdown(str(content)))
+            for tc in msg.get("tool_calls") or []:
+                fn = tc.get("function", {})
+                if fn.get("name") != "ipython":
+                    continue
+                try:
+                    code = json.loads(fn.get("arguments") or "{}").get("code", "")
+                except json.JSONDecodeError:
+                    code = fn.get("arguments") or ""
+                raw_out = tool_outputs.get(tc.get("id", ""), "")
+                is_err = "[stderr]" in raw_out and "Traceback" in raw_out
+                cell_res = CellResult(
+                    ok=not is_err,
+                    stdout="" if is_err else raw_out,
+                    stderr=raw_out if is_err else "",
+                    result=None,
+                )
+                cell_history.append((code, cell_res, 0.0))
+                if verbose:
+                    _render_tool_call(code)
+                    _render_tool_result(cell_res)
+                else:
+                    summary = format_compact_cell_summary(len(cell_history), code, cell_res, 0.0)
+                    style = "dim green" if cell_res.ok else "red"
+                    console.print(f"[{style}]{summary}[/{style}]")
+
+
 def _fmt_k(n: int) -> str:
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
@@ -336,11 +390,13 @@ def main() -> None:
     kernel.start()
 
     messages: list[dict[str, Any]] = []
+    resumed = False
+    restored_notice: str | None = None
     if args.cont or args.resume:
-        target_id = args.resume or Session.latest_id()
+        target_id = args.resume or Session.latest_id(cwd=cwd)
         if not target_id:
             kernel.close()
-            console.print("[red]Error: No previous session found to resume.[/red]")
+            console.print(f"[red]Error: No previous session found for {cwd}.[/red]")
             sys.exit(1)
         try:
             if args.fork:
@@ -352,33 +408,19 @@ def main() -> None:
             console.print(f"[red]Error: {exc}[/red]")
             sys.exit(1)
 
+        resumed = True
         restored_notice = active_session.restore_kernel(kernel)
         if restored_notice:
             messages.append({"role": "user", "content": restored_notice})
-        if not args.prompt:
-            recap_lines = [f"Resumed session [bold]{active_session.id}[/bold] ({len(messages)} messages)"]
-            last_user = next(
-                (m.get("content", "") for m in reversed(messages) if m.get("role") == "user" and not str(m.get("content", "")).startswith("[")),
-                None,
-            )
-            last_asst = next(
-                (m.get("content", "") for m in reversed(messages) if m.get("role") == "assistant" and m.get("content")),
-                None,
-            )
-            if last_user:
-                u_prev = str(last_user).strip().replace("\n", " ")[:140]
-                recap_lines.append(f"[dim]Last user:[/dim] {u_prev}")
-            if last_asst:
-                a_prev = str(last_asst).strip().replace("\n", " ")[:200]
-                recap_lines.append(f"[dim]Last reply:[/dim] {a_prev}")
-            if restored_notice:
-                recap_lines.append(restored_notice.strip())
-            console.print(Panel("\n".join(recap_lines), title="[bold cyan]session restored[/bold cyan]", border_style="cyan"))
     else:
         active_session = Session.create(cwd)
 
+    usage_stats = TurnUsage.from_dict(active_session.last_usage)
+
     def _persist(compacted: bool = False) -> None:
         active_session.save_messages(messages, compacted=compacted)
+        if usage_stats.prompt_tokens > 0 or usage_stats.total_prompt_tokens > 0:
+            active_session.save_usage(usage_stats.to_dict())
         active_session.save_kernel(kernel)
 
     cell_history: list[tuple[str, CellResult, float]] = []
@@ -426,7 +468,7 @@ def main() -> None:
             style = "dim green" if res.ok else "red"
             console.print(f"[{style}]{summary}[/{style}]")
 
-    def _run_turn(usage_stats: TurnUsage | None = None) -> tuple[str, list[dict[str, Any]], int]:
+    def _run_turn(turn_usage: TurnUsage | None = None) -> tuple[str, list[dict[str, Any]], int]:
         streamed_any[0] = False
         try:
             answer, updated_msgs, tokens = agent_loop(
@@ -444,7 +486,8 @@ def main() -> None:
                 on_bash_notice=_render_bash_notice,
                 on_status=_on_status,
                 on_text_delta=_on_text_delta,
-                usage_stats=usage_stats,
+                usage_stats=turn_usage,
+                initial_prompt_tokens=turn_usage.prompt_tokens if turn_usage else 0,
             )
         finally:
             _on_status(None)
@@ -456,7 +499,7 @@ def main() -> None:
     try:
         if args.prompt:
             messages.append({"role": "user", "content": args.prompt})
-            _, messages, _ = _run_turn()
+            _, messages, _ = _run_turn(turn_usage=usage_stats)
             _persist()
 
             while args.background_wait > 0 and (kernel.has_pending_events() or kernel.running_bash_count() > 0):
@@ -468,7 +511,7 @@ def main() -> None:
                     continue
                 _render_bash_notice(notice)
                 messages.append({"role": "user", "content": notice})
-                _, messages, _ = _run_turn()
+                _, messages, _ = _run_turn(turn_usage=usage_stats)
                 _persist()
             return
 
@@ -482,6 +525,11 @@ def main() -> None:
                 border_style="blue",
             )
         )
+
+        if resumed:
+            _replay_session(messages, cell_history, verbose=args.verbose)
+            if usage_stats.prompt_tokens > 0:
+                console.print(f"[dim]{_format_turn_footer(usage_stats, max_context_tokens)}[/dim]")
 
         kb = KeyBindings()
 
@@ -507,7 +555,6 @@ def main() -> None:
             key_bindings=kb,
             prompt_continuation="... ",
         )
-        usage_stats = TurnUsage()
 
         while True:
             bg_count = kernel.running_bash_count()
@@ -550,7 +597,7 @@ def main() -> None:
                 _render_bash_notice(notice)
                 messages.append({"role": "user", "content": notice})
                 try:
-                    _, messages, tokens = _run_turn(usage_stats=usage_stats)
+                    _, messages, tokens = _run_turn(turn_usage=usage_stats)
                     _persist()
                     if tokens:
                         console.print(f"[dim]{_format_turn_footer(usage_stats, max_context_tokens)}[/dim]")
@@ -632,6 +679,7 @@ def main() -> None:
             if user_input == "/reset":
                 messages.clear()
                 cell_history.clear()
+                usage_stats = TurnUsage()
                 kernel.restart()
                 active_session = Session.create(cwd)
                 console.print(
@@ -652,7 +700,7 @@ def main() -> None:
 
             messages.append({"role": "user", "content": user_input})
             try:
-                _, messages, tokens = _run_turn(usage_stats=usage_stats)
+                _, messages, tokens = _run_turn(turn_usage=usage_stats)
                 _persist()
                 if tokens:
                     console.print(f"[dim]{_format_turn_footer(usage_stats, max_context_tokens)}[/dim]")

@@ -111,3 +111,30 @@ def test_session_lazy_create_and_latest_skips_empty(tmp_path: Path) -> None:
     empty_file = sessions_dir / "99999999-999999-empty0.jsonl"
     empty_file.write_text('{"type": "meta", "id": "empty"}\n', encoding="utf-8")
     assert Session.latest_id(sessions_dir=sessions_dir) == s1.id
+
+
+def test_session_latest_filters_by_cwd_and_persists_usage(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    dir_a = tmp_path / "dir_a"
+    dir_b = tmp_path / "dir_b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+
+    s_a = Session.create(dir_a, sessions_dir=sessions_dir)
+    s_a.save_messages([{"role": "user", "content": "in dir_a"}])
+    s_a.save_usage({"prompt_tokens": 4200, "cached_tokens": 1000, "total_prompt_tokens": 4200})
+
+    s_b = Session.create(dir_b, sessions_dir=sessions_dir)
+    s_b.save_messages([{"role": "user", "content": "in dir_b"}])
+
+    # Latest for dir_a should still be s_a even though s_b is newer globally
+    assert Session.latest_id(cwd=dir_a, sessions_dir=sessions_dir) == s_a.id
+    assert Session.latest_id(cwd=dir_b, sessions_dir=sessions_dir) == s_b.id
+    assert Session.latest_id(cwd=tmp_path, sessions_dir=sessions_dir) is None
+
+    loaded_a, _ = Session.load(s_a.id, sessions_dir=sessions_dir)
+    assert loaded_a.last_usage == {"prompt_tokens": 4200, "cached_tokens": 1000, "total_prompt_tokens": 4200}
+
+    forked_a, _ = Session.fork(s_a.id, dir_a, sessions_dir=sessions_dir)
+    reloaded_fork, _ = Session.load(forked_a.id, sessions_dir=sessions_dir)
+    assert reloaded_fork.last_usage == loaded_a.last_usage
