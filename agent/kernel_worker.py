@@ -23,6 +23,8 @@ from typing import Any
 
 MAX_OUTPUT_CHARS = 128_000
 MAX_REPR_CHARS = 128_000
+MAX_VAR_BYTES = 16 * 1024 * 1024
+MAX_TOTAL_SNAPSHOT_BYTES = 256 * 1024 * 1024
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -269,6 +271,92 @@ class KernelWorker:
             vars_info[name] = type(val).__name__
         return vars_info
 
+    def snapshot_vars(self, snapshot_dir: str) -> dict[str, Any]:
+        """Serialize user-defined variables to `snapshot_dir` using dill."""
+        import shutil
+        from pathlib import Path
+
+        import dill
+
+        target = Path(snapshot_dir)
+        if target.exists():
+            shutil.rmtree(target)
+        target.mkdir(parents=True, exist_ok=True)
+
+        saved: list[str] = []
+        skipped: list[str] = []
+        total_bytes = 0
+
+        for name, val in list(self._namespace.items()):
+            if name in self._reserved_names or name.startswith("__"):
+                continue
+            if isinstance(val, _PopenBashHandle):
+                skipped.append(f"{name} (running/process handle)")
+                continue
+            try:
+                blob = dill.dumps(val, recurse=True)
+            except Exception:
+                skipped.append(f"{name} ({type(val).__name__})")
+                continue
+
+            if len(blob) > MAX_VAR_BYTES:
+                skipped.append(f"{name} (>16 MiB)")
+                continue
+            if total_bytes + len(blob) > MAX_TOTAL_SNAPSHOT_BYTES:
+                skipped.append(f"{name} (snapshot >256 MiB)")
+                continue
+
+            (target / f"{name}.dill").write_bytes(blob)
+            total_bytes += len(blob)
+            saved.append(name)
+
+        manifest = {"saved": saved, "skipped": skipped, "cwd": os.getcwd()}
+        (target / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        return manifest
+
+    def restore_vars(self, snapshot_dir: str) -> dict[str, Any]:
+        """Restore variables from `snapshot_dir` into the kernel namespace."""
+        from pathlib import Path
+
+        import dill
+
+        target = Path(snapshot_dir)
+        manifest_path = target / "manifest.json"
+        if not manifest_path.is_file():
+            return {"restored": [], "skipped": []}
+
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        saved_cwd = manifest.get("cwd")
+        if saved_cwd and os.path.isdir(saved_cwd):
+            os.chdir(saved_cwd)
+
+        restored: list[str] = []
+        skipped: list[str] = list(manifest.get("skipped", []))
+
+        for name in manifest.get("saved", []):
+            var_file = target / f"{name}.dill"
+            if not var_file.is_file():
+                skipped.append(f"{name} (missing)")
+                continue
+            try:
+                loaded = dill.loads(var_file.read_bytes())
+                if inspect.isfunction(loaded):
+                    import types
+
+                    loaded = types.FunctionType(
+                        loaded.__code__,
+                        self._namespace,
+                        loaded.__name__,
+                        loaded.__defaults__,
+                        loaded.__closure__,
+                    )
+                self._namespace[name] = loaded
+                restored.append(name)
+            except Exception:
+                skipped.append(f"{name} (unpickle error)")
+
+        return {"restored": restored, "skipped": skipped}
+
 
 # Fix synchronous bash() using subprocess.Popen + asyncio thread/pipe reader
 import subprocess  # noqa: E402
@@ -446,6 +534,12 @@ async def _main() -> None:
             worker._send(res)
         elif msg_type == "list_vars":
             worker._send({"type": "vars_result", "id": req_id, "vars": worker.list_vars()})
+        elif msg_type == "snapshot":
+            manifest = worker.snapshot_vars(msg.get("dir", ""))
+            worker._send({"type": "snapshot_result", "id": req_id, "manifest": manifest})
+        elif msg_type == "restore":
+            result = worker.restore_vars(msg.get("dir", ""))
+            worker._send({"type": "restore_result", "id": req_id, **result})
         elif msg_type == "shutdown":
             break
 

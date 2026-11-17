@@ -159,6 +159,21 @@ class KernelClient:
         resp = self._request({"type": "list_vars"}, timeout=timeout)
         return resp.get("vars", {}) if isinstance(resp.get("vars"), dict) else {}
 
+    def snapshot(self, snapshot_dir: Path, timeout: float = 30.0) -> dict[str, Any]:
+        if self._proc is None or self._proc.poll() is not None:
+            return {"saved": [], "skipped": []}
+        resp = self._request({"type": "snapshot", "dir": str(snapshot_dir)}, timeout=timeout)
+        return resp.get("manifest", {"saved": [], "skipped": []})
+
+    def restore(self, snapshot_dir: Path, timeout: float = 30.0) -> dict[str, list[str]]:
+        if self._proc is None or self._proc.poll() is not None:
+            self.start()
+        resp = self._request({"type": "restore", "dir": str(snapshot_dir)}, timeout=timeout)
+        return {
+            "restored": list(resp.get("restored", [])),
+            "skipped": list(resp.get("skipped", [])),
+        }
+
     def drain_events(self) -> list[dict[str, Any]]:
         with self._events_lock:
             events = list(self._events)

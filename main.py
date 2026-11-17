@@ -21,6 +21,7 @@ from agent.compact import compact_messages
 from agent.kernel_client import CellResult, KernelClient
 from agent.loop import agent_loop
 from agent.prompt import build_system_prompt
+from agent.session import Session
 
 console = Console()
 
@@ -64,6 +65,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Minimal agent with a single persistent Python REPL tool.")
     parser.add_argument("-p", "--prompt", help="Run a single prompt in headless mode and exit.")
     parser.add_argument("--cwd", type=Path, default=Path.cwd(), help="Working directory for the agent.")
+    parser.add_argument("-c", "--continue", dest="cont", action="store_true", help="Resume the most recent session.")
+    parser.add_argument("-r", "--resume", metavar="ID", help="Resume a specific session by ID.")
+    parser.add_argument("--fork", action="store_true", help="Fork the resumed session into a new session ID.")
     args = parser.parse_args()
 
     cwd = args.cwd.resolve()
@@ -77,6 +81,33 @@ def main() -> None:
     kernel.start()
 
     messages: list[dict[str, Any]] = []
+    if args.cont or args.resume:
+        target_id = args.resume or Session.latest_id()
+        if not target_id:
+            kernel.close()
+            console.print("[red]Error: No previous session found to resume.[/red]")
+            sys.exit(1)
+        try:
+            if args.fork:
+                active_session, messages = Session.fork(target_id, cwd)
+            else:
+                active_session, messages = Session.load(target_id)
+        except FileNotFoundError as exc:
+            kernel.close()
+            console.print(f"[red]Error: {exc}[/red]")
+            sys.exit(1)
+
+        restored_notice = active_session.restore_kernel(kernel)
+        if restored_notice:
+            messages.append({"role": "user", "content": restored_notice})
+            if not args.prompt:
+                console.print(Panel(restored_notice, title="[bold cyan]session restored[/bold cyan]", border_style="cyan"))
+    else:
+        active_session = Session.create(cwd)
+
+    def _persist(compacted: bool = False) -> None:
+        active_session.save_messages(messages, compacted=compacted)
+        active_session.save_kernel(kernel)
 
     try:
         if args.prompt:
@@ -95,25 +126,26 @@ def main() -> None:
                 on_compaction=_render_compaction,
                 on_bash_notice=_render_bash_notice,
             )
+            _persist()
             if answer:
                 console.print(Markdown(answer))
             return
 
         console.print(
             Panel(
-                f"Model: [bold]{model}[/bold] | Workspace: [bold]{cwd}[/bold]\n"
-                "Commands: [cyan]/vars[/cyan], [cyan]/compact [focus][/cyan], "
+                f"Model: [bold]{model}[/bold] | Workspace: [bold]{cwd}[/bold] | Session: [bold]{active_session.id}[/bold]\n"
+                "Commands: [cyan]/vars[/cyan], [cyan]/session[/cyan], [cyan]/compact [focus][/cyan], "
                 "[cyan]/prompt[/cyan], [cyan]/reset[/cyan], [cyan]/exit[/cyan]",
                 title="[bold]Minimal Agent (learn-claude-code + Unharnessed)[/bold]",
                 border_style="blue",
             )
         )
 
-        session: PromptSession[str] = PromptSession(history=InMemoryHistory())
+        prompt_session: PromptSession[str] = PromptSession(history=InMemoryHistory())
 
         while True:
             try:
-                user_input = session.prompt("\n> ").strip()
+                user_input = prompt_session.prompt("\n> ").strip()
             except (EOFError, KeyboardInterrupt):
                 console.print("\n[dim]Exiting.[/dim]")
                 break
@@ -126,10 +158,18 @@ def main() -> None:
             if user_input == "/help":
                 console.print(
                     "/vars            List live Python variables in the kernel\n"
+                    "/session         Show active session ID and file paths\n"
                     "/compact [focus] Summarize older messages while keeping the kernel alive\n"
                     "/prompt          Show the assembled system prompt\n"
-                    "/reset           Clear conversation history and restart the kernel\n"
+                    "/reset           Clear conversation history, start a new session, and restart the kernel\n"
                     "/exit            Exit"
+                )
+                continue
+            if user_input == "/session":
+                console.print(
+                    f"Session ID: [bold]{active_session.id}[/bold]\n"
+                    f"Log:        {active_session.jsonl_path}\n"
+                    f"Snapshot:   {active_session.snapshot_dir}"
                 )
                 continue
             if user_input == "/vars":
@@ -146,7 +186,10 @@ def main() -> None:
             if user_input == "/reset":
                 messages.clear()
                 kernel.restart()
-                console.print("[yellow]Conversation cleared and Python kernel restarted.[/yellow]")
+                active_session = Session.create(cwd)
+                console.print(
+                    f"[yellow]Conversation cleared, kernel restarted, new session: {active_session.id}[/yellow]"
+                )
                 continue
             if user_input.startswith("/compact"):
                 focus = user_input[len("/compact") :].strip() or None
@@ -154,6 +197,7 @@ def main() -> None:
                     client, model, messages, kernel, keep_recent=keep_recent_messages, focus=focus
                 )
                 if summarized > 0:
+                    _persist(compacted=True)
                     _render_compaction(summarized, kept)
                 else:
                     console.print("[dim]Nothing to compact yet.[/dim]")
@@ -175,6 +219,7 @@ def main() -> None:
                     on_compaction=_render_compaction,
                     on_bash_notice=_render_bash_notice,
                 )
+                _persist()
                 if answer:
                     console.print(Markdown(answer))
                 if tokens:
@@ -185,6 +230,10 @@ def main() -> None:
             except Exception as exc:
                 console.print(f"[red]Error: {exc}[/red]")
     finally:
+        try:
+            active_session.save_kernel(kernel)
+        except Exception:
+            pass
         kernel.close()
 
 
