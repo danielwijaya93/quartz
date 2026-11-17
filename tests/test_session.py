@@ -138,3 +138,27 @@ def test_session_latest_filters_by_cwd_and_persists_usage(tmp_path: Path) -> Non
     forked_a, _ = Session.fork(s_a.id, dir_a, sessions_dir=sessions_dir)
     reloaded_fork, _ = Session.load(forked_a.id, sessions_dir=sessions_dir)
     assert reloaded_fork.last_usage == loaded_a.last_usage
+
+
+def test_session_list_for_cwd(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    dir_a = tmp_path / "dir_a"
+    dir_b = tmp_path / "dir_b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+
+    s1 = Session.create(dir_a, sessions_dir=sessions_dir)
+    s1.save_messages([{"role": "user", "content": "first in a"}, {"role": "assistant", "content": "ok"}])
+
+    s_other = Session.create(dir_b, sessions_dir=sessions_dir)
+    s_other.save_messages([{"role": "user", "content": "in b"}])
+
+    s2 = Session.create(dir_a, sessions_dir=sessions_dir)
+    s2.save_messages([{"role": "user", "content": "second in a"}])
+
+    listed = Session.list_for_cwd(dir_a, sessions_dir=sessions_dir)
+    assert [item["id"] for item in listed] == [s2.id, s1.id]
+    assert listed[0]["preview"] == "second in a"
+    assert listed[0]["message_count"] == 1
+    assert listed[1]["preview"] == "first in a"
+    assert listed[1]["message_count"] == 2

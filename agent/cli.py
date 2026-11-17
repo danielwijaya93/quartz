@@ -13,9 +13,12 @@ from typing import Any
 
 from dotenv import load_dotenv
 from openai import OpenAI
-from prompt_toolkit import PromptSession
+from prompt_toolkit import Application, PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout import Layout
+from prompt_toolkit.layout.containers import Window
+from prompt_toolkit.layout.controls import FormattedTextControl
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -129,6 +132,53 @@ def _render_compaction(summarized: int, kept: int) -> None:
 
 def _render_bash_notice(notice: str) -> None:
     console.print(Panel(Text(notice), title="[bold magenta]harness notice[/bold magenta]", border_style="magenta"))
+
+
+def _pick_session(sessions: list[dict[str, Any]], current_id: str) -> str | None:
+    """Inline arrow-key picker for selecting a session (Up/Down, Enter, Esc)."""
+    selected_idx = [0]
+
+    def _get_text() -> list[tuple[str, str]]:
+        frags: list[tuple[str, str]] = [
+            ("bold", "Select a session (↑/↓ to move, Enter to resume, Esc to cancel):\n")
+        ]
+        for i, item in enumerate(sessions):
+            is_sel = i == selected_idx[0]
+            marker = "❯ " if is_sel else "  "
+            cur = " (current)" if item["id"] == current_id else ""
+            preview = f" — {item['preview']}" if item["preview"] else ""
+            line = f"{marker}{item['id']} | {item['updated_at']} | {item['message_count']} msgs{cur}{preview}\n"
+            style = "reverse bold cyan" if is_sel else ""
+            frags.append((style, line))
+        return frags
+
+    kb = KeyBindings()
+
+    @kb.add("up")
+    @kb.add("k")
+    def _(event: Any) -> None:
+        selected_idx[0] = (selected_idx[0] - 1) % len(sessions)
+
+    @kb.add("down")
+    @kb.add("j")
+    def _(event: Any) -> None:
+        selected_idx[0] = (selected_idx[0] + 1) % len(sessions)
+
+    @kb.add("enter")
+    def _(event: Any) -> None:
+        event.app.exit(result=sessions[selected_idx[0]]["id"])
+
+    @kb.add("escape")
+    @kb.add("c-c")
+    def _(event: Any) -> None:
+        event.app.exit(result=None)
+
+    app: Application[str | None] = Application(
+        layout=Layout(Window(content=FormattedTextControl(_get_text), always_hide_cursor=True)),
+        key_bindings=kb,
+        full_screen=False,
+    )
+    return app.run()
 
 
 def _replay_session(
@@ -615,6 +665,7 @@ def main() -> None:
                 break
             if user_input == "/help":
                 console.print(
+                    "/continue [id]   Pick and resume a previous session in this directory\n"
                     "/vars            List live Python variables in the kernel\n"
                     "/session         Show active session ID and file paths\n"
                     "/usage           Show context window usage and cache hit rate\n"
@@ -624,6 +675,43 @@ def main() -> None:
                     "/reset           Clear conversation history, start a new session, and restart the kernel\n"
                     "/exit            Exit"
                 )
+                continue
+            if user_input.startswith("/continue"):
+                arg_id = user_input[len("/continue") :].strip() or None
+                if arg_id:
+                    chosen_id = arg_id
+                else:
+                    sessions_list = Session.list_for_cwd(cwd)
+                    if not sessions_list:
+                        console.print(f"[dim]No saved sessions found for {cwd}.[/dim]")
+                        continue
+                    chosen_id = _pick_session(sessions_list, active_session.id)
+                    if not chosen_id:
+                        console.print("[dim]Cancelled.[/dim]")
+                        continue
+
+                if chosen_id == active_session.id:
+                    console.print(f"[dim]Already on session {active_session.id}.[/dim]")
+                    continue
+
+                try:
+                    new_session, new_messages = Session.load(chosen_id)
+                except FileNotFoundError as exc:
+                    console.print(f"[red]Error: {exc}[/red]")
+                    continue
+
+                active_session = new_session
+                messages = new_messages
+                cell_history.clear()
+                kernel.restart()
+                restored_notice = active_session.restore_kernel(kernel)
+                if restored_notice:
+                    messages.append({"role": "user", "content": restored_notice})
+                usage_stats = TurnUsage.from_dict(active_session.last_usage)
+                console.print(f"\n[bold cyan]Switched to session {active_session.id}[/bold cyan]")
+                _replay_session(messages, cell_history, verbose=args.verbose)
+                if usage_stats.prompt_tokens > 0:
+                    console.print(f"[dim]{_format_turn_footer(usage_stats, max_context_tokens)}[/dim]")
                 continue
             if user_input.startswith("/expand") or user_input == "/last":
                 if not cell_history:

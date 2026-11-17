@@ -17,7 +17,7 @@ def test_slash_command_autocomplete(tmp_path: Path) -> None:
     completer = AgentCompleter(tmp_path)
     comps = list(completer.get_completions(Document("/co"), CompleteEvent()))
     texts = [c.text for c in comps]
-    assert texts == ["/compact"]
+    assert texts == ["/continue", "/compact"]
 
     all_comps = list(completer.get_completions(Document("/"), CompleteEvent()))
     assert "/vars" in [c.text for c in all_comps]

@@ -100,6 +100,41 @@ class Session:
         return None
 
     @classmethod
+    def list_for_cwd(
+        cls, cwd: Path, sessions_dir: Path | None = None
+    ) -> list[dict[str, Any]]:
+        """List non-empty sessions for `cwd`, sorted newest-first."""
+        root = (sessions_dir or default_sessions_dir()).resolve()
+        if not root.is_dir():
+            return []
+        target_cwd = str(cwd.resolve())
+        files = sorted(root.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+        results: list[dict[str, Any]] = []
+        for f in files:
+            has_msgs, session_cwd = cls._inspect_session(f)
+            if not has_msgs or session_cwd != target_cwd:
+                continue
+            _, msgs = cls.load(f.stem, sessions_dir=root)
+            last_user = next(
+                (
+                    str(m.get("content", "")).strip().replace("\n", " ")
+                    for m in reversed(msgs)
+                    if m.get("role") == "user" and not str(m.get("content", "")).startswith("[")
+                ),
+                "",
+            )
+            mtime = datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            results.append(
+                {
+                    "id": f.stem,
+                    "updated_at": mtime,
+                    "message_count": len(msgs),
+                    "preview": (last_user[:70] + "...") if len(last_user) > 70 else last_user,
+                }
+            )
+        return results
+
+    @classmethod
     def load(cls, session_id: str, sessions_dir: Path | None = None) -> tuple[Session, list[dict[str, Any]]]:
         session = cls(session_id, sessions_dir=sessions_dir)
         if not session.jsonl_path.is_file():
