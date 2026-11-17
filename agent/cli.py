@@ -44,6 +44,7 @@ from agent.mcp_client import (
     remove_mcp_server,
     set_mcp_server_enabled,
 )
+from agent.models import PROVIDERS
 from agent.prompt import build_system_prompt
 from agent.session import Session
 
@@ -139,6 +140,57 @@ def _render_compaction(summarized: int, kept: int) -> None:
 
 def _render_bash_notice(notice: str) -> None:
     console.print(Panel(Text(notice), title="[bold magenta]harness notice[/bold magenta]", border_style="magenta"))
+
+
+def _pick_option(
+    title: str, options: list[tuple[str, str]], current: str | None = None
+) -> str | None:
+    """Generic inline arrow-key picker (Up/Down, Enter, Esc) returning the chosen value."""
+    selected_idx = [0]
+    if current:
+        for i, (val, _) in enumerate(options):
+            if val == current:
+                selected_idx[0] = i
+                break
+
+    def _get_text() -> list[tuple[str, str]]:
+        frags: list[tuple[str, str]] = [
+            ("bold", f"{title} (↑/↓ to move, Enter to select, Esc to cancel):\n")
+        ]
+        for i, (_, label) in enumerate(options):
+            is_sel = i == selected_idx[0]
+            marker = "❯ " if is_sel else "  "
+            style = "reverse bold cyan" if is_sel else ""
+            frags.append((style, f"{marker}{label}\n"))
+        return frags
+
+    kb = KeyBindings()
+
+    @kb.add("up")
+    @kb.add("k")
+    def _(event: Any) -> None:
+        selected_idx[0] = (selected_idx[0] - 1) % len(options)
+
+    @kb.add("down")
+    @kb.add("j")
+    def _(event: Any) -> None:
+        selected_idx[0] = (selected_idx[0] + 1) % len(options)
+
+    @kb.add("enter")
+    def _(event: Any) -> None:
+        event.app.exit(result=options[selected_idx[0]][0])
+
+    @kb.add("escape")
+    @kb.add("c-c")
+    def _(event: Any) -> None:
+        event.app.exit(result=None)
+
+    app: Application[str | None] = Application(
+        layout=Layout(Window(content=FormattedTextControl(_get_text), always_hide_cursor=True)),
+        key_bindings=kb,
+        full_screen=False,
+    )
+    return app.run()
 
 
 def _pick_session(sessions: list[dict[str, Any]], current_id: str) -> str | None:
@@ -254,6 +306,7 @@ def _format_turn_footer(usage: TurnUsage, max_context_tokens: int) -> str:
 
 def _format_toolbar(
     model: str,
+    effort: str | None,
     session_id: str,
     usage: TurnUsage,
     max_context_tokens: int,
@@ -261,8 +314,9 @@ def _format_toolbar(
 ) -> str:
     pct = usage.context_pct(max_context_tokens)
     cache_pct = usage.cache_hit_rate * 100.0
+    model_label = f"{model} ({effort})" if effort else model
     parts = [
-        f" {model}",
+        f" {model_label}",
         f"session:{session_id}",
         f"ctx:{_fmt_k(usage.prompt_tokens)}/{_fmt_k(max_context_tokens)} ({pct:.1f}%)",
         f"cache:{cache_pct:.0f}%",
@@ -272,26 +326,36 @@ def _format_toolbar(
     return " | ".join(parts) + " "
 
 
-def _build_client(provider: str = "auto", model_override: str | None = None) -> tuple[Any, str]:
+def _build_client(
+    provider: str = "auto",
+    model_override: str | None = None,
+    effort_override: str | None = None,
+) -> tuple[Any, str, str, str]:
     api_key = os.getenv("OPENAI_API_KEY")
     has_google = load_google_credentials() is not None
     env_model = model_override or os.getenv("MODEL")
 
-    use_google = False
-    if provider == "google":
-        use_google = True
-    elif provider == "auto":
+    if provider == "auto":
         if env_model and env_model.startswith("gemini-") and has_google:
-            use_google = True
+            chosen_provider = "google"
         elif not api_key and has_google:
-            use_google = True
+            chosen_provider = "google"
+        else:
+            chosen_provider = "deepseek"
+    elif provider == "openai":
+        chosen_provider = "deepseek"
+    else:
+        chosen_provider = provider
 
-    if use_google:
+    spec = PROVIDERS[chosen_provider]
+    model = env_model or spec["default_model"]
+    effort = effort_override or os.getenv("EFFORT") or spec["default_effort"]
+
+    if spec["backend"] == "google":
         if not has_google:
             console.print("[red]Error: Not logged in to Google. Run `quartz auth login google` first.[/red]")
             sys.exit(1)
-        model = env_model or "gemini-3-flash"
-        return GoogleAntigravityClient(), model
+        return GoogleAntigravityClient(), chosen_provider, model, effort
 
     if not api_key:
         console.print(
@@ -299,9 +363,8 @@ def _build_client(provider: str = "auto", model_override: str | None = None) -> 
         )
         sys.exit(1)
     base_url = os.getenv("OPENAI_BASE_URL") or None
-    model = env_model or "gpt-4.1"
     client = OpenAI(api_key=api_key, base_url=base_url)
-    return client, model
+    return client, chosen_provider, model, effort
 
 
 def _handle_auth_cli(argv: list[str]) -> None:
@@ -500,11 +563,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--provider",
-        choices=["auto", "openai", "google"],
+        choices=["auto", "deepseek", "google", "openai"],
         default=os.getenv("PROVIDER", "auto"),
         help="LLM provider backend (default: auto).",
     )
     parser.add_argument("--model", help="Override MODEL from environment.")
+    parser.add_argument("--effort", help="Reasoning effort level (e.g. low, medium, high, max, xhigh).")
     parser.add_argument(
         "--verbose",
         action="store_true",
@@ -517,7 +581,9 @@ def main() -> None:
     compact_reserve_tokens = int(os.getenv("COMPACT_RESERVE_TOKENS", "16384"))
     keep_recent_messages = int(os.getenv("COMPACT_KEEP_RECENT_MESSAGES", "10"))
 
-    client, model = _build_client(provider=args.provider, model_override=args.model)
+    client, provider_name, model, effort = _build_client(
+        provider=args.provider, model_override=args.model, effort_override=args.effort
+    )
     system_prompt = build_system_prompt(cwd)
     kernel = KernelClient(cwd=cwd)
     kernel.start()
@@ -621,6 +687,7 @@ def main() -> None:
                 on_text_delta=_on_text_delta,
                 usage_stats=turn_usage,
                 initial_prompt_tokens=turn_usage.prompt_tokens if turn_usage else 0,
+                effort=effort,
             )
         finally:
             _on_status(None)
@@ -650,8 +717,8 @@ def main() -> None:
 
         console.print(
             Panel(
-                f"Model: [bold]{model}[/bold] | Workspace: [bold]{cwd}[/bold] | Session: [bold]{active_session.id}[/bold]\n"
-                "Commands: [cyan]/vars[/cyan], [cyan]/session[/cyan], [cyan]/usage[/cyan], "
+                f"Model: [bold]{model}[/bold] ([cyan]{effort}[/cyan]) | Workspace: [bold]{cwd}[/bold] | Session: [bold]{active_session.id}[/bold]\n"
+                "Commands: [cyan]/model[/cyan], [cyan]/continue[/cyan], [cyan]/vars[/cyan], [cyan]/usage[/cyan], "
                 "[cyan]/expand[/cyan], [cyan]/compact[/cyan], [cyan]/reset[/cyan], [cyan]/exit[/cyan]\n"
                 "[dim]Tip: Use @path for files, Esc+Enter or Ctrl+J for multi-line input, Ctrl+C to interrupt.[/dim]",
                 title="[bold]quartz[/bold]",
@@ -712,7 +779,7 @@ def main() -> None:
                     watcher_thread.start()
 
                 try:
-                    toolbar = _format_toolbar(model, active_session.id, usage_stats, max_context_tokens, bg_count)
+                    toolbar = _format_toolbar(model, effort, active_session.id, usage_stats, max_context_tokens, bg_count)
                     user_input = prompt_session.prompt("\n> ", bottom_toolbar=toolbar).strip()
                 except (EOFError, KeyboardInterrupt):
                     console.print("\n[dim]Exiting.[/dim]")
@@ -748,6 +815,7 @@ def main() -> None:
                 break
             if user_input == "/help":
                 console.print(
+                    "/model           Choose provider, model, and reasoning effort\n"
                     "/continue [id]   Pick and resume a previous session in this directory\n"
                     "/vars            List live Python variables in the kernel\n"
                     "/session         Show active session ID and file paths\n"
@@ -757,6 +825,52 @@ def main() -> None:
                     "/prompt          Show the assembled system prompt\n"
                     "/reset           Clear conversation history, start a new session, and restart the kernel\n"
                     "/exit            Exit"
+                )
+                continue
+            if user_input == "/model":
+                provider_opts: list[tuple[str, str]] = []
+                for pname, pspec in PROVIDERS.items():
+                    if pspec["backend"] == "google":
+                        ready = "logged in" if load_google_credentials() is not None else "not logged in"
+                    else:
+                        ready = "configured" if os.getenv("OPENAI_API_KEY") else "no API key"
+                    provider_opts.append((pname, f"{pspec['label']} ({ready})"))
+
+                picked_provider = _pick_option("Provider", provider_opts, current=provider_name)
+                if not picked_provider:
+                    console.print("[dim]Cancelled.[/dim]")
+                    continue
+
+                pspec = PROVIDERS[picked_provider]
+                if len(pspec["models"]) > 1:
+                    model_opts = [(m, m) for m in pspec["models"]]
+                    picked_model = _pick_option("Model", model_opts, current=model)
+                    if not picked_model:
+                        console.print("[dim]Cancelled.[/dim]")
+                        continue
+                else:
+                    picked_model = pspec["models"][0]
+
+                effort_opts = [(e, e) for e in pspec["efforts"]]
+                picked_effort = _pick_option(
+                    f"Reasoning Effort ({picked_model})",
+                    effort_opts,
+                    current=effort if picked_provider == provider_name else pspec["default_effort"],
+                )
+                if not picked_effort:
+                    console.print("[dim]Cancelled.[/dim]")
+                    continue
+
+                try:
+                    client, provider_name, model, effort = _build_client(
+                        provider=picked_provider,
+                        model_override=picked_model,
+                        effort_override=picked_effort,
+                    )
+                except SystemExit:
+                    continue
+                console.print(
+                    f"[green]Switched to [bold]{provider_name}[/bold] / [bold]{model}[/bold] (effort: [bold]{effort}[/bold])[/green]"
                 )
                 continue
             if user_input.startswith("/continue"):

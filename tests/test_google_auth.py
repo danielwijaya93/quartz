@@ -75,10 +75,11 @@ def test_build_cloudcode_request_and_parse_sse() -> None:
         },
         {"role": "tool", "tool_call_id": "call_1", "content": "4"},
     ]
-    envelope = build_cloudcode_request("gemini-3-flash", "proj-1", messages, TOOLS)
-    assert envelope["model"] == "gemini-3-flash"
+    envelope = build_cloudcode_request("gemini-4-hydrogen", "proj-1", messages, TOOLS, effort="xhigh")
+    assert envelope["model"] == "gemini-4-hydrogen"
     assert envelope["project"] == "proj-1"
     req = envelope["request"]
+    assert req["generationConfig"] == {"thinkingConfig": {"thinkingLevel": "XHIGH"}}
     assert any("You are Quartz." in p["text"] for p in req["systemInstruction"]["parts"])
     assert req["tools"][0]["functionDeclarations"][0]["name"] == "ipython"
     assert req["tools"][0]["functionDeclarations"][0]["parameters"]["type"] == "OBJECT"
@@ -131,6 +132,8 @@ def test_build_client_provider_selection(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("MODEL", raising=False)
 
-    client, model = _build_client(provider="auto")
+    client, pname, model, effort = _build_client(provider="auto")
     assert isinstance(client, GoogleAntigravityClient)
-    assert model == "gemini-3-flash"
+    assert pname == "google"
+    assert model == "gemini-4-hydrogen"
+    assert effort == "medium"

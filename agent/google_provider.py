@@ -88,6 +88,7 @@ def build_cloudcode_request(
     project_id: str,
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
+    effort: str | None = None,
 ) -> dict[str, Any]:
     """Translate OpenAI chat messages + tools into a Cloud Code Assist envelope."""
     system_parts: list[dict[str, str]] = [
@@ -178,6 +179,11 @@ def build_cloudcode_request(
         ]
         if declarations:
             request_body["tools"] = [{"functionDeclarations": declarations}]
+
+    if effort:
+        request_body["generationConfig"] = {
+            "thinkingConfig": {"thinkingLevel": effort.upper()}
+        }
 
     return {
         "model": model,
@@ -307,13 +313,16 @@ class _GoogleCompletions:
         model: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
+        effort: str | None = None,
     ) -> Iterator[_Chunk]:
         creds = get_valid_google_credentials()
         refreshed = False
 
         for endpoint in (DAILY_ENDPOINT, PROD_ENDPOINT):
             url = f"{endpoint}/v1internal:streamGenerateContent?alt=sse"
-            body = build_cloudcode_request(model, creds.project_id, messages, tools)
+            body = build_cloudcode_request(
+                model, creds.project_id, messages, tools, effort=effort
+            )
 
             while True:
                 headers = {
@@ -365,9 +374,12 @@ class _GoogleCompletions:
         tools: list[dict[str, Any]] | None = None,
         stream: bool = False,
         stream_options: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> Any:
         del stream_options
-        gen = self._stream_sse(model=model, messages=messages, tools=tools)
+        gen = self._stream_sse(
+            model=model, messages=messages, tools=tools, effort=reasoning_effort
+        )
         if stream:
             return gen
 

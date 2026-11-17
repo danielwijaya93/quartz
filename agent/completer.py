@@ -10,6 +10,7 @@ from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 
 SLASH_COMMANDS: dict[str, str] = {
+    "/model": "Choose provider, model, and reasoning effort",
     "/continue": "Pick and resume a previous session in this directory",
     "/vars": "List live Python variables in the kernel",
     "/session": "Show active session ID and file paths",

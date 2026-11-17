@@ -152,19 +152,35 @@ def _call_model(
     full_messages: list[dict[str, Any]],
     *,
     stream: bool,
+    effort: str | None = None,
     on_status: Callable[[str | None], None] | None,
     on_text_delta: Callable[[str], None] | None,
 ) -> tuple[dict[str, Any], Any]:
     """Call chat completions (streaming or non-streaming) and return (assistant_dict, usage)."""
+    extra: dict[str, Any] = {}
+    if effort:
+        extra["reasoning_effort"] = effort
+
     if not stream:
         if on_status:
             on_status("Thinking...")
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=full_messages,
-                tools=TOOLS,
-            )
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=full_messages,
+                    tools=TOOLS,
+                    **extra,
+                )
+            except BadRequestError as exc:
+                if extra and "reasoning_effort" in str(exc).lower():
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=full_messages,
+                        tools=TOOLS,
+                    )
+                else:
+                    raise
         finally:
             if on_status:
                 on_status(None)
@@ -180,14 +196,20 @@ def _call_model(
                 tools=TOOLS,
                 stream=True,
                 stream_options={"include_usage": True},
+                **extra,
             )
         except BadRequestError as exc:
-            if "stream_options" in str(exc).lower():
+            err_lower = str(exc).lower()
+            if "stream_options" in err_lower or (extra and "reasoning_effort" in err_lower):
+                retry_extra = {} if "reasoning_effort" in err_lower else extra
+                retry_opts = {} if "stream_options" in err_lower else {"stream_options": {"include_usage": True}}
                 stream_resp = client.chat.completions.create(
                     model=model,
                     messages=full_messages,
                     tools=TOOLS,
                     stream=True,
+                    **retry_opts,
+                    **retry_extra,
                 )
             else:
                 raise
@@ -273,6 +295,7 @@ def agent_loop(
     on_text_delta: Callable[[str], None] | None = None,
     usage_stats: TurnUsage | None = None,
     initial_prompt_tokens: int = 0,
+    effort: str | None = None,
 ) -> tuple[str, list[dict[str, Any]], int]:
     """Run one turn of the agent loop until the model stops calling tools.
 
@@ -300,6 +323,7 @@ def agent_loop(
                 model,
                 full_messages,
                 stream=stream,
+                effort=effort,
                 on_status=on_status,
                 on_text_delta=on_text_delta,
             )
@@ -318,6 +342,7 @@ def agent_loop(
                         model,
                         full_messages,
                         stream=stream,
+                        effort=effort,
                         on_status=on_status,
                         on_text_delta=on_text_delta,
                     )

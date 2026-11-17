@@ -220,3 +220,45 @@ def test_markdown_block_streamer_respects_fences() -> None:
 
     streamer.flush()
     assert emitted[-1] == "Last"
+
+
+def test_agent_loop_forwards_reasoning_effort(tmp_path: Path) -> None:
+    captured_kwargs: dict = {}
+
+    class _Delta:
+        content = "ok"
+        tool_calls = None
+
+    class _Choice:
+        delta = _Delta()
+
+    class _Chunk:
+        choices = [_Choice()]
+        usage = None
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return iter([_Chunk()])
+
+    class _FakeChat:
+        completions = _FakeCompletions()
+
+    class _FakeClient:
+        chat = _FakeChat()
+
+    class _DummyKernel:
+        def drain_events(self):
+            return []
+
+    ans, _, _ = agent_loop(
+        _FakeClient(),  # type: ignore[arg-type]
+        "deepseek-flash",
+        "sys",
+        [{"role": "user", "content": "hi"}],
+        _DummyKernel(),  # type: ignore[arg-type]
+        stream=True,
+        effort="max",
+    )
+    assert ans == "ok"
+    assert captured_kwargs["reasoning_effort"] == "max"
