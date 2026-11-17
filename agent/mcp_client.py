@@ -176,9 +176,10 @@ class MCPManager:
                         httpx2.AsyncClient(headers=headers)
                     )
 
-                read_stream, write_stream, _ = await stack.enter_async_context(
+                streams = await stack.enter_async_context(
                     streamable_http_client(str(spec["url"]), http_client=http_client)
                 )
+                read_stream, write_stream = streams[0], streams[1]
             else:
                 raise ValueError(f"MCP server {server!r} must define either 'command' or 'url'")
 
