@@ -43,6 +43,17 @@ def _extract_prompt_text(prompt: Any) -> str:
     return str(prompt or "")
 
 
+def _extract_system_prompt_append(params: dict[str, Any]) -> str:
+    meta = params.get("_meta")
+    if not isinstance(meta, dict):
+        return ""
+    sp = meta.get("systemPrompt")
+    if not isinstance(sp, dict):
+        return ""
+    append = sp.get("append")
+    return append.strip() if isinstance(append, str) else ""
+
+
 class ACPServer:
     """JSON-RPC 2.0 ACP server speaking newline-delimited JSON over stdio."""
 
@@ -110,6 +121,9 @@ class ACPServer:
         kernel.start()
         session = Session.create(cwd)
         system_prompt = build_system_prompt(cwd)
+        append = _extract_system_prompt_append(params)
+        if append:
+            system_prompt = f"{system_prompt}\n\n{append}"
         state = _ActiveSession(
             session=session,
             kernel=kernel,
@@ -136,11 +150,15 @@ class ACPServer:
         if restored_notice:
             messages.append({"role": "user", "content": restored_notice})
 
+        system_prompt = build_system_prompt(cwd)
+        append = _extract_system_prompt_append(params)
+        if append:
+            system_prompt = f"{system_prompt}\n\n{append}"
         state = _ActiveSession(
             session=session,
             kernel=kernel,
             cwd=cwd,
-            system_prompt=build_system_prompt(cwd),
+            system_prompt=system_prompt,
             messages=messages,
             usage=TurnUsage.from_dict(session.last_usage),
         )
