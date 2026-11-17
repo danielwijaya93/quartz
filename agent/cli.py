@@ -343,12 +343,13 @@ def main() -> None:
             active_status.append(st)
 
     def _stop_live() -> None:
+        final_text = "".join(stream_buf)
+        stream_buf.clear()
         if active_live:
             live = active_live.pop()
-            if stream_buf:
-                live.update(Markdown("".join(stream_buf)))
             live.__exit__(None, None, None)
-        stream_buf.clear()
+        if final_text:
+            console.print(Markdown(final_text))
 
     def _on_text_delta(chunk: str) -> None:
         streamed_any[0] = True
@@ -359,7 +360,8 @@ def main() -> None:
                 md,
                 console=console,
                 refresh_per_second=12,
-                vertical_overflow="visible",
+                transient=True,
+                vertical_overflow="ellipsis",
             )
             live.__enter__()
             active_live.append(live)
