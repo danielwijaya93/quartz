@@ -8,6 +8,7 @@ import hashlib
 import http.server
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -37,10 +38,73 @@ PROD_ENDPOINT = "https://cloudcode-pa.googleapis.com"
 DAILY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com"
 FALLBACK_PROJECT_ID = "rising-fact-p41fc"
 EXPIRY_SKEW_MS = 5 * 60 * 1000
+ANTIGRAVITY_VERSION_FLOOR = "2.31.2"
+ANTIGRAVITY_MANIFEST_URL = (
+    "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml"
+)
+_VERSION_CACHE_TTL_S = 24 * 60 * 60
+_cached_ag_version: str | None = None
+_refreshing_ag_version = False
+
+
+def _parse_semver(v: str) -> tuple[int, ...]:
+    return tuple(int(p) for p in v.split(".") if p.isdigit())
+
+
+def _refresh_antigravity_version_bg(cache_path: Path) -> None:
+    global _cached_ag_version, _refreshing_ag_version
+    try:
+        resp = httpx2.get(ANTIGRAVITY_MANIFEST_URL, timeout=5.0)
+        if resp.status_code < 400:
+            m = re.search(r"^version:\s*([0-9]+\.[0-9]+\.[0-9]+)", resp.text, re.MULTILINE)
+            if m:
+                ver = m.group(1)
+                if _parse_semver(ver) >= _parse_semver(ANTIGRAVITY_VERSION_FLOOR):
+                    _cached_ag_version = ver
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(
+                    json.dumps({"version": ver, "checked_at": time.time()}),
+                    encoding="utf-8",
+                )
+    except Exception:
+        pass
+    finally:
+        _refreshing_ag_version = False
+
+
+def get_antigravity_version() -> str:
+    global _cached_ag_version, _refreshing_ag_version
+    override = os.getenv("QUARTZ_ANTIGRAVITY_VERSION")
+    if override and override.strip():
+        return override.strip()
+    if _cached_ag_version is not None:
+        return _cached_ag_version
+
+    cache_path = auth_file_path().parent / "antigravity-version.json"
+    best = ANTIGRAVITY_VERSION_FLOOR
+    stale = True
+    if cache_path.is_file():
+        try:
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            ver = str(data.get("version", ""))
+            checked_at = float(data.get("checked_at", 0))
+            if ver and _parse_semver(ver) > _parse_semver(best):
+                best = ver
+            stale = (time.time() - checked_at) > _VERSION_CACHE_TTL_S
+        except Exception:
+            pass
+
+    _cached_ag_version = best
+    if stale and not _refreshing_ag_version:
+        _refreshing_ag_version = True
+        threading.Thread(
+            target=_refresh_antigravity_version_bg, args=(cache_path,), daemon=True
+        ).start()
+    return best
 
 
 def antigravity_user_agent() -> str:
-    return "antigravity/1.15.8 linux/amd64"
+    return f"antigravity/{get_antigravity_version()} linux/amd64"
 
 
 def auth_file_path() -> Path:
@@ -187,7 +251,7 @@ def discover_project(access_token: str) -> str:
     body = {
         "metadata": {
             "ideType": "ANTIGRAVITY",
-            "ideVersion": "1.15.8",
+            "ideVersion": get_antigravity_version(),
             "ideName": "antigravity",
             "platform": "LINUX_AMD64",
         }
