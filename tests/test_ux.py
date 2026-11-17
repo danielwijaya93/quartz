@@ -7,7 +7,13 @@ from pathlib import Path
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from agent.cli import MarkdownBlockStreamer, format_compact_cell_summary
+import io
+
+import pytest
+from rich.console import Console
+
+import agent.cli as cli
+from agent.cli import BlockPrinter, MarkdownBlockStreamer, format_compact_cell_summary
 from agent.completer import AgentCompleter
 from agent.kernel_client import CellResult, KernelClient
 from agent.loop import TurnUsage, agent_loop
@@ -262,3 +268,116 @@ def test_agent_loop_forwards_reasoning_effort(tmp_path: Path) -> None:
     )
     assert ans == "ok"
     assert captured_kwargs["reasoning_effort"] == "max"
+
+
+def _recording_console(width: int = 80) -> tuple[Console, io.StringIO]:
+    buf = io.StringIO()
+    return Console(file=buf, width=width, force_terminal=False, color_system=None), buf
+
+
+def _visible_lines(text: str) -> list[str]:
+    return [line.rstrip() for line in text.rstrip("\n").split("\n")]
+
+
+def test_block_printer_separates_markdown_blocks_with_one_blank_line() -> None:
+    console, buf = _recording_console()
+    printer = BlockPrinter(console)
+    printer.reset()
+
+    streamer = MarkdownBlockStreamer(printer.markdown)
+    reply = (
+        "Here's what I found.\n\n"
+        "## Findings\n\n"
+        "- Item one\n"
+        "- Item two\n\n"
+        "```python\n"
+        "x = 1\n"
+        "print(x)\n"
+        "```\n\n"
+        "Then I ran it:\n\n"
+        "```\n"
+        "1\n"
+        "```\n\n"
+        "That's the answer.\n"
+    )
+    for i in range(0, len(reply), 5):
+        streamer.feed(reply[i : i + 5])
+    streamer.flush()
+
+    assert _visible_lines(buf.getvalue()) == [
+        "Here's what I found.",
+        "",
+        "Findings",
+        "",
+        " • Item one",
+        " • Item two",
+        "",
+        " x = 1",
+        " print(x)",
+        "",
+        "Then I ran it:",
+        "",
+        " 1",
+        "",
+        "That's the answer.",
+    ]
+
+
+def test_block_printer_keeps_blank_lines_inside_code_fences() -> None:
+    console, buf = _recording_console()
+    printer = BlockPrinter(console)
+    printer.reset()
+    printer.markdown("Before.\n")
+
+    streamer = MarkdownBlockStreamer(printer.markdown)
+    streamer.feed("```python\na = 1\n\nb = 2\n```\n")
+    streamer.flush()
+
+    lines = _visible_lines(buf.getvalue())
+    assert lines[0] == "Before."
+    assert lines.count(" a = 1") == 1
+    # the blank line inside the fence survives, and no double blanks are introduced
+    assert lines[lines.index(" a = 1") + 1] == ""
+    assert lines[lines.index(" a = 1") + 2] == " b = 2"
+    assert "\n\n\n" not in buf.getvalue()
+
+
+def test_printer_reset_starts_a_turn_without_leading_blank_line() -> None:
+    console, buf = _recording_console()
+    printer = BlockPrinter(console)
+    printer.reset()
+    printer.markdown("First block.")
+    printer.reset()  # start of next turn; the prompt echo supplies the separation
+    printer.markdown("Second block.")
+
+    assert _visible_lines(buf.getvalue()) == ["First block.", "Second block."]
+
+
+def test_cell_summary_chip_keeps_cell_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    console, buf = _recording_console()
+    monkeypatch.setattr(cli, "printer", BlockPrinter(console))
+
+    cli.printer.reset()
+    cli.printer.markdown("Running a cell now.")
+    cli._render_cell_summary(1, "print('hello')", CellResult(True, "hello\n", "", None), 0.01)
+
+    lines = _visible_lines(buf.getvalue())
+    assert lines == [
+        "Running a cell now.",
+        "",
+        "✔ [#1] ipython (1L: print('hello')) → hello (0.01s)",
+    ]
+
+
+def test_tool_result_panel_keeps_literal_brackets(monkeypatch: pytest.MonkeyPatch) -> None:
+    console, buf = _recording_console()
+    monkeypatch.setattr(cli, "printer", BlockPrinter(console))
+
+    cli.printer.reset()
+    cli._render_tool_result(
+        CellResult(ok=False, stdout="", stderr="ValueError: bad [red]thing[/red] here", result=None)
+    )
+
+    out = buf.getvalue()
+    assert "[red]thing[/red]" in out
+    assert "[stderr]" in out

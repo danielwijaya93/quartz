@@ -21,6 +21,7 @@ from prompt_toolkit.layout.containers import Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.status import Status
 from rich.syntax import Syntax
@@ -95,16 +96,68 @@ class MarkdownBlockStreamer:
             self._emit(block)
 
 
+def render_markdown_block(target: Console, block: str) -> Text | None:
+    """Render one Markdown block to Text with no leading or trailing blank lines."""
+    options = target.options.update(width=target.width)
+    rendered: list[Text] = []
+    for segments in target.render_lines(Markdown(block), options, pad=False):
+        line = Text()
+        for segment in segments:
+            if segment.control:
+                continue
+            line.append(segment.text, style=segment.style)
+        rendered.append(line)
+
+    while rendered and not rendered[0].plain.strip():
+        rendered.pop(0)
+    while rendered and not rendered[-1].plain.strip():
+        rendered.pop()
+    if not rendered:
+        return None
+    return Text("\n").join(rendered)
+
+
+class BlockPrinter:
+    """Print Markdown blocks, cells, and notices separated by exactly one blank line."""
+
+    def __init__(self, target: Console) -> None:
+        self._console = target
+        self._started = False
+
+    def reset(self) -> None:
+        """Mark the start of a turn so the first block gets no leading blank line."""
+        self._started = False
+
+    def _separate(self) -> None:
+        if self._started:
+            self._console.print()
+        self._started = True
+
+    def markdown(self, block: str) -> None:
+        text = render_markdown_block(self._console, block)
+        if text is None:
+            return
+        self._separate()
+        self._console.print(text, soft_wrap=True)
+
+    def block(self, renderable: Any) -> None:
+        self._separate()
+        self._console.print(renderable)
+
+
+printer = BlockPrinter(console)
+
+
 def _render_tool_call(code: str) -> None:
     syntax = Syntax(code.rstrip(), "python", theme="monokai", line_numbers=False)
-    console.print(Panel(syntax, title="[bold cyan]ipython[/bold cyan]", border_style="cyan"))
+    printer.block(Panel(syntax, title="[bold cyan]ipython[/bold cyan]", border_style="cyan"))
 
 
 def _render_tool_result(res: CellResult) -> None:
     text = res.format_for_model()
     style = "green" if res.ok else "red"
     title = "[bold green]out[/bold green]" if res.ok else "[bold red]error[/bold red]"
-    console.print(Panel(text, title=title, border_style=style))
+    printer.block(Panel(Text(text), title=title, border_style=style))
 
 
 def format_compact_cell_summary(
@@ -133,13 +186,22 @@ def format_compact_cell_summary(
 
 
 def _render_compaction(summarized: int, kept: int) -> None:
-    console.print(
-        f"[yellow][compact] Summarized {summarized} older messages; kept {kept} recent messages and Python kernel state.[/yellow]"
+    printer.block(
+        Text(
+            f"[compact] Summarized {summarized} older messages; kept {kept} recent messages and Python kernel state.",
+            style="yellow",
+        )
     )
 
 
 def _render_bash_notice(notice: str) -> None:
-    console.print(Panel(Text(notice), title="[bold magenta]harness notice[/bold magenta]", border_style="magenta"))
+    printer.block(Panel(Text(notice), title="[bold magenta]harness notice[/bold magenta]", border_style="magenta"))
+
+
+def _render_cell_summary(index: int, code: str, res: CellResult, duration: float) -> None:
+    """Print the one-line chip for an executed ipython cell (brackets stay literal)."""
+    summary = format_compact_cell_summary(index, code, res, duration)
+    printer.block(Text(summary, style="dim green" if res.ok else "red"))
 
 
 def _pick_option(
@@ -249,6 +311,7 @@ def _replay_session(
     """Replay a resumed session's full conversation and tool cells into the terminal."""
     import json
 
+    printer.reset()
     tool_outputs: dict[str, str] = {
         str(m["tool_call_id"]): str(m.get("content", ""))
         for m in messages
@@ -264,10 +327,10 @@ def _replay_session(
             if text.startswith("[") and text.endswith("]") or text.startswith("[bash-done") or text.startswith("[compaction-summary]") or text.startswith("[python-state"):
                 _render_bash_notice(text)
             else:
-                console.print(f"\n[bold]> {text}[/bold]")
+                console.print(Text("\n> " + text, style="bold"))
         elif role == "assistant":
             if content:
-                console.print(Markdown(str(content)))
+                printer.markdown(str(content))
             for tc in msg.get("tool_calls") or []:
                 fn = tc.get("function", {})
                 if fn.get("name") != "ipython":
@@ -289,9 +352,7 @@ def _replay_session(
                     _render_tool_call(code)
                     _render_tool_result(cell_res)
                 else:
-                    summary = format_compact_cell_summary(len(cell_history), code, cell_res, 0.0)
-                    style = "dim green" if cell_res.ok else "red"
-                    console.print(f"[{style}]{summary}[/{style}]")
+                    _render_cell_summary(len(cell_history), code, cell_res, 0.0)
 
 
 def _fmt_k(n: int) -> str:
@@ -494,7 +555,7 @@ def _handle_mcp_cli(argv: list[str]) -> None:
             if spec.get("env"):
                 extras.append("env")
             extra_str = f" [dim]({', '.join(extras)})[/dim]" if extras else ""
-            console.print(f"  [cyan]{name}[/cyan] [{status}] — {target}{extra_str}")
+            console.print(f"  [cyan]{escape(name)}[/cyan] [{status}] — {escape(target)}{extra_str}")
         return
 
     if args.action == "remove":
@@ -642,7 +703,7 @@ def main() -> None:
                 active_session, messages = Session.load(target_id)
         except FileNotFoundError as exc:
             kernel.close()
-            console.print(f"[red]Error: {exc}[/red]")
+            console.print(f"[red]Error: {escape(str(exc))}[/red]")
             sys.exit(1)
 
         resumed = True
@@ -665,7 +726,7 @@ def main() -> None:
     pending_cell_start: list[float] = []
     active_status: list[Status] = []
     streamed_any = [False]
-    md_streamer = MarkdownBlockStreamer(lambda block: console.print(Markdown(block)))
+    md_streamer = MarkdownBlockStreamer(printer.markdown)
 
     def _on_status(label: str | None) -> None:
         if label is None:
@@ -701,12 +762,11 @@ def main() -> None:
         if args.verbose:
             _render_tool_result(res)
         else:
-            summary = format_compact_cell_summary(len(cell_history), code, res, duration)
-            style = "dim green" if res.ok else "red"
-            console.print(f"[{style}]{summary}[/{style}]")
+            _render_cell_summary(len(cell_history), code, res, duration)
 
     def _run_turn(turn_usage: TurnUsage | None = None) -> tuple[str, list[dict[str, Any]], int]:
         streamed_any[0] = False
+        printer.reset()
         try:
             answer, updated_msgs, tokens = agent_loop(
                 client,
@@ -731,7 +791,7 @@ def main() -> None:
             _on_status(None)
             md_streamer.flush()
         if not streamed_any[0] and answer:
-            console.print(Markdown(answer))
+            printer.markdown(answer)
         return answer, updated_msgs, tokens
 
     try:
@@ -755,7 +815,7 @@ def main() -> None:
 
         console.print(
             Panel(
-                f"Model: [bold]{model}[/bold] ([cyan]{effort}[/cyan]) | Workspace: [bold]{cwd}[/bold] | Session: [bold]{active_session.id}[/bold]\n"
+                f"Model: [bold]{escape(model)}[/bold] ([cyan]{escape(str(effort))}[/cyan]) | Workspace: [bold]{escape(str(cwd))}[/bold] | Session: [bold]{escape(active_session.id)}[/bold]\n"
                 "Commands: [cyan]/model[/cyan], [cyan]/continue[/cyan], [cyan]/vars[/cyan], [cyan]/usage[/cyan], "
                 "[cyan]/expand[/cyan], [cyan]/compact[/cyan], [cyan]/reset[/cyan], [cyan]/exit[/cyan]\n"
                 "[dim]Tip: Use @path for files, Esc+Enter or Ctrl+J for multi-line input, Ctrl+C to interrupt.[/dim]",
@@ -767,7 +827,7 @@ def main() -> None:
         if resumed:
             _replay_session(messages, cell_history, verbose=args.verbose)
             if usage_stats.prompt_tokens > 0:
-                console.print(f"[dim]{_format_turn_footer(usage_stats, max_context_tokens)}[/dim]")
+                printer.block(Text(_format_turn_footer(usage_stats, max_context_tokens), style="dim"))
 
         kb = KeyBindings()
 
@@ -838,12 +898,12 @@ def main() -> None:
                     _, messages, tokens = _run_turn(turn_usage=usage_stats)
                     _persist()
                     if tokens:
-                        console.print(f"[dim]{_format_turn_footer(usage_stats, max_context_tokens)}[/dim]")
+                        printer.block(Text(_format_turn_footer(usage_stats, max_context_tokens), style="dim"))
                 except KeyboardInterrupt:
                     kernel.interrupt()
                     console.print("\n[yellow]Interrupted.[/yellow]")
                 except Exception as exc:
-                    console.print(f"[red]Error: {exc}[/red]")
+                    console.print(f"[red]Error: {escape(str(exc))}[/red]")
                 continue
 
             if not user_input:
@@ -853,16 +913,18 @@ def main() -> None:
                 break
             if user_input == "/help":
                 console.print(
-                    "/model           Choose provider, model, and reasoning effort\n"
-                    "/continue [id]   Pick and resume a previous session in this directory\n"
-                    "/vars            List live Python variables in the kernel\n"
-                    "/session         Show active session ID and file paths\n"
-                    "/usage           Show context window usage and cache hit rate\n"
-                    "/expand [n]      Expand a collapsed ipython cell (default: latest)\n"
-                    "/compact [focus] Summarize older messages while keeping the kernel alive\n"
-                    "/prompt          Show the assembled system prompt\n"
-                    "/reset           Clear conversation history, start a new session, and restart the kernel\n"
-                    "/exit            Exit"
+                    Text(
+                        "/model           Choose provider, model, and reasoning effort\n"
+                        "/continue [id]   Pick and resume a previous session in this directory\n"
+                        "/vars            List live Python variables in the kernel\n"
+                        "/session         Show active session ID and file paths\n"
+                        "/usage           Show context window usage and cache hit rate\n"
+                        "/expand [n]      Expand a collapsed ipython cell (default: latest)\n"
+                        "/compact [focus] Summarize older messages while keeping the kernel alive\n"
+                        "/prompt          Show the assembled system prompt\n"
+                        "/reset           Clear conversation history, start a new session, and restart the kernel\n"
+                        "/exit            Exit"
+                    )
                 )
                 continue
             if user_input == "/model":
@@ -933,7 +995,7 @@ def main() -> None:
                 try:
                     new_session, new_messages = Session.load(chosen_id)
                 except FileNotFoundError as exc:
-                    console.print(f"[red]Error: {exc}[/red]")
+                    console.print(f"[red]Error: {escape(str(exc))}[/red]")
                     continue
 
                 active_session = new_session
@@ -947,7 +1009,7 @@ def main() -> None:
                 console.print(f"\n[bold cyan]Switched to session {active_session.id}[/bold cyan]")
                 _replay_session(messages, cell_history, verbose=args.verbose)
                 if usage_stats.prompt_tokens > 0:
-                    console.print(f"[dim]{_format_turn_footer(usage_stats, max_context_tokens)}[/dim]")
+                    printer.block(Text(_format_turn_footer(usage_stats, max_context_tokens), style="dim"))
                 continue
             if user_input.startswith("/expand") or user_input == "/last":
                 if not cell_history:
@@ -984,9 +1046,9 @@ def main() -> None:
                 continue
             if user_input == "/session":
                 console.print(
-                    f"Session ID: [bold]{active_session.id}[/bold]\n"
-                    f"Log:        {active_session.jsonl_path}\n"
-                    f"Snapshot:   {active_session.snapshot_dir}"
+                    f"Session ID: [bold]{escape(active_session.id)}[/bold]\n"
+                    f"Log:        {escape(str(active_session.jsonl_path))}\n"
+                    f"Snapshot:   {escape(str(active_session.snapshot_dir))}"
                 )
                 continue
             if user_input == "/vars":
@@ -995,10 +1057,13 @@ def main() -> None:
                     console.print("[dim]No user-defined variables in the kernel.[/dim]")
                 else:
                     for name, typ in vars_info.items():
-                        console.print(f"  [cyan]{name}[/cyan]: {typ}")
+                        line = Text("  ")
+                        line.append(name, style="cyan")
+                        line.append(f": {typ}")
+                        console.print(line)
                 continue
             if user_input == "/prompt":
-                console.print(Panel(system_prompt, title="System Prompt", border_style="dim"))
+                console.print(Panel(Text(system_prompt), title="System Prompt", border_style="dim"))
                 continue
             if user_input == "/reset":
                 messages.clear()
@@ -1027,12 +1092,12 @@ def main() -> None:
                 _, messages, tokens = _run_turn(turn_usage=usage_stats)
                 _persist()
                 if tokens:
-                    console.print(f"[dim]{_format_turn_footer(usage_stats, max_context_tokens)}[/dim]")
+                    printer.block(Text(_format_turn_footer(usage_stats, max_context_tokens), style="dim"))
             except KeyboardInterrupt:
                 kernel.interrupt()
                 console.print("\n[yellow]Interrupted.[/yellow]")
             except Exception as exc:
-                console.print(f"[red]Error: {exc}[/red]")
+                console.print(f"[red]Error: {escape(str(exc))}[/red]")
     finally:
         if messages:
             try:
