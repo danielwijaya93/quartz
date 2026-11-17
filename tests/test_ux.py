@@ -132,3 +132,73 @@ def test_streaming_agent_loop_with_tool_call(tmp_path: Path) -> None:
         assert any(m.get("role") == "tool" and m.get("content") == "42" for m in msgs)
     finally:
         kernel.close()
+
+
+def test_keyboard_interrupt_preserves_valid_tool_history(tmp_path: Path) -> None:
+    import pytest
+
+    class _FnDelta:
+        def __init__(self, name: str | None = None, arguments: str | None = None) -> None:
+            self.name = name
+            self.arguments = arguments
+
+    class _TcDelta:
+        def __init__(self, index: int, id: str | None = None, function: _FnDelta | None = None) -> None:
+            self.index = index
+            self.id = id
+            self.function = function
+
+    class _Delta:
+        def __init__(self, content: str | None = None, tool_calls: list[_TcDelta] | None = None) -> None:
+            self.content = content
+            self.tool_calls = tool_calls
+
+    class _Choice:
+        def __init__(self, delta: _Delta) -> None:
+            self.delta = delta
+
+    class _Chunk:
+        def __init__(self, choices: list[_Choice]) -> None:
+            self.choices = choices
+            self.usage = None
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            return iter(
+                [
+                    _Chunk([_Choice(_Delta(tool_calls=[_TcDelta(0, id="tc_int", function=_FnDelta(name="ipython", arguments='{"code": "while True: pass"}'))]))]),
+                ]
+            )
+
+    class _FakeChat:
+        def __init__(self) -> None:
+            self.completions = _FakeCompletions()
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.chat = _FakeChat()
+
+    class _InterruptingKernel:
+        def drain_events(self):
+            return []
+
+        def exec_cell(self, code: str):
+            raise KeyboardInterrupt()
+
+        def interrupt(self):
+            pass
+
+    msgs: list[dict] = [{"role": "user", "content": "hang"}]
+    with pytest.raises(KeyboardInterrupt):
+        agent_loop(
+            _FakeClient(),  # type: ignore[arg-type]
+            "fake-model",
+            "sys",
+            msgs,
+            _InterruptingKernel(),  # type: ignore[arg-type]
+            stream=True,
+        )
+
+    assert msgs[-1]["role"] == "tool"
+    assert msgs[-1]["tool_call_id"] == "tc_int"
+    assert msgs[-1]["content"] == "[interrupted by user]"

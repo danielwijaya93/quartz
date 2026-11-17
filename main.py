@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -271,12 +272,28 @@ def main() -> None:
         console.print(
             Panel(
                 f"Model: [bold]{model}[/bold] | Workspace: [bold]{cwd}[/bold] | Session: [bold]{active_session.id}[/bold]\n"
-                "Commands: [cyan]/vars[/cyan], [cyan]/session[/cyan], [cyan]/compact [focus][/cyan], "
-                "[cyan]/prompt[/cyan], [cyan]/reset[/cyan], [cyan]/exit[/cyan]",
+                "Commands: [cyan]/vars[/cyan], [cyan]/session[/cyan], [cyan]/usage[/cyan], "
+                "[cyan]/expand[/cyan], [cyan]/compact[/cyan], [cyan]/reset[/cyan], [cyan]/exit[/cyan]\n"
+                "[dim]Tip: Use @path for files, Esc+Enter or Ctrl+J for multi-line input, Ctrl+C to interrupt.[/dim]",
                 title="[bold]Minimal Agent (learn-claude-code + Unharnessed)[/bold]",
                 border_style="blue",
             )
         )
+
+        kb = KeyBindings()
+
+        @kb.add("c-j")
+        def _(event: Any) -> None:
+            event.current_buffer.insert_text("\n")
+
+        @kb.add("enter")
+        def _(event: Any) -> None:
+            buf = event.current_buffer
+            if buf.text.endswith("\\"):
+                buf.delete_before_cursor(1)
+                buf.insert_text("\n")
+            else:
+                buf.validate_and_handle()
 
         history_path = Path.home() / ".minimal-agent" / "history"
         history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -284,6 +301,8 @@ def main() -> None:
             history=FileHistory(str(history_path)),
             completer=AgentCompleter(cwd),
             complete_while_typing=True,
+            key_bindings=kb,
+            prompt_continuation="... ",
         )
         usage_stats = TurnUsage()
 

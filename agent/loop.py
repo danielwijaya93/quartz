@@ -306,7 +306,7 @@ def agent_loop(
         if not tool_calls:
             return (assistant_dict.get("content") or "").strip(), messages, last_prompt_tokens
 
-        for tc in tool_calls:
+        for idx, tc in enumerate(tool_calls):
             fn_name = tc["function"]["name"]
             tc_id = tc["id"]
             if fn_name != "ipython":
@@ -327,6 +327,20 @@ def agent_loop(
                 on_status("Running ipython...")
             try:
                 cell_res = kernel.exec_cell(code)
+            except KeyboardInterrupt:
+                if on_status:
+                    on_status(None)
+                kernel.interrupt()
+                # Keep message history valid so the next turn never has orphaned tool_calls.
+                for rem_tc in tool_calls[idx:]:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": rem_tc["id"],
+                            "content": "[interrupted by user]",
+                        }
+                    )
+                raise
             finally:
                 if on_status:
                     on_status(None)
