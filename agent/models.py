@@ -16,9 +16,16 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     "google": {
         "label": "Google Antigravity (OAuth)",
         "backend": "google",
-        "models": ["gemini-4-hydrogen"],
+        "models": [
+            "gemini-3.8-flash-medium",
+            "gemini-3.8-flash-high",
+            "gemini-3.8-flash-low",
+            "gemini-3-flash",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+        ],
         "efforts": ["low", "medium", "high", "xhigh"],
-        "default_model": "gemini-4-hydrogen",
+        "default_model": "gemini-3.8-flash-medium",
         "default_effort": "medium",
     },
 }

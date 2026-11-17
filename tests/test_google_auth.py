@@ -75,8 +75,8 @@ def test_build_cloudcode_request_and_parse_sse() -> None:
         },
         {"role": "tool", "tool_call_id": "call_1", "content": "4"},
     ]
-    envelope = build_cloudcode_request("gemini-4-hydrogen", "proj-1", messages, TOOLS, effort="xhigh")
-    assert envelope["model"] == "gemini-4-hydrogen"
+    envelope = build_cloudcode_request("gemini-3.8-flash-medium", "proj-1", messages, TOOLS, effort="xhigh")
+    assert envelope["model"] == "gemini-3.8-flash-medium"
     assert envelope["project"] == "proj-1"
     req = envelope["request"]
     assert req["generationConfig"] == {"thinkingConfig": {"thinkingLevel": "XHIGH"}}
@@ -135,5 +135,5 @@ def test_build_client_provider_selection(tmp_path: Path, monkeypatch) -> None:
     client, pname, model, effort = _build_client(provider="auto")
     assert isinstance(client, GoogleAntigravityClient)
     assert pname == "google"
-    assert model == "gemini-4-hydrogen"
+    assert model == "gemini-3.8-flash-medium"
     assert effort == "medium"

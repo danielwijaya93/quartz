@@ -348,7 +348,12 @@ def _build_client(
         chosen_provider = provider
 
     spec = PROVIDERS[chosen_provider]
-    model = env_model or spec["default_model"]
+    if model_override:
+        model = model_override
+    elif env_model and env_model in spec["models"]:
+        model = env_model
+    else:
+        model = spec["default_model"]
     effort = effort_override or os.getenv("EFFORT") or spec["default_effort"]
 
     if spec["backend"] == "google":
