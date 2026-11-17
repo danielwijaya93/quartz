@@ -20,6 +20,7 @@ from agent.google_provider import (
     parse_sse_payload,
 )
 from agent.loop import TOOLS
+from agent.models import load_model_config, save_model_config
 
 
 def test_google_credentials_storage_and_expiry(tmp_path: Path, monkeypatch) -> None:
@@ -125,7 +126,9 @@ def test_build_cloudcode_request_and_parse_sse() -> None:
 
 def test_build_client_provider_selection(tmp_path: Path, monkeypatch) -> None:
     auth_path = tmp_path / "auth.json"
+    cfg_path = tmp_path / "config.json"
     monkeypatch.setenv("QUARTZ_AUTH_FILE", str(auth_path))
+    monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(cfg_path))
     save_google_credentials(
         GoogleCredentials("acc", "ref", int(time.time() * 1000) + 600_000, "proj-1")
     )
@@ -137,3 +140,28 @@ def test_build_client_provider_selection(tmp_path: Path, monkeypatch) -> None:
     assert pname == "google"
     assert model == "gemini-3.8-flash-medium"
     assert effort == "medium"
+
+
+def test_saved_model_config_overrides_env_defaults(tmp_path: Path, monkeypatch) -> None:
+    auth_path = tmp_path / "auth.json"
+    cfg_path = tmp_path / "config.json"
+    monkeypatch.setenv("QUARTZ_AUTH_FILE", str(auth_path))
+    monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(cfg_path))
+    save_google_credentials(
+        GoogleCredentials("acc", "ref", int(time.time() * 1000) + 600_000, "proj-1")
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("MODEL", "deepseek-flash")
+
+    save_model_config("google", "gemini-3.8-flash-high", "xhigh")
+    assert load_model_config() == {
+        "provider": "google",
+        "model": "gemini-3.8-flash-high",
+        "effort": "xhigh",
+    }
+
+    client, pname, model, effort = _build_client(provider="auto")
+    assert isinstance(client, GoogleAntigravityClient)
+    assert pname == "google"
+    assert model == "gemini-3.8-flash-high"
+    assert effort == "xhigh"

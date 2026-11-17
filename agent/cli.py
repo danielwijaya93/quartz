@@ -44,7 +44,7 @@ from agent.mcp_client import (
     remove_mcp_server,
     set_mcp_server_enabled,
 )
-from agent.models import PROVIDERS
+from agent.models import PROVIDERS, load_model_config, save_model_config
 from agent.prompt import build_system_prompt
 from agent.session import Session
 
@@ -333,10 +333,14 @@ def _build_client(
 ) -> tuple[Any, str, str, str]:
     api_key = os.getenv("OPENAI_API_KEY")
     has_google = load_google_credentials() is not None
+    saved = load_model_config()
     env_model = model_override or os.getenv("MODEL")
 
     if provider == "auto":
-        if env_model and env_model.startswith("gemini-") and has_google:
+        saved_provider = saved.get("provider")
+        if saved_provider in PROVIDERS:
+            chosen_provider = saved_provider
+        elif env_model and env_model.startswith("gemini-") and has_google:
             chosen_provider = "google"
         elif not api_key and has_google:
             chosen_provider = "google"
@@ -350,11 +354,19 @@ def _build_client(
     spec = PROVIDERS[chosen_provider]
     if model_override:
         model = model_override
+    elif provider == "auto" and saved.get("provider") == chosen_provider and saved.get("model"):
+        model = saved["model"]
     elif env_model and env_model in spec["models"]:
         model = env_model
     else:
         model = spec["default_model"]
-    effort = effort_override or os.getenv("EFFORT") or spec["default_effort"]
+
+    if effort_override:
+        effort = effort_override
+    elif provider == "auto" and saved.get("provider") == chosen_provider and saved.get("effort"):
+        effort = saved["effort"]
+    else:
+        effort = os.getenv("EFFORT") or spec["default_effort"]
 
     if spec["backend"] == "google":
         if not has_google:
@@ -874,6 +886,7 @@ def main() -> None:
                     )
                 except SystemExit:
                     continue
+                save_model_config(provider_name, model, effort)
                 console.print(
                     f"[green]Switched to [bold]{provider_name}[/bold] / [bold]{model}[/bold] (effort: [bold]{effort}[/bold])[/green]"
                 )
