@@ -111,6 +111,9 @@ def test_kernel_bash_timeout(tmp_path: Path) -> None:
 
 
 def test_prompt_discovery(tmp_path: Path) -> None:
+    global_agents = tmp_path / "global_AGENTS.md"
+    global_agents.write_text("Global rule: be concise.", encoding="utf-8")
+
     (tmp_path / "AGENTS.md").write_text("Always use pytest.", encoding="utf-8")
     # Project-local .agents/skills should NOT be scanned; only explicit/global ~/.agents/skills
     ignored_skill_dir = tmp_path / ".agents" / "skills" / "ignored-skill"
@@ -128,9 +131,11 @@ def test_prompt_discovery(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    prompt = build_system_prompt(tmp_path, skills_dir=skills_root)
+    prompt = build_system_prompt(tmp_path, skills_dir=skills_root, global_agents_path=global_agents)
     assert "You have one tool, `ipython`" in prompt
+    assert "Global rule: be concise." in prompt
     assert "Always use pytest." in prompt
+    assert prompt.index("Global rule: be concise.") < prompt.index("Always use pytest.")
     assert "`demo-skill`" in prompt
     assert "A demo skill for testing" in prompt
     assert "ignored-skill" not in prompt

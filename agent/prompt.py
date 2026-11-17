@@ -46,13 +46,30 @@ def _ancestor_dirs(cwd: Path) -> list[Path]:
     return trimmed
 
 
-def discover_context_files(cwd: Path) -> list[tuple[Path, str]]:
-    """Find AGENTS.md and CLAUDE.md files from repo/root down to cwd."""
+def discover_context_files(
+    cwd: Path, global_agents_path: Path | None = None
+) -> list[tuple[Path, str]]:
+    """Find global ~/.quartz/AGENTS.md plus AGENTS.md/CLAUDE.md from repo/root down to cwd."""
     found: list[tuple[Path, str]] = []
     seen: set[Path] = set()
+
+    env_global = os.getenv("QUARTZ_AGENTS_FILE")
+    g_path = (
+        global_agents_path
+        or (Path(env_global).expanduser() if env_global else Path.home() / ".quartz" / "AGENTS.md")
+    ).resolve()
+    if g_path.is_file():
+        seen.add(g_path)
+        try:
+            text = g_path.read_text(encoding="utf-8").strip()
+            if text:
+                found.append((g_path, text))
+        except OSError:
+            pass
+
     for directory in _ancestor_dirs(cwd):
         for filename in ("AGENTS.md", "CLAUDE.md"):
-            candidate = directory / filename
+            candidate = (directory / filename).resolve()
             if candidate.is_file() and candidate not in seen:
                 seen.add(candidate)
                 try:
@@ -109,6 +126,7 @@ def build_system_prompt(
     cwd: Path | None = None,
     *,
     skills_dir: Path | None = None,
+    global_agents_path: Path | None = None,
 ) -> str:
     """Assemble the static prompt plus dynamic environment, skills, and context files."""
     work_dir = (cwd or Path.cwd()).resolve()
@@ -141,7 +159,7 @@ def build_system_prompt(
             lines.append(f"- `{name}` (`{path}`){summary}")
         sections.append("\n".join(lines))
 
-    context_files = discover_context_files(work_dir)
+    context_files = discover_context_files(work_dir, global_agents_path=global_agents_path)
     if context_files:
         ctx_parts = ["## Project Instructions"]
         for path, text in context_files:
