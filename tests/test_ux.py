@@ -7,7 +7,7 @@ from pathlib import Path
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from agent.cli import format_compact_cell_summary
+from agent.cli import MarkdownBlockStreamer, format_compact_cell_summary
 from agent.completer import AgentCompleter
 from agent.kernel_client import CellResult, KernelClient
 from agent.loop import TurnUsage, agent_loop
@@ -202,3 +202,21 @@ def test_keyboard_interrupt_preserves_valid_tool_history(tmp_path: Path) -> None
     assert msgs[-1]["role"] == "tool"
     assert msgs[-1]["tool_call_id"] == "tc_int"
     assert msgs[-1]["content"] == "[interrupted by user]"
+
+
+def test_markdown_block_streamer_respects_fences() -> None:
+    emitted: list[str] = []
+    streamer = MarkdownBlockStreamer(emitted.append)
+
+    streamer.feed("# Title\n\nFirst para")
+    assert emitted == ["# Title"]
+
+    streamer.feed("graph.\n\n```python\na = 1\n\nb = 2\n```\n\nLast")
+    assert emitted == [
+        "# Title",
+        "First paragraph.",
+        "```python\na = 1\n\nb = 2\n```",
+    ]
+
+    streamer.flush()
+    assert emitted[-1] == "Last"

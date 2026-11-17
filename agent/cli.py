@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,6 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
-from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.status import Status
@@ -39,6 +39,49 @@ from agent.session import Session
 
 console = Console()
 _WAKEUP_SENTINEL = "__MINIMAL_AGENT_WAKEUP__"
+
+
+class MarkdownBlockStreamer:
+    """Buffers streamed text and emits complete Markdown blocks without cursor-up redraws."""
+
+    def __init__(self, emit: Callable[[str], None]) -> None:
+        self._emit = emit
+        self._buf = ""
+
+    def feed(self, chunk: str) -> None:
+        self._buf += chunk.replace("\r\n", "\n")
+        if "\n" not in self._buf:
+            return
+
+        # Keep any incomplete trailing line in self._buf
+        last_nl = self._buf.rfind("\n")
+        complete = self._buf[: last_nl + 1]
+        tail = self._buf[last_nl + 1 :]
+
+        in_fence = False
+        block_lines: list[str] = []
+        last_flushed_idx = 0
+        lines = complete.splitlines(keepends=True)
+
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("```") or stripped.startswith("~~~"):
+                in_fence = not in_fence
+            block_lines.append(line)
+            if not in_fence and stripped == "":
+                block = "".join(block_lines).strip()
+                if block:
+                    self._emit(block)
+                block_lines.clear()
+                last_flushed_idx = idx + 1
+
+        self._buf = "".join(lines[last_flushed_idx:]) + tail
+
+    def flush(self) -> None:
+        block = self._buf.strip()
+        self._buf = ""
+        if block:
+            self._emit(block)
 
 
 def _render_tool_call(code: str) -> None:
@@ -325,9 +368,8 @@ def main() -> None:
     pending_cell_code: list[str] = []
     pending_cell_start: list[float] = []
     active_status: list[Status] = []
-    active_live: list[Live] = []
-    stream_buf: list[str] = []
     streamed_any = [False]
+    md_streamer = MarkdownBlockStreamer(lambda block: console.print(Markdown(block)))
 
     def _on_status(label: str | None) -> None:
         if label is None:
@@ -342,35 +384,13 @@ def main() -> None:
             st.__enter__()
             active_status.append(st)
 
-    def _stop_live() -> None:
-        final_text = "".join(stream_buf)
-        stream_buf.clear()
-        if active_live:
-            live = active_live.pop()
-            live.__exit__(None, None, None)
-        if final_text:
-            console.print(Markdown(final_text))
-
     def _on_text_delta(chunk: str) -> None:
         streamed_any[0] = True
-        stream_buf.append(chunk)
-        md = Markdown("".join(stream_buf))
-        if not active_live:
-            live = Live(
-                md,
-                console=console,
-                refresh_per_second=12,
-                transient=True,
-                vertical_overflow="ellipsis",
-            )
-            live.__enter__()
-            active_live.append(live)
-        else:
-            active_live[-1].update(md)
+        md_streamer.feed(chunk)
 
     def _on_tool_call(code: str) -> None:
         if streamed_any[0]:
-            _stop_live()
+            md_streamer.flush()
             streamed_any[0] = False
         pending_cell_code.append(code)
         pending_cell_start.append(time.monotonic())
@@ -391,7 +411,6 @@ def main() -> None:
 
     def _run_turn(usage_stats: TurnUsage | None = None) -> tuple[str, list[dict[str, Any]], int]:
         streamed_any[0] = False
-        stream_buf.clear()
         try:
             answer, updated_msgs, tokens = agent_loop(
                 client,
@@ -412,7 +431,7 @@ def main() -> None:
             )
         finally:
             _on_status(None)
-            _stop_live()
+            md_streamer.flush()
         if not streamed_any[0] and answer:
             console.print(Markdown(answer))
         return answer, updated_msgs, tokens
