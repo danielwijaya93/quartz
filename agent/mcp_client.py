@@ -72,6 +72,28 @@ def remove_mcp_server(name: str, config_path: Path | None = None) -> bool:
     return True
 
 
+def set_mcp_server_enabled(
+    name: str, enabled: bool, config_path: Path | None = None
+) -> bool:
+    """Enable or disable an existing MCP server entry in ~/.quartz/mcp.json."""
+    path = config_path or default_mcp_config_path()
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    mcp_servers = data.get("mcpServers")
+    if not isinstance(mcp_servers, dict) or name not in mcp_servers or not isinstance(mcp_servers[name], dict):
+        return False
+    if enabled:
+        mcp_servers[name].pop("enabled", None)
+    else:
+        mcp_servers[name]["enabled"] = False
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
 def load_mcp_servers(cwd: Path | None = None) -> dict[str, dict[str, Any]]:
     """Discover enabled MCP server definitions from ~/.quartz/mcp.json (and MCP_CONFIG if set)."""
     del cwd

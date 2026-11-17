@@ -32,6 +32,7 @@ from agent.mcp_client import (
     default_mcp_config_path,
     load_raw_mcp_config,
     remove_mcp_server,
+    set_mcp_server_enabled,
 )
 from agent.prompt import build_system_prompt
 from agent.session import Session
@@ -162,6 +163,14 @@ def _handle_mcp_cli(argv: list[str]) -> None:
     rm_p = sub.add_parser("remove", help="Remove an MCP server")
     rm_p.add_argument("name", help="Server name to remove")
 
+    en_p = sub.add_parser("enable", help="Enable one or more MCP servers")
+    en_p.add_argument("names", nargs="*", help="Server name(s) to enable")
+    en_p.add_argument("--all", action="store_true", help="Enable all configured servers")
+
+    dis_p = sub.add_parser("disable", help="Disable one or more MCP servers")
+    dis_p.add_argument("names", nargs="*", help="Server name(s) to disable")
+    dis_p.add_argument("--all", action="store_true", help="Disable all configured servers")
+
     args = parser.parse_args(argv)
     cfg_path = default_mcp_config_path()
 
@@ -193,6 +202,28 @@ def _handle_mcp_cli(argv: list[str]) -> None:
             console.print(f"[green]Removed MCP server '{args.name}' from {cfg_path}[/green]")
         else:
             console.print(f"[red]MCP server '{args.name}' not found in {cfg_path}[/red]")
+            sys.exit(1)
+        return
+
+    if args.action in ("enable", "disable"):
+        target_enabled = args.action == "enable"
+        if args.all:
+            targets = sorted(load_raw_mcp_config(cfg_path).keys())
+        else:
+            targets = list(args.names)
+        if not targets:
+            console.print(f"[red]Error: specify server name(s) or --all[/red]")
+            sys.exit(2)
+        missing: list[str] = []
+        for name in targets:
+            if not set_mcp_server_enabled(name, target_enabled, cfg_path):
+                missing.append(name)
+        verb = "Enabled" if target_enabled else "Disabled"
+        updated = [n for n in targets if n not in missing]
+        if updated:
+            console.print(f"[green]{verb} MCP server(s): {', '.join(updated)}[/green]")
+        if missing:
+            console.print(f"[red]Not found in {cfg_path}: {', '.join(missing)}[/red]")
             sys.exit(1)
         return
 

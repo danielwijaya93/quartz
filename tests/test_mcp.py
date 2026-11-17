@@ -91,6 +91,12 @@ def test_mcp_cli_add_list_remove_and_disabled(tmp_path: Path, monkeypatch) -> No
     assert enabled["http_srv"]["headers"] == {"Authorization": "Bearer tok"}
     assert enabled["stdio_srv"] == {"command": "npx", "args": ["-y", "demo-pkg"], "env": {"FOO": "bar"}}
 
+    _handle_mcp_cli(["disable", "--all"])
+    assert load_mcp_servers() == {}
+
+    _handle_mcp_cli(["enable", "http_srv"])
+    assert set(load_mcp_servers().keys()) == {"http_srv"}
+
     assert remove_mcp_server("http_srv", cfg_path) is True
     assert remove_mcp_server("missing", cfg_path) is False
-    assert set(load_mcp_servers().keys()) == {"stdio_srv"}
+    assert set(load_mcp_servers().keys()) == set()
