@@ -560,6 +560,8 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "auth":
         _handle_auth_cli(sys.argv[2:])
         return
+    if len(sys.argv) > 1 and sys.argv[1] == "acp":
+        sys.argv[1] = "--acp"
 
     quartz_env = Path.home() / ".quartz" / ".env"
     if quartz_env.is_file():
@@ -587,6 +589,11 @@ def main() -> None:
     parser.add_argument("--model", help="Override MODEL from environment.")
     parser.add_argument("--effort", help="Reasoning effort level (e.g. low, medium, high, max, xhigh).")
     parser.add_argument(
+        "--acp",
+        action="store_true",
+        help="Run as an ACP (Agent Client Protocol) JSON-RPC 2.0 server over stdio.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Always show full ipython code and output panels instead of compact summaries.",
@@ -597,6 +604,20 @@ def main() -> None:
     max_context_tokens = int(os.getenv("MAX_CONTEXT_TOKENS", "128000"))
     compact_reserve_tokens = int(os.getenv("COMPACT_RESERVE_TOKENS", "16384"))
     keep_recent_messages = int(os.getenv("COMPACT_KEEP_RECENT_MESSAGES", "10"))
+
+    if args.acp:
+        from agent.acp import ACPServer
+
+        server = ACPServer(
+            lambda: _build_client(
+                provider=args.provider, model_override=args.model, effort_override=args.effort
+            ),
+            max_context_tokens=max_context_tokens,
+            compact_reserve_tokens=compact_reserve_tokens,
+            keep_recent_messages=keep_recent_messages,
+        )
+        server.serve()
+        return
 
     client, provider_name, model, effort = _build_client(
         provider=args.provider, model_override=args.model, effort_override=args.effort
