@@ -17,6 +17,7 @@ from prompt_toolkit.history import FileHistory
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.status import Status
 from rich.syntax import Syntax
 from rich.text import Text
 
@@ -176,8 +177,32 @@ def main() -> None:
     cell_history: list[tuple[str, CellResult, float]] = []
     pending_cell_code: list[str] = []
     pending_cell_start: list[float] = []
+    active_status: list[Status] = []
+    streamed_any = [False]
+
+    def _on_status(label: str | None) -> None:
+        if label is None:
+            if active_status:
+                st = active_status.pop()
+                st.__exit__(None, None, None)
+            return
+        if active_status:
+            active_status[-1].update(label)
+        else:
+            st = console.status(label, spinner="dots")
+            st.__enter__()
+            active_status.append(st)
+
+    def _on_text_delta(chunk: str) -> None:
+        streamed_any[0] = True
+        sys.stdout.write(chunk)
+        sys.stdout.flush()
 
     def _on_tool_call(code: str) -> None:
+        if streamed_any[0]:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            streamed_any[0] = False
         pending_cell_code.append(code)
         pending_cell_start.append(time.monotonic())
         if args.verbose:
@@ -195,10 +220,10 @@ def main() -> None:
             style = "dim green" if res.ok else "red"
             console.print(f"[{style}]{summary}[/{style}]")
 
-    try:
-        if args.prompt:
-            messages.append({"role": "user", "content": args.prompt})
-            answer, messages, _ = agent_loop(
+    def _run_turn(usage_stats: TurnUsage | None = None) -> tuple[str, list[dict[str, Any]], int]:
+        streamed_any[0] = False
+        try:
+            answer, updated_msgs, tokens = agent_loop(
                 client,
                 model,
                 system_prompt,
@@ -211,10 +236,24 @@ def main() -> None:
                 on_tool_result=_on_tool_result,
                 on_compaction=_render_compaction,
                 on_bash_notice=_render_bash_notice,
+                on_status=_on_status,
+                on_text_delta=_on_text_delta,
+                usage_stats=usage_stats,
             )
+        finally:
+            _on_status(None)
+        if streamed_any[0]:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        elif answer:
+            console.print(Markdown(answer))
+        return answer, updated_msgs, tokens
+
+    try:
+        if args.prompt:
+            messages.append({"role": "user", "content": args.prompt})
+            _, messages, _ = _run_turn()
             _persist()
-            if answer:
-                console.print(Markdown(answer))
 
             while args.background_wait > 0 and (kernel.has_pending_events() or kernel.running_bash_count() > 0):
                 events = kernel.wait_for_events(timeout=args.background_wait)
@@ -225,23 +264,8 @@ def main() -> None:
                     continue
                 _render_bash_notice(notice)
                 messages.append({"role": "user", "content": notice})
-                answer, messages, _ = agent_loop(
-                    client,
-                    model,
-                    system_prompt,
-                    messages,
-                    kernel,
-                    max_context_tokens=max_context_tokens,
-                    compact_reserve_tokens=compact_reserve_tokens,
-                    keep_recent_messages=keep_recent_messages,
-                    on_tool_call=_on_tool_call,
-                    on_tool_result=_on_tool_result,
-                    on_compaction=_render_compaction,
-                    on_bash_notice=_render_bash_notice,
-                )
+                _, messages, _ = _run_turn()
                 _persist()
-                if answer:
-                    console.print(Markdown(answer))
             return
 
         console.print(
@@ -304,24 +328,8 @@ def main() -> None:
                 _render_bash_notice(notice)
                 messages.append({"role": "user", "content": notice})
                 try:
-                    answer, messages, tokens = agent_loop(
-                        client,
-                        model,
-                        system_prompt,
-                        messages,
-                        kernel,
-                        max_context_tokens=max_context_tokens,
-                        compact_reserve_tokens=compact_reserve_tokens,
-                        keep_recent_messages=keep_recent_messages,
-                        on_tool_call=_on_tool_call,
-                        on_tool_result=_on_tool_result,
-                        on_compaction=_render_compaction,
-                        on_bash_notice=_render_bash_notice,
-                        usage_stats=usage_stats,
-                    )
+                    _, messages, tokens = _run_turn(usage_stats=usage_stats)
                     _persist()
-                    if answer:
-                        console.print(Markdown(answer))
                     if tokens:
                         console.print(f"[dim]{_format_turn_footer(usage_stats, max_context_tokens)}[/dim]")
                 except KeyboardInterrupt:
@@ -422,24 +430,8 @@ def main() -> None:
 
             messages.append({"role": "user", "content": user_input})
             try:
-                answer, messages, tokens = agent_loop(
-                    client,
-                    model,
-                    system_prompt,
-                    messages,
-                    kernel,
-                    max_context_tokens=max_context_tokens,
-                    compact_reserve_tokens=compact_reserve_tokens,
-                    keep_recent_messages=keep_recent_messages,
-                    on_tool_call=_on_tool_call,
-                    on_tool_result=_on_tool_result,
-                    on_compaction=_render_compaction,
-                    on_bash_notice=_render_bash_notice,
-                    usage_stats=usage_stats,
-                )
+                _, messages, tokens = _run_turn(usage_stats=usage_stats)
                 _persist()
-                if answer:
-                    console.print(Markdown(answer))
                 if tokens:
                     console.print(f"[dim]{_format_turn_footer(usage_stats, max_context_tokens)}[/dim]")
             except KeyboardInterrupt:

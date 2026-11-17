@@ -123,6 +123,107 @@ def _assistant_msg_to_dict(msg: Any) -> dict[str, Any]:
     return out
 
 
+def _call_model(
+    client: OpenAI,
+    model: str,
+    full_messages: list[dict[str, Any]],
+    *,
+    stream: bool,
+    on_status: Callable[[str | None], None] | None,
+    on_text_delta: Callable[[str], None] | None,
+) -> tuple[dict[str, Any], Any]:
+    """Call chat completions (streaming or non-streaming) and return (assistant_dict, usage)."""
+    if not stream:
+        if on_status:
+            on_status("Thinking...")
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=full_messages,
+                tools=TOOLS,
+            )
+        finally:
+            if on_status:
+                on_status(None)
+        return _assistant_msg_to_dict(response.choices[0].message), response.usage
+
+    if on_status:
+        on_status("Thinking...")
+    try:
+        try:
+            stream_resp = client.chat.completions.create(
+                model=model,
+                messages=full_messages,
+                tools=TOOLS,
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+        except BadRequestError as exc:
+            if "stream_options" in str(exc).lower():
+                stream_resp = client.chat.completions.create(
+                    model=model,
+                    messages=full_messages,
+                    tools=TOOLS,
+                    stream=True,
+                )
+            else:
+                raise
+
+        content_parts: list[str] = []
+        tool_calls_acc: dict[int, dict[str, str]] = {}
+        usage: Any = None
+        status_cleared = False
+
+        for chunk in stream_resp:
+            if getattr(chunk, "usage", None) is not None:
+                usage = chunk.usage
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            delta = choices[0].delta
+
+            text = getattr(delta, "content", None)
+            if text:
+                if not status_cleared:
+                    if on_status:
+                        on_status(None)
+                    status_cleared = True
+                content_parts.append(text)
+                if on_text_delta:
+                    on_text_delta(text)
+
+            tc_deltas = getattr(delta, "tool_calls", None) or []
+            for tc_delta in tc_deltas:
+                idx = getattr(tc_delta, "index", 0)
+                entry = tool_calls_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                if getattr(tc_delta, "id", None):
+                    entry["id"] = tc_delta.id
+                fn = getattr(tc_delta, "function", None)
+                if fn is not None:
+                    if getattr(fn, "name", None):
+                        entry["name"] += fn.name
+                    if getattr(fn, "arguments", None):
+                        entry["arguments"] += fn.arguments
+    finally:
+        if on_status:
+            on_status(None)
+
+    assistant_dict: dict[str, Any] = {
+        "role": "assistant",
+        "content": "".join(content_parts) if content_parts else None,
+    }
+    if tool_calls_acc:
+        assistant_dict["tool_calls"] = [
+            {
+                "id": entry["id"],
+                "type": "function",
+                "function": {"name": entry["name"], "arguments": entry["arguments"]},
+            }
+            for _, entry in sorted(tool_calls_acc.items())
+        ]
+    return assistant_dict, usage
+
+
 def agent_loop(
     client: OpenAI,
     model: str,
@@ -133,10 +234,13 @@ def agent_loop(
     max_context_tokens: int = 128_000,
     compact_reserve_tokens: int = 16_384,
     keep_recent_messages: int = 10,
+    stream: bool = True,
     on_tool_call: Callable[[str], None] | None = None,
     on_tool_result: Callable[[CellResult], None] | None = None,
     on_compaction: Callable[[int, int], None] | None = None,
     on_bash_notice: Callable[[str], None] | None = None,
+    on_status: Callable[[str | None], None] | None = None,
+    on_text_delta: Callable[[str], None] | None = None,
     usage_stats: TurnUsage | None = None,
 ) -> tuple[str, list[dict[str, Any]], int]:
     """Run one turn of the agent loop until the model stops calling tools.
@@ -158,11 +262,15 @@ def agent_loop(
             if summarized > 0 and on_compaction:
                 on_compaction(summarized, kept)
 
+        full_messages = [{"role": "system", "content": system_prompt}, *messages]
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "system", "content": system_prompt}, *messages],
-                tools=TOOLS,
+            assistant_dict, usage = _call_model(
+                client,
+                model,
+                full_messages,
+                stream=stream,
+                on_status=on_status,
+                on_text_delta=on_text_delta,
             )
         except BadRequestError as exc:
             err_msg = str(exc).lower()
@@ -173,50 +281,62 @@ def agent_loop(
                 if summarized > 0:
                     if on_compaction:
                         on_compaction(summarized, kept)
-                    response = client.chat.completions.create(
-                        model=model,
-                        messages=[{"role": "system", "content": system_prompt}, *messages],
-                        tools=TOOLS,
+                    full_messages = [{"role": "system", "content": system_prompt}, *messages]
+                    assistant_dict, usage = _call_model(
+                        client,
+                        model,
+                        full_messages,
+                        stream=stream,
+                        on_status=on_status,
+                        on_text_delta=on_text_delta,
                     )
                 else:
                     raise
             else:
                 raise
 
-        if response.usage and response.usage.prompt_tokens:
-            last_prompt_tokens = response.usage.prompt_tokens
-        if usage_stats is not None and response.usage is not None:
-            usage_stats.update(response.usage)
+        if usage and getattr(usage, "prompt_tokens", None):
+            last_prompt_tokens = int(usage.prompt_tokens)
+        if usage_stats is not None and usage is not None:
+            usage_stats.update(usage)
 
-        assistant_msg = response.choices[0].message
-        messages.append(_assistant_msg_to_dict(assistant_msg))
+        messages.append(assistant_dict)
 
-        if not assistant_msg.tool_calls:
-            return (assistant_msg.content or "").strip(), messages, last_prompt_tokens
+        tool_calls = assistant_dict.get("tool_calls") or []
+        if not tool_calls:
+            return (assistant_dict.get("content") or "").strip(), messages, last_prompt_tokens
 
-        for tc in assistant_msg.tool_calls:
-            if tc.function.name != "ipython":
-                result_text = f"Unknown tool: {tc.function.name}. Only `ipython` is available."
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_text})
+        for tc in tool_calls:
+            fn_name = tc["function"]["name"]
+            tc_id = tc["id"]
+            if fn_name != "ipython":
+                result_text = f"Unknown tool: {fn_name}. Only `ipython` is available."
+                messages.append({"role": "tool", "tool_call_id": tc_id, "content": result_text})
                 continue
 
             try:
-                args = json.loads(tc.function.arguments or "{}")
+                args = json.loads(tc["function"]["arguments"] or "{}")
                 code = args.get("code", "")
             except json.JSONDecodeError:
-                code = tc.function.arguments or ""
+                code = tc["function"]["arguments"] or ""
 
             if on_tool_call:
                 on_tool_call(code)
 
-            cell_res = kernel.exec_cell(code)
+            if on_status:
+                on_status("Running ipython...")
+            try:
+                cell_res = kernel.exec_cell(code)
+            finally:
+                if on_status:
+                    on_status(None)
             if on_tool_result:
                 on_tool_result(cell_res)
 
             messages.append(
                 {
                     "role": "tool",
-                    "tool_call_id": tc.id,
+                    "tool_call_id": tc_id,
                     "content": cell_res.format_for_model(),
                 }
             )
