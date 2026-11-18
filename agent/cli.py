@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import argparse
 import os
+import queue
+import select
 import sys
+import termios
 import threading
 import time
+import tty
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -46,7 +50,7 @@ from agent.images import (
     load_image_file,
 )
 from agent.kernel_client import CellResult, KernelClient
-from agent.loop import TurnUsage, agent_loop, format_bash_done_events
+from agent.loop import TurnAborted, TurnUsage, agent_loop, format_bash_done_events
 from agent.mcp_client import (
     add_mcp_server,
     default_mcp_config_path,
@@ -124,6 +128,96 @@ def render_markdown_block(target: Console, block: str) -> Text | None:
     if not rendered:
         return None
     return Text("\n").join(rendered)
+
+
+class _MidTurnInputWatcher:
+    """Listens for Esc (abort) and typed steering lines while a turn is executing."""
+
+    def __init__(
+        self,
+        abort_event: threading.Event,
+        steering_queue: queue.Queue[str],
+        *,
+        on_abort: Callable[[], None] | None = None,
+        on_queued: Callable[[str], None] | None = None,
+    ) -> None:
+        self._abort_event = abort_event
+        self._steering_queue = steering_queue
+        self._on_abort = on_abort
+        self._on_queued = on_queued
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._fd: int | None = None
+        self._old_attrs: list[Any] | None = None
+
+    def __enter__(self) -> _MidTurnInputWatcher:
+        if not sys.stdin.isatty():
+            return self
+        try:
+            self._fd = sys.stdin.fileno()
+            self._old_attrs = termios.tcgetattr(self._fd)
+            tty.setcbreak(self._fd)
+        except Exception:
+            self._fd = None
+            self._old_attrs = None
+            return self
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=0.3)
+        if self._fd is not None and self._old_attrs is not None:
+            try:
+                termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old_attrs)
+            except Exception:
+                pass
+
+    def _run(self) -> None:
+        assert self._fd is not None
+        buf: list[str] = []
+        while not self._stop.is_set():
+            try:
+                ready, _, _ = select.select([self._fd], [], [], 0.05)
+            except Exception:
+                return
+            if not ready:
+                continue
+            try:
+                raw = os.read(self._fd, 1)
+            except OSError:
+                return
+            if not raw:
+                return
+            ch = raw.decode("utf-8", errors="ignore")
+            if ch == "\x1b":
+                # Distinguish standalone Esc from terminal escape sequences (arrows, etc.)
+                more, _, _ = select.select([self._fd], [], [], 0.05)
+                if not more:
+                    self._abort_event.set()
+                    if self._on_abort:
+                        self._on_abort()
+                    return
+                # Drain rest of escape sequence
+                while select.select([self._fd], [], [], 0.005)[0]:
+                    os.read(self._fd, 16)
+                continue
+            if ch in ("\r", "\n"):
+                msg = "".join(buf).strip()
+                buf.clear()
+                if msg:
+                    self._steering_queue.put(msg)
+                    if self._on_queued:
+                        self._on_queued(msg)
+                continue
+            if ch in ("\x7f", "\x08"):
+                if buf:
+                    buf.pop()
+                continue
+            if ch >= " ":
+                buf.append(ch)
 
 
 class BlockPrinter:
@@ -915,7 +1009,13 @@ def main() -> None:
         else:
             cell_group.add(len(cell_history), code, res, duration)
 
-    def _run_turn(turn_usage: TurnUsage | None = None) -> tuple[str, list[dict[str, Any]], int]:
+    def _run_turn(
+        turn_usage: TurnUsage | None = None,
+        *,
+        abort_event: threading.Event | None = None,
+        steering_queue: queue.Queue[str] | None = None,
+        on_steering: Callable[[str], None] | None = None,
+    ) -> tuple[str, list[dict[str, Any]], int]:
         streamed_any[0] = False
         printer.reset()
         try:
@@ -937,6 +1037,9 @@ def main() -> None:
                 usage_stats=turn_usage,
                 initial_prompt_tokens=turn_usage.prompt_tokens if turn_usage else 0,
                 effort=effort,
+                abort_event=abort_event,
+                steering_queue=steering_queue,
+                on_steering=on_steering,
             )
         finally:
             _on_status(None)
@@ -1023,8 +1126,30 @@ def main() -> None:
 
         def _execute_interactive_turn() -> None:
             nonlocal messages, total_elapsed_s, turn_count
+            abort_event = threading.Event()
+            steering_queue: queue.Queue[str] = queue.Queue()
+
+            def _on_queued(text: str) -> None:
+                preview = text[:60] + ("..." if len(text) > 60 else "")
+                printer.block(Text(f"[queued] {preview}", style="dim cyan"))
+
+            def _on_steering(text: str) -> None:
+                preview = text[:60] + ("..." if len(text) > 60 else "")
+                printer.block(Text(f"[steering] {preview}", style="cyan"))
+
             t0 = time.monotonic()
-            _, messages, tokens = _run_turn(turn_usage=usage_stats)
+            with _MidTurnInputWatcher(
+                abort_event,
+                steering_queue,
+                on_abort=kernel.interrupt,
+                on_queued=_on_queued,
+            ):
+                _, messages, tokens = _run_turn(
+                    turn_usage=usage_stats,
+                    abort_event=abort_event,
+                    steering_queue=steering_queue,
+                    on_steering=_on_steering,
+                )
             turn_elapsed = time.monotonic() - t0
             total_elapsed_s += turn_elapsed
             turn_count += 1
@@ -1075,6 +1200,10 @@ def main() -> None:
                 messages.append({"role": "user", "content": notice})
                 try:
                     _execute_interactive_turn()
+                except TurnAborted:
+                    kernel.interrupt()
+                    _persist()
+                    console.print("\n[yellow]Aborted (Esc).[/yellow]")
                 except KeyboardInterrupt:
                     kernel.interrupt()
                     console.print("\n[yellow]Interrupted.[/yellow]")
@@ -1314,6 +1443,10 @@ def main() -> None:
             messages.append({"role": "user", "content": build_user_content(user_input, attached_images)})
             try:
                 _execute_interactive_turn()
+            except TurnAborted:
+                kernel.interrupt()
+                _persist()
+                console.print("\n[yellow]Aborted (Esc).[/yellow]")
             except KeyboardInterrupt:
                 kernel.interrupt()
                 console.print("\n[yellow]Interrupted.[/yellow]")

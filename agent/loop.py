@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import queue
+import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -12,6 +14,10 @@ from openai import BadRequestError, OpenAI
 
 from agent.compact import compact_messages
 from agent.kernel_client import CellResult, KernelClient
+
+class TurnAborted(Exception):
+    """Raised when the user aborts an active turn (e.g., by pressing Esc)."""
+
 
 @dataclasses.dataclass
 class TurnUsage:
@@ -156,8 +162,12 @@ def _call_model(
     effort: str | None = None,
     on_status: Callable[[str | None], None] | None,
     on_text_delta: Callable[[str], None] | None,
+    abort_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], Any]:
     """Call chat completions (streaming or non-streaming) and return (assistant_dict, usage)."""
+    if abort_event is not None and abort_event.is_set():
+        raise TurnAborted()
+
     extra: dict[str, Any] = {}
     if effort:
         extra["reasoning_effort"] = effort
@@ -185,10 +195,13 @@ def _call_model(
         finally:
             if on_status:
                 on_status(None)
+        if abort_event is not None and abort_event.is_set():
+            raise TurnAborted()
         return _assistant_msg_to_dict(response.choices[0].message), response.usage
 
     if on_status:
         on_status("Thinking...")
+    stream_done = threading.Event()
     try:
         try:
             stream_resp = client.chat.completions.create(
@@ -215,12 +228,28 @@ def _call_model(
             else:
                 raise
 
+        if abort_event is not None:
+            def _watch_abort() -> None:
+                while not stream_done.is_set():
+                    if abort_event.wait(timeout=0.05):
+                        try:
+                            close_fn = getattr(stream_resp, "close", None)
+                            if callable(close_fn):
+                                close_fn()
+                        except Exception:
+                            pass
+                        return
+
+            threading.Thread(target=_watch_abort, daemon=True).start()
+
         content_parts: list[str] = []
         tool_calls_acc: dict[int, dict[str, str]] = {}
         usage: Any = None
         status_cleared = False
 
         for chunk in stream_resp:
+            if abort_event is not None and abort_event.is_set():
+                raise TurnAborted()
             if getattr(chunk, "usage", None) is not None:
                 usage = chunk.usage
             choices = getattr(chunk, "choices", None) or []
@@ -254,7 +283,12 @@ def _call_model(
                         entry["name"] += fn.name
                     if getattr(fn, "arguments", None):
                         entry["arguments"] += fn.arguments
+    except Exception:
+        if abort_event is not None and abort_event.is_set():
+            raise TurnAborted()
+        raise
     finally:
+        stream_done.set()
         if on_status:
             on_status(None)
 
@@ -277,6 +311,29 @@ def _call_model(
     return assistant_dict, usage
 
 
+def _drain_steering(
+    steering_queue: queue.Queue[str] | None,
+    messages: list[dict[str, Any]],
+    on_steering: Callable[[str], None] | None = None,
+) -> list[str]:
+    """Drain any mid-turn user steering messages and append them to `messages`."""
+    if steering_queue is None:
+        return []
+    injected: list[str] = []
+    while True:
+        try:
+            text = steering_queue.get_nowait().strip()
+        except queue.Empty:
+            break
+        if not text:
+            continue
+        messages.append({"role": "user", "content": text})
+        injected.append(text)
+        if on_steering:
+            on_steering(text)
+    return injected
+
+
 def agent_loop(
     client: OpenAI,
     model: str,
@@ -297,6 +354,9 @@ def agent_loop(
     usage_stats: TurnUsage | None = None,
     initial_prompt_tokens: int = 0,
     effort: str | None = None,
+    abort_event: threading.Event | None = None,
+    steering_queue: queue.Queue[str] | None = None,
+    on_steering: Callable[[str], None] | None = None,
 ) -> tuple[str, list[dict[str, Any]], int]:
     """Run one turn of the agent loop until the model stops calling tools.
 
@@ -306,6 +366,9 @@ def agent_loop(
     compact_threshold = max(4096, max_context_tokens - compact_reserve_tokens)
 
     while True:
+        if abort_event is not None and abort_event.is_set():
+            raise TurnAborted()
+
         notice = drain_bash_events(kernel, messages)
         if notice and on_bash_notice:
             on_bash_notice(notice)
@@ -327,6 +390,7 @@ def agent_loop(
                 effort=effort,
                 on_status=on_status,
                 on_text_delta=on_text_delta,
+                abort_event=abort_event,
             )
         except BadRequestError as exc:
             err_msg = str(exc).lower()
@@ -346,6 +410,7 @@ def agent_loop(
                         effort=effort,
                         on_status=on_status,
                         on_text_delta=on_text_delta,
+                        abort_event=abort_event,
                     )
                 else:
                     raise
@@ -361,6 +426,8 @@ def agent_loop(
 
         tool_calls = assistant_dict.get("tool_calls") or []
         if not tool_calls:
+            if _drain_steering(steering_queue, messages, on_steering=on_steering):
+                continue
             return (assistant_dict.get("content") or "").strip(), messages, last_prompt_tokens
 
         parsed_calls: list[tuple[str, str, str | None]] = []
@@ -390,16 +457,17 @@ def agent_loop(
                     futures = {i: pool.submit(kernel.exec_cell, parsed_calls[i][2] or "") for i in ipython_indices}
                     for i in ipython_indices:
                         results_by_idx[i] = futures[i].result()
-            except KeyboardInterrupt:
+            except (KeyboardInterrupt, TurnAborted) as exc:
                 if on_status:
                     on_status(None)
                 kernel.interrupt()
+                marker = "[aborted by user]" if isinstance(exc, TurnAborted) else "[interrupted by user]"
                 for rem_tc in tool_calls:
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": rem_tc["id"],
-                            "content": "[interrupted by user]",
+                            "content": marker,
                         }
                     )
                 raise
@@ -442,17 +510,18 @@ def agent_loop(
                     on_status("Running ipython...")
                 try:
                     cell_res = kernel.exec_cell(code)
-                except KeyboardInterrupt:
+                except (KeyboardInterrupt, TurnAborted) as exc:
                     if on_status:
                         on_status(None)
                     kernel.interrupt()
+                    marker = "[aborted by user]" if isinstance(exc, TurnAborted) else "[interrupted by user]"
                     # Keep message history valid so the next turn never has orphaned tool_calls.
                     for rem_tc in tool_calls[idx:]:
                         messages.append(
                             {
                                 "role": "tool",
                                 "tool_call_id": rem_tc["id"],
-                                "content": "[interrupted by user]",
+                                "content": marker,
                             }
                         )
                     raise
@@ -469,3 +538,7 @@ def agent_loop(
                         "content": cell_res.format_for_model(),
                     }
                 )
+
+        if abort_event is not None and abort_event.is_set():
+            raise TurnAborted()
+        _drain_steering(steering_queue, messages, on_steering=on_steering)

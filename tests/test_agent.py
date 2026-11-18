@@ -188,3 +188,84 @@ def test_turn_usage_telemetry() -> None:
     assert stats.total_prompt_tokens == 1500
     assert stats.total_cached_tokens == 750
     assert stats.cache_hit_rate == 0.0
+
+
+def test_agent_loop_abort_event(tmp_path: Path) -> None:
+    import pytest
+    import queue
+    import threading
+    from types import SimpleNamespace
+    from agent.loop import TurnAborted, agent_loop
+
+    abort_event = threading.Event()
+    abort_event.set()
+
+    class _DummyCompletions:
+        def create(self, **kwargs: object) -> object:
+            raise AssertionError("Should not call API when already aborted")
+
+    dummy_client = SimpleNamespace(chat=SimpleNamespace(completions=_DummyCompletions()))
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        messages = [{"role": "user", "content": "hi"}]
+        with pytest.raises(TurnAborted):
+            agent_loop(
+                dummy_client,  # type: ignore[arg-type]
+                "m",
+                "sys",
+                messages,
+                kernel,
+                stream=False,
+                abort_event=abort_event,
+                steering_queue=queue.Queue(),
+            )
+    finally:
+        kernel.close()
+
+
+def test_agent_loop_steering_queue(tmp_path: Path) -> None:
+    import pytest
+    import queue
+    from types import SimpleNamespace
+    from agent.loop import agent_loop
+
+    steering_q: queue.Queue[str] = queue.Queue()
+    seen_steering: list[str] = []
+    calls = [0]
+
+    class _DummyCompletions:
+        def create(self, **kwargs: object) -> object:
+            calls[0] += 1
+            if calls[0] == 1:
+                # Queue a steering message mid-turn before returning first answer
+                steering_q.put("Actually check bar too")
+                msg = SimpleNamespace(content="First step done", tool_calls=None)
+            else:
+                msg = SimpleNamespace(content="Checked bar as well", tool_calls=None)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=msg)],
+                usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, prompt_tokens_details=None),
+            )
+
+    dummy_client = SimpleNamespace(chat=SimpleNamespace(completions=_DummyCompletions()))
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        messages = [{"role": "user", "content": "check foo"}]
+        answer, updated, _ = agent_loop(
+            dummy_client,  # type: ignore[arg-type]
+            "m",
+            "sys",
+            messages,
+            kernel,
+            stream=False,
+            steering_queue=steering_q,
+            on_steering=seen_steering.append,
+        )
+        assert answer == "Checked bar as well"
+        assert calls[0] == 2
+        assert seen_steering == ["Actually check bar too"]
+        assert any(m.get("role") == "user" and m.get("content") == "Actually check bar too" for m in updated)
+    finally:
+        kernel.close()
