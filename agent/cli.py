@@ -26,6 +26,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import Window
 from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.markup import escape
@@ -256,16 +257,26 @@ class BlockPrinter:
 printer = BlockPrinter(console)
 
 
+def _render_gutter_block(title: str, content: str, *, title_style: str = "dim", bar_style: str = "dim") -> None:
+    """Render a borderless left-gutter block (fx-style, no Panel box)."""
+    out = Text()
+    out.append("│ ", style=bar_style)
+    out.append(title, style=title_style)
+    for line in content.rstrip("\n").splitlines() or [""]:
+        out.append("\n│ ", style=bar_style)
+        out.append(line)
+    printer.block(out)
+
+
 def _render_tool_call(code: str) -> None:
-    syntax = Syntax(code.rstrip(), "python", theme="monokai", line_numbers=False)
-    printer.block(Panel(syntax, title="[bold cyan]ipython[/bold cyan]", border_style="cyan"))
+    _render_gutter_block("ipython", code)
 
 
 def _render_tool_result(res: CellResult) -> None:
     text = res.format_for_model()
-    style = "green" if res.ok else "red"
-    title = "[bold green]out[/bold green]" if res.ok else "[bold red]error[/bold red]"
-    printer.block(Panel(Text(text), title=title, border_style=style))
+    title = "out" if res.ok else "error"
+    style = "dim" if res.ok else "red"
+    _render_gutter_block(title, text, title_style=style, bar_style=style)
 
 
 def format_compact_cell_summary(
@@ -288,23 +299,23 @@ def format_compact_cell_summary(
             if len(out_lines) > 1
             else (out_lines[0][:50] if out_lines else "no output")
         )
-        return f"✔ [#{index}] {action} ({len(code_lines)}L: {code_preview}) → {out_summary} ({duration:.2f}s)"
+        return f"· #{index} · {action} ({len(code_lines)}L: {code_preview}) · {out_summary} · {duration:.2f}s"
     err_lines = [ln.strip() for ln in (res.stderr or out_text).splitlines() if ln.strip()]
     err_preview = err_lines[-1][:70] if err_lines else "error"
-    return f"✖ [#{index}] {action} ({len(code_lines)}L: {code_preview}) → {err_preview} ({duration:.2f}s)"
+    return f"× #{index} · {action} ({len(code_lines)}L: {code_preview}) · {err_preview} · {duration:.2f}s"
 
 
 def _render_compaction(summarized: int, kept: int) -> None:
     printer.block(
         Text(
-            f"[compact] Summarized {summarized} older messages; kept {kept} recent messages and Python kernel state.",
-            style="yellow",
+            f"· compact · summarized {summarized} older messages · kept {kept} recent",
+            style="dim",
         )
     )
 
 
 def _render_bash_notice(notice: str) -> None:
-    printer.block(Panel(Text(notice), title="[bold magenta]harness notice[/bold magenta]", border_style="magenta"))
+    _render_gutter_block("notice", notice)
 
 
 def format_grouped_cell_summary(
@@ -325,7 +336,7 @@ def format_grouped_cell_summary(
     failed = [(idx, res) for idx, _, res, _ in entries if not res.ok]
     if not failed:
         return (
-            f"✔ [#{start_idx}..#{end_idx}] {action} ({len(entries)} cells, {total_dur:.2f}s) — /expand {start_idx}..{end_idx}",
+            f"· #{start_idx}..#{end_idx} · {action} · {len(entries)} cells · {total_dur:.2f}s · /expand {start_idx}..{end_idx}",
             True,
         )
     last_idx, last_res = failed[-1]
@@ -333,8 +344,8 @@ def format_grouped_cell_summary(
     err_lines = [ln.strip() for ln in (last_res.stderr or out_text).splitlines() if ln.strip()]
     err_preview = err_lines[-1][:60] if err_lines else "error"
     return (
-        f"✖ [#{start_idx}..#{end_idx}] {action} "
-        f"({len(entries)} cells, {len(failed)} failed, last #{last_idx}: {err_preview}) ({total_dur:.2f}s) — /expand {last_idx}",
+        f"× #{start_idx}..#{end_idx} · {action} · "
+        f"{len(entries)} cells, {len(failed)} failed (last #{last_idx}: {err_preview}) · {total_dur:.2f}s · /expand {last_idx}",
         False,
     )
 
@@ -353,7 +364,7 @@ class CellGroupBuffer:
             return
         summary, all_ok = format_grouped_cell_summary(self.entries)
         self.entries.clear()
-        printer.block(Text(summary, style="dim green" if all_ok else "red"))
+        printer.block(Text(summary, style="dim" if all_ok else "red"))
 
 
 def _parse_expand_range(arg: str, total: int) -> tuple[int, int]:
@@ -521,13 +532,13 @@ def _fmt_stopwatch(elapsed: float) -> str:
 
 def _format_turn_timing(turn_seconds: float, total_seconds: float, turn_count: int) -> str:
     unit = "turn" if turn_count == 1 else "turns"
-    return f"Turn took {_fmt_duration(turn_seconds)} (Total time {_fmt_duration(total_seconds)} · {turn_count} {unit})"
+    return f"{_fmt_duration(turn_seconds)} · total {_fmt_duration(total_seconds)} ({turn_count} {unit})"
 
 
 def _format_turn_footer(usage: TurnUsage, max_context_tokens: int) -> str:
     pct = usage.context_pct(max_context_tokens)
     cache_pct = usage.cache_hit_rate * 100.0
-    return f"(ctx: {_fmt_k(usage.prompt_tokens)}/{_fmt_k(max_context_tokens)} ({pct:.1f}%) | cache: {cache_pct:.0f}%)"
+    return f"ctx {_fmt_k(usage.prompt_tokens)}/{_fmt_k(max_context_tokens)} ({pct:.1f}%) · cache {cache_pct:.0f}%"
 
 
 def _short_path(path: str | Path) -> str:
@@ -556,14 +567,14 @@ def _format_toolbar(
     cache_pct = usage.cache_hit_rate * 100.0
     model_label = f"{model} ({effort})" if effort else model
     parts = [
-        f" {model_label}",
+        model_label,
         _short_path(workspace),
         f"ctx:{_fmt_k(usage.prompt_tokens)}/{_fmt_k(max_context_tokens)} ({pct:.1f}%)",
         f"cache:{cache_pct:.0f}%",
     ]
     if bg_count > 0:
         parts.append(f"bg:{bg_count}")
-    return " | ".join(parts) + " "
+    return " · ".join(parts)
 
 
 def _build_client(
@@ -1056,9 +1067,12 @@ def _execute_interactive_turn(rt: _CLIRuntime) -> None:
     rt.total_elapsed_s += turn_elapsed
     rt.turn_count += 1
     rt.persist()
-    printer.block(Text(_format_turn_timing(turn_elapsed, rt.total_elapsed_s, rt.turn_count), style="dim"))
+    timing = _format_turn_timing(turn_elapsed, rt.total_elapsed_s, rt.turn_count)
     if tokens:
-        printer.block(Text(_format_turn_footer(rt.usage_stats, rt.max_context_tokens), style="dim"))
+        footer = f"{timing} · {_format_turn_footer(rt.usage_stats, rt.max_context_tokens)}"
+    else:
+        footer = timing
+    printer.block(Text(footer, style="dim"))
 
 
 def _handle_slash_command(rt: _CLIRuntime, user_input: str) -> bool | None:
@@ -1297,7 +1311,7 @@ def _handle_slash_command(rt: _CLIRuntime, user_input: str) -> bool | None:
 
 
 def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
-    console.print(Text("quartz", style="bold blue"))
+    console.print(Text.assemble(("quartz", "bold"), (" v0.1.0 · Run /help for commands", "dim")))
 
     if resumed:
         _replay_session(rt.messages, rt.cell_history, verbose=rt.verbose)
@@ -1321,12 +1335,14 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
 
     history_path = Path.home() / ".quartz" / "history"
     history_path.parent.mkdir(parents=True, exist_ok=True)
+    prompt_style = Style.from_dict({"bottom-toolbar": "noreverse ansibrightblack"})
     prompt_session: PromptSession[str] = PromptSession(
         history=FileHistory(str(history_path)),
         completer=AgentCompleter(rt.cwd),
         complete_while_typing=True,
         key_bindings=kb,
-        prompt_continuation="... ",
+        prompt_continuation="▌ ",
+        style=prompt_style,
     )
 
     while True:
@@ -1355,7 +1371,7 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
                 toolbar = _format_toolbar(
                     rt.model, rt.effort, rt.cwd, rt.usage_stats, rt.max_context_tokens, bg_count
                 )
-                user_input = prompt_session.prompt("\n> ", bottom_toolbar=toolbar).strip()
+                user_input = prompt_session.prompt("\n▌ ", bottom_toolbar=toolbar).strip()
             except (EOFError, KeyboardInterrupt):
                 console.print("\n[dim]Exiting.[/dim]")
                 break

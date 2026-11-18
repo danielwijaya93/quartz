@@ -46,11 +46,11 @@ def test_at_file_autocomplete(tmp_path: Path) -> None:
 def test_compact_cell_summary() -> None:
     ok_res = CellResult(ok=True, stdout="line1\nline2\nline3\n", stderr="", result=None)
     s1 = format_compact_cell_summary(1, "x = 1\nprint('line1')\nprint('line2')", ok_res, 0.12)
-    assert "✔ [#1] Run Python (3L: x = 1) → 3 lines out (0.12s)" == s1
+    assert "· #1 · Run Python (3L: x = 1) · 3 lines out · 0.12s" == s1
 
     err_res = CellResult(ok=False, stdout="", stderr="Traceback...\nNameError: name 'foo' is not defined\n", result=None)
     s2 = format_compact_cell_summary(2, "foo", err_res, 0.04)
-    assert "✖ [#2] Run Python (1L: foo) → NameError: name 'foo' is not defined (0.04s)" == s2
+    assert "× #2 · Run Python (1L: foo) · NameError: name 'foo' is not defined · 0.04s" == s2
 
 
 def test_streaming_agent_loop_with_tool_call(tmp_path: Path) -> None:
@@ -367,7 +367,7 @@ def test_cell_summary_chip_keeps_cell_index(monkeypatch: pytest.MonkeyPatch) -> 
     assert lines == [
         "Running a cell now.",
         "",
-        "✔ [#1] Run Python (1L: print('hello')) → hello (0.01s)",
+        "· #1 · Run Python (1L: print('hello')) · hello · 0.01s",
     ]
 
 
@@ -390,7 +390,7 @@ def test_grouped_cell_summary_single_and_multi() -> None:
         [(1, "x = 1", CellResult(True, "", "", None), 0.02)]
     )
     assert ok1 is True
-    assert single == "✔ [#1] Run Python (1L: x = 1) → no output (0.02s)"
+    assert single == "· #1 · Run Python (1L: x = 1) · no output · 0.02s"
 
     multi, ok_multi = cli.format_grouped_cell_summary(
         [
@@ -400,7 +400,7 @@ def test_grouped_cell_summary_single_and_multi() -> None:
         ]
     )
     assert ok_multi is True
-    assert multi == "✔ [#1..#3] Run Python (3 cells, 0.50s) — /expand 1..3"
+    assert multi == "· #1..#3 · Run Python · 3 cells · 0.50s · /expand 1..3"
 
 
 def test_grouped_cell_summary_with_failure() -> None:
@@ -412,7 +412,7 @@ def test_grouped_cell_summary_with_failure() -> None:
         ]
     )
     assert ok is False
-    assert "✖ [#1..#3] Run Python (3 cells, 1 failed, last #2: ZeroDivisionError: division by zero) (0.20s)" in summary
+    assert "× #1..#3 · Run Python · 3 cells, 1 failed (last #2: ZeroDivisionError: division by zero) · 0.20s" in summary
     assert "/expand 2" in summary
 
 
@@ -428,7 +428,7 @@ def test_cell_group_buffer_flushes_once_per_run(monkeypatch: pytest.MonkeyPatch)
     cli.printer.markdown("Done.")
 
     assert _visible_lines(buf.getvalue()) == [
-        "✔ [#1..#5] Run Python (5 cells, 0.50s) — /expand 1..5",
+        "· #1..#5 · Run Python · 5 cells · 0.50s · /expand 1..5",
         "",
         "Done.",
     ]
@@ -496,15 +496,15 @@ def test_toolbar_shows_workspace_and_not_session(monkeypatch: pytest.MonkeyPatch
 
     with_bg = cli._format_toolbar("gpt-5", None, "/home/tester/proj", usage, 200_000, 2)
     assert "bg:2" in with_bg
-    assert "gpt-5 |" in with_bg
+    assert "gpt-5 ·" in with_bg
 
 
 def test_format_turn_timing_and_duration() -> None:
     assert cli._fmt_duration(0.42) == "0.4s"
     assert cli._fmt_duration(7.1) == "7s"
     assert cli._fmt_duration(72.0) == "1m 12s"
-    assert cli._format_turn_timing(7.0, 7.0, 1) == "Turn took 7s (Total time 7s · 1 turn)"
-    assert cli._format_turn_timing(12.2, 72.0, 3) == "Turn took 12s (Total time 1m 12s · 3 turns)"
+    assert cli._format_turn_timing(7.0, 7.0, 1) == "7s · total 7s (1 turn)"
+    assert cli._format_turn_timing(12.2, 72.0, 3) == "12s · total 1m 12s (3 turns)"
 
 
 def test_format_thought_duration_and_stopwatch() -> None:
@@ -579,5 +579,5 @@ def test_run_turn_thought_line_separate_from_grouped_cells(
     lines = [ln.strip() for ln in buf.getvalue().splitlines() if ln.strip()]
     assert len(lines) == 3
     assert lines[0].startswith("Thought for ")
-    assert lines[1].startswith("✔ [#1..#2] ")
+    assert lines[1].startswith("· #1..#2 · ")
     assert lines[2] == "All done."
