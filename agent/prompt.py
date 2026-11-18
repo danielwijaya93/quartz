@@ -17,7 +17,7 @@ You have one tool, `ipython`: a persistent CPython REPL with top-level `await`. 
 ## REPL Functions
 - `bash(command, timeout=600) -> BashHandle`: runs a shell command in the background; `await handle -> BashResult(.exit_code, .output, .duration)`. Also `.pid`, `.running`, `.tail(n=50)`, `.output()`, `.poll()`, `.kill()`. Commands outliving a cell emit `[bash-done]`.
 - `ls(path=".")`, `find(pattern="*", path=".", limit=200)`, `rg(pattern, path=".", glob=None, max_hits=100)`
-- `read(path, start=1, end=200)`, `edit(path, old, new)`, `write(path, content)`, `gather(*coros)`
+- `read(path, start=1, end=200)`, `edit(path, old, new)`, `write(path, content)`, `view_image(path)`, `gather(*coros)`
 
 ## Rules
 - Batch independent work into one cell. Multiple `ipython` calls in one message run in parallel; put dependent steps in one cell.

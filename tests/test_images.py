@@ -138,3 +138,77 @@ def test_compact_serialize_strips_base64() -> None:
     summary = _serialize_for_summary([{"role": "user", "content": build_user_content("See img", [att])}])
     assert "[user]: See img\n[image]" in summary
     assert b64 not in summary
+
+
+def test_mcp_unwrap_tool_result_collects_images() -> None:
+    from agent.mcp_client import _unwrap_tool_result
+
+    b64 = base64.b64encode(_TINY_PNG).decode("ascii")
+    mcp_res = SimpleNamespace(
+        isError=False,
+        structuredContent=None,
+        content=[
+            SimpleNamespace(text="Screenshot taken"),
+            SimpleNamespace(type="image", mimeType="image/png", data=b64),
+        ],
+    )
+    sink: list[dict[str, str]] = []
+    unwrapped = _unwrap_tool_result(mcp_res, image_sink=sink)
+    assert unwrapped == ["Screenshot taken", {"type": "image", "mimeType": "image/png"}]
+    assert sink == [{"mime_type": "image/png", "data": b64}]
+
+
+def test_kernel_view_image_and_loop_forwards_mid_turn(tmp_path: Path) -> None:
+    from agent.kernel_client import KernelClient
+    from agent.loop import agent_loop
+
+    img_path = tmp_path / "shot.png"
+    img_path.write_bytes(_TINY_PNG)
+
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        res = kernel.exec_cell("view_image('shot.png')")
+        assert res.ok
+        assert len(res.images) == 1
+        assert res.images[0]["mime_type"] == "image/png"
+        assert base64.b64decode(res.images[0]["data"]) == _TINY_PNG
+
+        calls = [0]
+        seen_messages: list[list[dict[str, object]]] = []
+
+        class _DummyCompletions:
+            def create(self, **kwargs: object) -> object:
+                calls[0] += 1
+                seen_messages.append(list(kwargs["messages"]))  # type: ignore[arg-type]
+                if calls[0] == 1:
+                    tc = SimpleNamespace(
+                        id="call_1",
+                        function=SimpleNamespace(name="ipython", arguments='{"code": "view_image(\'shot.png\')"}'),
+                    )
+                    msg = SimpleNamespace(content=None, tool_calls=[tc])
+                else:
+                    msg = SimpleNamespace(content="I see the PNG.", tool_calls=None)
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=msg)],
+                    usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, prompt_tokens_details=None),
+                )
+
+        dummy_client = SimpleNamespace(chat=SimpleNamespace(completions=_DummyCompletions()))
+        answer, _, _ = agent_loop(
+            dummy_client,  # type: ignore[arg-type]
+            "m",
+            "sys",
+            [{"role": "user", "content": "check shot.png"}],
+            kernel,
+            stream=False,
+        )
+        assert answer == "I see the PNG."
+        assert calls[0] == 2
+        second_call_msgs = seen_messages[1]
+        img_msg = second_call_msgs[-1]
+        assert img_msg["role"] == "user"
+        assert isinstance(img_msg["content"], list)
+        assert img_msg["content"][1]["type"] == "image_url"
+    finally:
+        kernel.close()

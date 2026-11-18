@@ -445,6 +445,7 @@ def agent_loop(
             parsed_calls.append((tc_id, fn_name, code))
 
         ipython_indices = [i for i, (_, fn, _) in enumerate(parsed_calls) if fn == "ipython"]
+        step_images: list[dict[str, str]] = []
         if len(ipython_indices) > 1:
             for i in ipython_indices:
                 if on_tool_call:
@@ -486,6 +487,8 @@ def agent_loop(
                     )
                     continue
                 cell_res = results_by_idx[i]
+                if cell_res.images:
+                    step_images.extend(cell_res.images)
                 if on_tool_result:
                     on_tool_result(cell_res)
                 messages.append(
@@ -530,6 +533,8 @@ def agent_loop(
                         on_status(None)
                 if on_tool_result:
                     on_tool_result(cell_res)
+                if cell_res.images:
+                    step_images.extend(cell_res.images)
 
                 messages.append(
                     {
@@ -538,6 +543,23 @@ def agent_loop(
                         "content": cell_res.format_for_model(),
                     }
                 )
+
+        if step_images:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "[tool-images] Attached image(s) from tool output:"},
+                        *[
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{img['mime_type']};base64,{img['data']}"},
+                            }
+                            for img in step_images
+                        ],
+                    ],
+                }
+            )
 
         if abort_event is not None and abort_event.is_set():
             raise TurnAborted()

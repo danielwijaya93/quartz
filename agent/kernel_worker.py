@@ -27,6 +27,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from agent.images import load_image_file
 from agent.mcp_client import MCPManager
 
 MAX_OUTPUT_CHARS = 128_000
@@ -38,6 +39,20 @@ _IGNORE_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache",
 
 _STDOUT_VAR: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar("quartz_stdout", default=None)
 _STDERR_VAR: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar("quartz_stderr", default=None)
+_IMAGES_VAR: contextvars.ContextVar[list[dict[str, str]] | None] = contextvars.ContextVar("quartz_images", default=None)
+
+
+def _record_cell_image(img: dict[str, str]) -> None:
+    sink = _IMAGES_VAR.get()
+    if sink is not None:
+        sink.append(img)
+
+
+def _helper_view_image(path: str) -> str:
+    """Attach an image file from disk so the model can inspect it on the next step."""
+    att = load_image_file(Path(path))
+    _record_cell_image({"mime_type": att.mime_type, "data": att.data_b64})
+    return f"Attached {att.label} ({att.mime_type}) for viewing"
 
 
 class _ContextStreamProxy:
@@ -286,7 +301,7 @@ class KernelWorker:
 
         self._current_cell_id: str | None = None
         self._handles: list[BashHandle] = []
-        self.mcp = MCPManager(cwd=Path.cwd())
+        self.mcp = MCPManager(cwd=Path.cwd(), on_image=_record_cell_image)
 
         if not isinstance(sys.stdout, _ContextStreamProxy):
             sys.stdout = _ContextStreamProxy(_STDOUT_VAR, sys.stdout)  # type: ignore[assignment]
@@ -306,6 +321,7 @@ class KernelWorker:
             "read": _helper_read,
             "edit": _helper_edit,
             "write": _helper_write,
+            "view_image": _helper_view_image,
             "gather": asyncio.gather,
         }
         self._reserved_names = set(self._namespace.keys()) | {"_"}
@@ -349,6 +365,7 @@ class KernelWorker:
         self._current_cell_id = cell_id
         stdout_buf = io.StringIO()
         stderr_buf = io.StringIO()
+        cell_images: list[dict[str, str]] = []
         result_repr: str | None = None
         ok = True
 
@@ -373,6 +390,7 @@ class KernelWorker:
 
             tok_out = _STDOUT_VAR.set(stdout_buf)
             tok_err = _STDERR_VAR.set(stderr_buf)
+            tok_img = _IMAGES_VAR.set(cell_images)
             try:
                 coro = eval(compiled, self._namespace, self._namespace)
                 if inspect.isawaitable(coro):
@@ -386,6 +404,7 @@ class KernelWorker:
             finally:
                 _STDOUT_VAR.reset(tok_out)
                 _STDERR_VAR.reset(tok_err)
+                _IMAGES_VAR.reset(tok_img)
         except KeyboardInterrupt:
             ok = False
             stderr_buf.write("KeyboardInterrupt: cell execution interrupted\n")
@@ -405,6 +424,7 @@ class KernelWorker:
             "stdout": _truncate(stdout_buf.getvalue(), MAX_OUTPUT_CHARS),
             "stderr": _truncate(stderr_buf.getvalue(), MAX_OUTPUT_CHARS),
             "result": result_repr,
+            "images": cell_images,
             "running_bash": sum(1 for h in self._handles if h.running),
         }
 

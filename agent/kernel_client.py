@@ -21,6 +21,7 @@ class CellResult:
     stdout: str
     stderr: str
     result: str | None
+    images: list[dict[str, str]] = dataclasses.field(default_factory=list)
 
     def format_for_model(self) -> str:
         """Format cell output concisely for the LLM tool result."""
@@ -155,6 +156,7 @@ class KernelClient:
             stdout=resp.get("stdout", ""),
             stderr=resp.get("stderr", ""),
             result=resp.get("result"),
+            images=list(resp.get("images") or []),
         )
 
     def list_vars(self, timeout: float = 5.0) -> dict[str, str]:

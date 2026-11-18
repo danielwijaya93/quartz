@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from collections.abc import Callable
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
@@ -134,7 +135,10 @@ def load_mcp_servers(cwd: Path | None = None) -> dict[str, dict[str, Any]]:
     return {name: spec for name, spec in raw.items() if spec.get("enabled", True) is not False}
 
 
-def _unwrap_tool_result(result: Any) -> Any:
+def _unwrap_tool_result(
+    result: Any,
+    image_sink: list[dict[str, str]] | None = None,
+) -> Any:
     """Convert an MCP CallToolResult into plain Python values."""
     if getattr(result, "isError", False):
         texts = [getattr(c, "text", str(c)) for c in (getattr(result, "content", None) or [])]
@@ -150,6 +154,13 @@ def _unwrap_tool_result(result: Any) -> Any:
 
     parsed_items: list[Any] = []
     for item in content:
+        if getattr(item, "type", None) == "image" and getattr(item, "data", None):
+            mime = str(getattr(item, "mimeType", None) or getattr(item, "mime_type", None) or "image/png")
+            data = str(item.data)
+            if image_sink is not None:
+                image_sink.append({"mime_type": mime, "data": data})
+            parsed_items.append({"type": "image", "mimeType": mime})
+            continue
         text = getattr(item, "text", None)
         if text is not None:
             stripped = text.strip()
@@ -171,11 +182,17 @@ def _unwrap_tool_result(result: Any) -> Any:
 class MCPManager:
     """Lazy-connecting MCP client exposed as `mcp` inside the Python REPL."""
 
-    def __init__(self, cwd: Path | None = None) -> None:
+    def __init__(
+        self,
+        cwd: Path | None = None,
+        *,
+        on_image: Callable[[dict[str, str]], None] | None = None,
+    ) -> None:
         self._cwd = (cwd or Path.cwd()).resolve()
         self._stacks: dict[str, AsyncExitStack] = {}
         self._sessions: dict[str, Any] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._on_image = on_image
 
     def _servers(self) -> dict[str, dict[str, Any]]:
         return load_mcp_servers(self._cwd)
@@ -305,7 +322,12 @@ class MCPManager:
         """Call a tool on an MCP server and return the unwrapped Python result."""
         session = await self._get_session(server)
         result = await session.call_tool(tool, arguments or {})
-        return _unwrap_tool_result(result)
+        images: list[dict[str, str]] = []
+        unwrapped = _unwrap_tool_result(result, image_sink=images)
+        if self._on_image is not None:
+            for img in images:
+                self._on_image(img)
+        return unwrapped
 
     async def close(self) -> None:
         """Close all active MCP client sessions."""
