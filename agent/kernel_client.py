@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import dataclasses
 import json
 import os
@@ -50,6 +51,7 @@ class KernelClient:
         self._events_cond = threading.Condition()
         self._ready_event = threading.Event()
         self._reader_thread: threading.Thread | None = None
+        self._atexit_registered = False
 
     def start(self, timeout: float = 10.0) -> None:
         if self._proc is not None and self._proc.poll() is None:
@@ -76,6 +78,9 @@ class KernelClient:
         )
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._reader_thread.start()
+        if not self._atexit_registered:
+            atexit.register(self.close)
+            self._atexit_registered = True
 
         if not self._ready_event.wait(timeout=timeout):
             stderr_out = ""
@@ -212,19 +217,36 @@ class KernelClient:
                 pass
 
     def close(self) -> None:
-        if self._proc is not None and self._proc.poll() is None:
+        proc = self._proc
+        self._proc = None
+        if proc is None:
+            return
+        pid = proc.pid
+        if proc.poll() is None:
             try:
-                if self._proc.stdin:
-                    self._proc.stdin.write(json.dumps({"type": "shutdown"}) + "\n")
-                    self._proc.stdin.flush()
-                self._proc.wait(timeout=2.0)
+                if proc.stdin:
+                    proc.stdin.write(json.dumps({"type": "shutdown"}) + "\n")
+                    proc.stdin.flush()
+                proc.wait(timeout=4.0)
+            except Exception:
+                pass
+        if proc.poll() is None:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+                proc.wait(timeout=1.0)
             except Exception:
                 try:
-                    self._proc.terminate()
-                    self._proc.wait(timeout=2.0)
+                    os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    proc.kill()
                 except Exception:
-                    self._proc.kill()
-        self._proc = None
+                    pass
+                try:
+                    proc.wait(timeout=1.0)
+                except Exception:
+                    pass
 
     def restart(self) -> None:
         self.close()

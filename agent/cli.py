@@ -6,6 +6,7 @@ import argparse
 import os
 import queue
 import select
+import signal
 import sys
 import termios
 import threading
@@ -826,6 +827,14 @@ def main() -> None:
         return
     if len(sys.argv) > 1 and sys.argv[1] == "acp":
         sys.argv[1] = "--acp"
+
+    def _handle_sigterm(_signum: int, _frame: Any) -> None:
+        raise SystemExit(0)
+
+    try:
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+    except (OSError, ValueError):
+        pass
 
     quartz_env = Path.home() / ".quartz" / ".env"
     if quartz_env.is_file():

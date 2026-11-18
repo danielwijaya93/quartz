@@ -269,3 +269,24 @@ def test_agent_loop_steering_queue(tmp_path: Path) -> None:
         assert any(m.get("role") == "user" and m.get("content") == "Actually check bar too" for m in updated)
     finally:
         kernel.close()
+
+
+def test_kernel_close_cleans_up_child_processes(tmp_path: Path) -> None:
+    import os
+    import time
+
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    res = kernel.exec_cell("h = bash('sleep 60'); h.pid")
+    assert res.ok and res.result
+    child_pid = int(res.result)
+    kernel.close()
+
+    # Give OS a moment to reap the terminated child
+    for _ in range(20):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"Child process {child_pid} survived kernel.close()")
