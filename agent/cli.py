@@ -797,7 +797,7 @@ def main() -> None:
         client, provider_name, model, effort = _build_client(
             provider=args.provider, model_override=args.model, effort_override=args.effort
         )
-        system_prompt = build_system_prompt(cwd)
+        system_prompt = build_system_prompt(cwd, headless=bool(args.prompt))
     finally:
         kernel_thread.join()
     if kernel_err:
@@ -835,8 +835,10 @@ def main() -> None:
         active_session.save_messages(messages, compacted=compacted)
         if usage_stats.prompt_tokens > 0 or usage_stats.total_prompt_tokens > 0:
             active_session.save_usage(usage_stats.to_dict())
-        active_session.save_kernel(kernel)
+        if not args.prompt:
+            active_session.save_kernel(kernel)
 
+    plain_output = bool(args.prompt) or not sys.stdout.isatty()
     cell_history: list[tuple[str, CellResult, float]] = []
     pending_cell_code: list[str] = []
     pending_cell_start: list[float] = []
@@ -846,6 +848,8 @@ def main() -> None:
     cell_group = CellGroupBuffer()
 
     def _on_status(label: str | None) -> None:
+        if plain_output:
+            return
         if label is None:
             if active_status:
                 st = active_status.pop()
@@ -867,11 +871,19 @@ def main() -> None:
     def _on_text_delta(chunk: str) -> None:
         cell_group.flush()
         streamed_any[0] = True
-        md_streamer.feed(chunk)
+        if plain_output:
+            sys.stdout.write(chunk)
+            sys.stdout.flush()
+        else:
+            md_streamer.feed(chunk)
 
     def _on_tool_call(code: str) -> None:
         if streamed_any[0]:
-            md_streamer.flush()
+            if plain_output:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+            else:
+                md_streamer.flush()
             streamed_any[0] = False
         pending_cell_code.append(code)
         pending_cell_start.append(time.monotonic())
@@ -914,9 +926,18 @@ def main() -> None:
         finally:
             _on_status(None)
             cell_group.flush()
-            md_streamer.flush()
+            if plain_output:
+                if streamed_any[0]:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+            else:
+                md_streamer.flush()
         if not streamed_any[0] and answer:
-            printer.markdown(answer)
+            if plain_output:
+                sys.stdout.write(answer.rstrip() + "\n")
+                sys.stdout.flush()
+            else:
+                printer.markdown(answer)
         return answer, updated_msgs, tokens
 
     try:
@@ -1272,7 +1293,7 @@ def main() -> None:
             except Exception as exc:
                 console.print(f"[red]Error: {escape(str(exc))}[/red]")
     finally:
-        if messages:
+        if messages and not args.prompt:
             try:
                 active_session.save_kernel(kernel)
             except Exception:

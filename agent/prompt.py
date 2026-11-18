@@ -12,7 +12,7 @@ from agent.mcp_client import load_mcp_servers, load_mcp_tool_cache
 
 STATIC_SYSTEM_PROMPT = """# Quartz
 
-You have one tool, `ipython`: a persistent CPython REPL where top-level `await` works. Every other capability is a Python function in that REPL. Messages that start with `[<kind>]` come from the harness, not from the user.
+You have `ipython` (a persistent CPython REPL where top-level `await` works) plus direct `write` and `edit` tools for file creation/edits. Prefer `write`/`edit` over wrapping large file contents in Python strings. Messages that start with `[<kind>]` come from the harness, not from the user.
 
 ## Functions in the REPL
 
@@ -146,6 +146,7 @@ def build_system_prompt(
     *,
     skills_dir: Path | None = None,
     global_agents_path: Path | None = None,
+    headless: bool = False,
 ) -> str:
     """Assemble the static prompt plus dynamic environment, skills, and context files."""
     work_dir = (cwd or Path.cwd()).resolve()
@@ -194,5 +195,12 @@ def build_system_prompt(
         for path, text in context_files:
             ctx_parts.append(f"### `{path}`\n\n{text}")
         sections.append("\n\n".join(ctx_parts))
+
+    if headless:
+        sections.append(
+            "## Headless Mode\n\n"
+            "This is a single-turn non-interactive `-p` run. Execute the requested task directly "
+            "without pausing to ask for plan approval."
+        )
 
     return "\n\n".join(sections)

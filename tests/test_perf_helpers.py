@@ -7,6 +7,8 @@ from pathlib import Path
 
 from agent.actions import describe_cell_actions
 from agent.kernel_client import KernelClient
+from agent.loop import TOOLS, _exec_file_tool
+from agent.prompt import build_system_prompt
 
 
 def test_kernel_helpers_ls_find_rg_read_edit_write(tmp_path: Path) -> None:
@@ -70,3 +72,27 @@ def test_action_classifier_recognizes_kernel_helpers() -> None:
     assert describe_cell_actions("read('agent/cli.py', 1, 50)") == "Read files"
     assert describe_cell_actions("edit('a.py', 'x', 'y')") == "Edit files"
     assert describe_cell_actions("write('a.py', 'x')") == "Edit files"
+
+
+def test_direct_write_and_edit_tools(tmp_path: Path) -> None:
+    tool_names = {t["function"]["name"] for t in TOOLS}
+    assert {"ipython", "write", "edit"}.issubset(tool_names)
+
+    res_w = _exec_file_tool("write", {"path": "sub/page.html", "content": "<h1>Hi</h1>\n"}, tmp_path)
+    assert res_w.ok
+    assert (tmp_path / "sub" / "page.html").read_text(encoding="utf-8") == "<h1>Hi</h1>\n"
+
+    res_e = _exec_file_tool("edit", {"path": "sub/page.html", "old": "Hi", "new": "Hello"}, tmp_path)
+    assert res_e.ok
+    assert (tmp_path / "sub" / "page.html").read_text(encoding="utf-8") == "<h1>Hello</h1>\n"
+
+    res_miss = _exec_file_tool("edit", {"path": "sub/page.html", "old": "NOPE", "new": "X"}, tmp_path)
+    assert not res_miss.ok
+    assert "not found" in res_miss.stderr
+
+
+def test_headless_system_prompt_flag(tmp_path: Path) -> None:
+    interactive = build_system_prompt(tmp_path, headless=False)
+    headless = build_system_prompt(tmp_path, headless=True)
+    assert "## Headless Mode" not in interactive
+    assert "## Headless Mode" in headless
