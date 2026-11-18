@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
 
+from agent.images import content_to_text
 from agent.kernel_client import CellResult, KernelClient
 from agent.loop import TurnUsage, agent_loop
 from agent.prompt import build_system_prompt
@@ -29,17 +30,33 @@ class _ActiveSession:
     usage: TurnUsage
 
 
-def _extract_prompt_text(prompt: Any) -> str:
+def _extract_prompt_content(prompt: Any) -> str | list[dict[str, Any]]:
     if isinstance(prompt, str):
         return prompt
     if isinstance(prompt, list):
-        parts: list[str] = []
+        parts: list[dict[str, Any]] = []
+        has_image = False
         for block in prompt:
-            if isinstance(block, dict) and block.get("type") == "text":
-                parts.append(str(block.get("text", "")))
-            elif isinstance(block, str):
-                parts.append(block)
-        return "\n".join(p for p in parts if p)
+            if isinstance(block, str):
+                if block:
+                    parts.append({"type": "text", "text": block})
+                continue
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                text = str(block.get("text", ""))
+                if text:
+                    parts.append({"type": "text", "text": text})
+            elif btype == "image":
+                data = str(block.get("data", "")).strip()
+                mime = str(block.get("mimeType") or block.get("mime_type") or "image/png").strip()
+                if data:
+                    has_image = True
+                    parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
+        if not has_image:
+            return "\n".join(p["text"] for p in parts if p.get("text"))
+        return parts
     return str(prompt or "")
 
 
@@ -111,7 +128,10 @@ class ACPServer:
         return {
             "protocolVersion": PROTOCOL_VERSION,
             "agentInfo": {"name": "quartz", "version": "0.1.0"},
-            "agentCapabilities": {"loadSession": True},
+            "agentCapabilities": {
+                "loadSession": True,
+                "promptCapabilities": {"image": True},
+            },
         }
 
     def _handle_session_new(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -175,7 +195,7 @@ class ACPServer:
                     session.id,
                     {
                         "sessionUpdate": "user_message_chunk",
-                        "content": {"type": "text", "text": str(content)},
+                        "content": {"type": "text", "text": content_to_text(content)},
                     },
                 )
             elif role == "assistant":
@@ -196,8 +216,8 @@ class ACPServer:
         if state is None:
             raise KeyError(f"Unknown sessionId: {session_id}")
 
-        prompt_text = _extract_prompt_text(params.get("prompt"))
-        state.messages.append({"role": "user", "content": prompt_text})
+        prompt_content = _extract_prompt_content(params.get("prompt"))
+        state.messages.append({"role": "user", "content": prompt_content})
 
         client, model, effort = self._ensure_client()
         active_tc_ids: list[str] = []

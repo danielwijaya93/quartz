@@ -18,6 +18,7 @@ from agent.google_auth import (
     get_valid_google_credentials,
     refresh_google_credentials,
 )
+from agent.images import parse_data_url
 
 ANTIGRAVITY_SYSTEM_INSTRUCTION = (
     "You are Antigravity, a powerful agentic AI coding assistant designed by the "
@@ -137,7 +138,27 @@ def build_cloudcode_request(
         _flush_tool_parts()
 
         if role == "user":
-            contents.append({"role": "user", "parts": [{"text": str(content or "")}]})
+            if isinstance(content, list):
+                user_parts: list[dict[str, Any]] = []
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    btype = block.get("type")
+                    if btype == "text":
+                        text = str(block.get("text", ""))
+                        if text:
+                            user_parts.append({"text": text})
+                    elif btype == "image_url":
+                        url = str((block.get("image_url") or {}).get("url", ""))
+                        parsed = parse_data_url(url)
+                        if parsed:
+                            mime, b64_data = parsed
+                            user_parts.append({"inlineData": {"mimeType": mime, "data": b64_data}})
+                if not user_parts:
+                    user_parts.append({"text": ""})
+                contents.append({"role": "user", "parts": user_parts})
+            else:
+                contents.append({"role": "user", "parts": [{"text": str(content or "")}]})
         elif role == "assistant":
             parts: list[dict[str, Any]] = []
             if content:

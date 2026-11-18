@@ -36,6 +36,14 @@ from agent.google_auth import (
     login_google_interactive,
 )
 from agent.google_provider import GoogleAntigravityClient
+from agent.images import (
+    ImageAttachment,
+    build_user_content,
+    content_to_text,
+    extract_inline_image_mentions,
+    load_clipboard_image,
+    load_image_file,
+)
 from agent.kernel_client import CellResult, KernelClient
 from agent.loop import TurnUsage, agent_loop, format_bash_done_events
 from agent.mcp_client import (
@@ -198,6 +206,71 @@ def _render_bash_notice(notice: str) -> None:
     printer.block(Panel(Text(notice), title="[bold magenta]harness notice[/bold magenta]", border_style="magenta"))
 
 
+def format_grouped_cell_summary(
+    entries: list[tuple[int, str, CellResult, float]],
+) -> tuple[str, bool]:
+    """Format a 1-line summary for 1 or more consecutive ipython cells.
+
+    Returns (summary_text, all_ok).
+    """
+    if len(entries) == 1:
+        idx, code, res, duration = entries[0]
+        return format_compact_cell_summary(idx, code, res, duration), res.ok
+
+    start_idx = entries[0][0]
+    end_idx = entries[-1][0]
+    total_dur = sum(d for _, _, _, d in entries)
+    failed = [(idx, res) for idx, _, res, _ in entries if not res.ok]
+    if not failed:
+        return (
+            f"✔ [#{start_idx}..#{end_idx}] {len(entries)} ipython cells ({total_dur:.2f}s) — /expand {start_idx}..{end_idx}",
+            True,
+        )
+    last_idx, last_res = failed[-1]
+    out_text = last_res.format_for_model().strip()
+    err_lines = [ln.strip() for ln in (last_res.stderr or out_text).splitlines() if ln.strip()]
+    err_preview = err_lines[-1][:60] if err_lines else "error"
+    return (
+        f"✖ [#{start_idx}..#{end_idx}] {len(entries)} ipython cells "
+        f"({len(failed)} failed, last #{last_idx}: {err_preview}) ({total_dur:.2f}s) — /expand {last_idx}",
+        False,
+    )
+
+
+class CellGroupBuffer:
+    """Buffers consecutive ipython cell results and flushes them as one summary block."""
+
+    def __init__(self) -> None:
+        self.entries: list[tuple[int, str, CellResult, float]] = []
+
+    def add(self, index: int, code: str, res: CellResult, duration: float) -> None:
+        self.entries.append((index, code, res, duration))
+
+    def flush(self) -> None:
+        if not self.entries:
+            return
+        summary, all_ok = format_grouped_cell_summary(self.entries)
+        self.entries.clear()
+        printer.block(Text(summary, style="dim green" if all_ok else "red"))
+
+
+def _parse_expand_range(arg: str, total: int) -> tuple[int, int]:
+    """Parse `/expand` argument (`""`, `"N"`, or `"A..B"`) into inclusive 1-based `(start, end)`."""
+    if not arg:
+        return total, total
+    if ".." in arg:
+        left, right = arg.split("..", 1)
+        start = int(left.strip())
+        end = int(right.strip())
+        if not (1 <= start <= end <= total):
+            raise ValueError
+        return start, end
+    idx = int(arg)
+    if not (1 <= idx <= total):
+        raise ValueError
+    return idx, idx
+
+
 def _render_cell_summary(index: int, code: str, res: CellResult, duration: float) -> None:
     """Print the one-line chip for an executed ipython cell (brackets stay literal)."""
     summary = format_compact_cell_summary(index, code, res, duration)
@@ -312,6 +385,7 @@ def _replay_session(
     import json
 
     printer.reset()
+    cell_group = CellGroupBuffer()
     tool_outputs: dict[str, str] = {
         str(m["tool_call_id"]): str(m.get("content", ""))
         for m in messages
@@ -323,13 +397,15 @@ def _replay_session(
         content = msg.get("content") or ""
 
         if role == "user":
-            text = str(content)
+            cell_group.flush()
+            text = content_to_text(content)
             if text.startswith("[") and text.endswith("]") or text.startswith("[bash-done") or text.startswith("[compaction-summary]") or text.startswith("[python-state"):
                 _render_bash_notice(text)
             else:
                 console.print(Text("\n> " + text, style="bold"))
         elif role == "assistant":
             if content:
+                cell_group.flush()
                 printer.markdown(str(content))
             for tc in msg.get("tool_calls") or []:
                 fn = tc.get("function", {})
@@ -352,7 +428,8 @@ def _replay_session(
                     _render_tool_call(code)
                     _render_tool_result(cell_res)
                 else:
-                    _render_cell_summary(len(cell_history), code, cell_res, 0.0)
+                    cell_group.add(len(cell_history), code, cell_res, 0.0)
+    cell_group.flush()
 
 
 def _fmt_k(n: int) -> str:
@@ -631,6 +708,13 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="quartz — minimal coding agent with a persistent Python REPL.")
     parser.add_argument("-p", "--prompt", help="Run a single prompt in headless mode and exit.")
+    parser.add_argument(
+        "--image",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Attach an image file to the -p prompt (repeatable).",
+    )
     parser.add_argument("--cwd", type=Path, default=Path.cwd(), help="Working directory for the agent.")
     parser.add_argument("-c", "--continue", dest="cont", action="store_true", help="Resume the most recent session.")
     parser.add_argument("-r", "--resume", metavar="ID", help="Resume a specific session by ID.")
@@ -727,6 +811,7 @@ def main() -> None:
     active_status: list[Status] = []
     streamed_any = [False]
     md_streamer = MarkdownBlockStreamer(printer.markdown)
+    cell_group = CellGroupBuffer()
 
     def _on_status(label: str | None) -> None:
         if label is None:
@@ -734,6 +819,8 @@ def main() -> None:
                 st = active_status.pop()
                 st.__exit__(None, None, None)
             return
+        if label == "Running ipython..." and cell_group.entries:
+            label = f"Running ipython #{len(cell_history) + 1} ({len(cell_group.entries)} done)..."
         if active_status:
             active_status[-1].update(label)
         else:
@@ -742,6 +829,7 @@ def main() -> None:
             active_status.append(st)
 
     def _on_text_delta(chunk: str) -> None:
+        cell_group.flush()
         streamed_any[0] = True
         md_streamer.feed(chunk)
 
@@ -762,7 +850,7 @@ def main() -> None:
         if args.verbose:
             _render_tool_result(res)
         else:
-            _render_cell_summary(len(cell_history), code, res, duration)
+            cell_group.add(len(cell_history), code, res, duration)
 
     def _run_turn(turn_usage: TurnUsage | None = None) -> tuple[str, list[dict[str, Any]], int]:
         streamed_any[0] = False
@@ -779,8 +867,8 @@ def main() -> None:
                 keep_recent_messages=keep_recent_messages,
                 on_tool_call=_on_tool_call,
                 on_tool_result=_on_tool_result,
-                on_compaction=_render_compaction,
-                on_bash_notice=_render_bash_notice,
+                on_compaction=lambda s, k: (cell_group.flush(), _render_compaction(s, k)),
+                on_bash_notice=lambda n: (cell_group.flush(), _render_bash_notice(n)),
                 on_status=_on_status,
                 on_text_delta=_on_text_delta,
                 usage_stats=turn_usage,
@@ -789,6 +877,7 @@ def main() -> None:
             )
         finally:
             _on_status(None)
+            cell_group.flush()
             md_streamer.flush()
         if not streamed_any[0] and answer:
             printer.markdown(answer)
@@ -796,7 +885,18 @@ def main() -> None:
 
     try:
         if args.prompt:
-            messages.append({"role": "user", "content": args.prompt})
+            cli_images: list[ImageAttachment] = []
+            for raw_img in args.image:
+                img_path = Path(raw_img).expanduser()
+                if not img_path.is_absolute():
+                    img_path = cwd / img_path
+                try:
+                    cli_images.append(load_image_file(img_path))
+                except (FileNotFoundError, ValueError) as exc:
+                    console.print(f"[red]Error: {escape(str(exc))}[/red]")
+                    return
+            cli_images.extend(extract_inline_image_mentions(args.prompt, cwd))
+            messages.append({"role": "user", "content": build_user_content(args.prompt, cli_images)})
             _, messages, _ = _run_turn(turn_usage=usage_stats)
             _persist()
 
@@ -816,9 +916,9 @@ def main() -> None:
         console.print(
             Panel(
                 f"Model: [bold]{escape(model)}[/bold] ([cyan]{escape(str(effort))}[/cyan]) | Workspace: [bold]{escape(str(cwd))}[/bold] | Session: [bold]{escape(active_session.id)}[/bold]\n"
-                "Commands: [cyan]/model[/cyan], [cyan]/continue[/cyan], [cyan]/vars[/cyan], [cyan]/usage[/cyan], "
+                "Commands: [cyan]/model[/cyan], [cyan]/continue[/cyan], [cyan]/image[/cyan], [cyan]/paste[/cyan], [cyan]/vars[/cyan], [cyan]/usage[/cyan], "
                 "[cyan]/expand[/cyan], [cyan]/compact[/cyan], [cyan]/reset[/cyan], [cyan]/exit[/cyan]\n"
-                "[dim]Tip: Use @path for files, Esc+Enter or Ctrl+J for multi-line input, Ctrl+C to interrupt.[/dim]",
+                "[dim]Tip: Use @path for files/images, Esc+Enter or Ctrl+J for multi-line input, Ctrl+C to interrupt.[/dim]",
                 title="[bold]quartz[/bold]",
                 border_style="blue",
             )
@@ -853,6 +953,8 @@ def main() -> None:
             key_bindings=kb,
             prompt_continuation="... ",
         )
+
+        pending_images: list[ImageAttachment] = []
 
         while True:
             bg_count = kernel.running_bash_count()
@@ -916,15 +1018,56 @@ def main() -> None:
                     Text(
                         "/model           Choose provider, model, and reasoning effort\n"
                         "/continue [id]   Pick and resume a previous session in this directory\n"
+                        "/image [path]    Attach an image for the next message (or: clear)\n"
+                        "/paste           Attach an image from the system clipboard\n"
                         "/vars            List live Python variables in the kernel\n"
                         "/session         Show active session ID and file paths\n"
                         "/usage           Show context window usage and cache hit rate\n"
-                        "/expand [n]      Expand a collapsed ipython cell (default: latest)\n"
+                        "/expand [n|a..b] Expand a collapsed ipython cell or range (default: latest)\n"
                         "/compact [focus] Summarize older messages while keeping the kernel alive\n"
                         "/prompt          Show the assembled system prompt\n"
                         "/reset           Clear conversation history, start a new session, and restart the kernel\n"
                         "/exit            Exit"
                     )
+                )
+                continue
+            if user_input == "/paste":
+                try:
+                    img = load_clipboard_image()
+                except Exception as exc:
+                    console.print(f"[red]Error: {escape(str(exc))}[/red]")
+                    continue
+                pending_images.append(img)
+                console.print(
+                    f"[green]Attached clipboard image ([bold]{escape(img.mime_type)}[/bold]); "
+                    f"{len(pending_images)} image(s) queued for next message.[/green]"
+                )
+                continue
+            if user_input == "/image" or user_input.startswith("/image "):
+                arg = user_input[len("/image") :].strip()
+                if not arg:
+                    if not pending_images:
+                        console.print("[dim]No images queued. Use /image <path>, /paste, or @image_path.[/dim]")
+                    else:
+                        names = ", ".join(img.label for img in pending_images)
+                        console.print(f"[cyan]Queued ({len(pending_images)}):[/cyan] {escape(names)}")
+                    continue
+                if arg == "clear":
+                    pending_images.clear()
+                    console.print("[dim]Cleared queued images.[/dim]")
+                    continue
+                img_path = Path(arg).expanduser()
+                if not img_path.is_absolute():
+                    img_path = cwd / img_path
+                try:
+                    img = load_image_file(img_path)
+                except (FileNotFoundError, ValueError) as exc:
+                    console.print(f"[red]Error: {escape(str(exc))}[/red]")
+                    continue
+                pending_images.append(img)
+                console.print(
+                    f"[green]Attached [bold]{escape(img.label)}[/bold] ([cyan]{escape(img.mime_type)}[/cyan]); "
+                    f"{len(pending_images)} image(s) queued for next message.[/green]"
                 )
                 continue
             if user_input == "/model":
@@ -1017,16 +1160,15 @@ def main() -> None:
                     continue
                 arg = user_input[len("/expand") :].strip() if user_input.startswith("/expand") else ""
                 try:
-                    idx = int(arg) if arg else len(cell_history)
-                    if not (1 <= idx <= len(cell_history)):
-                        raise ValueError
+                    start_idx, end_idx = _parse_expand_range(arg, len(cell_history))
                 except ValueError:
-                    console.print(f"[red]Invalid cell index. Choose 1..{len(cell_history)}.[/red]")
+                    console.print(f"[red]Invalid cell index or range. Choose 1..{len(cell_history)}.[/red]")
                     continue
-                code, res, duration = cell_history[idx - 1]
-                console.print(f"[dim]Cell #{idx} ({duration:.2f}s)[/dim]")
-                _render_tool_call(code)
-                _render_tool_result(res)
+                for idx in range(start_idx, end_idx + 1):
+                    code, res, duration = cell_history[idx - 1]
+                    console.print(f"[dim]Cell #{idx} ({duration:.2f}s)[/dim]")
+                    _render_tool_call(code)
+                    _render_tool_result(res)
                 continue
             if user_input == "/usage":
                 pct = usage_stats.context_pct(max_context_tokens)
@@ -1068,6 +1210,7 @@ def main() -> None:
             if user_input == "/reset":
                 messages.clear()
                 cell_history.clear()
+                pending_images.clear()
                 usage_stats = TurnUsage()
                 kernel.restart()
                 active_session = Session.create(cwd)
@@ -1087,7 +1230,10 @@ def main() -> None:
                     console.print("[dim]Nothing to compact yet.[/dim]")
                 continue
 
-            messages.append({"role": "user", "content": user_input})
+            inline_images = extract_inline_image_mentions(user_input, cwd)
+            attached_images = [*pending_images, *inline_images]
+            pending_images.clear()
+            messages.append({"role": "user", "content": build_user_content(user_input, attached_images)})
             try:
                 _, messages, tokens = _run_turn(turn_usage=usage_stats)
                 _persist()

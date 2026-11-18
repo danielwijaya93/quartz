@@ -11,6 +11,8 @@ from prompt_toolkit.document import Document
 
 SLASH_COMMANDS: dict[str, str] = {
     "/model": "Choose provider, model, and reasoning effort",
+    "/image": "Attach an image file (or /image clear)",
+    "/paste": "Attach an image from the system clipboard",
     "/continue": "Pick and resume a previous session in this directory",
     "/vars": "List live Python variables in the kernel",
     "/session": "Show active session ID and file paths",

@@ -7,6 +7,7 @@ from typing import Any
 
 from openai import OpenAI
 
+from agent.images import content_to_text
 from agent.kernel_client import KernelClient
 
 COMPACT_SYSTEM_PROMPT = (
@@ -34,7 +35,7 @@ def _serialize_for_summary(messages: list[dict[str, Any]]) -> str:
         role = msg.get("role", "unknown")
         content = msg.get("content") or ""
         if isinstance(content, list):
-            content = json.dumps(content, ensure_ascii=False)
+            content = content_to_text(content)
         if role == "assistant" and msg.get("tool_calls"):
             calls = [
                 f"{tc.get('function', {}).get('name')}({tc.get('function', {}).get('arguments', '')[:400]})"

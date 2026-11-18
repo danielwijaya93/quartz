@@ -381,3 +381,64 @@ def test_tool_result_panel_keeps_literal_brackets(monkeypatch: pytest.MonkeyPatc
     out = buf.getvalue()
     assert "[red]thing[/red]" in out
     assert "[stderr]" in out
+
+
+def test_grouped_cell_summary_single_and_multi() -> None:
+    single, ok1 = cli.format_grouped_cell_summary(
+        [(1, "x = 1", CellResult(True, "", "", None), 0.02)]
+    )
+    assert ok1 is True
+    assert single == "✔ [#1] ipython (1L: x = 1) → no output (0.02s)"
+
+    multi, ok_multi = cli.format_grouped_cell_summary(
+        [
+            (1, "a = 1", CellResult(True, "", "", None), 0.10),
+            (2, "b = 2", CellResult(True, "2\n", "", None), 0.25),
+            (3, "c = 3", CellResult(True, "3\n", "", None), 0.15),
+        ]
+    )
+    assert ok_multi is True
+    assert multi == "✔ [#1..#3] 3 ipython cells (0.50s) — /expand 1..3"
+
+
+def test_grouped_cell_summary_with_failure() -> None:
+    summary, ok = cli.format_grouped_cell_summary(
+        [
+            (1, "a = 1", CellResult(True, "", "", None), 0.10),
+            (2, "1 / 0", CellResult(False, "", "ZeroDivisionError: division by zero", None), 0.05),
+            (3, "b = 2", CellResult(True, "", "", None), 0.05),
+        ]
+    )
+    assert ok is False
+    assert "✖ [#1..#3] 3 ipython cells (1 failed, last #2: ZeroDivisionError: division by zero) (0.20s)" in summary
+    assert "/expand 2" in summary
+
+
+def test_cell_group_buffer_flushes_once_per_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    console, buf = _recording_console()
+    monkeypatch.setattr(cli, "printer", BlockPrinter(console))
+
+    cli.printer.reset()
+    group = cli.CellGroupBuffer()
+    for i in range(1, 6):
+        group.add(i, f"x = {i}", CellResult(True, "", "", None), 0.1)
+    group.flush()
+    cli.printer.markdown("Done.")
+
+    assert _visible_lines(buf.getvalue()) == [
+        "✔ [#1..#5] 5 ipython cells (0.50s) — /expand 1..5",
+        "",
+        "Done.",
+    ]
+
+
+def test_parse_expand_range() -> None:
+    assert cli._parse_expand_range("", 5) == (5, 5)
+    assert cli._parse_expand_range("3", 5) == (3, 3)
+    assert cli._parse_expand_range("2..4", 5) == (2, 4)
+    with pytest.raises(ValueError):
+        cli._parse_expand_range("4..2", 5)
+    with pytest.raises(ValueError):
+        cli._parse_expand_range("0..2", 5)
+    with pytest.raises(ValueError):
+        cli._parse_expand_range("6", 5)

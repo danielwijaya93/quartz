@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from agent.images import content_to_text
 from agent.kernel_client import KernelClient
 
 
@@ -117,9 +118,10 @@ class Session:
             _, msgs = cls.load(f.stem, sessions_dir=root)
             last_user = next(
                 (
-                    str(m.get("content", "")).strip().replace("\n", " ")
+                    content_to_text(m.get("content", "")).strip().replace("\n", " ")
                     for m in reversed(msgs)
-                    if m.get("role") == "user" and not str(m.get("content", "")).startswith("[")
+                    if m.get("role") == "user"
+                    and not content_to_text(m.get("content", "")).startswith("[")
                 ),
                 "",
             )
