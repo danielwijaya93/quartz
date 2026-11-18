@@ -439,6 +439,21 @@ def _fmt_k(n: int) -> str:
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
 
+def _fmt_duration(seconds: float) -> str:
+    if seconds < 1.0:
+        return f"{max(0.0, seconds):.1f}s"
+    whole = round(seconds)
+    if whole < 60:
+        return f"{whole}s"
+    mins, secs = divmod(whole, 60)
+    return f"{mins}m {secs}s"
+
+
+def _format_turn_timing(turn_seconds: float, total_seconds: float, turn_count: int) -> str:
+    unit = "turn" if turn_count == 1 else "turns"
+    return f"Turn took {_fmt_duration(turn_seconds)} (Total time {_fmt_duration(total_seconds)} · {turn_count} {unit})"
+
+
 def _format_turn_footer(usage: TurnUsage, max_context_tokens: int) -> str:
     pct = usage.context_pct(max_context_tokens)
     cache_pct = usage.cache_hit_rate * 100.0
@@ -1003,6 +1018,20 @@ def main() -> None:
         )
 
         pending_images: list[ImageAttachment] = []
+        total_elapsed_s = 0.0
+        turn_count = 0
+
+        def _execute_interactive_turn() -> None:
+            nonlocal messages, total_elapsed_s, turn_count
+            t0 = time.monotonic()
+            _, messages, tokens = _run_turn(turn_usage=usage_stats)
+            turn_elapsed = time.monotonic() - t0
+            total_elapsed_s += turn_elapsed
+            turn_count += 1
+            _persist()
+            printer.block(Text(_format_turn_timing(turn_elapsed, total_elapsed_s, turn_count), style="dim"))
+            if tokens:
+                printer.block(Text(_format_turn_footer(usage_stats, max_context_tokens), style="dim"))
 
         while True:
             bg_count = kernel.running_bash_count()
@@ -1045,10 +1074,7 @@ def main() -> None:
                 _render_bash_notice(notice)
                 messages.append({"role": "user", "content": notice})
                 try:
-                    _, messages, tokens = _run_turn(turn_usage=usage_stats)
-                    _persist()
-                    if tokens:
-                        printer.block(Text(_format_turn_footer(usage_stats, max_context_tokens), style="dim"))
+                    _execute_interactive_turn()
                 except KeyboardInterrupt:
                     kernel.interrupt()
                     console.print("\n[yellow]Interrupted.[/yellow]")
@@ -1192,6 +1218,8 @@ def main() -> None:
                 active_session = new_session
                 messages = new_messages
                 cell_history.clear()
+                total_elapsed_s = 0.0
+                turn_count = 0
                 kernel.restart()
                 restored_notice = active_session.restore_kernel(kernel)
                 if restored_notice:
@@ -1260,6 +1288,8 @@ def main() -> None:
                 cell_history.clear()
                 pending_images.clear()
                 usage_stats = TurnUsage()
+                total_elapsed_s = 0.0
+                turn_count = 0
                 kernel.restart()
                 active_session = Session.create(cwd)
                 console.print(
@@ -1283,10 +1313,7 @@ def main() -> None:
             pending_images.clear()
             messages.append({"role": "user", "content": build_user_content(user_input, attached_images)})
             try:
-                _, messages, tokens = _run_turn(turn_usage=usage_stats)
-                _persist()
-                if tokens:
-                    printer.block(Text(_format_turn_footer(usage_stats, max_context_tokens), style="dim"))
+                _execute_interactive_turn()
             except KeyboardInterrupt:
                 kernel.interrupt()
                 console.print("\n[yellow]Interrupted.[/yellow]")

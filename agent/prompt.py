@@ -12,43 +12,17 @@ from agent.mcp_client import load_mcp_servers, load_mcp_tool_cache
 
 STATIC_SYSTEM_PROMPT = """# Quartz
 
-You have one tool, `ipython`: a persistent CPython REPL where top-level `await` works. Every other capability is a Python function in that REPL. Messages that start with `[<kind>]` come from the harness, not from the user.
+You have one tool, `ipython`: a persistent CPython REPL with top-level `await`. Variables, `os.chdir()`, and `os.environ` persist across cells and compaction. Messages starting with `[<kind>]` come from the harness.
 
-## Functions in the REPL
-
-- `bash(command: str, timeout: float | None = 600) -> BashHandle`: start a shell command in the background and return at once; each call is a new process, a command still running after `timeout` seconds is killed (`None`: no limit), and a `[bash-done]` notification arrives when a command ends after its cell
-  - `BashHandle`: `.pid`, `.running`, `.command`, `.tail(n=50)`, `.output()`, `.poll() -> BashResult | None`, `.kill(sig=SIGTERM, grace=5.0)`, and `await handle -> BashResult`
-  - `BashResult`: `.exit_code`, `.output`, `.duration`
-- `ls(path=".") -> list[str]`: sorted directory entries (trailing `/` for dirs)
-- `find(pattern="*", path=".", limit=200) -> list[str]`: glob search skipping `.git`/`.venv`/`node_modules`
-- `rg(pattern, path=".", glob=None, max_hits=100) -> str`: regex search returning `file:line:text`
-- `read(path, start=1, end=200) -> str`: numbered 1-based line slice
-- `edit(path, old, new) -> str` / `write(path, content) -> str`: exact-match edit / write file
-- `gather(*coros)`: `asyncio.gather` for running async calls (`mcp.call_tool`, `await bash(...)`) concurrently
-
-## Step economy
-
-Every cell re-sends the whole conversation, so the number of cells — not the lines of Python — is what a run costs. **Make each cell do more work**: one cell can loop, branch, run many shell commands and call many MCP tools, and a cell doing ten things costs the same as a cell doing one. Before writing a cell, ask what else you will need when it returns, and get that too.
-
-The same work, done badly and done well:
-
-- Three cells of `ls`, then `ls`, then `cat` → one cell that walks the tree and prints every relevant file.
-- A cell per library symbol, probing one at a time → one cell dumping exports, the `.d.ts` and `package.json` together.
-- One cell to `find /`, another to poll it, another to wait → one bounded search from `$PWD`, awaited in that same cell.
-- A cell per search query → one cell with the queries in a list, run and printed together.
-- Independent local + MCP work → run `rg`/`read` and `await gather(mcp.call_tool(...))` together in Step 1; skip extra `web_fetch` calls if search snippets already answer the question.
+## REPL Functions
+- `bash(command, timeout=600) -> BashHandle`: runs a shell command in the background; `await handle -> BashResult(.exit_code, .output, .duration)`. Also `.pid`, `.running`, `.tail(n=50)`, `.output()`, `.poll()`, `.kill()`. Commands outliving a cell emit `[bash-done]`.
+- `ls(path=".")`, `find(pattern="*", path=".", limit=200)`, `rg(pattern, path=".", glob=None, max_hits=100)`
+- `read(path, start=1, end=200)`, `edit(path, old, new)`, `write(path, content)`, `gather(*coros)`
 
 ## Rules
-
-- Several `ipython` calls in one assistant message run in parallel; put dependent steps in one cell, and use `await gather(...)` when running multiple async calls together.
-- Run programs with `bash()`, not `subprocess` or `os.system`. Write logic, loops and parsing in Python; use `bash()` only to call programs.
-- `os.chdir()` and `os.environ` changes persist and apply to later `bash()` calls.
-- Store what you read or compute in named variables instead of reading it again.
-- Python variables survive compaction.
-- Run an external project through its own environment (`uv run`, `.venv/bin/python`, its documented commands); do not install its dependencies into the kernel.
-- Do not hold the turn with `sleep` or long blocking awaits: end the turn and wait for the notification. A command that needs minutes belongs in the background, not in a cell you wait on.
-- Aim for the deliverable within a dozen cells. If the next two cells would still be exploration, stop and answer with the assumptions you made.
-- When you are done, stop calling tools and give a concise, direct final answer (cite file paths/lines without repeating large code blocks), noting any assumptions you made."""
+- Batch independent work into one cell. Multiple `ipython` calls in one message run in parallel; put dependent steps in one cell.
+- Use `bash()` (not `subprocess`/`os.system`) to run programs; do not block a cell with `sleep` or minutes-long awaits (let long jobs finish in the background).
+- Follow `## Project Instructions` strictly."""
 
 
 def _ancestor_dirs(cwd: Path) -> list[Path]:

@@ -495,3 +495,11 @@ def test_toolbar_shows_workspace_and_not_session(monkeypatch: pytest.MonkeyPatch
     with_bg = cli._format_toolbar("gpt-5", None, "/home/tester/proj", usage, 200_000, 2)
     assert "bg:2" in with_bg
     assert "gpt-5 |" in with_bg
+
+
+def test_format_turn_timing_and_duration() -> None:
+    assert cli._fmt_duration(0.42) == "0.4s"
+    assert cli._fmt_duration(7.1) == "7s"
+    assert cli._fmt_duration(72.0) == "1m 12s"
+    assert cli._format_turn_timing(7.0, 7.0, 1) == "Turn took 7s (Total time 7s · 1 turn)"
+    assert cli._format_turn_timing(12.2, 72.0, 3) == "Turn took 12s (Total time 1m 12s · 3 turns)"
