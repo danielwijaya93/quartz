@@ -505,3 +505,79 @@ def test_format_turn_timing_and_duration() -> None:
     assert cli._fmt_duration(72.0) == "1m 12s"
     assert cli._format_turn_timing(7.0, 7.0, 1) == "Turn took 7s (Total time 7s · 1 turn)"
     assert cli._format_turn_timing(12.2, 72.0, 3) == "Turn took 12s (Total time 1m 12s · 3 turns)"
+
+
+def test_format_thought_duration_and_stopwatch() -> None:
+    assert cli._fmt_thought_duration(0.2) == "<1 second"
+    assert cli._fmt_thought_duration(1.0) == "1 second"
+    assert cli._fmt_thought_duration(2.4) == "2 seconds"
+    assert cli._fmt_thought_duration(60.0) == "1 minute"
+    assert cli._fmt_thought_duration(90.0) == "1 minute 30 seconds"
+    assert cli._fmt_thought_duration(121.0) == "2 minutes 1 second"
+
+    assert cli._fmt_stopwatch(0.4) == "0s"
+    assert cli._fmt_stopwatch(5.9) == "5s"
+    assert cli._fmt_stopwatch(90.2) == "1m 30s"
+
+
+def test_run_turn_thought_line_separate_from_grouped_cells(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    buf = io.StringIO()
+    test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
+    test_printer = BlockPrinter(test_console)
+    monkeypatch.setattr(cli, "console", test_console)
+    monkeypatch.setattr(cli, "printer", test_printer)
+
+    def _fake_agent_loop(*args, **kwargs):
+        on_status = kwargs["on_status"]
+        on_tool_call = kwargs["on_tool_call"]
+        on_tool_result = kwargs["on_tool_result"]
+        on_text_delta = kwargs["on_text_delta"]
+
+        on_status("Thinking...")
+        on_status(None)
+        on_tool_call("x = 1")
+        on_status("Running ipython...")
+        on_tool_result(CellResult(ok=True, stdout="", stderr="", result=None))
+        on_status(None)
+
+        on_status("Thinking...")
+        on_status(None)
+        on_tool_call("y = 2")
+        on_status("Running ipython...")
+        on_tool_result(CellResult(ok=True, stdout="", stderr="", result=None))
+        on_status(None)
+
+        on_status("Thinking...")
+        on_status(None)
+        on_text_delta("All done.")
+        return "All done.", [], 10
+
+    monkeypatch.setattr(cli, "agent_loop", _fake_agent_loop)
+
+    rt = cli._CLIRuntime(
+        cwd=tmp_path,
+        kernel=object(),  # type: ignore[arg-type]
+        client=object(),
+        provider_name="openai",
+        model="gpt-5",
+        effort="",
+        system_prompt="",
+        active_session=object(),  # type: ignore[arg-type]
+        messages=[],
+        usage_stats=TurnUsage(),
+        max_context_tokens=100_000,
+        compact_reserve_tokens=8_000,
+        keep_recent_messages=4,
+        verbose=False,
+        plain_output=False,
+        headless=True,
+    )
+    cli._run_turn(rt)
+
+    lines = [ln.strip() for ln in buf.getvalue().splitlines() if ln.strip()]
+    assert len(lines) == 3
+    assert lines[0].startswith("Thought for ")
+    assert lines[1].startswith("✔ [#1..#2] ")
+    assert lines[2] == "All done."

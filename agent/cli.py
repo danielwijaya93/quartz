@@ -495,6 +495,30 @@ def _fmt_duration(seconds: float) -> str:
     return f"{mins}m {secs}s"
 
 
+def _fmt_thought_duration(seconds: float) -> str:
+    """Format elapsed thinking time in whole seconds / minutes (e.g. '1 minute 30 seconds')."""
+    whole = round(max(0.0, seconds))
+    if whole < 1:
+        return "<1 second"
+    if whole < 60:
+        return f"{whole} {'second' if whole == 1 else 'seconds'}"
+    mins, secs = divmod(whole, 60)
+    min_part = f"{mins} {'minute' if mins == 1 else 'minutes'}"
+    if secs == 0:
+        return min_part
+    sec_part = f"{secs} {'second' if secs == 1 else 'seconds'}"
+    return f"{min_part} {sec_part}"
+
+
+def _fmt_stopwatch(elapsed: float) -> str:
+    """Format live elapsed seconds for the thinking stopwatch spinner."""
+    whole = int(max(0.0, elapsed))
+    if whole < 60:
+        return f"{whole}s"
+    mins, secs = divmod(whole, 60)
+    return f"{mins}m {secs}s"
+
+
 def _format_turn_timing(turn_seconds: float, total_seconds: float, turn_count: int) -> str:
     unit = "turn" if turn_count == 1 else "turns"
     return f"Turn took {_fmt_duration(turn_seconds)} (Total time {_fmt_duration(total_seconds)} · {turn_count} {unit})"
@@ -812,32 +836,90 @@ def _run_turn(
     pending_cell_code: list[str] = []
     pending_cell_start: list[float] = []
     active_status: list[Status] = []
+    status_lock = threading.Lock()
+    thinking_started: list[float | None] = [None]
+    thinking_stop: list[threading.Event | None] = [None]
+    streak_thought_s = [0.0]
+    has_streak_thought = [False]
     streamed_any = [False]
     md_streamer = MarkdownBlockStreamer(printer.markdown)
     cell_group = CellGroupBuffer()
+
+    def _flush_streak() -> None:
+        if has_streak_thought[0]:
+            elapsed = streak_thought_s[0]
+            streak_thought_s[0] = 0.0
+            has_streak_thought[0] = False
+            printer.block(Text(f"Thought for {_fmt_thought_duration(elapsed)}", style="dim"))
+        cell_group.flush()
+
+    def _tick_thinking(started: float, stop_event: threading.Event) -> None:
+        while not stop_event.wait(0.2):
+            label = f"Thinking... {_fmt_stopwatch(time.monotonic() - started)}"
+            with status_lock:
+                if stop_event.is_set() or not active_status:
+                    return
+                active_status[-1].update(label)
+
+    def _stop_thinking() -> float | None:
+        with status_lock:
+            if thinking_stop[0] is not None:
+                thinking_stop[0].set()
+                thinking_stop[0] = None
+            started = thinking_started[0]
+            thinking_started[0] = None
+            if started is not None and active_status:
+                active_status.pop().__exit__(None, None, None)
+        if started is not None:
+            elapsed = time.monotonic() - started
+            streak_thought_s[0] += elapsed
+            has_streak_thought[0] = True
+            return elapsed
+        return None
 
     def _on_status(label: str | None) -> None:
         if rt.plain_output:
             return
         if label is None:
-            if active_status:
-                active_status.pop().__exit__(None, None, None)
+            _stop_thinking()
+            with status_lock:
+                if active_status:
+                    active_status.pop().__exit__(None, None, None)
             return
+        if label == "Thinking...":
+            with status_lock:
+                if thinking_started[0] is not None:
+                    return
+                started = time.monotonic()
+                thinking_started[0] = started
+                stop_event = threading.Event()
+                thinking_stop[0] = stop_event
+                tick_label = f"Thinking... {_fmt_stopwatch(0.0)}"
+                if active_status:
+                    active_status[-1].update(tick_label)
+                else:
+                    st = console.status(tick_label, spinner="dots")
+                    st.__enter__()
+                    active_status.append(st)
+            threading.Thread(target=_tick_thinking, args=(started, stop_event), daemon=True).start()
+            return
+        _stop_thinking()
         if label == "Running ipython...":
             action = describe_cell_actions(pending_cell_code[-1]) if pending_cell_code else "Run Python"
             if cell_group.entries:
                 label = f"{action} #{len(rt.cell_history) + 1} ({len(cell_group.entries)} done)..."
             else:
                 label = f"{action}..."
-        if active_status:
-            active_status[-1].update(label)
-        else:
-            st = console.status(label, spinner="dots")
-            st.__enter__()
-            active_status.append(st)
+        with status_lock:
+            if active_status:
+                active_status[-1].update(label)
+            else:
+                st = console.status(label, spinner="dots")
+                st.__enter__()
+                active_status.append(st)
 
     def _on_text_delta(chunk: str) -> None:
-        cell_group.flush()
+        _flush_streak()
         streamed_any[0] = True
         if rt.plain_output:
             sys.stdout.write(chunk)
@@ -856,6 +938,7 @@ def _run_turn(
         pending_cell_code.append(code)
         pending_cell_start.append(time.monotonic())
         if rt.verbose:
+            _flush_streak()
             _render_tool_call(code)
 
     def _on_tool_result(res: CellResult) -> None:
@@ -882,8 +965,8 @@ def _run_turn(
             keep_recent_messages=rt.keep_recent_messages,
             on_tool_call=_on_tool_call,
             on_tool_result=_on_tool_result,
-            on_compaction=lambda s, k: (cell_group.flush(), _render_compaction(s, k)),
-            on_bash_notice=lambda n: (cell_group.flush(), _render_bash_notice(n)),
+            on_compaction=lambda s, k: (_flush_streak(), _render_compaction(s, k)),
+            on_bash_notice=lambda n: (_flush_streak(), _render_bash_notice(n)),
             on_status=_on_status,
             on_text_delta=_on_text_delta,
             usage_stats=rt.usage_stats,
@@ -895,7 +978,7 @@ def _run_turn(
         )
     finally:
         _on_status(None)
-        cell_group.flush()
+        _flush_streak()
         if rt.plain_output:
             if streamed_any[0]:
                 sys.stdout.write("\n")
