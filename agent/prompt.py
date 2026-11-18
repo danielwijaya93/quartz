@@ -8,7 +8,7 @@ import re
 import sys
 from pathlib import Path
 
-from agent.mcp_client import load_mcp_servers
+from agent.mcp_client import load_mcp_servers, load_mcp_tool_cache
 
 STATIC_SYSTEM_PROMPT = """# Quartz
 
@@ -19,6 +19,12 @@ You have one tool, `ipython`: a persistent CPython REPL where top-level `await` 
 - `bash(command: str, timeout: float | None = 600) -> BashHandle`: start a shell command in the background and return at once; each call is a new process, a command still running after `timeout` seconds is killed (`None`: no limit), and a `[bash-done]` notification arrives when a command ends after its cell
   - `BashHandle`: `.pid`, `.running`, `.command`, `.tail(n=50)`, `.output()`, `.poll() -> BashResult | None`, `.kill(sig=SIGTERM, grace=5.0)`, and `await handle -> BashResult`
   - `BashResult`: `.exit_code`, `.output`, `.duration`
+- `ls(path=".") -> list[str]`: sorted directory entries (trailing `/` for dirs)
+- `find(pattern="*", path=".", limit=200) -> list[str]`: glob search skipping `.git`/`.venv`/`node_modules`
+- `rg(pattern, path=".", glob=None, max_hits=100) -> str`: regex search returning `file:line:text`
+- `read(path, start=1, end=200) -> str`: numbered 1-based line slice
+- `edit(path, old, new) -> str` / `write(path, content) -> str`: exact-match edit / write file
+- `gather(*coros)`: `asyncio.gather` for running async calls (`mcp.call_tool`, `await bash(...)`) concurrently
 
 ## Step economy
 
@@ -30,10 +36,11 @@ The same work, done badly and done well:
 - A cell per library symbol, probing one at a time → one cell dumping exports, the `.d.ts` and `package.json` together.
 - One cell to `find /`, another to poll it, another to wait → one bounded search from `$PWD`, awaited in that same cell.
 - A cell per search query → one cell with the queries in a list, run and printed together.
+- Independent local + MCP work → run `rg`/`read` and `await gather(mcp.call_tool(...))` together in Step 1; skip extra `web_fetch` calls if search snippets already answer the question.
 
 ## Rules
 
-- Several `ipython` calls in one assistant message run in order; use that only when a call depends on the one before it, otherwise put it all in one cell.
+- Several `ipython` calls in one assistant message run in parallel; put dependent steps in one cell, and use `await gather(...)` when running multiple async calls together.
 - Run programs with `bash()`, not `subprocess` or `os.system`. Write logic, loops and parsing in Python; use `bash()` only to call programs.
 - `os.chdir()` and `os.environ` changes persist and apply to later `bash()` calls.
 - Store what you read or compute in named variables instead of reading it again.
@@ -41,7 +48,7 @@ The same work, done badly and done well:
 - Run an external project through its own environment (`uv run`, `.venv/bin/python`, its documented commands); do not install its dependencies into the kernel.
 - Do not hold the turn with `sleep` or long blocking awaits: end the turn and wait for the notification. A command that needs minutes belongs in the background, not in a cell you wait on.
 - Aim for the deliverable within a dozen cells. If the next two cells would still be exploration, stop and answer with the assumptions you made.
-- When you are done, stop calling tools and give the final answer, with any assumption you made."""
+- When you are done, stop calling tools and give a concise, direct final answer (cite file paths/lines without repeating large code blocks), noting any assumptions you made."""
 
 
 def _ancestor_dirs(cwd: Path) -> list[Path]:
@@ -154,14 +161,24 @@ def build_system_prompt(
 
     mcp_servers = load_mcp_servers(work_dir)
     if mcp_servers:
-        server_list = ", ".join(f"`{name}`" for name in sorted(mcp_servers))
-        sections.append(
+        tool_cache = load_mcp_tool_cache()
+        mcp_lines = [
             "## MCP Servers\n\n"
-            f"Configured servers: {server_list}\n"
-            "Call them from Python via the pre-imported `mcp` object:\n"
-            "- `await mcp.search_tools(query)` / `await mcp.list_tools(server=None)`\n"
-            "- `await mcp.call_tool(server, tool, arguments={...})`"
-        )
+            "Call them from Python via the pre-imported `mcp` object "
+            "(`await mcp.call_tool(server, tool, arguments={...})`, or `await mcp.list_tools(server)`):"
+        ]
+        for name in sorted(mcp_servers):
+            cached = tool_cache.get(name)
+            if cached:
+                tool_strs = [
+                    f"`{t['name']}({', '.join(t.get('args', [])[:5])})`"
+                    for t in cached[:12]
+                ]
+                suffix = f" (+{len(cached) - 12} more)" if len(cached) > 12 else ""
+                mcp_lines.append(f"- `{name}`: {', '.join(tool_strs)}{suffix}")
+            else:
+                mcp_lines.append(f"- `{name}`")
+        sections.append("\n".join(mcp_lines))
 
     skills = discover_skills(skills_dir=skills_dir)
     if skills:

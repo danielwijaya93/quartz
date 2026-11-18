@@ -27,6 +27,7 @@ from rich.status import Status
 from rich.syntax import Syntax
 from rich.text import Text
 
+from agent.actions import describe_cell_actions, describe_group_actions
 from agent.compact import compact_messages
 from agent.completer import AgentCompleter
 from agent.google_auth import (
@@ -181,16 +182,17 @@ def format_compact_cell_summary(
     out_text = res.format_for_model().strip()
     out_lines = out_text.splitlines() if out_text and out_text != "(ok, no output)" else []
 
+    action = describe_cell_actions(code)
     if res.ok:
         out_summary = (
             f"{len(out_lines)} lines out"
             if len(out_lines) > 1
             else (out_lines[0][:50] if out_lines else "no output")
         )
-        return f"✔ [#{index}] ipython ({len(code_lines)}L: {code_preview}) → {out_summary} ({duration:.2f}s)"
+        return f"✔ [#{index}] {action} ({len(code_lines)}L: {code_preview}) → {out_summary} ({duration:.2f}s)"
     err_lines = [ln.strip() for ln in (res.stderr or out_text).splitlines() if ln.strip()]
     err_preview = err_lines[-1][:70] if err_lines else "error"
-    return f"✖ [#{index}] ipython ({len(code_lines)}L: {code_preview}) → {err_preview} ({duration:.2f}s)"
+    return f"✖ [#{index}] {action} ({len(code_lines)}L: {code_preview}) → {err_preview} ({duration:.2f}s)"
 
 
 def _render_compaction(summarized: int, kept: int) -> None:
@@ -220,10 +222,11 @@ def format_grouped_cell_summary(
     start_idx = entries[0][0]
     end_idx = entries[-1][0]
     total_dur = sum(d for _, _, _, d in entries)
+    action = describe_group_actions([code for _, code, _, _ in entries])
     failed = [(idx, res) for idx, _, res, _ in entries if not res.ok]
     if not failed:
         return (
-            f"✔ [#{start_idx}..#{end_idx}] {len(entries)} ipython cells ({total_dur:.2f}s) — /expand {start_idx}..{end_idx}",
+            f"✔ [#{start_idx}..#{end_idx}] {action} ({len(entries)} cells, {total_dur:.2f}s) — /expand {start_idx}..{end_idx}",
             True,
         )
     last_idx, last_res = failed[-1]
@@ -231,8 +234,8 @@ def format_grouped_cell_summary(
     err_lines = [ln.strip() for ln in (last_res.stderr or out_text).splitlines() if ln.strip()]
     err_preview = err_lines[-1][:60] if err_lines else "error"
     return (
-        f"✖ [#{start_idx}..#{end_idx}] {len(entries)} ipython cells "
-        f"({len(failed)} failed, last #{last_idx}: {err_preview}) ({total_dur:.2f}s) — /expand {last_idx}",
+        f"✖ [#{start_idx}..#{end_idx}] {action} "
+        f"({len(entries)} cells, {len(failed)} failed, last #{last_idx}: {err_preview}) ({total_dur:.2f}s) — /expand {last_idx}",
         False,
     )
 
@@ -764,12 +767,27 @@ def main() -> None:
         server.serve()
         return
 
-    client, provider_name, model, effort = _build_client(
-        provider=args.provider, model_override=args.model, effort_override=args.effort
-    )
-    system_prompt = build_system_prompt(cwd)
     kernel = KernelClient(cwd=cwd)
-    kernel.start()
+    kernel_err: list[BaseException] = []
+
+    def _start_kernel() -> None:
+        try:
+            kernel.start()
+        except BaseException as exc:
+            kernel_err.append(exc)
+
+    kernel_thread = threading.Thread(target=_start_kernel, daemon=True)
+    kernel_thread.start()
+
+    try:
+        client, provider_name, model, effort = _build_client(
+            provider=args.provider, model_override=args.model, effort_override=args.effort
+        )
+        system_prompt = build_system_prompt(cwd)
+    finally:
+        kernel_thread.join()
+    if kernel_err:
+        raise kernel_err[0]
 
     messages: list[dict[str, Any]] = []
     resumed = False
@@ -819,8 +837,12 @@ def main() -> None:
                 st = active_status.pop()
                 st.__exit__(None, None, None)
             return
-        if label == "Running ipython..." and cell_group.entries:
-            label = f"Running ipython #{len(cell_history) + 1} ({len(cell_group.entries)} done)..."
+        if label == "Running ipython...":
+            action = describe_cell_actions(pending_cell_code[-1]) if pending_cell_code else "Run Python"
+            if cell_group.entries:
+                label = f"{action} #{len(cell_history) + 1} ({len(cell_group.entries)} done)..."
+            else:
+                label = f"{action}..."
         if active_status:
             active_status[-1].update(label)
         else:
@@ -843,8 +865,8 @@ def main() -> None:
             _render_tool_call(code)
 
     def _on_tool_result(res: CellResult) -> None:
-        code = pending_cell_code.pop() if pending_cell_code else ""
-        started = pending_cell_start.pop() if pending_cell_start else time.monotonic()
+        code = pending_cell_code.pop(0) if pending_cell_code else ""
+        started = pending_cell_start.pop(0) if pending_cell_start else time.monotonic()
         duration = time.monotonic() - started
         cell_history.append((code, res, duration))
         if args.verbose:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from openai import BadRequestError, OpenAI
@@ -362,33 +363,38 @@ def agent_loop(
         if not tool_calls:
             return (assistant_dict.get("content") or "").strip(), messages, last_prompt_tokens
 
-        for idx, tc in enumerate(tool_calls):
+        parsed_calls: list[tuple[str, str, str | None]] = []
+        for tc in tool_calls:
             fn_name = tc["function"]["name"]
             tc_id = tc["id"]
             if fn_name != "ipython":
-                result_text = f"Unknown tool: {fn_name}. Only `ipython` is available."
-                messages.append({"role": "tool", "tool_call_id": tc_id, "content": result_text})
+                parsed_calls.append((tc_id, fn_name, None))
                 continue
-
             try:
                 args = json.loads(tc["function"]["arguments"] or "{}")
                 code = args.get("code", "")
             except json.JSONDecodeError:
                 code = tc["function"]["arguments"] or ""
+            parsed_calls.append((tc_id, fn_name, code))
 
-            if on_tool_call:
-                on_tool_call(code)
-
+        ipython_indices = [i for i, (_, fn, _) in enumerate(parsed_calls) if fn == "ipython"]
+        if len(ipython_indices) > 1:
+            for i in ipython_indices:
+                if on_tool_call:
+                    on_tool_call(parsed_calls[i][2] or "")
             if on_status:
                 on_status("Running ipython...")
+            results_by_idx: dict[int, CellResult] = {}
             try:
-                cell_res = kernel.exec_cell(code)
+                with ThreadPoolExecutor(max_workers=min(len(ipython_indices), 8)) as pool:
+                    futures = {i: pool.submit(kernel.exec_cell, parsed_calls[i][2] or "") for i in ipython_indices}
+                    for i in ipython_indices:
+                        results_by_idx[i] = futures[i].result()
             except KeyboardInterrupt:
                 if on_status:
                     on_status(None)
                 kernel.interrupt()
-                # Keep message history valid so the next turn never has orphaned tool_calls.
-                for rem_tc in tool_calls[idx:]:
+                for rem_tc in tool_calls:
                     messages.append(
                         {
                             "role": "tool",
@@ -400,13 +406,66 @@ def agent_loop(
             finally:
                 if on_status:
                     on_status(None)
-            if on_tool_result:
-                on_tool_result(cell_res)
 
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc_id,
-                    "content": cell_res.format_for_model(),
-                }
-            )
+            for i, (tc_id, fn_name, _) in enumerate(parsed_calls):
+                if fn_name != "ipython":
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": f"Unknown tool: {fn_name}. Only `ipython` is available.",
+                        }
+                    )
+                    continue
+                cell_res = results_by_idx[i]
+                if on_tool_result:
+                    on_tool_result(cell_res)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": cell_res.format_for_model(),
+                    }
+                )
+        else:
+            for idx, (tc_id, fn_name, code) in enumerate(parsed_calls):
+                if fn_name != "ipython":
+                    result_text = f"Unknown tool: {fn_name}. Only `ipython` is available."
+                    messages.append({"role": "tool", "tool_call_id": tc_id, "content": result_text})
+                    continue
+
+                assert code is not None
+                if on_tool_call:
+                    on_tool_call(code)
+
+                if on_status:
+                    on_status("Running ipython...")
+                try:
+                    cell_res = kernel.exec_cell(code)
+                except KeyboardInterrupt:
+                    if on_status:
+                        on_status(None)
+                    kernel.interrupt()
+                    # Keep message history valid so the next turn never has orphaned tool_calls.
+                    for rem_tc in tool_calls[idx:]:
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": rem_tc["id"],
+                                "content": "[interrupted by user]",
+                            }
+                        )
+                    raise
+                finally:
+                    if on_status:
+                        on_status(None)
+                if on_tool_result:
+                    on_tool_result(cell_res)
+
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": cell_res.format_for_model(),
+                    }
+                )

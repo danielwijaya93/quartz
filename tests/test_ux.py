@@ -46,11 +46,11 @@ def test_at_file_autocomplete(tmp_path: Path) -> None:
 def test_compact_cell_summary() -> None:
     ok_res = CellResult(ok=True, stdout="line1\nline2\nline3\n", stderr="", result=None)
     s1 = format_compact_cell_summary(1, "x = 1\nprint('line1')\nprint('line2')", ok_res, 0.12)
-    assert "✔ [#1] ipython (3L: x = 1) → 3 lines out (0.12s)" == s1
+    assert "✔ [#1] Run Python (3L: x = 1) → 3 lines out (0.12s)" == s1
 
     err_res = CellResult(ok=False, stdout="", stderr="Traceback...\nNameError: name 'foo' is not defined\n", result=None)
     s2 = format_compact_cell_summary(2, "foo", err_res, 0.04)
-    assert "✖ [#2] ipython (1L: foo) → NameError: name 'foo' is not defined (0.04s)" == s2
+    assert "✖ [#2] Run Python (1L: foo) → NameError: name 'foo' is not defined (0.04s)" == s2
 
 
 def test_streaming_agent_loop_with_tool_call(tmp_path: Path) -> None:
@@ -365,7 +365,7 @@ def test_cell_summary_chip_keeps_cell_index(monkeypatch: pytest.MonkeyPatch) -> 
     assert lines == [
         "Running a cell now.",
         "",
-        "✔ [#1] ipython (1L: print('hello')) → hello (0.01s)",
+        "✔ [#1] Run Python (1L: print('hello')) → hello (0.01s)",
     ]
 
 
@@ -388,7 +388,7 @@ def test_grouped_cell_summary_single_and_multi() -> None:
         [(1, "x = 1", CellResult(True, "", "", None), 0.02)]
     )
     assert ok1 is True
-    assert single == "✔ [#1] ipython (1L: x = 1) → no output (0.02s)"
+    assert single == "✔ [#1] Run Python (1L: x = 1) → no output (0.02s)"
 
     multi, ok_multi = cli.format_grouped_cell_summary(
         [
@@ -398,7 +398,7 @@ def test_grouped_cell_summary_single_and_multi() -> None:
         ]
     )
     assert ok_multi is True
-    assert multi == "✔ [#1..#3] 3 ipython cells (0.50s) — /expand 1..3"
+    assert multi == "✔ [#1..#3] Run Python (3 cells, 0.50s) — /expand 1..3"
 
 
 def test_grouped_cell_summary_with_failure() -> None:
@@ -410,7 +410,7 @@ def test_grouped_cell_summary_with_failure() -> None:
         ]
     )
     assert ok is False
-    assert "✖ [#1..#3] 3 ipython cells (1 failed, last #2: ZeroDivisionError: division by zero) (0.20s)" in summary
+    assert "✖ [#1..#3] Run Python (3 cells, 1 failed, last #2: ZeroDivisionError: division by zero) (0.20s)" in summary
     assert "/expand 2" in summary
 
 
@@ -426,7 +426,7 @@ def test_cell_group_buffer_flushes_once_per_run(monkeypatch: pytest.MonkeyPatch)
     cli.printer.markdown("Done.")
 
     assert _visible_lines(buf.getvalue()) == [
-        "✔ [#1..#5] 5 ipython cells (0.50s) — /expand 1..5",
+        "✔ [#1..#5] Run Python (5 cells, 0.50s) — /expand 1..5",
         "",
         "Done.",
     ]
@@ -442,3 +442,31 @@ def test_parse_expand_range() -> None:
         cli._parse_expand_range("0..2", 5)
     with pytest.raises(ValueError):
         cli._parse_expand_range("6", 5)
+
+
+def test_action_classifier_single_and_combined() -> None:
+    from agent.actions import describe_cell_actions, describe_group_actions
+
+    assert describe_cell_actions("import os\nos.listdir('.')") == "List directory and files"
+    assert describe_cell_actions("bash('rg -n foo agent/')") == "Find files"
+    assert describe_cell_actions("Path('a.py').read_text()") == "Read files"
+    assert describe_cell_actions("Path('a.py').write_text('x')") == "Edit files"
+    assert describe_cell_actions("mcp.github.get_issue(id=1)") == "Calling MCP"
+    assert describe_cell_actions("bash('uv run pytest')") == "Run program or script"
+    assert describe_cell_actions("x = 1 + 2") == "Run Python"
+
+    # Multi-action in a single cell
+    assert (
+        describe_cell_actions("files = list(Path('.').rglob('*.py'))\ntext = files[0].read_text()")
+        == "Find and Read files"
+    )
+    assert (
+        describe_cell_actions("s = Path('a.py').read_text()\nPath('a.py').write_text(s)\nbash('uv run pytest')")
+        == "Read files, Edit files, and Run script"
+    )
+
+    # Combined across grouped cells
+    assert (
+        describe_group_actions(["bash('rg foo')", "Path('a.py').read_text()"])
+        == "Find and Read files"
+    )

@@ -9,12 +9,17 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import contextvars
 import dataclasses
+import fnmatch
 import inspect
 import io
 import json
 import os
+import re
+import shutil
 import signal
+import subprocess
 import sys
 import time
 import traceback
@@ -28,6 +33,126 @@ MAX_OUTPUT_CHARS = 128_000
 MAX_REPR_CHARS = 128_000
 MAX_VAR_BYTES = 16 * 1024 * 1024
 MAX_TOTAL_SNAPSHOT_BYTES = 256 * 1024 * 1024
+
+_IGNORE_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", ".mypy_cache"}
+
+_STDOUT_VAR: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar("quartz_stdout", default=None)
+_STDERR_VAR: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar("quartz_stderr", default=None)
+
+
+class _ContextStreamProxy:
+    """Routes writes to the active asyncio task's StringIO buffer if set."""
+
+    def __init__(self, var: contextvars.ContextVar[io.StringIO | None], fallback: Any) -> None:
+        self._var = var
+        self._fallback = fallback
+
+    def write(self, s: str) -> int:
+        buf = self._var.get()
+        target = buf if buf is not None else self._fallback
+        return target.write(s)
+
+    def flush(self) -> None:
+        buf = self._var.get()
+        target = buf if buf is not None else self._fallback
+        target.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        buf = self._var.get()
+        return getattr(buf if buf is not None else self._fallback, name)
+
+
+def _helper_ls(path: str = ".") -> list[str]:
+    """List sorted entries in a directory (trailing `/` for directories)."""
+    p = Path(path).expanduser()
+    entries = []
+    for item in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+        entries.append(f"{item.name}/" if item.is_dir() else item.name)
+    return entries
+
+
+def _helper_find(pattern: str = "*", path: str = ".", limit: int = 200) -> list[str]:
+    """Find files matching a glob pattern, skipping .git/.venv/node_modules."""
+    root = Path(path).expanduser().resolve()
+    hits: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in _IGNORE_DIRS)
+        rel_dir = Path(dirpath).relative_to(root)
+        for fname in sorted(filenames):
+            rel = str(rel_dir / fname) if str(rel_dir) != "." else fname
+            if fnmatch.fnmatch(fname, pattern) or fnmatch.fnmatch(rel, pattern):
+                hits.append(rel)
+                if len(hits) >= limit:
+                    return hits
+    return hits
+
+
+def _helper_rg(pattern: str, path: str = ".", glob: str | None = None, max_hits: int = 100) -> str:
+    """Search files for a regex pattern and return `file:line:text` matches."""
+    if shutil.which("rg"):
+        cmd = ["rg", "-n", "--no-heading", "--color=never", "-m", str(max_hits)]
+        if glob:
+            cmd.extend(["-g", glob])
+        cmd.extend([pattern, path])
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        out = proc.stdout.strip()
+        if proc.returncode == 0:
+            lines = out.splitlines()[:max_hits]
+            return "\n".join(lines)
+        if proc.returncode == 1:
+            return "(no matches)"
+        return proc.stderr.strip() or f"rg exited with code {proc.returncode}"
+
+    regex = re.compile(pattern)
+    root = Path(path).expanduser()
+    if root.is_file():
+        files = [root]
+    else:
+        files = [root / rel for rel in _helper_find(glob or "*", str(root), limit=2000)]
+    hits: list[str] = []
+    for fpath in files:
+        try:
+            text = fpath.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for idx, line in enumerate(text.splitlines(), 1):
+            if regex.search(line):
+                hits.append(f"{fpath}:{idx}:{line}")
+                if len(hits) >= max_hits:
+                    return "\n".join(hits)
+    return "\n".join(hits) if hits else "(no matches)"
+
+
+def _helper_read(path: str, start: int = 1, end: int = 200) -> str:
+    """Read 1-based inclusive line range from a file with line numbers."""
+    p = Path(path).expanduser()
+    lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    s = max(1, start)
+    e = min(len(lines), end) if end is not None else len(lines)
+    if s > len(lines):
+        return f"(EOF: file has {len(lines)} lines)"
+    return "\n".join(f"{i}: {lines[i - 1]}" for i in range(s, e + 1))
+
+
+def _helper_edit(path: str, old: str, new: str) -> str:
+    """Replace an exact unique occurrence of `old` with `new` in `path`."""
+    p = Path(path).expanduser()
+    text = p.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count == 0:
+        raise ValueError(f"Target text not found in {path}")
+    if count > 1:
+        raise ValueError(f"Target text matched {count} times in {path}; provide more context")
+    p.write_text(text.replace(old, new, 1), encoding="utf-8")
+    return f"Updated {path}"
+
+
+def _helper_write(path: str, content: str) -> str:
+    """Write `content` to `path`, creating parent directories as needed."""
+    p = Path(path).expanduser()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    return f"Wrote {len(content)} chars to {path}"
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -163,6 +288,11 @@ class KernelWorker:
         self._handles: list[BashHandle] = []
         self.mcp = MCPManager(cwd=Path.cwd())
 
+        if not isinstance(sys.stdout, _ContextStreamProxy):
+            sys.stdout = _ContextStreamProxy(_STDOUT_VAR, sys.stdout)  # type: ignore[assignment]
+        if not isinstance(sys.stderr, _ContextStreamProxy):
+            sys.stderr = _ContextStreamProxy(_STDERR_VAR, sys.stderr)  # type: ignore[assignment]
+
         self._namespace: dict[str, Any] = {
             "__name__": "__main__",
             "__builtins__": __builtins__,
@@ -170,6 +300,13 @@ class KernelWorker:
             "BashHandle": BashHandle,
             "BashResult": BashResult,
             "mcp": self.mcp,
+            "ls": _helper_ls,
+            "find": _helper_find,
+            "rg": _helper_rg,
+            "read": _helper_read,
+            "edit": _helper_edit,
+            "write": _helper_write,
+            "gather": asyncio.gather,
         }
         self._reserved_names = set(self._namespace.keys()) | {"_"}
 
@@ -234,10 +371,9 @@ class KernelWorker:
                 flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT,
             )
 
-            with (
-                contextlib.redirect_stdout(stdout_buf),
-                contextlib.redirect_stderr(stderr_buf),
-            ):
+            tok_out = _STDOUT_VAR.set(stdout_buf)
+            tok_err = _STDERR_VAR.set(stderr_buf)
+            try:
                 coro = eval(compiled, self._namespace, self._namespace)
                 if inspect.isawaitable(coro):
                     await coro
@@ -247,6 +383,9 @@ class KernelWorker:
                     if val is not None:
                         self._namespace["_"] = val
                         result_repr = _truncate(repr(val), MAX_REPR_CHARS)
+            finally:
+                _STDOUT_VAR.reset(tok_out)
+                _STDERR_VAR.reset(tok_err)
         except KeyboardInterrupt:
             ok = False
             stderr_buf.write("KeyboardInterrupt: cell execution interrupted\n")
@@ -511,11 +650,12 @@ async def _main() -> None:
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     reader_task = asyncio.create_task(_stdin_reader(queue))
 
-    active_cell_task: asyncio.Task[dict[str, Any]] | None = None
+    active_cell_tasks: set[asyncio.Task[None]] = set()
 
     def _handle_sigint() -> None:
-        if active_cell_task is not None and not active_cell_task.done():
-            active_cell_task.cancel()
+        for t in list(active_cell_tasks):
+            if not t.done():
+                t.cancel()
 
     loop = asyncio.get_running_loop()
     try:
@@ -524,6 +664,10 @@ async def _main() -> None:
         pass
 
     worker._send({"type": "ready"})
+
+    async def _run_and_send(req_id: str, code: str) -> None:
+        res = await worker._exec_cell(req_id, code)
+        worker._send(res)
 
     while True:
         msg = await queue.get()
@@ -534,10 +678,9 @@ async def _main() -> None:
 
         if msg_type == "exec":
             code = msg.get("code", "")
-            active_cell_task = asyncio.create_task(worker._exec_cell(req_id, code))
-            res = await active_cell_task
-            active_cell_task = None
-            worker._send(res)
+            task = asyncio.create_task(_run_and_send(req_id, code))
+            active_cell_tasks.add(task)
+            task.add_done_callback(active_cell_tasks.discard)
         elif msg_type == "list_vars":
             worker._send({"type": "vars_result", "id": req_id, "vars": worker.list_vars()})
         elif msg_type == "running_bash":

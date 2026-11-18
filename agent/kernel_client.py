@@ -44,6 +44,7 @@ class KernelClient:
         self._proc: subprocess.Popen[str] | None = None
         self._pending: dict[str, queue.Queue[dict[str, Any]]] = {}
         self._pending_lock = threading.Lock()
+        self._write_lock = threading.Lock()
         self._events: list[dict[str, Any]] = []
         self._events_cond = threading.Condition()
         self._ready_event = threading.Event()
@@ -128,8 +129,10 @@ class KernelClient:
             self._pending[req_id] = q
 
         try:
-            self._proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
-            self._proc.stdin.flush()
+            line = json.dumps(payload, ensure_ascii=False) + "\n"
+            with self._write_lock:
+                self._proc.stdin.write(line)
+                self._proc.stdin.flush()
             try:
                 return q.get(timeout=timeout)
             except queue.Empty:

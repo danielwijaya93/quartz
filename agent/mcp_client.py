@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from contextlib import AsyncExitStack
@@ -15,6 +16,38 @@ def default_mcp_config_path() -> Path:
     if env_cfg:
         return Path(env_cfg).expanduser().resolve()
     return (Path.home() / ".quartz" / "mcp.json").resolve()
+
+
+def default_mcp_cache_path() -> Path:
+    """Return the local MCP tool-schema cache path (~/.quartz/mcp_cache.json)."""
+    return Path.home() / ".quartz" / "mcp_cache.json"
+
+
+def load_mcp_tool_cache(cache_path: Path | None = None) -> dict[str, list[dict[str, Any]]]:
+    """Load cached MCP tool names and parameter lists by server name."""
+    path = cache_path or default_mcp_cache_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_mcp_tool_cache(
+    updates: dict[str, list[dict[str, Any]]],
+    cache_path: Path | None = None,
+) -> None:
+    """Merge and persist MCP tool summaries into the local cache file."""
+    path = cache_path or default_mcp_cache_path()
+    existing = load_mcp_tool_cache(path)
+    existing.update(updates)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
 
 
 def load_raw_mcp_config(config_path: Path | None = None) -> dict[str, dict[str, Any]]:
@@ -142,6 +175,7 @@ class MCPManager:
         self._cwd = (cwd or Path.cwd()).resolve()
         self._stacks: dict[str, AsyncExitStack] = {}
         self._sessions: dict[str, Any] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
 
     def _servers(self) -> dict[str, dict[str, Any]]:
         return load_mcp_servers(self._cwd)
@@ -154,6 +188,13 @@ class MCPManager:
         if server in self._sessions:
             return self._sessions[server]
 
+        lock = self._locks.setdefault(server, asyncio.Lock())
+        async with lock:
+            if server in self._sessions:
+                return self._sessions[server]
+            return await self._connect_session(server)
+
+    async def _connect_session(self, server: str) -> Any:
         servers = self._servers()
         if server not in servers:
             available = ", ".join(sorted(servers)) or "(none)"
@@ -217,20 +258,33 @@ class MCPManager:
     async def list_tools(self, server: str | None = None) -> list[dict[str, Any]]:
         """List tools from one MCP server or all configured servers."""
         target_servers = [server] if server is not None else self.list_servers()
-        tools_out: list[dict[str, Any]] = []
-        for srv in target_servers:
+
+        async def _fetch_one(srv: str) -> list[dict[str, Any]]:
             session = await self._get_session(srv)
             resp = await session.list_tools()
-            for tool in resp.tools:
-                tools_out.append(
-                    {
-                        "server": srv,
-                        "name": tool.name,
-                        "description": tool.description or "",
-                        "inputSchema": getattr(tool, "input_schema", getattr(tool, "inputSchema", {})),
-                    }
-                )
-        return tools_out
+            return [
+                {
+                    "server": srv,
+                    "name": tool.name,
+                    "description": tool.description or "",
+                    "inputSchema": getattr(tool, "input_schema", getattr(tool, "inputSchema", {})),
+                }
+                for tool in resp.tools
+            ]
+
+        batches = await asyncio.gather(*(_fetch_one(srv) for srv in target_servers))
+        cache_updates: dict[str, list[dict[str, Any]]] = {}
+        for srv, batch in zip(target_servers, batches):
+            cache_updates[srv] = [
+                {
+                    "name": t["name"],
+                    "args": list((t.get("inputSchema") or {}).get("properties", {}).keys()),
+                }
+                for t in batch
+            ]
+        if cache_updates:
+            save_mcp_tool_cache(cache_updates)
+        return [item for batch in batches for item in batch]
 
     async def search_tools(self, query: str) -> list[dict[str, Any]]:
         """Search MCP tools by keyword across all configured servers."""
