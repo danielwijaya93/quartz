@@ -132,7 +132,7 @@ def test_prompt_discovery(tmp_path: Path) -> None:
     )
 
     prompt = build_system_prompt(tmp_path, skills_dir=skills_root, global_agents_path=global_agents)
-    assert "You have `ipython`" in prompt
+    assert "You have one tool, `ipython`" in prompt
     assert "Global rule: be concise." in prompt
     assert "Always use pytest." in prompt
     assert prompt.index("Global rule: be concise.") < prompt.index("Always use pytest.")

@@ -6,7 +6,6 @@ import dataclasses
 import json
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import Any
 
 from openai import BadRequestError, OpenAI
@@ -94,74 +93,8 @@ TOOLS = [
                 "required": ["code"],
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "write",
-            "description": "Create or overwrite a file with raw content (avoids Python string-escaping overhead).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "File path (relative to cwd or absolute)."},
-                    "content": {"type": "string", "description": "Full file contents to write."},
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "edit",
-            "description": "Replace an exact unique string in an existing file.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "File path (relative to cwd or absolute)."},
-                    "old": {"type": "string", "description": "Exact existing text to replace."},
-                    "new": {"type": "string", "description": "Replacement text."},
-                },
-                "required": ["path", "old", "new"],
-            },
-        },
-    },
+    }
 ]
-
-
-def _exec_file_tool(fn_name: str, args: dict[str, Any], cwd: Path) -> CellResult:
-    """Execute `write` or `edit` directly on disk without kernel round-trip."""
-    try:
-        raw_path = str(args.get("path", "")).strip()
-        if not raw_path:
-            return CellResult(ok=False, stdout="", stderr="Missing 'path' argument", result=None)
-        p = Path(raw_path).expanduser()
-        if not p.is_absolute():
-            p = cwd / p
-        if fn_name == "write":
-            content = str(args.get("content", ""))
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(content, encoding="utf-8")
-            return CellResult(ok=True, stdout=f"Wrote {len(content)} chars to {raw_path}\n", stderr="", result=None)
-        if fn_name == "edit":
-            old = str(args.get("old", ""))
-            new = str(args.get("new", ""))
-            text = p.read_text(encoding="utf-8")
-            count = text.count(old)
-            if count == 0:
-                return CellResult(ok=False, stdout="", stderr=f"Target text not found in {raw_path}", result=None)
-            if count > 1:
-                return CellResult(
-                    ok=False,
-                    stdout="",
-                    stderr=f"Target text matched {count} times in {raw_path}; provide more context",
-                    result=None,
-                )
-            p.write_text(text.replace(old, new, 1), encoding="utf-8")
-            return CellResult(ok=True, stdout=f"Updated {raw_path}\n", stderr="", result=None)
-        return CellResult(ok=False, stdout="", stderr=f"Unknown file tool: {fn_name}", result=None)
-    except Exception as exc:
-        return CellResult(ok=False, stdout="", stderr=f"{type(exc).__name__}: {exc}", result=None)
 
 
 def format_bash_done_events(events: list[dict[str, Any]]) -> str | None:
@@ -430,46 +363,32 @@ def agent_loop(
         if not tool_calls:
             return (assistant_dict.get("content") or "").strip(), messages, last_prompt_tokens
 
-        parsed_calls: list[tuple[str, str, dict[str, Any], str]] = []
+        parsed_calls: list[tuple[str, str, str | None]] = []
         for tc in tool_calls:
             fn_name = tc["function"]["name"]
             tc_id = tc["id"]
-            if fn_name not in ("ipython", "write", "edit"):
-                parsed_calls.append((tc_id, fn_name, {}, ""))
+            if fn_name != "ipython":
+                parsed_calls.append((tc_id, fn_name, None))
                 continue
             try:
                 args = json.loads(tc["function"]["arguments"] or "{}")
-                if not isinstance(args, dict):
-                    args = {}
+                code = args.get("code", "")
             except json.JSONDecodeError:
-                args = {"code": tc["function"]["arguments"] or ""} if fn_name == "ipython" else {}
-            if fn_name == "ipython":
-                display_code = str(args.get("code", ""))
-            elif fn_name == "write":
-                display_code = f"write({args.get('path', '')!r}, ...)"
-            else:
-                display_code = f"edit({args.get('path', '')!r}, ...)"
-            parsed_calls.append((tc_id, fn_name, args, display_code))
+                code = tc["function"]["arguments"] or ""
+            parsed_calls.append((tc_id, fn_name, code))
 
-        valid_indices = [i for i, (_, fn, _, _) in enumerate(parsed_calls) if fn in ("ipython", "write", "edit")]
-
-        def _run_one(idx_i: int) -> CellResult:
-            _, fn, args_dict, _ = parsed_calls[idx_i]
-            if fn == "ipython":
-                return kernel.exec_cell(str(args_dict.get("code", "")))
-            return _exec_file_tool(fn, args_dict, kernel.cwd)
-
-        if len(valid_indices) > 1:
-            for i in valid_indices:
+        ipython_indices = [i for i, (_, fn, _) in enumerate(parsed_calls) if fn == "ipython"]
+        if len(ipython_indices) > 1:
+            for i in ipython_indices:
                 if on_tool_call:
-                    on_tool_call(parsed_calls[i][3])
+                    on_tool_call(parsed_calls[i][2] or "")
             if on_status:
                 on_status("Running ipython...")
             results_by_idx: dict[int, CellResult] = {}
             try:
-                with ThreadPoolExecutor(max_workers=min(len(valid_indices), 8)) as pool:
-                    futures = {i: pool.submit(_run_one, i) for i in valid_indices}
-                    for i in valid_indices:
+                with ThreadPoolExecutor(max_workers=min(len(ipython_indices), 8)) as pool:
+                    futures = {i: pool.submit(kernel.exec_cell, parsed_calls[i][2] or "") for i in ipython_indices}
+                    for i in ipython_indices:
                         results_by_idx[i] = futures[i].result()
             except KeyboardInterrupt:
                 if on_status:
@@ -488,13 +407,13 @@ def agent_loop(
                 if on_status:
                     on_status(None)
 
-            for i, (tc_id, fn_name, _, _) in enumerate(parsed_calls):
-                if fn_name not in ("ipython", "write", "edit"):
+            for i, (tc_id, fn_name, _) in enumerate(parsed_calls):
+                if fn_name != "ipython":
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tc_id,
-                            "content": f"Unknown tool: {fn_name}. Available: ipython, write, edit.",
+                            "content": f"Unknown tool: {fn_name}. Only `ipython` is available.",
                         }
                     )
                     continue
@@ -509,19 +428,20 @@ def agent_loop(
                     }
                 )
         else:
-            for idx, (tc_id, fn_name, args_dict, display_code) in enumerate(parsed_calls):
-                if fn_name not in ("ipython", "write", "edit"):
-                    result_text = f"Unknown tool: {fn_name}. Available: ipython, write, edit."
+            for idx, (tc_id, fn_name, code) in enumerate(parsed_calls):
+                if fn_name != "ipython":
+                    result_text = f"Unknown tool: {fn_name}. Only `ipython` is available."
                     messages.append({"role": "tool", "tool_call_id": tc_id, "content": result_text})
                     continue
 
+                assert code is not None
                 if on_tool_call:
-                    on_tool_call(display_code)
+                    on_tool_call(code)
 
                 if on_status:
                     on_status("Running ipython...")
                 try:
-                    cell_res = _run_one(idx)
+                    cell_res = kernel.exec_cell(code)
                 except KeyboardInterrupt:
                     if on_status:
                         on_status(None)

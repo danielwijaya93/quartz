@@ -12,7 +12,7 @@ from agent.mcp_client import load_mcp_servers, load_mcp_tool_cache
 
 STATIC_SYSTEM_PROMPT = """# Quartz
 
-You have `ipython` (a persistent CPython REPL where top-level `await` works) plus direct `write` and `edit` tools for file creation/edits. Prefer `write`/`edit` over wrapping large file contents in Python strings. Messages that start with `[<kind>]` come from the harness, not from the user.
+You have one tool, `ipython`: a persistent CPython REPL where top-level `await` works. Every other capability is a Python function in that REPL. Messages that start with `[<kind>]` come from the harness, not from the user.
 
 ## Functions in the REPL
 
