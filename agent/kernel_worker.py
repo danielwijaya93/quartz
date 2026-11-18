@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import contextvars
 import dataclasses
+import difflib
 import fnmatch
 import inspect
 import io
@@ -21,6 +22,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from collections import deque
@@ -150,7 +152,7 @@ def _helper_read(path: str, start: int = 1, end: int = 200) -> str:
 
 
 def _helper_edit(path: str, old: str, new: str) -> str:
-    """Replace an exact unique occurrence of `old` with `new` in `path`."""
+    """Replace an exact unique occurrence of `old` with `new` in `path` and return a unified diff."""
     p = Path(path).expanduser()
     text = p.read_text(encoding="utf-8")
     count = text.count(old)
@@ -158,8 +160,21 @@ def _helper_edit(path: str, old: str, new: str) -> str:
         raise ValueError(f"Target text not found in {path}")
     if count > 1:
         raise ValueError(f"Target text matched {count} times in {path}; provide more context")
-    p.write_text(text.replace(old, new, 1), encoding="utf-8")
-    return f"Updated {path}"
+    updated = text.replace(old, new, 1)
+    p.write_text(updated, encoding="utf-8")
+    diff_lines = list(
+        difflib.unified_diff(
+            text.splitlines(),
+            updated.splitlines(),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+            n=2,
+            lineterm="",
+        )
+    )
+    if not diff_lines:
+        return f"Updated {path} (no changes)"
+    return f"Updated {path}\n{_truncate(chr(10).join(diff_lines), 8000)}"
 
 
 def _helper_write(path: str, content: str) -> str:
@@ -176,6 +191,21 @@ def _truncate(text: str, limit: int) -> str:
     half = limit // 2
     omitted = len(text) - limit
     return f"{text[:half]}\n... [{omitted} chars truncated] ...\n{text[-half:]}"
+
+
+def _spill_or_truncate(text: str, limit: int, kind: str, cell_id: str) -> str:
+    """Return text if within limit, otherwise spill full text to disk and truncate inline."""
+    if len(text) <= limit:
+        return text
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", cell_id or "cell")
+    spill_dir = Path(tempfile.gettempdir()) / "quartz_outputs"
+    spill_dir.mkdir(parents=True, exist_ok=True)
+    spill_path = spill_dir / f"{safe_id}_{kind}.txt"
+    spill_path.write_text(text, encoding="utf-8")
+    return (
+        f"{_truncate(text, limit)}\n"
+        f"[full {kind} ({len(text):,} chars) saved to {spill_path}; use read()/rg() to inspect]"
+    )
 
 
 @dataclasses.dataclass
@@ -407,7 +437,7 @@ class KernelWorker:
                     val = self._namespace.pop("__last_expr__")
                     if val is not None:
                         self._namespace["_"] = val
-                        result_repr = _truncate(repr(val), MAX_REPR_CHARS)
+                        result_repr = _spill_or_truncate(repr(val), MAX_REPR_CHARS, "result", cell_id)
             finally:
                 _STDOUT_VAR.reset(tok_out)
                 _STDERR_VAR.reset(tok_err)
@@ -428,8 +458,8 @@ class KernelWorker:
             "type": "exec_result",
             "id": cell_id,
             "ok": ok,
-            "stdout": _truncate(stdout_buf.getvalue(), MAX_OUTPUT_CHARS),
-            "stderr": _truncate(stderr_buf.getvalue(), MAX_OUTPUT_CHARS),
+            "stdout": _spill_or_truncate(stdout_buf.getvalue(), MAX_OUTPUT_CHARS, "stdout", cell_id),
+            "stderr": _spill_or_truncate(stderr_buf.getvalue(), MAX_OUTPUT_CHARS, "stderr", cell_id),
             "result": result_repr,
             "images": cell_images,
             "running_bash": sum(1 for h in self._handles if h.running),
@@ -554,15 +584,28 @@ async def _main() -> None:
 
     active_cell_tasks: set[asyncio.Task[None]] = set()
 
-    def _handle_sigint() -> None:
+    def _cancel_active_tasks() -> None:
         for t in list(active_cell_tasks):
             if not t.done():
                 t.cancel()
 
+    def _in_cell_frame(frame: Any) -> bool:
+        while frame is not None:
+            if frame.f_code.co_filename == "<ipython>":
+                return True
+            frame = frame.f_back
+        return False
+
     loop = asyncio.get_running_loop()
+
+    def _sigint_handler(_signum: int, frame: Any) -> None:
+        if _in_cell_frame(frame):
+            raise KeyboardInterrupt
+        loop.call_soon_threadsafe(_cancel_active_tasks)
+
     try:
-        loop.add_signal_handler(signal.SIGINT, _handle_sigint)
-    except NotImplementedError:
+        signal.signal(signal.SIGINT, _sigint_handler)
+    except (ValueError, OSError):
         pass
 
     worker._send({"type": "ready"})

@@ -179,6 +179,40 @@ def _unwrap_tool_result(
     return parsed_items[0] if len(parsed_items) == 1 else parsed_items
 
 
+class _MCPToolProxy:
+    """Callable proxy for `await mcp.<server>.<tool>(**kwargs)`."""
+
+    def __init__(self, manager: MCPManager, server: str, tool: str) -> None:
+        self._manager = manager
+        self._server = server
+        self._tool = tool
+
+    def __call__(self, **kwargs: Any) -> Any:
+        return self._manager.call_tool(self._server, self._tool, arguments=kwargs)
+
+    def __repr__(self) -> str:
+        return f"<MCPTool {self._server}.{self._tool}>"
+
+
+class _MCPServerProxy:
+    """Attribute/item proxy for `mcp.<server>` and `mcp['server']`."""
+
+    def __init__(self, manager: MCPManager, server: str) -> None:
+        self._manager = manager
+        self._server = server
+
+    def __getattr__(self, tool: str) -> _MCPToolProxy:
+        if tool.startswith("__") and tool.endswith("__"):
+            raise AttributeError(tool)
+        return _MCPToolProxy(self._manager, self._server, tool)
+
+    def __getitem__(self, tool: str) -> _MCPToolProxy:
+        return _MCPToolProxy(self._manager, self._server, tool)
+
+    def __repr__(self) -> str:
+        return f"<MCPServer {self._server!r}>"
+
+
 class MCPManager:
     """Lazy-connecting MCP client exposed as `mcp` inside the Python REPL."""
 
@@ -193,6 +227,14 @@ class MCPManager:
         self._sessions: dict[str, Any] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._on_image = on_image
+
+    def __getattr__(self, server: str) -> _MCPServerProxy:
+        if server.startswith("__") and server.endswith("__"):
+            raise AttributeError(server)
+        return _MCPServerProxy(self, server)
+
+    def __getitem__(self, server: str) -> _MCPServerProxy:
+        return _MCPServerProxy(self, server)
 
     def _servers(self) -> dict[str, dict[str, Any]]:
         return load_mcp_servers(self._cwd)

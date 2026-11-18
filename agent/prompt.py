@@ -159,7 +159,7 @@ def build_system_prompt(
         mcp_lines = [
             "## MCP Servers\n\n"
             "Call them from Python via the pre-imported `mcp` object "
-            "(`await mcp.call_tool(server, tool, arguments={...})`, or `await mcp.list_tools(server)`):"
+            "(`await mcp.<server>.<tool>(...)`, `await mcp.call_tool(server, tool, arguments={...})`, or `await mcp.list_tools(server)`):"
         ]
         for name in sorted(mcp_servers):
             cached = tool_cache.get(name)

@@ -376,3 +376,99 @@ def test_kernel_wait_for_events_returns_fast_on_exit(tmp_path: Path) -> None:
     assert events == []
     assert elapsed < 2.0
     kernel.close()
+
+
+def test_kernel_spill_large_output(tmp_path: Path) -> None:
+    import re
+
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    spill_file: Path | None = None
+    try:
+        res = kernel.exec_cell("print('A' * 140_000, end='')")
+        assert res.ok
+        assert "chars truncated" in res.stdout
+        m = re.search(r"saved to ([^;]+); use read\(\)/rg\(\) to inspect", res.stdout)
+        assert m is not None
+        spill_file = Path(m.group(1))
+        assert spill_file.is_file()
+        assert len(spill_file.read_text(encoding="utf-8")) == 140_000
+    finally:
+        if spill_file is not None and spill_file.exists():
+            spill_file.unlink()
+        kernel.close()
+
+
+def test_mcp_proxy_delegates_to_call_tool() -> None:
+    import asyncio
+    from agent.mcp_client import MCPManager
+
+    mgr = MCPManager()
+    calls: list[tuple[str, str, dict[str, object] | None]] = []
+
+    async def fake_call_tool(
+        server: str, tool: str, arguments: dict[str, object] | None = None
+    ) -> str:
+        calls.append((server, tool, arguments))
+        return "ok"
+
+    mgr.call_tool = fake_call_tool  # type: ignore[method-assign]
+
+    async def _run() -> None:
+        r1 = await mgr.github.search_issues(q="bug", limit=5)
+        r2 = await mgr["my-server"]["my-tool"](x=1)
+        assert r1 == "ok"
+        assert r2 == "ok"
+
+    asyncio.run(_run())
+    assert calls == [
+        ("github", "search_issues", {"q": "bug", "limit": 5}),
+        ("my-server", "my-tool", {"x": 1}),
+    ]
+
+
+def test_kernel_interrupt_sync_loop(tmp_path: Path) -> None:
+    import threading
+    from agent.kernel_client import CellResult
+
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    holder: list[CellResult] = []
+    try:
+        t = threading.Thread(
+            target=lambda: holder.append(kernel.exec_cell("while True: pass", timeout=10.0))
+        )
+        t.start()
+        time.sleep(0.2)
+        kernel.interrupt()
+        t.join(timeout=3.0)
+        assert not t.is_alive()
+        assert len(holder) == 1
+        assert not holder[0].ok
+        assert "KeyboardInterrupt" in holder[0].stderr
+
+        # Kernel remains alive and responsive after interrupting a sync loop
+        r2 = kernel.exec_cell("1 + 1")
+        assert r2.ok
+        assert r2.result == "2"
+    finally:
+        kernel.close()
+
+
+def test_kernel_edit_returns_unified_diff(tmp_path: Path) -> None:
+    target = tmp_path / "sample.py"
+    target.write_text("def greet():\n    return 'hi'\n", encoding="utf-8")
+
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        res = kernel.exec_cell(
+            f"edit({str(target)!r}, \"return 'hi'\", \"return 'hello'\")"
+        )
+        assert res.ok
+        assert res.result is not None
+        assert "Updated" in res.result
+        assert "-    return 'hi'" in res.result
+        assert "+    return 'hello'" in res.result
+    finally:
+        kernel.close()
