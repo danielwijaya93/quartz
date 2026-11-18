@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import codecs
+import dataclasses
 import os
 import queue
 import select
@@ -179,6 +181,7 @@ class _MidTurnInputWatcher:
     def _run(self) -> None:
         assert self._fd is not None
         buf: list[str] = []
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="ignore")
         while not self._stop.is_set():
             try:
                 ready, _, _ = select.select([self._fd], [], [], 0.05)
@@ -192,33 +195,34 @@ class _MidTurnInputWatcher:
                 return
             if not raw:
                 return
-            ch = raw.decode("utf-8", errors="ignore")
-            if ch == "\x1b":
-                # Distinguish standalone Esc from terminal escape sequences (arrows, etc.)
-                more, _, _ = select.select([self._fd], [], [], 0.05)
-                if not more:
-                    self._abort_event.set()
-                    if self._on_abort:
-                        self._on_abort()
-                    return
-                # Drain rest of escape sequence
-                while select.select([self._fd], [], [], 0.005)[0]:
-                    os.read(self._fd, 16)
-                continue
-            if ch in ("\r", "\n"):
-                msg = "".join(buf).strip()
-                buf.clear()
-                if msg:
-                    self._steering_queue.put(msg)
-                    if self._on_queued:
-                        self._on_queued(msg)
-                continue
-            if ch in ("\x7f", "\x08"):
-                if buf:
-                    buf.pop()
-                continue
-            if ch >= " ":
-                buf.append(ch)
+            text = decoder.decode(raw)
+            for ch in text:
+                if ch == "\x1b":
+                    # Distinguish standalone Esc from terminal escape sequences (arrows, etc.)
+                    more, _, _ = select.select([self._fd], [], [], 0.05)
+                    if not more:
+                        self._abort_event.set()
+                        if self._on_abort:
+                            self._on_abort()
+                        return
+                    # Drain rest of escape sequence
+                    while select.select([self._fd], [], [], 0.005)[0]:
+                        os.read(self._fd, 16)
+                    continue
+                if ch in ("\r", "\n"):
+                    msg = "".join(buf).strip()
+                    buf.clear()
+                    if msg:
+                        self._steering_queue.put(msg)
+                        if self._on_queued:
+                            self._on_queued(msg)
+                    continue
+                if ch in ("\x7f", "\x08"):
+                    if buf:
+                        buf.pop()
+                    continue
+                if ch >= " ":
+                    buf.append(ch)
 
 
 class BlockPrinter:
@@ -369,12 +373,6 @@ def _parse_expand_range(arg: str, total: int) -> tuple[int, int]:
     return idx, idx
 
 
-def _render_cell_summary(index: int, code: str, res: CellResult, duration: float) -> None:
-    """Print the one-line chip for an executed ipython cell (brackets stay literal)."""
-    summary = format_compact_cell_summary(index, code, res, duration)
-    printer.block(Text(summary, style="dim green" if res.ok else "red"))
-
-
 def _pick_option(
     title: str, options: list[tuple[str, str]], current: str | None = None
 ) -> str | None:
@@ -412,53 +410,6 @@ def _pick_option(
     @kb.add("enter")
     def _(event: Any) -> None:
         event.app.exit(result=options[selected_idx[0]][0])
-
-    @kb.add("escape")
-    @kb.add("c-c")
-    def _(event: Any) -> None:
-        event.app.exit(result=None)
-
-    app: Application[str | None] = Application(
-        layout=Layout(Window(content=FormattedTextControl(_get_text), always_hide_cursor=True)),
-        key_bindings=kb,
-        full_screen=False,
-    )
-    return app.run()
-
-
-def _pick_session(sessions: list[dict[str, Any]], current_id: str) -> str | None:
-    """Inline arrow-key picker for selecting a session (Up/Down, Enter, Esc)."""
-    selected_idx = [0]
-
-    def _get_text() -> list[tuple[str, str]]:
-        frags: list[tuple[str, str]] = [
-            ("bold", "Select a session (↑/↓ to move, Enter to resume, Esc to cancel):\n")
-        ]
-        for i, item in enumerate(sessions):
-            is_sel = i == selected_idx[0]
-            marker = "❯ " if is_sel else "  "
-            cur = " (current)" if item["id"] == current_id else ""
-            preview = f" — {item['preview']}" if item["preview"] else ""
-            line = f"{marker}{item['id']} | {item['updated_at']} | {item['message_count']} msgs{cur}{preview}\n"
-            style = "reverse bold cyan" if is_sel else ""
-            frags.append((style, line))
-        return frags
-
-    kb = KeyBindings()
-
-    @kb.add("up")
-    @kb.add("k")
-    def _(event: Any) -> None:
-        selected_idx[0] = (selected_idx[0] - 1) % len(sessions)
-
-    @kb.add("down")
-    @kb.add("j")
-    def _(event: Any) -> None:
-        selected_idx[0] = (selected_idx[0] + 1) % len(sessions)
-
-    @kb.add("enter")
-    def _(event: Any) -> None:
-        event.app.exit(result=sessions[selected_idx[0]]["id"])
 
     @kb.add("escape")
     @kb.add("c-c")
@@ -818,6 +769,623 @@ def _handle_mcp_cli(argv: list[str]) -> None:
         console.print(f"[green]Saved MCP server '{args.name}' to {saved_path}[/green]")
 
 
+@dataclasses.dataclass
+class _CLIRuntime:
+    """Mutable session and UI state for one CLI invocation."""
+
+    cwd: Path
+    kernel: KernelClient
+    client: Any
+    provider_name: str
+    model: str
+    effort: str
+    system_prompt: str
+    active_session: Session
+    messages: list[dict[str, Any]]
+    usage_stats: TurnUsage
+    max_context_tokens: int
+    compact_reserve_tokens: int
+    keep_recent_messages: int
+    verbose: bool
+    plain_output: bool
+    headless: bool
+    cell_history: list[tuple[str, CellResult, float]] = dataclasses.field(default_factory=list)
+    pending_images: list[ImageAttachment] = dataclasses.field(default_factory=list)
+    total_elapsed_s: float = 0.0
+    turn_count: int = 0
+
+    def persist(self, *, compacted: bool = False) -> None:
+        self.active_session.save_messages(self.messages, compacted=compacted)
+        if self.usage_stats.prompt_tokens > 0 or self.usage_stats.total_prompt_tokens > 0:
+            self.active_session.save_usage(self.usage_stats.to_dict())
+        if not self.headless:
+            self.active_session.save_kernel(self.kernel)
+
+
+def _run_turn(
+    rt: _CLIRuntime,
+    *,
+    abort_event: threading.Event | None = None,
+    steering_queue: queue.Queue[str] | None = None,
+    on_steering: Callable[[str], None] | None = None,
+) -> tuple[str, list[dict[str, Any]], int]:
+    pending_cell_code: list[str] = []
+    pending_cell_start: list[float] = []
+    active_status: list[Status] = []
+    streamed_any = [False]
+    md_streamer = MarkdownBlockStreamer(printer.markdown)
+    cell_group = CellGroupBuffer()
+
+    def _on_status(label: str | None) -> None:
+        if rt.plain_output:
+            return
+        if label is None:
+            if active_status:
+                active_status.pop().__exit__(None, None, None)
+            return
+        if label == "Running ipython...":
+            action = describe_cell_actions(pending_cell_code[-1]) if pending_cell_code else "Run Python"
+            if cell_group.entries:
+                label = f"{action} #{len(rt.cell_history) + 1} ({len(cell_group.entries)} done)..."
+            else:
+                label = f"{action}..."
+        if active_status:
+            active_status[-1].update(label)
+        else:
+            st = console.status(label, spinner="dots")
+            st.__enter__()
+            active_status.append(st)
+
+    def _on_text_delta(chunk: str) -> None:
+        cell_group.flush()
+        streamed_any[0] = True
+        if rt.plain_output:
+            sys.stdout.write(chunk)
+            sys.stdout.flush()
+        else:
+            md_streamer.feed(chunk)
+
+    def _on_tool_call(code: str) -> None:
+        if streamed_any[0]:
+            if rt.plain_output:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+            else:
+                md_streamer.flush()
+            streamed_any[0] = False
+        pending_cell_code.append(code)
+        pending_cell_start.append(time.monotonic())
+        if rt.verbose:
+            _render_tool_call(code)
+
+    def _on_tool_result(res: CellResult) -> None:
+        code = pending_cell_code.pop(0) if pending_cell_code else ""
+        started = pending_cell_start.pop(0) if pending_cell_start else time.monotonic()
+        duration = time.monotonic() - started
+        rt.cell_history.append((code, res, duration))
+        if rt.verbose:
+            _render_tool_result(res)
+        else:
+            cell_group.add(len(rt.cell_history), code, res, duration)
+
+    streamed_any[0] = False
+    printer.reset()
+    try:
+        answer, updated_msgs, tokens = agent_loop(
+            rt.client,
+            rt.model,
+            rt.system_prompt,
+            rt.messages,
+            rt.kernel,
+            max_context_tokens=rt.max_context_tokens,
+            compact_reserve_tokens=rt.compact_reserve_tokens,
+            keep_recent_messages=rt.keep_recent_messages,
+            on_tool_call=_on_tool_call,
+            on_tool_result=_on_tool_result,
+            on_compaction=lambda s, k: (cell_group.flush(), _render_compaction(s, k)),
+            on_bash_notice=lambda n: (cell_group.flush(), _render_bash_notice(n)),
+            on_status=_on_status,
+            on_text_delta=_on_text_delta,
+            usage_stats=rt.usage_stats,
+            initial_prompt_tokens=rt.usage_stats.prompt_tokens,
+            effort=rt.effort,
+            abort_event=abort_event,
+            steering_queue=steering_queue,
+            on_steering=on_steering,
+        )
+    finally:
+        _on_status(None)
+        cell_group.flush()
+        if rt.plain_output:
+            if streamed_any[0]:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+        else:
+            md_streamer.flush()
+    if not streamed_any[0] and answer:
+        if rt.plain_output:
+            sys.stdout.write(answer.rstrip() + "\n")
+            sys.stdout.flush()
+        else:
+            printer.markdown(answer)
+    return answer, updated_msgs, tokens
+
+
+def _run_headless(
+    rt: _CLIRuntime, prompt: str, image_args: list[str], background_wait: float
+) -> None:
+    cli_images: list[ImageAttachment] = []
+    for raw_img in image_args:
+        img_path = Path(raw_img).expanduser()
+        if not img_path.is_absolute():
+            img_path = rt.cwd / img_path
+        try:
+            cli_images.append(load_image_file(img_path))
+        except (FileNotFoundError, ValueError) as exc:
+            console.print(f"[red]Error: {escape(str(exc))}[/red]")
+            return
+    cli_images.extend(extract_inline_image_mentions(prompt, rt.cwd))
+    rt.messages.append({"role": "user", "content": build_user_content(prompt, cli_images)})
+    _, rt.messages, _ = _run_turn(rt)
+    rt.persist()
+
+    while background_wait > 0 and (
+        rt.kernel.has_pending_events() or rt.kernel.running_bash_count() > 0
+    ):
+        events = rt.kernel.wait_for_events(timeout=background_wait)
+        if not events:
+            break
+        notice = format_bash_done_events(events)
+        if not notice:
+            continue
+        _render_bash_notice(notice)
+        rt.messages.append({"role": "user", "content": notice})
+        _, rt.messages, _ = _run_turn(rt)
+        rt.persist()
+
+
+def _execute_interactive_turn(rt: _CLIRuntime) -> None:
+    abort_event = threading.Event()
+    steering_queue: queue.Queue[str] = queue.Queue()
+
+    def _on_queued(text: str) -> None:
+        preview = text[:60] + ("..." if len(text) > 60 else "")
+        printer.block(Text(f"[queued] {preview}", style="dim cyan"))
+
+    def _on_steering(text: str) -> None:
+        preview = text[:60] + ("..." if len(text) > 60 else "")
+        printer.block(Text(f"[steering] {preview}", style="cyan"))
+
+    t0 = time.monotonic()
+    with _MidTurnInputWatcher(
+        abort_event,
+        steering_queue,
+        on_abort=rt.kernel.interrupt,
+        on_queued=_on_queued,
+    ):
+        _, rt.messages, tokens = _run_turn(
+            rt,
+            abort_event=abort_event,
+            steering_queue=steering_queue,
+            on_steering=_on_steering,
+        )
+    turn_elapsed = time.monotonic() - t0
+    rt.total_elapsed_s += turn_elapsed
+    rt.turn_count += 1
+    rt.persist()
+    printer.block(Text(_format_turn_timing(turn_elapsed, rt.total_elapsed_s, rt.turn_count), style="dim"))
+    if tokens:
+        printer.block(Text(_format_turn_footer(rt.usage_stats, rt.max_context_tokens), style="dim"))
+
+
+def _handle_slash_command(rt: _CLIRuntime, user_input: str) -> bool | None:
+    """Handle a slash command. Returns True to exit, False if handled, None if not a command."""
+    if user_input in ("/exit", "/quit"):
+        return True
+    if user_input == "/help":
+        console.print(
+            Text(
+                "/model           Choose provider, model, and reasoning effort\n"
+                "/continue [id]   Pick and resume a previous session in this directory\n"
+                "/image [path]    Attach an image for the next message (or: clear)\n"
+                "/paste           Attach an image from the system clipboard\n"
+                "/vars            List live Python variables in the kernel\n"
+                "/session         Show active session ID and file paths\n"
+                "/usage           Show context window usage and cache hit rate\n"
+                "/expand [n|a..b] Expand a collapsed ipython cell or range (default: latest)\n"
+                "/compact [focus] Summarize older messages while keeping the kernel alive\n"
+                "/prompt          Show the assembled system prompt\n"
+                "/reset           Clear conversation history, start a new session, and restart the kernel\n"
+                "/exit            Exit"
+            )
+        )
+        return False
+    if user_input == "/paste":
+        try:
+            img = load_clipboard_image()
+        except Exception as exc:
+            console.print(f"[red]Error: {escape(str(exc))}[/red]")
+            return False
+        rt.pending_images.append(img)
+        console.print(
+            f"[green]Attached clipboard image ([bold]{escape(img.mime_type)}[/bold]); "
+            f"{len(rt.pending_images)} image(s) queued for next message.[/green]"
+        )
+        return False
+    if user_input == "/image" or user_input.startswith("/image "):
+        arg = user_input[len("/image") :].strip()
+        if not arg:
+            if not rt.pending_images:
+                console.print("[dim]No images queued. Use /image <path>, /paste, or @image_path.[/dim]")
+            else:
+                names = ", ".join(img.label for img in rt.pending_images)
+                console.print(f"[cyan]Queued ({len(rt.pending_images)}):[/cyan] {escape(names)}")
+            return False
+        if arg == "clear":
+            rt.pending_images.clear()
+            console.print("[dim]Cleared queued images.[/dim]")
+            return False
+        img_path = Path(arg).expanduser()
+        if not img_path.is_absolute():
+            img_path = rt.cwd / img_path
+        try:
+            img = load_image_file(img_path)
+        except (FileNotFoundError, ValueError) as exc:
+            console.print(f"[red]Error: {escape(str(exc))}[/red]")
+            return False
+        rt.pending_images.append(img)
+        console.print(
+            f"[green]Attached [bold]{escape(img.label)}[/bold] ([cyan]{escape(img.mime_type)}[/cyan]); "
+            f"{len(rt.pending_images)} image(s) queued for next message.[/green]"
+        )
+        return False
+    if user_input == "/model":
+        provider_opts: list[tuple[str, str]] = []
+        for pname, pspec in PROVIDERS.items():
+            if pspec["backend"] == "google":
+                ready = "logged in" if load_google_credentials() is not None else "not logged in"
+            else:
+                ready = "configured" if os.getenv("OPENAI_API_KEY") else "no API key"
+            provider_opts.append((pname, f"{pspec['label']} ({ready})"))
+
+        picked_provider = _pick_option("Provider", provider_opts, current=rt.provider_name)
+        if not picked_provider:
+            console.print("[dim]Cancelled.[/dim]")
+            return False
+
+        pspec = PROVIDERS[picked_provider]
+        if len(pspec["models"]) > 1:
+            model_opts = [(m, m) for m in pspec["models"]]
+            picked_model = _pick_option("Model", model_opts, current=rt.model)
+            if not picked_model:
+                console.print("[dim]Cancelled.[/dim]")
+                return False
+        else:
+            picked_model = pspec["models"][0]
+
+        effort_opts = [(e, e) for e in pspec["efforts"]]
+        picked_effort = _pick_option(
+            f"Reasoning Effort ({picked_model})",
+            effort_opts,
+            current=rt.effort if picked_provider == rt.provider_name else pspec["default_effort"],
+        )
+        if not picked_effort:
+            console.print("[dim]Cancelled.[/dim]")
+            return False
+
+        try:
+            rt.client, rt.provider_name, rt.model, rt.effort = _build_client(
+                provider=picked_provider,
+                model_override=picked_model,
+                effort_override=picked_effort,
+            )
+        except SystemExit:
+            return False
+        save_model_config(rt.provider_name, rt.model, rt.effort)
+        console.print(
+            f"[green]Switched to [bold]{rt.provider_name}[/bold] / [bold]{rt.model}[/bold] "
+            f"(effort: [bold]{rt.effort}[/bold])[/green]"
+        )
+        return False
+    if user_input.startswith("/continue"):
+        arg_id = user_input[len("/continue") :].strip() or None
+        if arg_id:
+            chosen_id = arg_id
+        else:
+            sessions_list = Session.list_for_cwd(rt.cwd)
+            if not sessions_list:
+                console.print(f"[dim]No saved sessions found for {escape(_short_path(rt.cwd))}.[/dim]")
+                return False
+            session_opts = [
+                (
+                    item["id"],
+                    f"{item['id']} | {item['updated_at']} | {item['message_count']} msgs"
+                    f"{' (current)' if item['id'] == rt.active_session.id else ''}"
+                    f"{' — ' + item['preview'] if item['preview'] else ''}",
+                )
+                for item in sessions_list
+            ]
+            chosen_id = _pick_option("Select a session", session_opts, current=rt.active_session.id)
+            if not chosen_id:
+                console.print("[dim]Cancelled.[/dim]")
+                return False
+
+        if chosen_id == rt.active_session.id:
+            console.print(f"[dim]Already on session {rt.active_session.id}.[/dim]")
+            return False
+
+        try:
+            new_session, new_messages = Session.load(chosen_id)
+        except FileNotFoundError as exc:
+            console.print(f"[red]Error: {escape(str(exc))}[/red]")
+            return False
+
+        rt.active_session = new_session
+        rt.messages = new_messages
+        rt.cell_history.clear()
+        rt.total_elapsed_s = 0.0
+        rt.turn_count = 0
+        rt.kernel.restart()
+        restored_notice = rt.active_session.restore_kernel(rt.kernel)
+        if restored_notice:
+            rt.messages.append({"role": "user", "content": restored_notice})
+        rt.usage_stats = TurnUsage.from_dict(rt.active_session.last_usage)
+        console.print(f"\n[bold cyan]Switched to session {rt.active_session.id}[/bold cyan]")
+        _replay_session(rt.messages, rt.cell_history, verbose=rt.verbose)
+        if rt.usage_stats.prompt_tokens > 0:
+            printer.block(Text(_format_turn_footer(rt.usage_stats, rt.max_context_tokens), style="dim"))
+        return False
+    if user_input.startswith("/expand") or user_input == "/last":
+        if not rt.cell_history:
+            console.print("[dim]No ipython cells executed in this session yet.[/dim]")
+            return False
+        arg = user_input[len("/expand") :].strip() if user_input.startswith("/expand") else ""
+        try:
+            start_idx, end_idx = _parse_expand_range(arg, len(rt.cell_history))
+        except ValueError:
+            console.print(f"[red]Invalid cell index or range. Choose 1..{len(rt.cell_history)}.[/red]")
+            return False
+        for idx in range(start_idx, end_idx + 1):
+            code, res, duration = rt.cell_history[idx - 1]
+            console.print(f"[dim]Cell #{idx} ({duration:.2f}s)[/dim]")
+            _render_tool_call(code)
+            _render_tool_result(res)
+        return False
+    if user_input == "/usage":
+        pct = rt.usage_stats.context_pct(rt.max_context_tokens)
+        cache_pct = rt.usage_stats.cache_hit_rate * 100.0
+        total_cache = (
+            (rt.usage_stats.total_cached_tokens / rt.usage_stats.total_prompt_tokens * 100.0)
+            if rt.usage_stats.total_prompt_tokens > 0
+            else 0.0
+        )
+        console.print(
+            f"Last context:  {rt.usage_stats.prompt_tokens:,} / {rt.max_context_tokens:,} ({pct:.1f}%)\n"
+            f"Last cache:    {rt.usage_stats.cached_tokens:,} cached ({cache_pct:.1f}%)\n"
+            f"Session total: {rt.usage_stats.total_prompt_tokens:,} in / "
+            f"{rt.usage_stats.total_completion_tokens:,} out / "
+            f"{rt.usage_stats.total_cached_tokens:,} cached ({total_cache:.1f}%)"
+        )
+        return False
+    if user_input == "/session":
+        console.print(
+            f"Session ID: [bold]{escape(rt.active_session.id)}[/bold]\n"
+            f"Log:        {escape(_short_path(rt.active_session.jsonl_path))}\n"
+            f"Snapshot:   {escape(_short_path(rt.active_session.snapshot_dir))}"
+        )
+        return False
+    if user_input == "/vars":
+        vars_info = rt.kernel.list_vars()
+        if not vars_info:
+            console.print("[dim]No user-defined variables in the kernel.[/dim]")
+        else:
+            for name, typ in vars_info.items():
+                line = Text("  ")
+                line.append(name, style="cyan")
+                line.append(f": {typ}")
+                console.print(line)
+        return False
+    if user_input == "/prompt":
+        console.print(Panel(Text(rt.system_prompt), title="System Prompt", border_style="dim"))
+        return False
+    if user_input == "/reset":
+        rt.messages.clear()
+        rt.cell_history.clear()
+        rt.pending_images.clear()
+        rt.usage_stats = TurnUsage()
+        rt.total_elapsed_s = 0.0
+        rt.turn_count = 0
+        rt.kernel.restart()
+        rt.active_session = Session.create(rt.cwd)
+        console.print("[yellow]Conversation cleared, kernel restarted.[/yellow]")
+        return False
+    if user_input.startswith("/compact"):
+        focus = user_input[len("/compact") :].strip() or None
+        rt.messages, summarized, kept = compact_messages(
+            rt.client, rt.model, rt.messages, rt.kernel, keep_recent=rt.keep_recent_messages, focus=focus
+        )
+        if summarized > 0:
+            rt.persist(compacted=True)
+            _render_compaction(summarized, kept)
+        else:
+            console.print("[dim]Nothing to compact yet.[/dim]")
+        return False
+    return None
+
+
+def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
+    console.print(Text("quartz", style="bold blue"))
+
+    if resumed:
+        _replay_session(rt.messages, rt.cell_history, verbose=rt.verbose)
+        if rt.usage_stats.prompt_tokens > 0:
+            printer.block(Text(_format_turn_footer(rt.usage_stats, rt.max_context_tokens), style="dim"))
+
+    kb = KeyBindings()
+
+    @kb.add("c-j")
+    def _(event: Any) -> None:
+        event.current_buffer.insert_text("\n")
+
+    @kb.add("enter")
+    def _(event: Any) -> None:
+        buf = event.current_buffer
+        if buf.text.endswith("\\"):
+            buf.delete_before_cursor(1)
+            buf.insert_text("\n")
+        else:
+            buf.validate_and_handle()
+
+    history_path = Path.home() / ".quartz" / "history"
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    prompt_session: PromptSession[str] = PromptSession(
+        history=FileHistory(str(history_path)),
+        completer=AgentCompleter(rt.cwd),
+        complete_while_typing=True,
+        key_bindings=kb,
+        prompt_continuation="... ",
+    )
+
+    while True:
+        bg_count = rt.kernel.running_bash_count()
+        if rt.kernel.has_pending_events():
+            user_input = _WAKEUP_SENTINEL
+        else:
+            stop_watcher = threading.Event()
+            watcher_thread: threading.Thread | None = None
+            if bg_count > 0:
+                def _watch_wakeup() -> None:
+                    while not stop_watcher.is_set():
+                        with rt.kernel._events_cond:
+                            if not rt.kernel._events:
+                                rt.kernel._events_cond.wait(timeout=0.25)
+                            if rt.kernel._events:
+                                app = prompt_session.app
+                                if app.is_running:
+                                    app.exit(result=_WAKEUP_SENTINEL)
+                                return
+
+                watcher_thread = threading.Thread(target=_watch_wakeup, daemon=True)
+                watcher_thread.start()
+
+            try:
+                toolbar = _format_toolbar(
+                    rt.model, rt.effort, rt.cwd, rt.usage_stats, rt.max_context_tokens, bg_count
+                )
+                user_input = prompt_session.prompt("\n> ", bottom_toolbar=toolbar).strip()
+            except (EOFError, KeyboardInterrupt):
+                console.print("\n[dim]Exiting.[/dim]")
+                break
+            finally:
+                stop_watcher.set()
+                if watcher_thread is not None:
+                    watcher_thread.join(timeout=0.5)
+
+        if user_input == _WAKEUP_SENTINEL:
+            events = rt.kernel.drain_events()
+            notice = format_bash_done_events(events)
+            if not notice:
+                continue
+            _render_bash_notice(notice)
+            rt.messages.append({"role": "user", "content": notice})
+        else:
+            if not user_input:
+                continue
+            cmd_res = _handle_slash_command(rt, user_input)
+            if cmd_res is True:
+                break
+            if cmd_res is False:
+                continue
+            inline_images = extract_inline_image_mentions(user_input, rt.cwd)
+            attached_images = [*rt.pending_images, *inline_images]
+            rt.pending_images.clear()
+            rt.messages.append({"role": "user", "content": build_user_content(user_input, attached_images)})
+
+        try:
+            _execute_interactive_turn(rt)
+        except TurnAborted:
+            rt.kernel.interrupt()
+            rt.persist()
+            console.print("\n[yellow]Aborted (Esc).[/yellow]")
+        except KeyboardInterrupt:
+            rt.kernel.interrupt()
+            console.print("\n[yellow]Interrupted.[/yellow]")
+        except Exception as exc:
+            console.print(f"[red]Error: {escape(str(exc))}[/red]")
+
+
+def _build_runtime(args: argparse.Namespace) -> tuple[_CLIRuntime, bool]:
+    cwd = args.cwd.resolve()
+    max_context_tokens = int(os.getenv("MAX_CONTEXT_TOKENS", "128000"))
+    compact_reserve_tokens = int(os.getenv("COMPACT_RESERVE_TOKENS", "16384"))
+    keep_recent_messages = int(os.getenv("COMPACT_KEEP_RECENT_MESSAGES", "10"))
+
+    kernel = KernelClient(cwd=cwd)
+    kernel_err: list[BaseException] = []
+
+    def _start_kernel() -> None:
+        try:
+            kernel.start()
+        except BaseException as exc:
+            kernel_err.append(exc)
+
+    kernel_thread = threading.Thread(target=_start_kernel, daemon=True)
+    kernel_thread.start()
+    try:
+        client, provider_name, model, effort = _build_client(
+            provider=args.provider, model_override=args.model, effort_override=args.effort
+        )
+        system_prompt = build_system_prompt(cwd, headless=bool(args.prompt))
+    finally:
+        kernel_thread.join()
+    if kernel_err:
+        raise kernel_err[0]
+
+    messages: list[dict[str, Any]] = []
+    resumed = False
+    if args.cont or args.resume:
+        target_id = args.resume or Session.latest_id(cwd=cwd)
+        if not target_id:
+            kernel.close()
+            console.print(f"[red]Error: No previous session found for {escape(_short_path(cwd))}.[/red]")
+            sys.exit(1)
+        try:
+            if args.fork:
+                active_session, messages = Session.fork(target_id, cwd)
+            else:
+                active_session, messages = Session.load(target_id)
+        except FileNotFoundError as exc:
+            kernel.close()
+            console.print(f"[red]Error: {escape(str(exc))}[/red]")
+            sys.exit(1)
+        resumed = True
+        restored_notice = active_session.restore_kernel(kernel)
+        if restored_notice:
+            messages.append({"role": "user", "content": restored_notice})
+    else:
+        active_session = Session.create(cwd)
+
+    rt = _CLIRuntime(
+        cwd=cwd,
+        kernel=kernel,
+        client=client,
+        provider_name=provider_name,
+        model=model,
+        effort=effort,
+        system_prompt=system_prompt,
+        active_session=active_session,
+        messages=messages,
+        usage_stats=TurnUsage.from_dict(active_session.last_usage),
+        max_context_tokens=max_context_tokens,
+        compact_reserve_tokens=compact_reserve_tokens,
+        keep_recent_messages=keep_recent_messages,
+        verbose=args.verbose,
+        plain_output=bool(args.prompt) or not sys.stdout.isatty(),
+        headless=bool(args.prompt),
+    )
+    return rt, resumed
+
+
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "mcp":
         _handle_mcp_cli(sys.argv[2:])
@@ -880,11 +1448,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    cwd = args.cwd.resolve()
-    max_context_tokens = int(os.getenv("MAX_CONTEXT_TOKENS", "128000"))
-    compact_reserve_tokens = int(os.getenv("COMPACT_RESERVE_TOKENS", "16384"))
-    keep_recent_messages = int(os.getenv("COMPACT_KEEP_RECENT_MESSAGES", "10"))
-
     if args.acp:
         from agent.acp import ACPServer
 
@@ -892,579 +1455,23 @@ def main() -> None:
             lambda: _build_client(
                 provider=args.provider, model_override=args.model, effort_override=args.effort
             ),
-            max_context_tokens=max_context_tokens,
-            compact_reserve_tokens=compact_reserve_tokens,
-            keep_recent_messages=keep_recent_messages,
+            max_context_tokens=int(os.getenv("MAX_CONTEXT_TOKENS", "128000")),
+            compact_reserve_tokens=int(os.getenv("COMPACT_RESERVE_TOKENS", "16384")),
+            keep_recent_messages=int(os.getenv("COMPACT_KEEP_RECENT_MESSAGES", "10")),
         )
         server.serve()
         return
 
-    kernel = KernelClient(cwd=cwd)
-    kernel_err: list[BaseException] = []
-
-    def _start_kernel() -> None:
-        try:
-            kernel.start()
-        except BaseException as exc:
-            kernel_err.append(exc)
-
-    kernel_thread = threading.Thread(target=_start_kernel, daemon=True)
-    kernel_thread.start()
-
-    try:
-        client, provider_name, model, effort = _build_client(
-            provider=args.provider, model_override=args.model, effort_override=args.effort
-        )
-        system_prompt = build_system_prompt(cwd, headless=bool(args.prompt))
-    finally:
-        kernel_thread.join()
-    if kernel_err:
-        raise kernel_err[0]
-
-    messages: list[dict[str, Any]] = []
-    resumed = False
-    restored_notice: str | None = None
-    if args.cont or args.resume:
-        target_id = args.resume or Session.latest_id(cwd=cwd)
-        if not target_id:
-            kernel.close()
-            console.print(f"[red]Error: No previous session found for {escape(_short_path(cwd))}.[/red]")
-            sys.exit(1)
-        try:
-            if args.fork:
-                active_session, messages = Session.fork(target_id, cwd)
-            else:
-                active_session, messages = Session.load(target_id)
-        except FileNotFoundError as exc:
-            kernel.close()
-            console.print(f"[red]Error: {escape(str(exc))}[/red]")
-            sys.exit(1)
-
-        resumed = True
-        restored_notice = active_session.restore_kernel(kernel)
-        if restored_notice:
-            messages.append({"role": "user", "content": restored_notice})
-    else:
-        active_session = Session.create(cwd)
-
-    usage_stats = TurnUsage.from_dict(active_session.last_usage)
-
-    def _persist(compacted: bool = False) -> None:
-        active_session.save_messages(messages, compacted=compacted)
-        if usage_stats.prompt_tokens > 0 or usage_stats.total_prompt_tokens > 0:
-            active_session.save_usage(usage_stats.to_dict())
-        if not args.prompt:
-            active_session.save_kernel(kernel)
-
-    plain_output = bool(args.prompt) or not sys.stdout.isatty()
-    cell_history: list[tuple[str, CellResult, float]] = []
-    pending_cell_code: list[str] = []
-    pending_cell_start: list[float] = []
-    active_status: list[Status] = []
-    streamed_any = [False]
-    md_streamer = MarkdownBlockStreamer(printer.markdown)
-    cell_group = CellGroupBuffer()
-
-    def _on_status(label: str | None) -> None:
-        if plain_output:
-            return
-        if label is None:
-            if active_status:
-                st = active_status.pop()
-                st.__exit__(None, None, None)
-            return
-        if label == "Running ipython...":
-            action = describe_cell_actions(pending_cell_code[-1]) if pending_cell_code else "Run Python"
-            if cell_group.entries:
-                label = f"{action} #{len(cell_history) + 1} ({len(cell_group.entries)} done)..."
-            else:
-                label = f"{action}..."
-        if active_status:
-            active_status[-1].update(label)
-        else:
-            st = console.status(label, spinner="dots")
-            st.__enter__()
-            active_status.append(st)
-
-    def _on_text_delta(chunk: str) -> None:
-        cell_group.flush()
-        streamed_any[0] = True
-        if plain_output:
-            sys.stdout.write(chunk)
-            sys.stdout.flush()
-        else:
-            md_streamer.feed(chunk)
-
-    def _on_tool_call(code: str) -> None:
-        if streamed_any[0]:
-            if plain_output:
-                sys.stdout.write("\n")
-                sys.stdout.flush()
-            else:
-                md_streamer.flush()
-            streamed_any[0] = False
-        pending_cell_code.append(code)
-        pending_cell_start.append(time.monotonic())
-        if args.verbose:
-            _render_tool_call(code)
-
-    def _on_tool_result(res: CellResult) -> None:
-        code = pending_cell_code.pop(0) if pending_cell_code else ""
-        started = pending_cell_start.pop(0) if pending_cell_start else time.monotonic()
-        duration = time.monotonic() - started
-        cell_history.append((code, res, duration))
-        if args.verbose:
-            _render_tool_result(res)
-        else:
-            cell_group.add(len(cell_history), code, res, duration)
-
-    def _run_turn(
-        turn_usage: TurnUsage | None = None,
-        *,
-        abort_event: threading.Event | None = None,
-        steering_queue: queue.Queue[str] | None = None,
-        on_steering: Callable[[str], None] | None = None,
-    ) -> tuple[str, list[dict[str, Any]], int]:
-        streamed_any[0] = False
-        printer.reset()
-        try:
-            answer, updated_msgs, tokens = agent_loop(
-                client,
-                model,
-                system_prompt,
-                messages,
-                kernel,
-                max_context_tokens=max_context_tokens,
-                compact_reserve_tokens=compact_reserve_tokens,
-                keep_recent_messages=keep_recent_messages,
-                on_tool_call=_on_tool_call,
-                on_tool_result=_on_tool_result,
-                on_compaction=lambda s, k: (cell_group.flush(), _render_compaction(s, k)),
-                on_bash_notice=lambda n: (cell_group.flush(), _render_bash_notice(n)),
-                on_status=_on_status,
-                on_text_delta=_on_text_delta,
-                usage_stats=turn_usage,
-                initial_prompt_tokens=turn_usage.prompt_tokens if turn_usage else 0,
-                effort=effort,
-                abort_event=abort_event,
-                steering_queue=steering_queue,
-                on_steering=on_steering,
-            )
-        finally:
-            _on_status(None)
-            cell_group.flush()
-            if plain_output:
-                if streamed_any[0]:
-                    sys.stdout.write("\n")
-                    sys.stdout.flush()
-            else:
-                md_streamer.flush()
-        if not streamed_any[0] and answer:
-            if plain_output:
-                sys.stdout.write(answer.rstrip() + "\n")
-                sys.stdout.flush()
-            else:
-                printer.markdown(answer)
-        return answer, updated_msgs, tokens
-
+    rt, resumed = _build_runtime(args)
     try:
         if args.prompt:
-            cli_images: list[ImageAttachment] = []
-            for raw_img in args.image:
-                img_path = Path(raw_img).expanduser()
-                if not img_path.is_absolute():
-                    img_path = cwd / img_path
-                try:
-                    cli_images.append(load_image_file(img_path))
-                except (FileNotFoundError, ValueError) as exc:
-                    console.print(f"[red]Error: {escape(str(exc))}[/red]")
-                    return
-            cli_images.extend(extract_inline_image_mentions(args.prompt, cwd))
-            messages.append({"role": "user", "content": build_user_content(args.prompt, cli_images)})
-            _, messages, _ = _run_turn(turn_usage=usage_stats)
-            _persist()
-
-            while args.background_wait > 0 and (kernel.has_pending_events() or kernel.running_bash_count() > 0):
-                events = kernel.wait_for_events(timeout=args.background_wait)
-                if not events:
-                    break
-                notice = format_bash_done_events(events)
-                if not notice:
-                    continue
-                _render_bash_notice(notice)
-                messages.append({"role": "user", "content": notice})
-                _, messages, _ = _run_turn(turn_usage=usage_stats)
-                _persist()
-            return
-
-        console.print(Text("quartz", style="bold blue"))
-
-        if resumed:
-            _replay_session(messages, cell_history, verbose=args.verbose)
-            if usage_stats.prompt_tokens > 0:
-                printer.block(Text(_format_turn_footer(usage_stats, max_context_tokens), style="dim"))
-
-        kb = KeyBindings()
-
-        @kb.add("c-j")
-        def _(event: Any) -> None:
-            event.current_buffer.insert_text("\n")
-
-        @kb.add("enter")
-        def _(event: Any) -> None:
-            buf = event.current_buffer
-            if buf.text.endswith("\\"):
-                buf.delete_before_cursor(1)
-                buf.insert_text("\n")
-            else:
-                buf.validate_and_handle()
-
-        history_path = Path.home() / ".quartz" / "history"
-        history_path.parent.mkdir(parents=True, exist_ok=True)
-        prompt_session: PromptSession[str] = PromptSession(
-            history=FileHistory(str(history_path)),
-            completer=AgentCompleter(cwd),
-            complete_while_typing=True,
-            key_bindings=kb,
-            prompt_continuation="... ",
-        )
-
-        pending_images: list[ImageAttachment] = []
-        total_elapsed_s = 0.0
-        turn_count = 0
-
-        def _execute_interactive_turn() -> None:
-            nonlocal messages, total_elapsed_s, turn_count
-            abort_event = threading.Event()
-            steering_queue: queue.Queue[str] = queue.Queue()
-
-            def _on_queued(text: str) -> None:
-                preview = text[:60] + ("..." if len(text) > 60 else "")
-                printer.block(Text(f"[queued] {preview}", style="dim cyan"))
-
-            def _on_steering(text: str) -> None:
-                preview = text[:60] + ("..." if len(text) > 60 else "")
-                printer.block(Text(f"[steering] {preview}", style="cyan"))
-
-            t0 = time.monotonic()
-            with _MidTurnInputWatcher(
-                abort_event,
-                steering_queue,
-                on_abort=kernel.interrupt,
-                on_queued=_on_queued,
-            ):
-                _, messages, tokens = _run_turn(
-                    turn_usage=usage_stats,
-                    abort_event=abort_event,
-                    steering_queue=steering_queue,
-                    on_steering=_on_steering,
-                )
-            turn_elapsed = time.monotonic() - t0
-            total_elapsed_s += turn_elapsed
-            turn_count += 1
-            _persist()
-            printer.block(Text(_format_turn_timing(turn_elapsed, total_elapsed_s, turn_count), style="dim"))
-            if tokens:
-                printer.block(Text(_format_turn_footer(usage_stats, max_context_tokens), style="dim"))
-
-        while True:
-            bg_count = kernel.running_bash_count()
-            if kernel.has_pending_events():
-                user_input = _WAKEUP_SENTINEL
-            else:
-                stop_watcher = threading.Event()
-                watcher_thread: threading.Thread | None = None
-                if bg_count > 0:
-                    def _watch_wakeup() -> None:
-                        while not stop_watcher.is_set():
-                            with kernel._events_cond:
-                                if not kernel._events:
-                                    kernel._events_cond.wait(timeout=0.25)
-                                if kernel._events:
-                                    app = prompt_session.app
-                                    if app.is_running:
-                                        app.exit(result=_WAKEUP_SENTINEL)
-                                    return
-
-                    watcher_thread = threading.Thread(target=_watch_wakeup, daemon=True)
-                    watcher_thread.start()
-
-                try:
-                    toolbar = _format_toolbar(model, effort, cwd, usage_stats, max_context_tokens, bg_count)
-                    user_input = prompt_session.prompt("\n> ", bottom_toolbar=toolbar).strip()
-                except (EOFError, KeyboardInterrupt):
-                    console.print("\n[dim]Exiting.[/dim]")
-                    break
-                finally:
-                    stop_watcher.set()
-                    if watcher_thread is not None:
-                        watcher_thread.join(timeout=0.5)
-
-            if user_input == _WAKEUP_SENTINEL:
-                events = kernel.drain_events()
-                notice = format_bash_done_events(events)
-                if not notice:
-                    continue
-                _render_bash_notice(notice)
-                messages.append({"role": "user", "content": notice})
-                try:
-                    _execute_interactive_turn()
-                except TurnAborted:
-                    kernel.interrupt()
-                    _persist()
-                    console.print("\n[yellow]Aborted (Esc).[/yellow]")
-                except KeyboardInterrupt:
-                    kernel.interrupt()
-                    console.print("\n[yellow]Interrupted.[/yellow]")
-                except Exception as exc:
-                    console.print(f"[red]Error: {escape(str(exc))}[/red]")
-                continue
-
-            if not user_input:
-                continue
-
-            if user_input in ("/exit", "/quit"):
-                break
-            if user_input == "/help":
-                console.print(
-                    Text(
-                        "/model           Choose provider, model, and reasoning effort\n"
-                        "/continue [id]   Pick and resume a previous session in this directory\n"
-                        "/image [path]    Attach an image for the next message (or: clear)\n"
-                        "/paste           Attach an image from the system clipboard\n"
-                        "/vars            List live Python variables in the kernel\n"
-                        "/session         Show active session ID and file paths\n"
-                        "/usage           Show context window usage and cache hit rate\n"
-                        "/expand [n|a..b] Expand a collapsed ipython cell or range (default: latest)\n"
-                        "/compact [focus] Summarize older messages while keeping the kernel alive\n"
-                        "/prompt          Show the assembled system prompt\n"
-                        "/reset           Clear conversation history, start a new session, and restart the kernel\n"
-                        "/exit            Exit"
-                    )
-                )
-                continue
-            if user_input == "/paste":
-                try:
-                    img = load_clipboard_image()
-                except Exception as exc:
-                    console.print(f"[red]Error: {escape(str(exc))}[/red]")
-                    continue
-                pending_images.append(img)
-                console.print(
-                    f"[green]Attached clipboard image ([bold]{escape(img.mime_type)}[/bold]); "
-                    f"{len(pending_images)} image(s) queued for next message.[/green]"
-                )
-                continue
-            if user_input == "/image" or user_input.startswith("/image "):
-                arg = user_input[len("/image") :].strip()
-                if not arg:
-                    if not pending_images:
-                        console.print("[dim]No images queued. Use /image <path>, /paste, or @image_path.[/dim]")
-                    else:
-                        names = ", ".join(img.label for img in pending_images)
-                        console.print(f"[cyan]Queued ({len(pending_images)}):[/cyan] {escape(names)}")
-                    continue
-                if arg == "clear":
-                    pending_images.clear()
-                    console.print("[dim]Cleared queued images.[/dim]")
-                    continue
-                img_path = Path(arg).expanduser()
-                if not img_path.is_absolute():
-                    img_path = cwd / img_path
-                try:
-                    img = load_image_file(img_path)
-                except (FileNotFoundError, ValueError) as exc:
-                    console.print(f"[red]Error: {escape(str(exc))}[/red]")
-                    continue
-                pending_images.append(img)
-                console.print(
-                    f"[green]Attached [bold]{escape(img.label)}[/bold] ([cyan]{escape(img.mime_type)}[/cyan]); "
-                    f"{len(pending_images)} image(s) queued for next message.[/green]"
-                )
-                continue
-            if user_input == "/model":
-                provider_opts: list[tuple[str, str]] = []
-                for pname, pspec in PROVIDERS.items():
-                    if pspec["backend"] == "google":
-                        ready = "logged in" if load_google_credentials() is not None else "not logged in"
-                    else:
-                        ready = "configured" if os.getenv("OPENAI_API_KEY") else "no API key"
-                    provider_opts.append((pname, f"{pspec['label']} ({ready})"))
-
-                picked_provider = _pick_option("Provider", provider_opts, current=provider_name)
-                if not picked_provider:
-                    console.print("[dim]Cancelled.[/dim]")
-                    continue
-
-                pspec = PROVIDERS[picked_provider]
-                if len(pspec["models"]) > 1:
-                    model_opts = [(m, m) for m in pspec["models"]]
-                    picked_model = _pick_option("Model", model_opts, current=model)
-                    if not picked_model:
-                        console.print("[dim]Cancelled.[/dim]")
-                        continue
-                else:
-                    picked_model = pspec["models"][0]
-
-                effort_opts = [(e, e) for e in pspec["efforts"]]
-                picked_effort = _pick_option(
-                    f"Reasoning Effort ({picked_model})",
-                    effort_opts,
-                    current=effort if picked_provider == provider_name else pspec["default_effort"],
-                )
-                if not picked_effort:
-                    console.print("[dim]Cancelled.[/dim]")
-                    continue
-
-                try:
-                    client, provider_name, model, effort = _build_client(
-                        provider=picked_provider,
-                        model_override=picked_model,
-                        effort_override=picked_effort,
-                    )
-                except SystemExit:
-                    continue
-                save_model_config(provider_name, model, effort)
-                console.print(
-                    f"[green]Switched to [bold]{provider_name}[/bold] / [bold]{model}[/bold] (effort: [bold]{effort}[/bold])[/green]"
-                )
-                continue
-            if user_input.startswith("/continue"):
-                arg_id = user_input[len("/continue") :].strip() or None
-                if arg_id:
-                    chosen_id = arg_id
-                else:
-                    sessions_list = Session.list_for_cwd(cwd)
-                    if not sessions_list:
-                        console.print(f"[dim]No saved sessions found for {escape(_short_path(cwd))}.[/dim]")
-                        continue
-                    chosen_id = _pick_session(sessions_list, active_session.id)
-                    if not chosen_id:
-                        console.print("[dim]Cancelled.[/dim]")
-                        continue
-
-                if chosen_id == active_session.id:
-                    console.print(f"[dim]Already on session {active_session.id}.[/dim]")
-                    continue
-
-                try:
-                    new_session, new_messages = Session.load(chosen_id)
-                except FileNotFoundError as exc:
-                    console.print(f"[red]Error: {escape(str(exc))}[/red]")
-                    continue
-
-                active_session = new_session
-                messages = new_messages
-                cell_history.clear()
-                total_elapsed_s = 0.0
-                turn_count = 0
-                kernel.restart()
-                restored_notice = active_session.restore_kernel(kernel)
-                if restored_notice:
-                    messages.append({"role": "user", "content": restored_notice})
-                usage_stats = TurnUsage.from_dict(active_session.last_usage)
-                console.print(f"\n[bold cyan]Switched to session {active_session.id}[/bold cyan]")
-                _replay_session(messages, cell_history, verbose=args.verbose)
-                if usage_stats.prompt_tokens > 0:
-                    printer.block(Text(_format_turn_footer(usage_stats, max_context_tokens), style="dim"))
-                continue
-            if user_input.startswith("/expand") or user_input == "/last":
-                if not cell_history:
-                    console.print("[dim]No ipython cells executed in this session yet.[/dim]")
-                    continue
-                arg = user_input[len("/expand") :].strip() if user_input.startswith("/expand") else ""
-                try:
-                    start_idx, end_idx = _parse_expand_range(arg, len(cell_history))
-                except ValueError:
-                    console.print(f"[red]Invalid cell index or range. Choose 1..{len(cell_history)}.[/red]")
-                    continue
-                for idx in range(start_idx, end_idx + 1):
-                    code, res, duration = cell_history[idx - 1]
-                    console.print(f"[dim]Cell #{idx} ({duration:.2f}s)[/dim]")
-                    _render_tool_call(code)
-                    _render_tool_result(res)
-                continue
-            if user_input == "/usage":
-                pct = usage_stats.context_pct(max_context_tokens)
-                cache_pct = usage_stats.cache_hit_rate * 100.0
-                total_cache = (
-                    (usage_stats.total_cached_tokens / usage_stats.total_prompt_tokens * 100.0)
-                    if usage_stats.total_prompt_tokens > 0
-                    else 0.0
-                )
-                console.print(
-                    f"Last context:  {usage_stats.prompt_tokens:,} / {max_context_tokens:,} ({pct:.1f}%)\n"
-                    f"Last cache:    {usage_stats.cached_tokens:,} cached ({cache_pct:.1f}%)\n"
-                    f"Session total: {usage_stats.total_prompt_tokens:,} in / "
-                    f"{usage_stats.total_completion_tokens:,} out / "
-                    f"{usage_stats.total_cached_tokens:,} cached ({total_cache:.1f}%)"
-                )
-                continue
-            if user_input == "/session":
-                console.print(
-                    f"Session ID: [bold]{escape(active_session.id)}[/bold]\n"
-                    f"Log:        {escape(_short_path(active_session.jsonl_path))}\n"
-                    f"Snapshot:   {escape(_short_path(active_session.snapshot_dir))}"
-                )
-                continue
-            if user_input == "/vars":
-                vars_info = kernel.list_vars()
-                if not vars_info:
-                    console.print("[dim]No user-defined variables in the kernel.[/dim]")
-                else:
-                    for name, typ in vars_info.items():
-                        line = Text("  ")
-                        line.append(name, style="cyan")
-                        line.append(f": {typ}")
-                        console.print(line)
-                continue
-            if user_input == "/prompt":
-                console.print(Panel(Text(system_prompt), title="System Prompt", border_style="dim"))
-                continue
-            if user_input == "/reset":
-                messages.clear()
-                cell_history.clear()
-                pending_images.clear()
-                usage_stats = TurnUsage()
-                total_elapsed_s = 0.0
-                turn_count = 0
-                kernel.restart()
-                active_session = Session.create(cwd)
-                console.print(
-                    "[yellow]Conversation cleared, kernel restarted.[/yellow]"
-                )
-                continue
-            if user_input.startswith("/compact"):
-                focus = user_input[len("/compact") :].strip() or None
-                messages, summarized, kept = compact_messages(
-                    client, model, messages, kernel, keep_recent=keep_recent_messages, focus=focus
-                )
-                if summarized > 0:
-                    _persist(compacted=True)
-                    _render_compaction(summarized, kept)
-                else:
-                    console.print("[dim]Nothing to compact yet.[/dim]")
-                continue
-
-            inline_images = extract_inline_image_mentions(user_input, cwd)
-            attached_images = [*pending_images, *inline_images]
-            pending_images.clear()
-            messages.append({"role": "user", "content": build_user_content(user_input, attached_images)})
-            try:
-                _execute_interactive_turn()
-            except TurnAborted:
-                kernel.interrupt()
-                _persist()
-                console.print("\n[yellow]Aborted (Esc).[/yellow]")
-            except KeyboardInterrupt:
-                kernel.interrupt()
-                console.print("\n[yellow]Interrupted.[/yellow]")
-            except Exception as exc:
-                console.print(f"[red]Error: {escape(str(exc))}[/red]")
+            _run_headless(rt, args.prompt, args.image, args.background_wait)
+        else:
+            _run_interactive(rt, resumed)
     finally:
-        if messages and not args.prompt:
+        if rt.messages and not rt.headless:
             try:
-                active_session.save_kernel(kernel)
+                rt.active_session.save_kernel(rt.kernel)
             except Exception:
                 pass
-        kernel.close()
+        rt.kernel.close()

@@ -50,6 +50,7 @@ class KernelClient:
         self._events: list[dict[str, Any]] = []
         self._events_cond = threading.Condition()
         self._ready_event = threading.Event()
+        self._worker_exited = False
         self._reader_thread: threading.Thread | None = None
         self._atexit_registered = False
 
@@ -58,6 +59,7 @@ class KernelClient:
             return
 
         self._ready_event.clear()
+        self._worker_exited = False
         env = os.environ.copy()
         # Ensure the package root is importable even if cwd differs
         repo_root = str(Path(__file__).resolve().parent.parent)
@@ -82,9 +84,9 @@ class KernelClient:
             atexit.register(self.close)
             self._atexit_registered = True
 
-        if not self._ready_event.wait(timeout=timeout):
+        if not self._ready_event.wait(timeout=timeout) or self._worker_exited or self._proc.poll() is not None:
             stderr_out = ""
-            if self._proc.stderr:
+            if self._proc and self._proc.stderr:
                 try:
                     stderr_out = self._proc.stderr.read()
                 except Exception:
@@ -119,6 +121,10 @@ class KernelClient:
                         q.put(msg)
 
         # Unblock any waiters if the worker exited unexpectedly
+        self._worker_exited = True
+        self._ready_event.set()
+        with self._events_cond:
+            self._events_cond.notify_all()
         with self._pending_lock:
             for q in self._pending.values():
                 q.put({"type": "error", "error": "Kernel process exited unexpectedly"})
@@ -197,7 +203,7 @@ class KernelClient:
 
     def wait_for_events(self, timeout: float | None = None) -> list[dict[str, Any]]:
         with self._events_cond:
-            if not self._events:
+            if not self._events and not self._worker_exited and self._proc is not None and self._proc.poll() is None:
                 self._events_cond.wait(timeout=timeout)
             events = list(self._events)
             self._events.clear()

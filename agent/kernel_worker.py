@@ -192,14 +192,11 @@ class BashHandle:
     def __init__(
         self,
         command: str,
-        proc: asyncio.subprocess.Process,
         timeout: float | None,
         started_cell_id: str | None,
         on_done_callback: Any,
     ) -> None:
         self.command = command
-        self.pid = proc.pid
-        self._proc = proc
         self._timeout = timeout
         self._started_cell_id = started_cell_id
         self._on_done_callback = on_done_callback
@@ -208,6 +205,18 @@ class BashHandle:
         self._result: BashResult | None = None
         self._awaited = False
         self._timed_out = False
+
+        self._proc = subprocess.Popen(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd=os.getcwd(),
+            env=os.environ.copy(),
+        )
+        self.pid = self._proc.pid
         self._task = asyncio.create_task(self._monitor())
 
     @property
@@ -215,11 +224,15 @@ class BashHandle:
         return self._result is None
 
     def output(self) -> str:
+        if self._result is not None:
+            return self._result.output
         return "".join(self._lines)
 
     def tail(self, n: int = 50) -> str:
         if n <= 0:
             return ""
+        if self._result is not None:
+            return "".join(self._result.output.splitlines(keepends=True)[-n:])
         return "".join(list(self._lines)[-n:])
 
     def poll(self) -> BashResult | None:
@@ -244,39 +257,30 @@ class BashHandle:
             except ProcessLookupError:
                 pass
 
-    async def _read_stream(self) -> None:
+    def _read_blocking(self) -> int:
         assert self._proc.stdout is not None
-        while True:
-            chunk = await self._proc.stdout.readline()
-            if not chunk:
-                break
-            self._lines.append(chunk.decode("utf-8", errors="replace"))
+        for raw_line in self._proc.stdout:
+            self._lines.append(raw_line.decode("utf-8", errors="replace"))
+        return self._proc.wait()
 
     async def _monitor(self) -> BashResult:
-        reader = asyncio.create_task(self._read_stream())
+        waiter = asyncio.create_task(asyncio.to_thread(self._read_blocking))
         try:
             if self._timeout is not None:
-                await asyncio.wait_for(self._proc.wait(), timeout=self._timeout)
+                exit_code = await asyncio.wait_for(asyncio.shield(waiter), timeout=self._timeout)
             else:
-                await self._proc.wait()
+                exit_code = await waiter
         except asyncio.TimeoutError:
             self._timed_out = True
             self.kill(signal.SIGTERM, grace=3.0)
-            try:
-                await asyncio.wait_for(self._proc.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                try:
-                    os.killpg(self.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                await self._proc.wait()
-        await reader
+            exit_code = await waiter
 
         duration = round(time.monotonic() - self._start_time, 3)
-        exit_code = self._proc.returncode if self._proc.returncode is not None else -1
+        full_output = "".join(self._lines)
+        self._lines.clear()
         self._result = BashResult(
             exit_code=exit_code,
-            output=self.output(),
+            output=full_output,
             duration=duration,
             timed_out=self._timed_out,
         )
@@ -297,7 +301,6 @@ class KernelWorker:
         # Duplicate fd 1 for JSONL protocol output so cell stdout never corrupts it.
         proto_fd = os.dup(1)
         self._proto_out = os.fdopen(proto_fd, "w", encoding="utf-8", buffering=1)
-        self._write_lock = asyncio.Lock() if False else None
 
         self._current_cell_id: str | None = None
         self._handles: list[BashHandle] = []
@@ -311,7 +314,7 @@ class KernelWorker:
         self._namespace: dict[str, Any] = {
             "__name__": "__main__",
             "__builtins__": __builtins__,
-            "bash": self.bash,
+            "bash": lambda command, timeout=600: self._start_bash(command, timeout),
             "BashHandle": BashHandle,
             "BashResult": BashResult,
             "mcp": self.mcp,
@@ -326,12 +329,25 @@ class KernelWorker:
         }
         self._reserved_names = set(self._namespace.keys()) | {"_"}
 
+    def _start_bash(self, command: str, timeout: float | None = 600) -> BashHandle:
+        """Start a shell command in the background and return a BashHandle immediately."""
+        handle = BashHandle(
+            command=command,
+            timeout=timeout,
+            started_cell_id=self._current_cell_id,
+            on_done_callback=self._on_bash_done,
+        )
+        self._handles.append(handle)
+        return handle
+
     def _send(self, payload: dict[str, Any]) -> None:
         line = json.dumps(payload, ensure_ascii=False)
         self._proto_out.write(line + "\n")
         self._proto_out.flush()
 
     def _on_bash_done(self, handle: BashHandle) -> None:
+        with contextlib.suppress(ValueError):
+            self._handles.remove(handle)
         # Only emit a wake-up/notification if the command outlived its starting cell
         # and was not directly awaited inside a cell.
         if handle._awaited:
@@ -351,15 +367,6 @@ class KernelWorker:
                 "tail": _truncate(handle.tail(30), 4000),
             }
         )
-
-    def bash(self, command: str, timeout: float | None = 600) -> BashHandle:
-        """Start a shell command in the background and return a BashHandle immediately."""
-        loop = asyncio.get_running_loop()
-        # Synchronous creation of subprocess is not possible directly, so we use
-        # subprocess.Popen? No, asyncio.create_subprocess_shell is a coroutine.
-        # To make bash() synchronous (non-await) as in Unharnessed, we spawn via
-        # subprocess.Popen or schedule? Wait: subprocess.Popen is synchronous!
-        raise NotImplementedError("Replaced in __init__ or below")
 
     async def _exec_cell(self, cell_id: str, code: str) -> dict[str, Any]:
         self._current_cell_id = cell_id
@@ -455,7 +462,7 @@ class KernelWorker:
         for name, val in list(self._namespace.items()):
             if name in self._reserved_names or name.startswith("__"):
                 continue
-            if isinstance(val, _PopenBashHandle):
+            if isinstance(val, BashHandle):
                 skipped.append(f"{name} (running/process handle)")
                 continue
             try:
@@ -523,130 +530,6 @@ class KernelWorker:
         return {"restored": restored, "skipped": skipped}
 
 
-# Fix synchronous bash() using subprocess.Popen + asyncio thread/pipe reader
-import subprocess  # noqa: E402
-
-
-class _PopenBashHandle:
-    """BashHandle backed by subprocess.Popen so bash() returns synchronously without await."""
-
-    def __init__(
-        self,
-        command: str,
-        timeout: float | None,
-        started_cell_id: str | None,
-        on_done_callback: Any,
-    ) -> None:
-        self.command = command
-        self._timeout = timeout
-        self._started_cell_id = started_cell_id
-        self._on_done_callback = on_done_callback
-        self._lines: deque[str] = deque(maxlen=20_000)
-        self._start_time = time.monotonic()
-        self._result: BashResult | None = None
-        self._awaited = False
-        self._timed_out = False
-
-        self._proc = subprocess.Popen(
-            command,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-            cwd=os.getcwd(),
-            env=os.environ.copy(),
-        )
-        self.pid = self._proc.pid
-        self._task = asyncio.create_task(self._monitor())
-
-    @property
-    def running(self) -> bool:
-        return self._result is None
-
-    def output(self) -> str:
-        return "".join(self._lines)
-
-    def tail(self, n: int = 50) -> str:
-        if n <= 0:
-            return ""
-        return "".join(list(self._lines)[-n:])
-
-    def poll(self) -> BashResult | None:
-        return self._result
-
-    def kill(self, sig: int = signal.SIGTERM, grace: float = 5.0) -> None:
-        if not self.running:
-            return
-        try:
-            os.killpg(self.pid, sig)
-        except ProcessLookupError:
-            return
-        if sig != signal.SIGKILL and grace is not None and grace > 0:
-            asyncio.create_task(self._escalate_kill(grace))
-
-    async def _escalate_kill(self, grace: float) -> None:
-        await asyncio.sleep(grace)
-        if self.running:
-            try:
-                os.killpg(self.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-
-    def _read_blocking(self) -> int:
-        assert self._proc.stdout is not None
-        for raw_line in self._proc.stdout:
-            self._lines.append(raw_line.decode("utf-8", errors="replace"))
-        return self._proc.wait()
-
-    async def _monitor(self) -> BashResult:
-        waiter = asyncio.create_task(asyncio.to_thread(self._read_blocking))
-        try:
-            if self._timeout is not None:
-                exit_code = await asyncio.wait_for(asyncio.shield(waiter), timeout=self._timeout)
-            else:
-                exit_code = await waiter
-        except asyncio.TimeoutError:
-            self._timed_out = True
-            self.kill(signal.SIGTERM, grace=3.0)
-            exit_code = await waiter
-
-        duration = round(time.monotonic() - self._start_time, 3)
-        self._result = BashResult(
-            exit_code=exit_code,
-            output=self.output(),
-            duration=duration,
-            timed_out=self._timed_out,
-        )
-        self._on_done_callback(self)
-        return self._result
-
-    def __await__(self):
-        self._awaited = True
-        return self._task.__await__()
-
-    def __repr__(self) -> str:
-        status = "running" if self.running else f"exit={self._result.exit_code}"
-        return f"<BashHandle pid={self.pid} {status} command={self.command!r}>"
-
-
-def _bind_bash(worker: KernelWorker) -> None:
-    def bash(command: str, timeout: float | None = 600) -> _PopenBashHandle:
-        """Start a shell command in the background and return a BashHandle at once."""
-        handle = _PopenBashHandle(
-            command=command,
-            timeout=timeout,
-            started_cell_id=worker._current_cell_id,
-            on_done_callback=worker._on_bash_done,
-        )
-        worker._handles.append(handle)
-        return handle
-
-    worker._namespace["bash"] = bash
-    worker._namespace["BashHandle"] = _PopenBashHandle
-    worker.bash = bash  # type: ignore[method-assign]
-
-
 async def _stdin_reader(queue: asyncio.Queue[dict[str, Any] | None]) -> None:
     loop = asyncio.get_running_loop()
     while True:
@@ -666,7 +549,6 @@ async def _stdin_reader(queue: asyncio.Queue[dict[str, Any] | None]) -> None:
 
 async def _main() -> None:
     worker = KernelWorker()
-    _bind_bash(worker)
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     reader_task = asyncio.create_task(_stdin_reader(queue))
 

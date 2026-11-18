@@ -112,10 +112,30 @@ class Session:
         files = sorted(root.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
         results: list[dict[str, Any]] = []
         for f in files:
-            has_msgs, session_cwd = cls._inspect_session(f)
-            if not has_msgs or session_cwd != target_cwd:
+            session_cwd: str | None = None
+            msgs: list[dict[str, Any]] = []
+            try:
+                with f.open("r", encoding="utf-8") as fh:
+                    for raw_line in fh:
+                        line = raw_line.strip()
+                        if not line:
+                            continue
+                        rec = json.loads(line)
+                        rec_type = rec.get("type")
+                        if rec_type == "meta" and session_cwd is None:
+                            session_cwd = rec.get("cwd")
+                            if session_cwd != target_cwd:
+                                break
+                        elif rec_type == "message":
+                            msgs.append(rec["message"])
+                        elif rec_type == "compaction":
+                            msgs = list(rec["messages"])
+            except (OSError, json.JSONDecodeError):
                 continue
-            _, msgs = cls.load(f.stem, sessions_dir=root)
+
+            if session_cwd != target_cwd or not msgs:
+                continue
+
             last_user = next(
                 (
                     content_to_text(m.get("content", "")).strip().replace("\n", " ")

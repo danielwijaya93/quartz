@@ -260,9 +260,16 @@ class _Chunk:
 
 
 @dataclasses.dataclass
+class _NonStreamToolCall:
+    id: str
+    function: _FnDelta
+    type: str = "function"
+
+
+@dataclasses.dataclass
 class _NonStreamMessage:
     content: str | None
-    tool_calls: list[Any] | None = None
+    tool_calls: list[_NonStreamToolCall] | None = None
 
 
 @dataclasses.dataclass
@@ -405,14 +412,35 @@ class _GoogleCompletions:
             return gen
 
         content_parts: list[str] = []
+        tool_calls: list[_NonStreamToolCall] = []
         usage: _Usage | None = None
         for chunk in gen:
             if chunk.usage is not None:
                 usage = chunk.usage
-            if chunk.choices and chunk.choices[0].delta.content:
-                content_parts.append(chunk.choices[0].delta.content)
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta.content:
+                content_parts.append(delta.content)
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    if tc.function is not None:
+                        tool_calls.append(
+                            _NonStreamToolCall(
+                                id=tc.id or f"call_{secrets.token_hex(6)}",
+                                function=tc.function,
+                            )
+                        )
+        content = "".join(content_parts) if content_parts else None
         return _NonStreamResponse(
-            choices=[_NonStreamChoice(message=_NonStreamMessage(content="".join(content_parts)))],
+            choices=[
+                _NonStreamChoice(
+                    message=_NonStreamMessage(
+                        content=content,
+                        tool_calls=tool_calls or None,
+                    )
+                )
+            ],
             usage=usage,
         )
 

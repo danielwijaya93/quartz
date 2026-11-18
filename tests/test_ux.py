@@ -359,7 +359,9 @@ def test_cell_summary_chip_keeps_cell_index(monkeypatch: pytest.MonkeyPatch) -> 
 
     cli.printer.reset()
     cli.printer.markdown("Running a cell now.")
-    cli._render_cell_summary(1, "print('hello')", CellResult(True, "hello\n", "", None), 0.01)
+    cell_group = cli.CellGroupBuffer()
+    cell_group.add(1, "print('hello')", CellResult(True, "hello\n", "", None), 0.01)
+    cell_group.flush()
 
     lines = _visible_lines(buf.getvalue())
     assert lines == [

@@ -165,3 +165,79 @@ def test_saved_model_config_overrides_env_defaults(tmp_path: Path, monkeypatch) 
     assert pname == "google"
     assert model == "gemini-3.8-flash-high"
     assert effort == "xhigh"
+
+
+def test_google_provider_stream_refresh_fallback_and_non_stream_tools(
+    tmp_path: Path, monkeypatch
+) -> None:
+    auth_path = tmp_path / "auth.json"
+    monkeypatch.setenv("QUARTZ_AUTH_FILE", str(auth_path))
+    save_google_credentials(
+        GoogleCredentials("old-tok", "ref-tok", int(time.time() * 1000) + 600_000, "proj-1")
+    )
+
+    calls: list[tuple[str, str]] = []
+
+    class _FakeResp:
+        def __init__(self, status_code: int, lines: list[str] | None = None, body: bytes = b"") -> None:
+            self.status_code = status_code
+            self._lines = lines or []
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self) -> bytes:
+            return self._body
+
+        def iter_lines(self):
+            return iter(self._lines)
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def stream(self, method: str, url: str, json: dict, headers: dict):
+            del method, json
+            calls.append((url, headers["Authorization"]))
+            if len(calls) == 1:
+                return _FakeResp(401, body=b"expired")
+            if len(calls) == 2:
+                return _FakeResp(429, body=b"rate limited")
+            sse_line = (
+                'data: {"response": {"candidates": [{"content": {"parts": ['
+                '{"text": "hi "}, '
+                '{"functionCall": {"name": "ipython", "args": {"code": "1+1"}}}'
+                ']}}]}}'
+            )
+            return _FakeResp(200, lines=[sse_line, "data: [DONE]"])
+
+    monkeypatch.setattr("agent.google_provider.httpx2.Client", _FakeClient)
+    monkeypatch.setattr(
+        "agent.google_provider.refresh_google_credentials",
+        lambda creds: GoogleCredentials("new-tok", creds.refresh, creds.expires_ms, creds.project_id),
+    )
+
+    client = GoogleAntigravityClient()
+    resp = client.chat.completions.create(
+        model="gemini-3.8-flash-medium",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=False,
+    )
+    assert len(calls) == 3
+    assert calls[0][1] == "Bearer old-tok"
+    assert calls[1][1] == "Bearer new-tok"
+    assert "daily-cloudcode-pa" in calls[1][0]
+    assert "cloudcode-pa.googleapis.com" in calls[2][0]
+    assert resp.choices[0].message.content == "hi "
+    assert resp.choices[0].message.tool_calls is not None
+    assert resp.choices[0].message.tool_calls[0].function.name == "ipython"

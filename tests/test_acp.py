@@ -197,3 +197,97 @@ def test_acp_subprocess_initialize_and_new(tmp_path: Path) -> None:
     finally:
         if proc.poll() is None:
             proc.kill()
+
+
+def test_acp_parallel_tool_call_ids_and_cancel(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
+
+    class _FnDelta:
+        def __init__(self, name: str | None = None, arguments: str | None = None) -> None:
+            self.name = name
+            self.arguments = arguments
+
+    class _TcDelta:
+        def __init__(self, index: int, id: str | None = None, function: _FnDelta | None = None) -> None:
+            self.index = index
+            self.id = id
+            self.function = function
+
+    class _Delta:
+        def __init__(self, content: str | None = None, tool_calls: list[_TcDelta] | None = None) -> None:
+            self.content = content
+            self.tool_calls = tool_calls
+
+    class _Choice:
+        def __init__(self, delta: _Delta) -> None:
+            self.delta = delta
+
+    class _Chunk:
+        def __init__(self, choices: list[_Choice]) -> None:
+            self.choices = choices
+            self.usage = None
+
+    class _ParallelCompletions:
+        def __init__(self) -> None:
+            self.n = 0
+
+        def create(self, **kwargs):
+            self.n += 1
+            if self.n == 1:
+                return iter(
+                    [
+                        _Chunk(
+                            [
+                                _Choice(
+                                    _Delta(
+                                        tool_calls=[
+                                            _TcDelta(0, id="tc_a", function=_FnDelta(name="ipython", arguments='{"code": "1 + 1"}')),
+                                            _TcDelta(1, id="tc_b", function=_FnDelta(name="ipython", arguments='{"code": "2 + 2"}')),
+                                        ]
+                                    )
+                                )
+                            ]
+                        )
+                    ]
+                )
+            return iter([_Chunk([_Choice(_Delta(content="Done"))])])
+
+    from types import SimpleNamespace
+
+    def _factory():
+        return (
+            SimpleNamespace(chat=SimpleNamespace(completions=_ParallelCompletions())),
+            "deepseek",
+            "deepseek-flash",
+            "high",
+        )
+
+    out_buf = io.StringIO()
+    server = ACPServer(_factory, in_stream=io.StringIO(""), out_stream=out_buf)
+    server._dispatch_request({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {"cwd": str(tmp_path)}})
+    sid = json.loads(out_buf.getvalue().splitlines()[0])["result"]["sessionId"]
+    out_buf.seek(0)
+    out_buf.truncate(0)
+
+    server._dispatch_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "session/prompt",
+            "params": {"sessionId": sid, "prompt": [{"type": "text", "text": "run two"}]},
+        }
+    )
+    # Also test session/cancel does not raise
+    server._dispatch_request({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": sid}})
+    for st in server._sessions.values():
+        st.kernel.close()
+
+    msgs = [json.loads(line) for line in out_buf.getvalue().splitlines() if line.strip()]
+    updates = [m["params"]["update"] for m in msgs if m.get("method") == "session/update"]
+    starts = [u for u in updates if u["sessionUpdate"] == "tool_call"]
+    ends = [u for u in updates if u["sessionUpdate"] == "tool_call_update"]
+    assert len(starts) == 2 and len(ends) == 2
+    assert ends[0]["toolCallId"] == starts[0]["toolCallId"]
+    assert ends[0]["rawOutput"] == "2"
+    assert ends[1]["toolCallId"] == starts[1]["toolCallId"]
+    assert ends[1]["rawOutput"] == "4"

@@ -290,3 +290,89 @@ def test_kernel_close_cleans_up_child_processes(tmp_path: Path) -> None:
             return
         time.sleep(0.05)
     raise AssertionError(f"Child process {child_pid} survived kernel.close()")
+
+
+def test_multiline_skill_frontmatter_discovery(tmp_path: Path) -> None:
+    from agent.prompt import discover_skills
+
+    skills_dir = tmp_path / "skills"
+    sdir = skills_dir / "demo-skill"
+    sdir.mkdir(parents=True)
+    (sdir / "SKILL.md").write_text(
+        "---\n"
+        "name: demo-skill\n"
+        "description: >\n"
+        "  First line of description\n"
+        "  and second line.\n"
+        "---\n"
+        "\nBody\n",
+        encoding="utf-8",
+    )
+    found = discover_skills(skills_dir=skills_dir)
+    assert len(found) == 1
+    assert found[0][0] == "demo-skill"
+    assert found[0][1] == "First line of description and second line."
+
+
+def test_compact_messages_summarizes_and_keeps_kernel(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+    from agent.compact import compact_messages
+
+    dummy_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **kwargs: SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content="Summary of earlier work."))]
+                )
+            )
+        )
+    )
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        kernel.exec_cell("answer = 42")
+        msgs = [
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "reply 1"},
+            {"role": "user", "content": "msg 2"},
+            {"role": "assistant", "content": "reply 2"},
+            {"role": "user", "content": "msg 3"},
+        ]
+        new_msgs, summarized, kept = compact_messages(
+            dummy_client, "m", msgs, kernel, keep_recent=2  # type: ignore[arg-type]
+        )
+        assert summarized == 2
+        assert kept == 3
+        assert "[compaction-summary]" in new_msgs[0]["content"]
+        assert "Summary of earlier work." in new_msgs[0]["content"]
+        assert "answer (int)" in new_msgs[0]["content"]
+    finally:
+        kernel.close()
+
+
+def test_bash_handle_pruned_and_output_preserved(tmp_path: Path) -> None:
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        res = kernel.exec_cell("h = bash('echo hello_world')\nr = await h\n(r.output.strip(), h.output().strip(), h.tail(1).strip())")
+        assert res.ok
+        assert res.result == "('hello_world', 'hello_world', 'hello_world')"
+        assert kernel.running_bash_count() == 0
+    finally:
+        kernel.close()
+
+
+def test_kernel_wait_for_events_returns_fast_on_exit(tmp_path: Path) -> None:
+    import time
+
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    assert kernel._proc is not None
+    kernel._proc.kill()
+    kernel._proc.wait(timeout=2.0)
+    t0 = time.monotonic()
+    events = kernel.wait_for_events(timeout=30.0)
+    elapsed = time.monotonic() - t0
+    assert events == []
+    assert elapsed < 2.0
+    kernel.close()

@@ -7,6 +7,7 @@ import json
 import sys
 import threading
 import uuid
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
@@ -28,6 +29,7 @@ class _ActiveSession:
     system_prompt: str
     messages: list[dict[str, Any]]
     usage: TurnUsage
+    prompt_lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
 
 
 def _extract_prompt_content(prompt: Any) -> str | list[dict[str, Any]]:
@@ -216,73 +218,74 @@ class ACPServer:
         if state is None:
             raise KeyError(f"Unknown sessionId: {session_id}")
 
-        prompt_content = _extract_prompt_content(params.get("prompt"))
-        state.messages.append({"role": "user", "content": prompt_content})
+        with state.prompt_lock:
+            prompt_content = _extract_prompt_content(params.get("prompt"))
+            state.messages.append({"role": "user", "content": prompt_content})
 
-        client, model, effort = self._ensure_client()
-        active_tc_ids: list[str] = []
+            client, model, effort = self._ensure_client()
+            active_tc_ids: deque[str] = deque()
 
-        def _on_text_delta(chunk: str) -> None:
-            self._send_update(
-                session_id,
-                {
-                    "sessionUpdate": "agent_message_chunk",
-                    "content": {"type": "text", "text": chunk},
-                },
-            )
+            def _on_text_delta(chunk: str) -> None:
+                self._send_update(
+                    session_id,
+                    {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": chunk},
+                    },
+                )
 
-        def _on_tool_call(code: str) -> None:
-            tc_id = f"tc_{uuid.uuid4().hex[:8]}"
-            active_tc_ids.append(tc_id)
-            self._send_update(
-                session_id,
-                {
-                    "sessionUpdate": "tool_call",
-                    "toolCallId": tc_id,
-                    "title": "ipython",
-                    "kind": "execute",
-                    "status": "in_progress",
-                    "rawInput": {"code": code},
-                },
-            )
+            def _on_tool_call(code: str) -> None:
+                tc_id = f"tc_{uuid.uuid4().hex[:8]}"
+                active_tc_ids.append(tc_id)
+                self._send_update(
+                    session_id,
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": tc_id,
+                        "title": "ipython",
+                        "kind": "execute",
+                        "status": "in_progress",
+                        "rawInput": {"code": code},
+                    },
+                )
 
-        def _on_tool_result(res: CellResult) -> None:
-            tc_id = active_tc_ids.pop() if active_tc_ids else f"tc_{uuid.uuid4().hex[:8]}"
-            self._send_update(
-                session_id,
-                {
-                    "sessionUpdate": "tool_call_update",
-                    "toolCallId": tc_id,
-                    "status": "completed" if res.ok else "failed",
-                    "rawOutput": res.format_for_model(),
-                },
-            )
+            def _on_tool_result(res: CellResult) -> None:
+                tc_id = active_tc_ids.popleft() if active_tc_ids else f"tc_{uuid.uuid4().hex[:8]}"
+                self._send_update(
+                    session_id,
+                    {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": tc_id,
+                        "status": "completed" if res.ok else "failed",
+                        "rawOutput": res.format_for_model(),
+                    },
+                )
 
-        try:
-            _, updated_msgs, _ = agent_loop(
-                client,
-                model,
-                state.system_prompt,
-                state.messages,
-                state.kernel,
-                max_context_tokens=self._max_context_tokens,
-                compact_reserve_tokens=self._compact_reserve_tokens,
-                keep_recent_messages=self._keep_recent_messages,
-                on_tool_call=_on_tool_call,
-                on_tool_result=_on_tool_result,
-                on_text_delta=_on_text_delta,
-                usage_stats=state.usage,
-                initial_prompt_tokens=state.usage.prompt_tokens,
-                effort=effort,
-            )
-            state.messages = updated_msgs
-            state.session.save_messages(state.messages)
-            if state.usage.prompt_tokens > 0 or state.usage.total_prompt_tokens > 0:
-                state.session.save_usage(state.usage.to_dict())
-            state.session.save_kernel(state.kernel)
-            return {"stopReason": "end_turn"}
-        except KeyboardInterrupt:
-            return {"stopReason": "cancelled"}
+            try:
+                _, updated_msgs, _ = agent_loop(
+                    client,
+                    model,
+                    state.system_prompt,
+                    state.messages,
+                    state.kernel,
+                    max_context_tokens=self._max_context_tokens,
+                    compact_reserve_tokens=self._compact_reserve_tokens,
+                    keep_recent_messages=self._keep_recent_messages,
+                    on_tool_call=_on_tool_call,
+                    on_tool_result=_on_tool_result,
+                    on_text_delta=_on_text_delta,
+                    usage_stats=state.usage,
+                    initial_prompt_tokens=state.usage.prompt_tokens,
+                    effort=effort,
+                )
+                state.messages = updated_msgs
+                state.session.save_messages(state.messages)
+                if state.usage.prompt_tokens > 0 or state.usage.total_prompt_tokens > 0:
+                    state.session.save_usage(state.usage.to_dict())
+                state.session.save_kernel(state.kernel)
+                return {"stopReason": "end_turn"}
+            except KeyboardInterrupt:
+                return {"stopReason": "cancelled"}
 
     def _handle_session_cancel(self, params: dict[str, Any]) -> None:
         session_id = str(params.get("sessionId", "")).strip()

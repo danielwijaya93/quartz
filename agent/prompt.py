@@ -88,11 +88,30 @@ def _parse_skill_frontmatter(skill_md: Path) -> tuple[str, str] | None:
     frontmatter = match.group(1)
     name = ""
     description = ""
-    for line in frontmatter.splitlines():
+    lines = frontmatter.splitlines()
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
         if line.startswith("name:"):
             name = line.split(":", 1)[1].strip().strip("\"'")
         elif line.startswith("description:"):
-            description = line.split(":", 1)[1].strip().strip("\"'")
+            raw_val = line.split(":", 1)[1].strip()
+            if raw_val in (">", ">-", "|", "|-"):
+                block_lines: list[str] = []
+                idx += 1
+                while idx < len(lines):
+                    cont = lines[idx]
+                    if cont and not cont[0].isspace():
+                        idx -= 1
+                        break
+                    stripped = cont.strip()
+                    if stripped:
+                        block_lines.append(stripped)
+                    idx += 1
+                description = " ".join(block_lines)
+            else:
+                description = raw_val.strip("\"'")
+        idx += 1
     if not name:
         name = skill_md.parent.name
     return (name, description)
