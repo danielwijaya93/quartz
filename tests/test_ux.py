@@ -470,3 +470,28 @@ def test_action_classifier_single_and_combined() -> None:
         describe_group_actions(["bash('rg foo')", "Path('a.py').read_text()"])
         == "Find and Read files"
     )
+
+
+def test_short_path_collapses_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: Path("/home/tester")))
+    assert cli._short_path("/home/tester") == "~"
+    assert cli._short_path("/home/tester/project/sub") == "~/project/sub"
+    assert cli._short_path(Path("/home/tester/project")) == "~/project"
+    assert cli._short_path("/home/tester2/project") == "/home/tester2/project"
+    assert cli._short_path("/opt/data") == "/opt/data"
+
+
+def test_toolbar_shows_workspace_and_not_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: Path("/home/tester")))
+    usage = TurnUsage(prompt_tokens=1000, cached_tokens=500)
+    toolbar = cli._format_toolbar("gpt-5", "high", "/home/tester/proj", usage, 200_000, 0)
+    assert "gpt-5 (high)" in toolbar
+    assert "~/proj" in toolbar
+    assert "/home/tester/proj" not in toolbar
+    assert "session" not in toolbar.lower()
+    assert "ctx:" in toolbar and "cache:" in toolbar
+    assert "bg:" not in toolbar
+
+    with_bg = cli._format_toolbar("gpt-5", None, "/home/tester/proj", usage, 200_000, 2)
+    assert "bg:2" in with_bg
+    assert "gpt-5 |" in with_bg

@@ -445,10 +445,24 @@ def _format_turn_footer(usage: TurnUsage, max_context_tokens: int) -> str:
     return f"(ctx: {_fmt_k(usage.prompt_tokens)}/{_fmt_k(max_context_tokens)} ({pct:.1f}%) | cache: {cache_pct:.0f}%)"
 
 
+def _short_path(path: str | Path) -> str:
+    """Render a path with the home directory collapsed to `~`."""
+    text = str(path)
+    try:
+        home = str(Path.home())
+    except (RuntimeError, OSError):
+        return text
+    if text == home:
+        return "~"
+    if text.startswith(home + os.sep):
+        return "~" + text[len(home) :]
+    return text
+
+
 def _format_toolbar(
     model: str,
     effort: str | None,
-    session_id: str,
+    workspace: str | Path,
     usage: TurnUsage,
     max_context_tokens: int,
     bg_count: int,
@@ -458,7 +472,7 @@ def _format_toolbar(
     model_label = f"{model} ({effort})" if effort else model
     parts = [
         f" {model_label}",
-        f"session:{session_id}",
+        _short_path(workspace),
         f"ctx:{_fmt_k(usage.prompt_tokens)}/{_fmt_k(max_context_tokens)} ({pct:.1f}%)",
         f"cache:{cache_pct:.0f}%",
     ]
@@ -796,7 +810,7 @@ def main() -> None:
         target_id = args.resume or Session.latest_id(cwd=cwd)
         if not target_id:
             kernel.close()
-            console.print(f"[red]Error: No previous session found for {cwd}.[/red]")
+            console.print(f"[red]Error: No previous session found for {escape(_short_path(cwd))}.[/red]")
             sys.exit(1)
         try:
             if args.fork:
@@ -935,16 +949,7 @@ def main() -> None:
                 _persist()
             return
 
-        console.print(
-            Panel(
-                f"Model: [bold]{escape(model)}[/bold] ([cyan]{escape(str(effort))}[/cyan]) | Workspace: [bold]{escape(str(cwd))}[/bold] | Session: [bold]{escape(active_session.id)}[/bold]\n"
-                "Commands: [cyan]/model[/cyan], [cyan]/continue[/cyan], [cyan]/image[/cyan], [cyan]/paste[/cyan], [cyan]/vars[/cyan], [cyan]/usage[/cyan], "
-                "[cyan]/expand[/cyan], [cyan]/compact[/cyan], [cyan]/reset[/cyan], [cyan]/exit[/cyan]\n"
-                "[dim]Tip: Use @path for files/images, Esc+Enter or Ctrl+J for multi-line input, Ctrl+C to interrupt.[/dim]",
-                title="[bold]quartz[/bold]",
-                border_style="blue",
-            )
-        )
+        console.print(Text("quartz", style="bold blue"))
 
         if resumed:
             _replay_session(messages, cell_history, verbose=args.verbose)
@@ -1001,7 +1006,7 @@ def main() -> None:
                     watcher_thread.start()
 
                 try:
-                    toolbar = _format_toolbar(model, effort, active_session.id, usage_stats, max_context_tokens, bg_count)
+                    toolbar = _format_toolbar(model, effort, cwd, usage_stats, max_context_tokens, bg_count)
                     user_input = prompt_session.prompt("\n> ", bottom_toolbar=toolbar).strip()
                 except (EOFError, KeyboardInterrupt):
                     console.print("\n[dim]Exiting.[/dim]")
@@ -1146,7 +1151,7 @@ def main() -> None:
                 else:
                     sessions_list = Session.list_for_cwd(cwd)
                     if not sessions_list:
-                        console.print(f"[dim]No saved sessions found for {cwd}.[/dim]")
+                        console.print(f"[dim]No saved sessions found for {escape(_short_path(cwd))}.[/dim]")
                         continue
                     chosen_id = _pick_session(sessions_list, active_session.id)
                     if not chosen_id:
@@ -1211,8 +1216,8 @@ def main() -> None:
             if user_input == "/session":
                 console.print(
                     f"Session ID: [bold]{escape(active_session.id)}[/bold]\n"
-                    f"Log:        {escape(str(active_session.jsonl_path))}\n"
-                    f"Snapshot:   {escape(str(active_session.snapshot_dir))}"
+                    f"Log:        {escape(_short_path(active_session.jsonl_path))}\n"
+                    f"Snapshot:   {escape(_short_path(active_session.snapshot_dir))}"
                 )
                 continue
             if user_input == "/vars":
@@ -1237,7 +1242,7 @@ def main() -> None:
                 kernel.restart()
                 active_session = Session.create(cwd)
                 console.print(
-                    f"[yellow]Conversation cleared, kernel restarted, new session: {active_session.id}[/yellow]"
+                    "[yellow]Conversation cleared, kernel restarted.[/yellow]"
                 )
                 continue
             if user_input.startswith("/compact"):
