@@ -569,7 +569,7 @@ def test_run_turn_thought_line_separate_from_grouped_cells(
         usage_stats=TurnUsage(),
         max_context_tokens=100_000,
         compact_reserve_tokens=8_000,
-        keep_recent_messages=4,
+        keep_recent_tokens=2_000,
         verbose=False,
         plain_output=False,
         headless=True,

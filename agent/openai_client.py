@@ -9,6 +9,8 @@ from typing import Any
 
 import httpx2
 
+from agent.errors import ContextOverflowError, is_context_overflow
+
 
 class BadRequestError(RuntimeError):
     """Raised on HTTP 400 responses from an OpenAI-compatible endpoint."""
@@ -199,6 +201,13 @@ class _Completions:
             if resp.status_code >= 400:
                 err_text = resp.read().decode("utf-8", errors="replace")
                 ctx.__exit__(None, None, None)
+                if is_context_overflow(resp.status_code, err_text):
+                    raise ContextOverflowError(
+                        "Prompt exceeds the model context window",
+                        provider=self._client.base_url,
+                        status_code=resp.status_code,
+                        detail=err_text,
+                    )
                 if resp.status_code == 400:
                     raise BadRequestError(f"Error code: 400 - {err_text}", 400)
                 raise RuntimeError(f"API error ({resp.status_code}): {err_text}")
@@ -207,6 +216,13 @@ class _Completions:
         resp = self._client._http.post(url, json=body, headers=headers)
         if resp.status_code >= 400:
             err_text = resp.text
+            if is_context_overflow(resp.status_code, err_text):
+                raise ContextOverflowError(
+                    "Prompt exceeds the model context window",
+                    provider=self._client.base_url,
+                    status_code=resp.status_code,
+                    detail=err_text,
+                )
             if resp.status_code == 400:
                 raise BadRequestError(f"Error code: 400 - {err_text}", 400)
             raise RuntimeError(f"API error ({resp.status_code}): {err_text}")

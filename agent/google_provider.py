@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx2
 
+from agent.errors import ContextOverflowError, ProviderError, is_context_overflow
 from agent.google_auth import (
     DAILY_ENDPOINT,
     PROD_ENDPOINT,
@@ -379,8 +380,18 @@ class _GoogleCompletions:
                             break
                         if resp.status_code >= 400:
                             err_text = resp.read().decode("utf-8", errors="replace")
-                            raise RuntimeError(
-                                f"Google Cloud Code Assist error ({resp.status_code}): {err_text}"
+                            if is_context_overflow(resp.status_code, err_text):
+                                raise ContextOverflowError(
+                                    "Prompt exceeds the Gemini context window",
+                                    provider="google",
+                                    status_code=resp.status_code,
+                                    detail=err_text,
+                                )
+                            raise ProviderError(
+                                "Google Cloud Code Assist request failed",
+                                provider="google",
+                                status_code=resp.status_code,
+                                detail=err_text,
                             )
 
                         tc_counter = [0]

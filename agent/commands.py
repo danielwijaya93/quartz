@@ -79,7 +79,7 @@ class _CLIRuntime:
     usage_stats: TurnUsage
     max_context_tokens: int
     compact_reserve_tokens: int
-    keep_recent_messages: int
+    keep_recent_tokens: int
     verbose: bool
     plain_output: bool
     headless: bool
@@ -874,14 +874,21 @@ def _cmd_expand(rt: _CLIRuntime, arg: str) -> bool | None:
 )
 def _cmd_compact(rt: _CLIRuntime, arg: str) -> bool | None:
     focus = arg or None
-    rt.messages, summarized, kept = compact_messages(
-        rt.client, rt.model, rt.messages, rt.kernel, keep_recent=rt.keep_recent_messages, focus=focus
+    result = compact_messages(
+        rt.client,
+        rt.model,
+        rt.messages,
+        rt.kernel,
+        keep_recent_tokens=rt.keep_recent_tokens,
+        focus=focus,
     )
-    if summarized > 0:
-        rt.persist(compacted=True)
-        _render_compaction(summarized, kept)
-    else:
+    rt.messages = result.messages
+    if not result.changed:
         console.print("[dim]Nothing to compact yet.[/dim]")
+        return False
+    rt.persist(compacted=True)
+    _render_compaction(result)
+    console.print(f"[dim]Context is now ~{result.estimated_tokens_after:,} tokens.[/dim]")
     return False
 
 

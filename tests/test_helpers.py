@@ -173,7 +173,7 @@ def test_slash_command_helpers_execution(tmp_path: Path) -> None:
         usage_stats=TurnUsage(),
         max_context_tokens=128000,
         compact_reserve_tokens=16384,
-        keep_recent_messages=10,
+        keep_recent_tokens=32_000,
         verbose=False,
         plain_output=False,
         headless=True,

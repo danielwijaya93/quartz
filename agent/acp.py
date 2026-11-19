@@ -12,6 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
 
+from agent.compact import DEFAULT_KEEP_RECENT_TOKENS
 from agent.images import content_to_text
 from agent.kernel_client import CellResult, KernelClient
 from agent.loop import TurnAborted, TurnUsage, agent_loop
@@ -85,7 +86,7 @@ class ACPServer:
         out_stream: TextIO | None = None,
         max_context_tokens: int = 128_000,
         compact_reserve_tokens: int = 16_384,
-        keep_recent_messages: int = 10,
+        keep_recent_tokens: int = DEFAULT_KEEP_RECENT_TOKENS,
     ) -> None:
         self._client_factory = client_factory
         self._in = in_stream or sys.stdin
@@ -95,7 +96,7 @@ class ACPServer:
         self._sessions_lock = threading.Lock()
         self._max_context_tokens = max_context_tokens
         self._compact_reserve_tokens = compact_reserve_tokens
-        self._keep_recent_messages = keep_recent_messages
+        self._keep_recent_tokens = keep_recent_tokens
         self._client: Any = None
         self._client_lock = threading.Lock()
         self._model = ""
@@ -274,7 +275,7 @@ class ACPServer:
                     state.kernel,
                     max_context_tokens=self._max_context_tokens,
                     compact_reserve_tokens=self._compact_reserve_tokens,
-                    keep_recent_messages=self._keep_recent_messages,
+                    keep_recent_tokens=self._keep_recent_tokens,
                     on_tool_call=_on_tool_call,
                     on_tool_result=_on_tool_result,
                     on_text_delta=_on_text_delta,
