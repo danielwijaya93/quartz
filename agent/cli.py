@@ -157,6 +157,7 @@ def _run_turn(
     from agent.ui import (
         MarkdownBlockStreamer,
         TurnProgressTracker,
+        _format_toolbar,
         _render_bash_notice,
         _render_compaction,
         _render_tool_call,
@@ -176,6 +177,14 @@ def _run_turn(
             active_printer,
             verbose=rt.verbose,
             plain_output=rt.plain_output,
+            toolbar_provider=lambda: _format_toolbar(
+                rt.model,
+                rt.effort,
+                rt.cwd,
+                rt.usage_stats,
+                rt.max_context_tokens,
+                getattr(rt.kernel, "running_bash_count", lambda: 0)(),
+            ),
         )
     turn_stop = threading.Event()
 
@@ -323,7 +332,13 @@ def _run_headless(
 def _execute_interactive_turn(rt: _CLIRuntime) -> str:
     from rich.text import Text
 
-    from agent.ui import TurnProgressTracker, _MidTurnInputWatcher, _format_turn_footer, _format_turn_timing
+    from agent.ui import (
+        TurnProgressTracker,
+        _MidTurnInputWatcher,
+        _format_toolbar,
+        _format_turn_footer,
+        _format_turn_timing,
+    )
 
     active_printer = _sym("printer")
     active_console = _sym("console")
@@ -335,6 +350,14 @@ def _execute_interactive_turn(rt: _CLIRuntime) -> str:
         active_printer,
         verbose=rt.verbose,
         plain_output=rt.plain_output,
+        toolbar_provider=lambda: _format_toolbar(
+            rt.model,
+            rt.effort,
+            rt.cwd,
+            rt.usage_stats,
+            rt.max_context_tokens,
+            getattr(rt.kernel, "running_bash_count", lambda: 0)(),
+        ),
     )
 
     def _on_change(text: str) -> None:
