@@ -238,9 +238,17 @@ def _load_helper_file(
         target.warnings.append(f"Failed to load helpers from {file_path}: {exc}")
         return
 
-    for attr_name in dir(mod):
-        if attr_name.startswith("_"):
-            continue
+    exported_names = getattr(mod, "__all__", None)
+    if exported_names is not None:
+        candidates = [attr for attr in exported_names if hasattr(mod, attr)]
+    else:
+        candidates = [
+            attr
+            for attr in dir(mod)
+            if not attr.startswith("_") and inspect.isfunction(getattr(mod, attr))
+        ]
+
+    for attr_name in candidates:
         val = getattr(mod, attr_name)
         if not callable(val):
             continue
