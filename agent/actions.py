@@ -32,7 +32,7 @@ _FILE_VERBS: dict[str, str] = {
     "edit": "Edit",
 }
 
-_BASH_CALL_RE = re.compile(r"\bbash(?:_bg)?\s*\(\s*([\"'])(.*?)\1", re.DOTALL)
+_BASH_CALL_RE = re.compile(r"\bbash\s*\(\s*([\"'])(.*?)\1", re.DOTALL)
 
 
 def _attr_chain(node: ast.AST) -> list[str]:
@@ -112,11 +112,11 @@ def classify_cell_actions(code: str) -> list[str]:
             root = chain[0]
             name = chain[-1]
 
-            if root == "mcp" or name in ("call_mcp", "call_mcp_tool"):
+            if root == "mcp" or name == "call_mcp_tool":
                 found.add("mcp")
                 continue
 
-            if name in ("bash", "bash_bg"):
+            if name == "bash":
                 if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
                     _classify_bash_command(node.args[0].value, found)
                 else:

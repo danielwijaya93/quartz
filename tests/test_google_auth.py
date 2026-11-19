@@ -241,3 +241,15 @@ def test_google_provider_stream_refresh_fallback_and_non_stream_tools(
     assert resp.choices[0].message.content == "hi "
     assert resp.choices[0].message.tool_calls is not None
     assert resp.choices[0].message.tool_calls[0].function.name == "ipython"
+
+
+def test_build_client_honors_openai_env_model(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "missing_config.json"))
+    monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "missing_auth.json"))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("MODEL", "gpt-4.1")
+
+    _, provider, model, _ = _build_client(provider="auto")
+    assert provider == "deepseek"
+    assert model == "gpt-4.1"

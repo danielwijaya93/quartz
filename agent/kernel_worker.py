@@ -23,6 +23,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
 from collections import deque
@@ -42,6 +43,7 @@ _IGNORE_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache",
 _STDOUT_VAR: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar("quartz_stdout", default=None)
 _STDERR_VAR: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar("quartz_stderr", default=None)
 _IMAGES_VAR: contextvars.ContextVar[list[dict[str, str]] | None] = contextvars.ContextVar("quartz_images", default=None)
+_CELL_ID_VAR: contextvars.ContextVar[str | None] = contextvars.ContextVar("quartz_cell_id", default=None)
 
 
 def _record_cell_image(img: dict[str, str]) -> None:
@@ -231,6 +233,7 @@ class BashHandle:
         self._started_cell_id = started_cell_id
         self._on_done_callback = on_done_callback
         self._lines: deque[str] = deque(maxlen=20_000)
+        self._lines_lock = threading.Lock()
         self._start_time = time.monotonic()
         self._result: BashResult | None = None
         self._awaited = False
@@ -256,14 +259,16 @@ class BashHandle:
     def output(self) -> str:
         if self._result is not None:
             return self._result.output
-        return "".join(self._lines)
+        with self._lines_lock:
+            return "".join(self._lines)
 
     def tail(self, n: int = 50) -> str:
         if n <= 0:
             return ""
         if self._result is not None:
             return "".join(self._result.output.splitlines(keepends=True)[-n:])
-        return "".join(list(self._lines)[-n:])
+        with self._lines_lock:
+            return "".join(list(self._lines)[-n:])
 
     def poll(self) -> BashResult | None:
         return self._result
@@ -290,7 +295,9 @@ class BashHandle:
     def _read_blocking(self) -> int:
         assert self._proc.stdout is not None
         for raw_line in self._proc.stdout:
-            self._lines.append(raw_line.decode("utf-8", errors="replace"))
+            line = raw_line.decode("utf-8", errors="replace")
+            with self._lines_lock:
+                self._lines.append(line)
         return self._proc.wait()
 
     async def _monitor(self) -> BashResult:
@@ -306,8 +313,9 @@ class BashHandle:
             exit_code = await waiter
 
         duration = round(time.monotonic() - self._start_time, 3)
-        full_output = "".join(self._lines)
-        self._lines.clear()
+        with self._lines_lock:
+            full_output = "".join(self._lines)
+            self._lines.clear()
         self._result = BashResult(
             exit_code=exit_code,
             output=full_output,
@@ -332,7 +340,7 @@ class KernelWorker:
         proto_fd = os.dup(1)
         self._proto_out = os.fdopen(proto_fd, "w", encoding="utf-8", buffering=1)
 
-        self._current_cell_id: str | None = None
+        self._active_cell_ids: set[str] = set()
         self._handles: list[BashHandle] = []
         self.mcp = MCPManager(cwd=Path.cwd(), on_image=_record_cell_image)
 
@@ -364,7 +372,7 @@ class KernelWorker:
         handle = BashHandle(
             command=command,
             timeout=timeout,
-            started_cell_id=self._current_cell_id,
+            started_cell_id=_CELL_ID_VAR.get(),
             on_done_callback=self._on_bash_done,
         )
         self._handles.append(handle)
@@ -382,7 +390,7 @@ class KernelWorker:
         # and was not directly awaited inside a cell.
         if handle._awaited:
             return
-        if self._current_cell_id is not None and handle._started_cell_id == self._current_cell_id:
+        if handle._started_cell_id is not None and handle._started_cell_id in self._active_cell_ids:
             return
         assert handle._result is not None
         self._send(
@@ -399,7 +407,7 @@ class KernelWorker:
         )
 
     async def _exec_cell(self, cell_id: str, code: str) -> dict[str, Any]:
-        self._current_cell_id = cell_id
+        self._active_cell_ids.add(cell_id)
         stdout_buf = io.StringIO()
         stderr_buf = io.StringIO()
         cell_images: list[dict[str, str]] = []
@@ -428,6 +436,7 @@ class KernelWorker:
             tok_out = _STDOUT_VAR.set(stdout_buf)
             tok_err = _STDERR_VAR.set(stderr_buf)
             tok_img = _IMAGES_VAR.set(cell_images)
+            tok_cid = _CELL_ID_VAR.set(cell_id)
             try:
                 coro = eval(compiled, self._namespace, self._namespace)
                 if inspect.isawaitable(coro):
@@ -439,6 +448,7 @@ class KernelWorker:
                         self._namespace["_"] = val
                         result_repr = _spill_or_truncate(repr(val), MAX_REPR_CHARS, "result", cell_id)
             finally:
+                _CELL_ID_VAR.reset(tok_cid)
                 _STDOUT_VAR.reset(tok_out)
                 _STDERR_VAR.reset(tok_err)
                 _IMAGES_VAR.reset(tok_img)
@@ -452,7 +462,7 @@ class KernelWorker:
             ok = False
             stderr_buf.write(traceback.format_exc())
         finally:
-            self._current_cell_id = None
+            self._active_cell_ids.discard(cell_id)
 
         return {
             "type": "exec_result",
@@ -480,40 +490,53 @@ class KernelWorker:
 
         import dill
 
-        target = Path(snapshot_dir)
-        if target.exists():
-            shutil.rmtree(target)
-        target.mkdir(parents=True, exist_ok=True)
+        if not snapshot_dir or not str(snapshot_dir).strip():
+            raise ValueError("snapshot_dir must not be empty")
+
+        target = Path(snapshot_dir).resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp_dir = target.parent / f".{target.name}.{os.getpid()}.tmp"
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
 
         saved: list[str] = []
         skipped: list[str] = []
         total_bytes = 0
 
-        for name, val in list(self._namespace.items()):
-            if name in self._reserved_names or name.startswith("__"):
-                continue
-            if isinstance(val, BashHandle):
-                skipped.append(f"{name} (running/process handle)")
-                continue
-            try:
-                blob = dill.dumps(val, recurse=True)
-            except Exception:
-                skipped.append(f"{name} ({type(val).__name__})")
-                continue
+        try:
+            for name, val in list(self._namespace.items()):
+                if name in self._reserved_names or name.startswith("__"):
+                    continue
+                if isinstance(val, BashHandle):
+                    skipped.append(f"{name} (running/process handle)")
+                    continue
+                try:
+                    blob = dill.dumps(val, recurse=True)
+                except Exception:
+                    skipped.append(f"{name} ({type(val).__name__})")
+                    continue
 
-            if len(blob) > MAX_VAR_BYTES:
-                skipped.append(f"{name} (>16 MiB)")
-                continue
-            if total_bytes + len(blob) > MAX_TOTAL_SNAPSHOT_BYTES:
-                skipped.append(f"{name} (snapshot >256 MiB)")
-                continue
+                if len(blob) > MAX_VAR_BYTES:
+                    skipped.append(f"{name} (>16 MiB)")
+                    continue
+                if total_bytes + len(blob) > MAX_TOTAL_SNAPSHOT_BYTES:
+                    skipped.append(f"{name} (snapshot >256 MiB)")
+                    continue
 
-            (target / f"{name}.dill").write_bytes(blob)
-            total_bytes += len(blob)
-            saved.append(name)
+                (tmp_dir / f"{name}.dill").write_bytes(blob)
+                total_bytes += len(blob)
+                saved.append(name)
 
-        manifest = {"saved": saved, "skipped": skipped, "cwd": os.getcwd()}
-        (target / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            manifest = {"saved": saved, "skipped": skipped, "cwd": os.getcwd()}
+            (tmp_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            if target.exists():
+                shutil.rmtree(target)
+            tmp_dir.rename(target)
+        except BaseException:
+            if tmp_dir.exists():
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
         return manifest
 
     def restore_vars(self, snapshot_dir: str) -> dict[str, Any]:

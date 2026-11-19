@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import dataclasses
 import hashlib
+import html
 import http.server
 import json
 import os
@@ -344,7 +345,7 @@ def login_google_interactive(path: Path | None = None) -> GoogleCredentials:
 
             if err:
                 result_box["error"] = err
-                body = f"<h3>Login failed: {err}</h3><p>You can close this tab.</p>"
+                body = f"<h3>Login failed: {html.escape(err)}</h3><p>You can close this tab.</p>"
                 self.send_response(400)
             elif cb_state != state or not code:
                 result_box["error"] = "Invalid state or missing code"

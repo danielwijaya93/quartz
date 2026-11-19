@@ -14,7 +14,7 @@ from typing import Any, TextIO
 
 from agent.images import content_to_text
 from agent.kernel_client import CellResult, KernelClient
-from agent.loop import TurnUsage, agent_loop
+from agent.loop import TurnAborted, TurnUsage, agent_loop
 from agent.prompt import build_system_prompt
 from agent.session import Session
 
@@ -30,6 +30,7 @@ class _ActiveSession:
     messages: list[dict[str, Any]]
     usage: TurnUsage
     prompt_lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
+    abort_event: threading.Event = dataclasses.field(default_factory=threading.Event)
 
 
 def _extract_prompt_content(prompt: Any) -> str | list[dict[str, Any]]:
@@ -96,13 +97,15 @@ class ACPServer:
         self._compact_reserve_tokens = compact_reserve_tokens
         self._keep_recent_messages = keep_recent_messages
         self._client: Any = None
+        self._client_lock = threading.Lock()
         self._model = ""
         self._effort: str | None = None
 
     def _ensure_client(self) -> tuple[Any, str, str | None]:
-        if self._client is None:
-            self._client, _, self._model, self._effort = self._client_factory()
-        return self._client, self._model, self._effort
+        with self._client_lock:
+            if self._client is None:
+                self._client, _, self._model, self._effort = self._client_factory()
+            return self._client, self._model, self._effort
 
     def _send(self, payload: dict[str, Any]) -> None:
         line = json.dumps(payload, ensure_ascii=False)
@@ -219,6 +222,7 @@ class ACPServer:
             raise KeyError(f"Unknown sessionId: {session_id}")
 
         with state.prompt_lock:
+            state.abort_event.clear()
             prompt_content = _extract_prompt_content(params.get("prompt"))
             state.messages.append({"role": "user", "content": prompt_content})
 
@@ -277,6 +281,7 @@ class ACPServer:
                     usage_stats=state.usage,
                     initial_prompt_tokens=state.usage.prompt_tokens,
                     effort=effort,
+                    abort_event=state.abort_event,
                 )
                 state.messages = updated_msgs
                 state.session.save_messages(state.messages)
@@ -284,7 +289,7 @@ class ACPServer:
                     state.session.save_usage(state.usage.to_dict())
                 state.session.save_kernel(state.kernel)
                 return {"stopReason": "end_turn"}
-            except KeyboardInterrupt:
+            except (KeyboardInterrupt, TurnAborted):
                 return {"stopReason": "cancelled"}
 
     def _handle_session_cancel(self, params: dict[str, Any]) -> None:
@@ -292,6 +297,7 @@ class ACPServer:
         with self._sessions_lock:
             state = self._sessions.get(session_id)
         if state is not None:
+            state.abort_event.set()
             state.kernel.interrupt()
 
     def _dispatch_request(self, req: dict[str, Any]) -> None:

@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import pytest
+
 from agent.compact import _find_safe_split_index, format_python_state_notice
 from agent.kernel_client import KernelClient
 from agent.loop import TurnUsage, format_bash_done_events
@@ -472,3 +474,63 @@ def test_kernel_edit_returns_unified_diff(tmp_path: Path) -> None:
         assert "+    return 'hello'" in res.result
     finally:
         kernel.close()
+
+
+def test_agent_loop_abort_during_parallel_ipython(tmp_path: Path) -> None:
+    import threading
+    from types import SimpleNamespace
+    from agent.loop import TurnAborted, agent_loop
+
+    class _ParallelAbortClient:
+        def __init__(self) -> None:
+            self.chat = SimpleNamespace(completions=self)
+
+        def create(self, **kwargs):
+            del kwargs
+            tc1 = SimpleNamespace(
+                id="tc_1",
+                function=SimpleNamespace(name="ipython", arguments='{"code": "import asyncio; await asyncio.sleep(5)"}'),
+            )
+            tc2 = SimpleNamespace(
+                id="tc_2",
+                function=SimpleNamespace(name="ipython", arguments='{"code": "import asyncio; await asyncio.sleep(5)"}'),
+            )
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=None, tool_calls=[tc1, tc2]))],
+                usage=None,
+            )
+
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    abort_event = threading.Event()
+    messages: list[dict] = [{"role": "user", "content": "run two"}]
+    try:
+        timer = threading.Timer(0.25, lambda: (abort_event.set(), kernel.interrupt()))
+        timer.start()
+        try:
+            with pytest.raises(TurnAborted):
+                agent_loop(
+                    _ParallelAbortClient(),  # type: ignore[arg-type]
+                    "test-model",
+                    "sys",
+                    messages,
+                    kernel,
+                    stream=False,
+                    abort_event=abort_event,
+                )
+        finally:
+            timer.cancel()
+
+        tool_msgs = [m for m in messages if m.get("role") == "tool"]
+        assert [m["tool_call_id"] for m in tool_msgs] == ["tc_1", "tc_2"]
+        assert all("KeyboardInterrupt" in m["content"] or m["content"] == "[aborted by user]" for m in tool_msgs)
+    finally:
+        kernel.close()
+
+
+def test_kernel_snapshot_rejects_empty_dir() -> None:
+    from agent.kernel_worker import KernelWorker
+
+    worker = KernelWorker()
+    with pytest.raises(ValueError, match="snapshot_dir"):
+        worker.snapshot_vars("")

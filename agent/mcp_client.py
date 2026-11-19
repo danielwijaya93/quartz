@@ -320,7 +320,11 @@ class MCPManager:
 
         async def _fetch_one(srv: str) -> list[dict[str, Any]]:
             session = await self._get_session(srv)
-            resp = await session.list_tools()
+            try:
+                resp = await session.list_tools()
+            except Exception:
+                await self._drop_session(srv)
+                raise
             return [
                 {
                     "server": srv,
@@ -358,12 +362,25 @@ class MCPManager:
                 matched.append(tool)
         return matched
 
+    async def _drop_session(self, server: str) -> None:
+        self._sessions.pop(server, None)
+        stack = self._stacks.pop(server, None)
+        if stack is not None:
+            try:
+                await stack.aclose()
+            except Exception:
+                pass
+
     async def call_tool(
         self, server: str, tool: str, arguments: dict[str, Any] | None = None
     ) -> Any:
         """Call a tool on an MCP server and return the unwrapped Python result."""
         session = await self._get_session(server)
-        result = await session.call_tool(tool, arguments or {})
+        try:
+            result = await session.call_tool(tool, arguments or {})
+        except Exception:
+            await self._drop_session(server)
+            raise
         images: list[dict[str, str]] = []
         unwrapped = _unwrap_tool_result(result, image_sink=images)
         if self._on_image is not None:

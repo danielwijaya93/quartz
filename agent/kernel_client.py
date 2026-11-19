@@ -201,6 +201,16 @@ class KernelClient:
         with self._events_cond:
             return bool(self._events)
 
+    def wait_until_event(self, stop_event: threading.Event, timeout: float = 0.25) -> bool:
+        """Block until a kernel event arrives or `stop_event` is set. Returns True if events are pending."""
+        while not stop_event.is_set():
+            with self._events_cond:
+                if not self._events:
+                    self._events_cond.wait(timeout=timeout)
+                if self._events:
+                    return True
+        return False
+
     def wait_for_events(self, timeout: float | None = None) -> list[dict[str, Any]]:
         with self._events_cond:
             if not self._events and not self._worker_exited and self._proc is not None and self._proc.poll() is None:

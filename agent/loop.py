@@ -446,18 +446,23 @@ def agent_loop(
 
         ipython_indices = [i for i, (_, fn, _) in enumerate(parsed_calls) if fn == "ipython"]
         step_images: list[dict[str, str]] = []
-        if len(ipython_indices) > 1:
+        results_by_idx: dict[int, CellResult] = {}
+
+        if ipython_indices:
             for i in ipython_indices:
                 if on_tool_call:
                     on_tool_call(parsed_calls[i][2] or "")
             if on_status:
                 on_status("Running ipython...")
-            results_by_idx: dict[int, CellResult] = {}
             try:
-                with ThreadPoolExecutor(max_workers=min(len(ipython_indices), 8)) as pool:
-                    futures = {i: pool.submit(kernel.exec_cell, parsed_calls[i][2] or "") for i in ipython_indices}
-                    for i in ipython_indices:
-                        results_by_idx[i] = futures[i].result()
+                if len(ipython_indices) > 1:
+                    with ThreadPoolExecutor(max_workers=min(len(ipython_indices), 8)) as pool:
+                        futures = {i: pool.submit(kernel.exec_cell, parsed_calls[i][2] or "") for i in ipython_indices}
+                        for i in ipython_indices:
+                            results_by_idx[i] = futures[i].result()
+                else:
+                    i = ipython_indices[0]
+                    results_by_idx[i] = kernel.exec_cell(parsed_calls[i][2] or "")
             except (KeyboardInterrupt, TurnAborted) as exc:
                 if on_status:
                     on_status(None)
@@ -476,73 +481,28 @@ def agent_loop(
                 if on_status:
                     on_status(None)
 
-            for i, (tc_id, fn_name, _) in enumerate(parsed_calls):
-                if fn_name != "ipython":
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc_id,
-                            "content": f"Unknown tool: {fn_name}. Only `ipython` is available.",
-                        }
-                    )
-                    continue
-                cell_res = results_by_idx[i]
-                if cell_res.images:
-                    step_images.extend(cell_res.images)
-                if on_tool_result:
-                    on_tool_result(cell_res)
+        for i, (tc_id, fn_name, _) in enumerate(parsed_calls):
+            if fn_name != "ipython":
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": tc_id,
-                        "content": cell_res.format_for_model(),
+                        "content": f"Unknown tool: {fn_name}. Only `ipython` is available.",
                     }
                 )
-        else:
-            for idx, (tc_id, fn_name, code) in enumerate(parsed_calls):
-                if fn_name != "ipython":
-                    result_text = f"Unknown tool: {fn_name}. Only `ipython` is available."
-                    messages.append({"role": "tool", "tool_call_id": tc_id, "content": result_text})
-                    continue
-
-                assert code is not None
-                if on_tool_call:
-                    on_tool_call(code)
-
-                if on_status:
-                    on_status("Running ipython...")
-                try:
-                    cell_res = kernel.exec_cell(code)
-                except (KeyboardInterrupt, TurnAborted) as exc:
-                    if on_status:
-                        on_status(None)
-                    kernel.interrupt()
-                    marker = "[aborted by user]" if isinstance(exc, TurnAborted) else "[interrupted by user]"
-                    # Keep message history valid so the next turn never has orphaned tool_calls.
-                    for rem_tc in tool_calls[idx:]:
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": rem_tc["id"],
-                                "content": marker,
-                            }
-                        )
-                    raise
-                finally:
-                    if on_status:
-                        on_status(None)
-                if on_tool_result:
-                    on_tool_result(cell_res)
-                if cell_res.images:
-                    step_images.extend(cell_res.images)
-
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc_id,
-                        "content": cell_res.format_for_model(),
-                    }
-                )
+                continue
+            cell_res = results_by_idx[i]
+            if cell_res.images:
+                step_images.extend(cell_res.images)
+            if on_tool_result:
+                on_tool_result(cell_res)
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": cell_res.format_for_model(),
+                }
+            )
 
         if step_images:
             messages.append(

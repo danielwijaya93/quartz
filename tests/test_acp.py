@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -170,6 +171,7 @@ def test_acp_initialize_new_prompt_and_load(tmp_path: Path, monkeypatch) -> None
 
 
 def test_acp_subprocess_initialize_and_new(tmp_path: Path) -> None:
+    env = {**os.environ, "SESSION_DIR": str(tmp_path / "sessions")}
     proc = subprocess.Popen(
         ["quartz", "--acp"],
         stdin=subprocess.PIPE,
@@ -177,6 +179,7 @@ def test_acp_subprocess_initialize_and_new(tmp_path: Path) -> None:
         stderr=subprocess.PIPE,
         text=True,
         cwd=str(tmp_path),
+        env=env,
     )
     try:
         assert proc.stdin is not None and proc.stdout is not None
@@ -291,3 +294,60 @@ def test_acp_parallel_tool_call_ids_and_cancel(tmp_path: Path, monkeypatch) -> N
     assert ends[0]["rawOutput"] == "2"
     assert ends[1]["toolCallId"] == starts[1]["toolCallId"]
     assert ends[1]["rawOutput"] == "4"
+
+
+def test_acp_session_cancel_stops_active_turn(tmp_path: Path, monkeypatch) -> None:
+    import threading
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
+    started = threading.Event()
+    release = threading.Event()
+
+    class _SlowCompletions:
+        def create(self, **kwargs):
+            del kwargs
+            started.set()
+            release.wait(timeout=3.0)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="late", tool_calls=None))],
+                usage=None,
+            )
+
+    def _factory():
+        return (
+            SimpleNamespace(chat=SimpleNamespace(completions=_SlowCompletions())),
+            "deepseek",
+            "deepseek-flash",
+            "high",
+        )
+
+    out_buf = io.StringIO()
+    server = ACPServer(_factory, in_stream=io.StringIO(""), out_stream=out_buf)
+    server._dispatch_request({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {"cwd": str(tmp_path)}})
+    sid = json.loads(out_buf.getvalue().splitlines()[0])["result"]["sessionId"]
+    out_buf.seek(0)
+    out_buf.truncate(0)
+
+    def _run_prompt() -> None:
+        server._dispatch_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {"sessionId": sid, "prompt": [{"type": "text", "text": "wait"}]},
+            }
+        )
+
+    t = threading.Thread(target=_run_prompt, daemon=True)
+    t.start()
+    assert started.wait(timeout=2.0)
+    server._dispatch_request({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": sid}})
+    release.set()
+    t.join(timeout=3.0)
+    for st in server._sessions.values():
+        st.kernel.close()
+
+    msgs = [json.loads(line) for line in out_buf.getvalue().splitlines() if line.strip()]
+    resp = next(m for m in msgs if m.get("id") == 2)
+    assert resp["result"] == {"stopReason": "cancelled"}
