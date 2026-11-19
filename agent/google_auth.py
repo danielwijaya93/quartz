@@ -20,6 +20,10 @@ from typing import Any
 
 import httpx2
 
+from agent.errors import CredentialError, ProviderError
+from agent.provider_config import resolve_cloudcode_endpoint
+
+
 def get_google_client_id() -> str:
     """Return active Google Client ID from environment."""
     return os.getenv("QUARTZ_GOOGLE_CLIENT_ID", "")
@@ -30,12 +34,39 @@ def get_google_client_secret() -> str:
     return os.getenv("QUARTZ_GOOGLE_CLIENT_SECRET", "")
 
 
+def require_client_credentials() -> tuple[str, str]:
+    """Return (client_id, client_secret), or fail with an actionable message.
+
+    Sending an empty client_id to Google yields the opaque error
+    "Could not determine client ID from request" long after the real mistake.
+    """
+    client_id = get_google_client_id().strip()
+    client_secret = get_google_client_secret().strip()
+    missing = [
+        name
+        for name, value in (
+            ("QUARTZ_GOOGLE_CLIENT_ID", client_id),
+            ("QUARTZ_GOOGLE_CLIENT_SECRET", client_secret),
+        )
+        if not value
+    ]
+    if missing:
+        raise CredentialError(
+            f"{' and '.join(missing)} not set. Add "
+            f"{'them' if len(missing) > 1 else 'it'} to ~/.quartz/.env (or your shell), "
+            "then run `quartz auth login google`."
+        )
+    return client_id, client_secret
+
+
 def __getattr__(name: str) -> Any:
     if name == "CLIENT_ID":
         return get_google_client_id()
     if name == "CLIENT_SECRET":
         return get_google_client_secret()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPES = (
@@ -49,8 +80,6 @@ CALLBACK_PORT = 51121
 CALLBACK_PATH = "/oauth-callback"
 REDIRECT_URI = f"http://localhost:{CALLBACK_PORT}{CALLBACK_PATH}"
 
-PROD_ENDPOINT = "https://cloudcode-pa.googleapis.com"
-DAILY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com"
 FALLBACK_PROJECT_ID = "rising-fact-p41fc"
 EXPIRY_SKEW_MS = 5 * 60 * 1000
 ANTIGRAVITY_VERSION_FLOOR = "2.31.2"
@@ -271,34 +300,54 @@ def discover_project(access_token: str) -> str:
             "platform": "LINUX_AMD64",
         }
     }
-    for endpoint in (PROD_ENDPOINT, DAILY_ENDPOINT):
-        try:
-            resp = httpx2.post(
-                f"{endpoint}/v1internal:loadCodeAssist",
-                json=body,
-                headers=headers,
-                timeout=15.0,
-            )
-            if resp.status_code < 400:
-                payload = resp.json()
-                proj = payload.get("cloudaicompanionProject")
-                if isinstance(proj, str) and proj.strip():
-                    return proj.strip()
-                if isinstance(proj, dict) and isinstance(proj.get("id"), str) and proj["id"].strip():
-                    return proj["id"].strip()
-        except Exception:
-            continue
+    endpoint = resolve_cloudcode_endpoint()
+    try:
+        resp = httpx2.post(
+            f"{endpoint}/v1internal:loadCodeAssist",
+            json=body,
+            headers=headers,
+            timeout=15.0,
+        )
+    except httpx2.HTTPError as exc:
+        # Transport failure: report it rather than silently billing another project.
+        raise ProviderError(
+            "Could not reach Cloud Code Assist to discover the project",
+            provider="google",
+            detail=f"{endpoint}: {exc}",
+        ) from exc
+
+    if resp.status_code >= 400:
+        # An HTTP status is the provider answering: the account is not onboarded
+        # for a managed project, so Antigravity's shared project is authoritative.
+        return FALLBACK_PROJECT_ID
+
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        raise ProviderError(
+            "Cloud Code Assist returned a non-JSON project response",
+            provider="google",
+            status_code=resp.status_code,
+            detail=resp.text[:500],
+        ) from exc
+
+    proj = payload.get("cloudaicompanionProject") if isinstance(payload, dict) else None
+    if isinstance(proj, str) and proj.strip():
+        return proj.strip()
+    if isinstance(proj, dict) and isinstance(proj.get("id"), str) and proj["id"].strip():
+        return proj["id"].strip()
     return FALLBACK_PROJECT_ID
 
 
 def refresh_google_credentials(
     creds: GoogleCredentials, path: Path | None = None
 ) -> GoogleCredentials:
+    client_id, client_secret = require_client_credentials()
     token = _token_request(
         {
             "grant_type": "refresh_token",
-            "client_id": get_google_client_id(),
-            "client_secret": get_google_client_secret(),
+            "client_id": client_id,
+            "client_secret": client_secret,
             "refresh_token": creds.refresh,
         },
         "Google token refresh",
@@ -311,7 +360,7 @@ def refresh_google_credentials(
 def get_valid_google_credentials(path: Path | None = None) -> GoogleCredentials:
     creds = load_google_credentials(path=path)
     if creds is None:
-        raise RuntimeError(
+        raise CredentialError(
             "Not logged in to Google. Run `quartz auth login google` first."
         )
     if creds.is_expired():
@@ -321,13 +370,14 @@ def get_valid_google_credentials(path: Path | None = None) -> GoogleCredentials:
 
 def login_google_interactive(path: Path | None = None) -> GoogleCredentials:
     """Run Google OAuth2 PKCE flow with localhost:51121 callback and manual paste fallback."""
+    client_id, client_secret = require_client_credentials()
     verifier, challenge = generate_pkce()
     state = secrets.token_urlsafe(24)
 
     params = urllib.parse.urlencode(
         {
             "response_type": "code",
-            "client_id": get_google_client_id(),
+            "client_id": client_id,
             "redirect_uri": REDIRECT_URI,
             "scope": SCOPES,
             "code_challenge": challenge,
@@ -428,8 +478,8 @@ def login_google_interactive(path: Path | None = None) -> GoogleCredentials:
             "grant_type": "authorization_code",
             "code": auth_code,
             "redirect_uri": REDIRECT_URI,
-            "client_id": get_google_client_id(),
-            "client_secret": get_google_client_secret(),
+            "client_id": client_id,
+            "client_secret": client_secret,
             "code_verifier": verifier,
         },
         "Google token exchange",

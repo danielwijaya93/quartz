@@ -13,13 +13,12 @@ import httpx2
 
 from agent.errors import ContextOverflowError, ProviderError, is_context_overflow
 from agent.google_auth import (
-    DAILY_ENDPOINT,
-    PROD_ENDPOINT,
     antigravity_user_agent,
     get_valid_google_credentials,
     refresh_google_credentials,
 )
 from agent.images import parse_data_url
+from agent.provider_config import resolve_cloudcode_endpoint, resolve_http_timeout
 
 ANTIGRAVITY_SYSTEM_INSTRUCTION = (
     "You are Antigravity, a powerful agentic AI coding assistant designed by the "
@@ -342,7 +341,7 @@ class _GoogleCompletions:
 
     def _get_http(self) -> Any:
         if self._http is None:
-            self._http = httpx2.Client(timeout=120.0)
+            self._http = httpx2.Client(timeout=resolve_http_timeout())
         return self._http
 
     def _stream_sse(
@@ -352,66 +351,60 @@ class _GoogleCompletions:
         tools: list[dict[str, Any]] | None,
         effort: str | None = None,
     ) -> Iterator[_Chunk]:
+        endpoint = resolve_cloudcode_endpoint()
+        url = f"{endpoint}/v1internal:streamGenerateContent?alt=sse"
         creds = get_valid_google_credentials()
+        body = build_cloudcode_request(
+            model, creds.project_id, messages, tools, effort=effort
+        )
         refreshed = False
 
-        for endpoint in (DAILY_ENDPOINT, PROD_ENDPOINT):
-            url = f"{endpoint}/v1internal:streamGenerateContent?alt=sse"
-            body = build_cloudcode_request(
-                model, creds.project_id, messages, tools, effort=effort
-            )
+        while True:
+            headers = {
+                "Authorization": f"Bearer {creds.access}",
+                "User-Agent": antigravity_user_agent(),
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            }
+            with self._get_http().stream("POST", url, json=body, headers=headers) as resp:
+                if resp.status_code == 401 and not refreshed:
+                    resp.read()
+                    creds = refresh_google_credentials(creds)
+                    refreshed = True
+                    continue
 
-            while True:
-                headers = {
-                    "Authorization": f"Bearer {creds.access}",
-                    "User-Agent": antigravity_user_agent(),
-                    "Content-Type": "application/json",
-                    "Accept": "text/event-stream",
-                }
-                http = self._get_http()
-                with http.stream("POST", url, json=body, headers=headers) as resp:
-                        if resp.status_code == 401 and not refreshed:
-                            creds = refresh_google_credentials(creds)
-                            refreshed = True
-                            continue
-                        if resp.status_code in (403, 404, 429) or resp.status_code >= 500:
-                            err_text = resp.read().decode("utf-8", errors="replace")
-                            last_err = f"Google Cloud Code Assist error ({resp.status_code}): {err_text}"
-                            break
-                        if resp.status_code >= 400:
-                            err_text = resp.read().decode("utf-8", errors="replace")
-                            if is_context_overflow(resp.status_code, err_text):
-                                raise ContextOverflowError(
-                                    "Prompt exceeds the Gemini context window",
-                                    provider="google",
-                                    status_code=resp.status_code,
-                                    detail=err_text,
-                                )
-                            raise ProviderError(
-                                "Google Cloud Code Assist request failed",
-                                provider="google",
-                                status_code=resp.status_code,
-                                detail=err_text,
-                            )
+                if resp.status_code >= 400:
+                    err_text = resp.read().decode("utf-8", errors="replace")
+                    if is_context_overflow(resp.status_code, err_text):
+                        raise ContextOverflowError(
+                            "Prompt exceeds the Gemini context window",
+                            provider="google",
+                            status_code=resp.status_code,
+                            detail=err_text,
+                        )
+                    raise ProviderError(
+                        f"Cloud Code Assist request failed on {endpoint}",
+                        provider="google",
+                        status_code=resp.status_code,
+                        detail=err_text,
+                    )
 
-                        tc_counter = [0]
-                        for raw_line in resp.iter_lines():
-                            line = raw_line.strip()
-                            if not line or not line.startswith("data:"):
-                                continue
-                            data_str = line[5:].strip()
-                            if data_str == "[DONE]":
-                                break
-                            try:
-                                payload = json.loads(data_str)
-                            except json.JSONDecodeError:
-                                continue
-                            chunk = parse_sse_payload(payload, tc_counter)
-                            if chunk is not None:
-                                yield chunk
-                        return
-
-        raise RuntimeError(last_err)
+                tc_counter = [0]
+                for raw_line in resp.iter_lines():
+                    line = raw_line.strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        payload = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    chunk = parse_sse_payload(payload, tc_counter)
+                    if chunk is not None:
+                        yield chunk
+                return
 
     def create(
         self,
