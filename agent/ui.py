@@ -520,12 +520,14 @@ class TurnProgressTracker:
         chunk_size: int = 5,
         verbose: bool = False,
         plain_output: bool = False,
+        toolbar_provider: Callable[[], str | None] | None = None,
     ) -> None:
         self.console = console
         self.printer = printer
         self.chunk_size = chunk_size
         self.verbose = verbose
         self.plain_output = plain_output
+        self.toolbar_provider = toolbar_provider
         self.lock = threading.RLock()
 
         self.screen = InlineScreen(console)
@@ -600,6 +602,11 @@ class TurnProgressTracker:
                 else "..." + self.input_buffer[-(max_buf_len - 3) :]
             )
             items.append(Text(f"▌ {displayed}█", style="cyan"))
+
+        if self.toolbar_provider is not None:
+            bar = self.toolbar_provider()
+            if bar:
+                items.append(Text(bar, style="dim"))
 
         return Group(*items)
 

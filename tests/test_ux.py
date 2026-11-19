@@ -968,3 +968,46 @@ def test_execute_interactive_turn_unsubmitted_input_handoff(monkeypatch: pytest.
 
     leftover = cli._execute_interactive_turn(rt)
     assert leftover == "unsubmitted thought"
+
+
+def test_turn_progress_tracker_toolbar_provider() -> None:
+    buf = io.StringIO()
+    test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
+    test_printer = BlockPrinter(test_console)
+    test_printer.reset()
+
+    toolbar_value = "claude-3-7-sonnet · ~/repo · ctx:10.0k/200.0k (5.0%) · cache:80% · bg:1"
+    tracker = cli.TurnProgressTracker(
+        test_console,
+        test_printer,
+        toolbar_provider=lambda: toolbar_value,
+    )
+    tracker.start_thinking()
+    grp = tracker._render_group()
+    assert len(grp.renderables) == 2
+    assert getattr(grp.renderables[-1], "plain", "") == toolbar_value
+
+    # When toolbar_provider returns None or empty string, no extra item is added
+    tracker_none = cli.TurnProgressTracker(
+        test_console,
+        test_printer,
+        toolbar_provider=lambda: None,
+    )
+    tracker_none.start_thinking()
+    grp_none = tracker_none._render_group()
+    assert len(grp_none.renderables) == 1
+
+    tracker_empty = cli.TurnProgressTracker(
+        test_console,
+        test_printer,
+        toolbar_provider=lambda: "",
+    )
+    tracker_empty.start_thinking()
+    grp_empty = tracker_empty._render_group()
+    assert len(grp_empty.renderables) == 1
+    # Verify toolbar is at the very bottom even with tools and input buffer
+    tracker.start_tool("read('file.py')")
+    tracker.set_input_buffer("typing...")
+    grp_multi = tracker._render_group()
+    assert getattr(grp_multi.renderables[-1], "plain", "") == toolbar_value
+
