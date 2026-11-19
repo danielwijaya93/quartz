@@ -20,8 +20,8 @@ from typing import Any
 
 import httpx2
 
-CLIENT_ID = "your-google-client-id"
-CLIENT_SECRET = "your-google-client-secret"
+CLIENT_ID = os.getenv("QUARTZ_GOOGLE_CLIENT_ID", "")
+CLIENT_SECRET = os.getenv("QUARTZ_GOOGLE_CLIENT_SECRET", "")
 AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPES = (
