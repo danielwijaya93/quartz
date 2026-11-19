@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -46,9 +47,19 @@ def _iter_workspace_files(cwd: Path, limit: int = 500) -> list[str]:
 class AgentCompleter(Completer):
     """Autocompletes `/commands` at line start and `@path` file mentions anywhere."""
 
-    def __init__(self, cwd: Path, commands: dict[str, str] | None = None) -> None:
+    def __init__(self, cwd: Path, commands: dict[str, str] | None = None, *, cache_ttl_s: float = 5.0) -> None:
         self.cwd = cwd.resolve()
         self.commands = commands or SLASH_COMMANDS
+        self._cache_ttl_s = cache_ttl_s
+        self._files_cache: list[str] | None = None
+        self._files_cache_ts: float = 0.0
+
+    def _get_workspace_files(self) -> list[str]:
+        now = time.monotonic()
+        if self._files_cache is None or (now - self._files_cache_ts) >= self._cache_ttl_s:
+            self._files_cache = _iter_workspace_files(self.cwd)
+            self._files_cache_ts = now
+        return self._files_cache
 
     def get_completions(
         self, document: Document, complete_event: CompleteEvent
@@ -67,7 +78,7 @@ class AgentCompleter(Completer):
         word = document.get_word_before_cursor(WORD=True)
         if word.startswith("@"):
             needle = word[1:].lower()
-            for rel_path in _iter_workspace_files(self.cwd):
+            for rel_path in self._get_workspace_files():
                 if needle in rel_path.lower():
                     yield Completion(
                         f"@{rel_path}",

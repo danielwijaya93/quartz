@@ -37,39 +37,35 @@ class MarkdownBlockStreamer:
 
     def __init__(self, emit: Callable[[str], None]) -> None:
         self._emit = emit
-        self._buf = ""
+        self._tail = ""
+        self._block_lines: list[str] = []
+        self._in_fence = False
 
     def feed(self, chunk: str) -> None:
-        self._buf += chunk.replace("\r\n", "\n")
-        if "\n" not in self._buf:
+        self._tail += chunk.replace("\r\n", "\n")
+        if "\n" not in self._tail:
             return
 
-        last_nl = self._buf.rfind("\n")
-        complete = self._buf[: last_nl + 1]
-        tail = self._buf[last_nl + 1 :]
+        last_nl = self._tail.rfind("\n")
+        complete = self._tail[: last_nl + 1]
+        self._tail = self._tail[last_nl + 1 :]
 
-        in_fence = False
-        block_lines: list[str] = []
-        last_flushed_idx = 0
-        lines = complete.splitlines(keepends=True)
-
-        for idx, line in enumerate(lines):
+        for line in complete.splitlines(keepends=True):
             stripped = line.strip()
             if stripped.startswith("```") or stripped.startswith("~~~"):
-                in_fence = not in_fence
-            block_lines.append(line)
-            if not in_fence and stripped == "":
-                block = "".join(block_lines).strip()
+                self._in_fence = not self._in_fence
+            self._block_lines.append(line)
+            if not self._in_fence and stripped == "":
+                block = "".join(self._block_lines).strip()
+                self._block_lines.clear()
                 if block:
                     self._emit(block)
-                block_lines.clear()
-                last_flushed_idx = idx + 1
-
-        self._buf = "".join(lines[last_flushed_idx:]) + tail
 
     def flush(self) -> None:
-        block = self._buf.strip()
-        self._buf = ""
+        block = ("".join(self._block_lines) + self._tail).strip()
+        self._block_lines.clear()
+        self._tail = ""
+        self._in_fence = False
         if block:
             self._emit(block)
 

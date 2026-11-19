@@ -145,12 +145,20 @@ def _helper_rg(pattern: str, path: str = ".", glob: str | None = None, max_hits:
 def _helper_read(path: str, start: int = 1, end: int = 200) -> str:
     """Read 1-based inclusive line range from a file with line numbers."""
     p = Path(path).expanduser()
-    lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
     s = max(1, start)
-    e = min(len(lines), end) if end is not None else len(lines)
-    if s > len(lines):
-        return f"(EOF: file has {len(lines)} lines)"
-    return "\n".join(f"{i}: {lines[i - 1]}" for i in range(s, e + 1))
+    out: list[str] = []
+    total_lines = 0
+    with p.open("r", encoding="utf-8", errors="replace") as fh:
+        for idx, raw_line in enumerate(fh, 1):
+            total_lines = idx
+            if idx < s:
+                continue
+            if end is not None and idx > end:
+                break
+            out.append(f"{idx}: {raw_line.rstrip(chr(10)).rstrip(chr(13))}")
+    if s > total_lines:
+        return f"(EOF: file has {total_lines} lines)"
+    return "\n".join(out)
 
 
 def _helper_edit(path: str, old: str, new: str) -> str:
