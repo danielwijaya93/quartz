@@ -169,6 +169,7 @@ def _run_turn(
     active_printer = _sym("printer")
     active_console = _sym("console")
     md_streamer = MarkdownBlockStreamer(active_printer.markdown)
+    own_tracker = tracker is None
     if tracker is None:
         tracker = _sym("TurnProgressTracker")(
             active_console,
@@ -255,7 +256,10 @@ def _run_turn(
         )
     finally:
         turn_stop.set()
-        tracker.close()
+        if own_tracker and tracker is not None:
+            tracker.close()
+        elif tracker is not None:
+            tracker.flush()
         if rt.plain_output:
             if streamed_any[0]:
                 sys.stdout.write("\n")
@@ -316,7 +320,7 @@ def _run_headless(
         rt.persist()
 
 
-def _execute_interactive_turn(rt: _CLIRuntime) -> None:
+def _execute_interactive_turn(rt: _CLIRuntime) -> str:
     from rich.text import Text
 
     from agent.ui import TurnProgressTracker, _MidTurnInputWatcher, _format_turn_footer, _format_turn_timing
@@ -348,20 +352,27 @@ def _execute_interactive_turn(rt: _CLIRuntime) -> None:
         active_printer.block(Text(f"[steering] {preview}", style="cyan"))
 
     t0 = time.monotonic()
-    with _MidTurnInputWatcher(
-        abort_event,
-        steering_queue,
-        on_abort=rt.kernel.interrupt,
-        on_queued=_on_queued,
-        on_change=_on_change,
-    ):
-        _, rt.messages, tokens = _run_turn(
-            rt,
-            tracker=tracker,
-            abort_event=abort_event,
-            steering_queue=steering_queue,
-            on_steering=_on_steering,
-        )
+    leftover_buffer = ""
+    watcher_cls = _sym("_MidTurnInputWatcher")
+    try:
+        with watcher_cls(
+            abort_event,
+            steering_queue,
+            on_abort=rt.kernel.interrupt,
+            on_queued=_on_queued,
+            on_change=_on_change,
+        ) as watcher:
+            _, rt.messages, tokens = _run_turn(
+                rt,
+                tracker=tracker,
+                abort_event=abort_event,
+                steering_queue=steering_queue,
+                on_steering=_on_steering,
+            )
+            leftover_buffer = watcher.current_buffer()
+    finally:
+        tracker.close()
+
     turn_elapsed = time.monotonic() - t0
     rt.total_elapsed_s += turn_elapsed
     rt.turn_count += 1
@@ -372,6 +383,7 @@ def _execute_interactive_turn(rt: _CLIRuntime) -> None:
     else:
         footer = timing
     active_printer.block(Text(footer, style="dim"))
+    return leftover_buffer
 
 
 def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
@@ -429,6 +441,7 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
         style=prompt_style,
     )
 
+    leftover_input = ""
     while True:
         bg_count = rt.kernel.running_bash_count()
         if rt.kernel.has_pending_events():
@@ -446,11 +459,17 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
                 watcher_thread = threading.Thread(target=_watch_wakeup, daemon=True)
                 watcher_thread.start()
 
+            prompt_default = leftover_input
+            leftover_input = ""
             try:
                 toolbar = _format_toolbar(
                     rt.model, rt.effort, rt.cwd, rt.usage_stats, rt.max_context_tokens, bg_count
                 )
-                user_input = prompt_session.prompt("\n▌ ", bottom_toolbar=toolbar).strip()
+                user_input = prompt_session.prompt(
+                    "\n▌ ",
+                    bottom_toolbar=toolbar,
+                    default=prompt_default,
+                ).strip()
             except (EOFError, KeyboardInterrupt):
                 active_console.print("\n[dim]Exiting.[/dim]")
                 break
@@ -460,6 +479,7 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
                     watcher_thread.join(timeout=0.5)
 
         if user_input == _WAKEUP_SENTINEL:
+            leftover_input = prompt_default
             events = rt.kernel.drain_events()
             notice = format_bash_done_events(events)
             if not notice:
@@ -482,7 +502,7 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
                 active_console.print()
 
         try:
-            _execute_interactive_turn(rt)
+            leftover_input = _execute_interactive_turn(rt)
         except TurnAborted:
             rt.kernel.interrupt()
             rt.persist()

@@ -22,7 +22,6 @@ from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from rich.console import Console, Group
-from rich.live import Live
 from rich.markdown import Markdown
 from rich.spinner import Spinner
 from rich.text import Text
@@ -120,6 +119,13 @@ class _MidTurnInputWatcher:
         self._thread: threading.Thread | None = None
         self._fd: int | None = None
         self._old_attrs: list[Any] | None = None
+        self._buffer: list[str] = []
+        self._lock = threading.RLock()
+
+    def current_buffer(self) -> str:
+        """Return the current uncommitted input buffer text."""
+        with self._lock:
+            return "".join(self._buffer)
 
     def __enter__(self) -> _MidTurnInputWatcher:
         if not sys.stdin.isatty():
@@ -146,8 +152,9 @@ class _MidTurnInputWatcher:
             except Exception:
                 pass
 
-    def _process_text(self, text: str, buf: list[str]) -> bool:
+    def _process_text(self, text: str, buf: list[str] | None = None) -> bool:
         """Process incoming decoded characters. Return False if aborted."""
+        target_buf = self._buffer if buf is None else buf
         i = 0
         n = len(text)
         while i < n:
@@ -176,8 +183,8 @@ class _MidTurnInputWatcher:
                 i += 1
                 continue
             if ch in ("\r", "\n"):
-                msg = "".join(buf).strip()
-                buf.clear()
+                msg = "".join(target_buf).strip()
+                target_buf.clear()
                 if self._on_change:
                     self._on_change("")
                 if msg:
@@ -187,15 +194,15 @@ class _MidTurnInputWatcher:
                 i += 1
                 continue
             if ch in ("\x7f", "\x08"):
-                if buf:
-                    buf.pop()
+                if target_buf:
+                    target_buf.pop()
                     if self._on_change:
-                        self._on_change("".join(buf))
+                        self._on_change("".join(target_buf))
                 i += 1
                 continue
             if ch == "\x15":  # Ctrl+U: clear input line
-                if buf:
-                    buf.clear()
+                if target_buf:
+                    target_buf.clear()
                     if self._on_change:
                         self._on_change("")
                 i += 1
@@ -206,15 +213,14 @@ class _MidTurnInputWatcher:
                     self._on_abort()
                 return False
             if ch >= " ":
-                buf.append(ch)
+                target_buf.append(ch)
                 if self._on_change:
-                    self._on_change("".join(buf))
+                    self._on_change("".join(target_buf))
             i += 1
         return True
 
     def _run(self) -> None:
         assert self._fd is not None
-        buf: list[str] = []
         decoder = codecs.getincrementaldecoder("utf-8")(errors="ignore")
         while not self._stop.is_set():
             try:
@@ -230,8 +236,9 @@ class _MidTurnInputWatcher:
             if not raw:
                 return
             text = decoder.decode(raw)
-            if not self._process_text(text, buf):
-                return
+            with self._lock:
+                if not self._process_text(text, self._buffer):
+                    return
 
 class BlockPrinter:
     """Print Markdown blocks, cells, and notices separated by exactly one blank line."""
@@ -239,6 +246,8 @@ class BlockPrinter:
     def __init__(self, target: Console) -> None:
         self._console = target
         self._started = False
+        self.before_print: Callable[[], None] | None = None
+        self.after_print: Callable[[], None] | None = None
 
     def reset(self) -> None:
         """Mark the start of a turn so the first block gets no leading blank line."""
@@ -253,12 +262,20 @@ class BlockPrinter:
         text = render_markdown_block(self._console, block)
         if text is None:
             return
+        if self.before_print:
+            self.before_print()
         self._separate()
         self._console.print(text, soft_wrap=True)
+        if self.after_print:
+            self.after_print()
 
     def block(self, renderable: Any) -> None:
+        if self.before_print:
+            self.before_print()
         self._separate()
         self._console.print(renderable)
+        if self.after_print:
+            self.after_print()
 
 
 printer = BlockPrinter(console)
@@ -386,6 +403,109 @@ class CellGroupBuffer:
         _active_printer().block(Text(summary, style="dim" if all_ok else "red"))
 
 
+class InlineScreen:
+    """Differential inline terminal renderer using synchronized output and cursor repositioning.
+
+    Inspired by modern inline differential TUI engines (e.g. pi-tui), this renderer manages
+    a dynamic viewport at the bottom of the terminal screen:
+      - Uses Mode 2026 (\x1b[?2026h / \x1b[?2026l) for atomic, flicker-free redraws on supported terminals.
+      - Calculates line diffs between the previous frame and new frame to reposition the cursor.
+      - Can be atomically cleared before permanent blocks (markdown chunks, tool execution chips) are written.
+    """
+
+    def __init__(self, console: Console, *, enabled: bool | None = None) -> None:
+        self.console = console
+        self._enabled = console.is_terminal if enabled is None else enabled
+        self._previous_lines: list[str] = []
+        self._lock = threading.RLock()
+
+    def is_active(self) -> bool:
+        with self._lock:
+            return bool(self._previous_lines)
+
+    def render(self, lines: list[str]) -> None:
+        """Atomically render or update lines at the bottom of the terminal."""
+        with self._lock:
+            if not self._enabled:
+                return
+            if not lines:
+                self._clear_locked()
+                return
+
+            n_prev = len(self._previous_lines)
+            n_new = len(lines)
+            out: list[str] = ["\x1b[?2026h"]  # Begin synchronized output
+
+            if n_prev == 0:
+                for i, line in enumerate(lines):
+                    if i > 0:
+                        out.append("\r\n")
+                    out.append(line)
+            else:
+                if n_prev > 1:
+                    out.append(f"\x1b[{n_prev - 1}A\r")
+                else:
+                    out.append("\r")
+
+                max_lines = max(n_prev, n_new)
+                for i in range(max_lines):
+                    out.append("\x1b[2K")
+                    if i < n_new:
+                        out.append(lines[i])
+                    if i < max_lines - 1:
+                        out.append("\r\n")
+
+                if max_lines > n_new:
+                    diff = max_lines - n_new
+                    out.append(f"\x1b[{diff}A\r")
+
+            out.append("\x1b[?2026l")  # End synchronized output
+            self.console.file.write("".join(out))
+            self.console.file.flush()
+            self._previous_lines = list(lines)
+
+    def clear(self) -> None:
+        """Atomically erase the dynamic viewport and reposition cursor at its top row."""
+        with self._lock:
+            self._clear_locked()
+
+    def _clear_locked(self) -> None:
+        if not self._enabled:
+            self._previous_lines.clear()
+            return
+        n_prev = len(self._previous_lines)
+        if n_prev == 0:
+            return
+
+        out: list[str] = ["\x1b[?2026h"]
+        if n_prev > 1:
+            out.append(f"\x1b[{n_prev - 1}A\r")
+        else:
+            out.append("\r")
+
+        for i in range(n_prev):
+            out.append("\x1b[2K")
+            if i < n_prev - 1:
+                out.append("\x1b[1B\r")
+
+        if n_prev > 1:
+            out.append(f"\x1b[{n_prev - 1}A\r")
+        else:
+            out.append("\r")
+
+        out.append("\x1b[?2026l")
+        self.console.file.write("".join(out))
+        self.console.file.flush()
+        self._previous_lines.clear()
+
+
+def _render_renderable_to_lines(console: Console, renderable: Any) -> list[str]:
+    with console.capture() as capture:
+        console.print(renderable, end="")
+    text = capture.get()
+    return text.splitlines() if text else []
+
+
 class TurnProgressTracker:
     """Tracks and renders in-progress thinking and tool execution with turn-end collapsing."""
 
@@ -401,9 +521,9 @@ class TurnProgressTracker:
         self.printer = printer
         self.verbose = verbose
         self.plain_output = plain_output
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
 
-        self._live: Live | None = None
+        self.screen = InlineScreen(console)
         self.step_history: list[tuple[str, Any]] = []
         self.thinking_intervals: list[float] = []
         self.active_thinking_start: float | None = None
@@ -414,15 +534,35 @@ class TurnProgressTracker:
         self.queued_messages: list[str] = []
         self._flushed = False
 
-    def _ensure_live(self) -> None:
-        if self._live is None and not self.plain_output and not self.verbose:
-            self._live = Live(
-                self._render_group(),
-                console=self.console,
-                transient=True,
-                auto_refresh=False,
-            )
-            self._live.start()
+        if not self.plain_output and not self.verbose:
+            self.printer.before_print = self._before_print
+            self.printer.after_print = self._after_print
+
+    def _before_print(self) -> None:
+        with self.lock:
+            if not self.plain_output and not self.verbose and self.screen.is_active():
+                self.screen.clear()
+
+    def _after_print(self) -> None:
+        with self.lock:
+            if (
+                not self.plain_output
+                and not self.verbose
+                and not self._flushed
+                and (
+                    self.active_thinking_start is not None
+                    or self.active_tool_code is not None
+                    or self.input_buffer
+                    or self.queued_messages
+                )
+            ):
+                self._render_current()
+
+    def _render_current(self) -> None:
+        if self.plain_output or self.verbose:
+            return
+        lines = _render_renderable_to_lines(self.console, self._render_group())
+        self.screen.render(lines)
 
     def _render_group(self) -> Group:
         items: list[Any] = []
@@ -447,7 +587,14 @@ class TurnProgressTracker:
             items.append(Text(f"[queued] {preview}", style="dim cyan"))
 
         if self.input_buffer:
-            items.append(Text(f"▌ {self.input_buffer}█", style="cyan"))
+            width = self.console.width or 80
+            max_buf_len = max(10, width - 6)
+            displayed = (
+                self.input_buffer
+                if len(self.input_buffer) <= max_buf_len
+                else "..." + self.input_buffer[-(max_buf_len - 3) :]
+            )
+            items.append(Text(f"▌ {displayed}█", style="cyan"))
 
         return Group(*items)
 
@@ -455,28 +602,21 @@ class TurnProgressTracker:
         if self.plain_output or self.verbose:
             return
         with self.lock:
-            if self._live is not None and (
+            if (
                 self.active_thinking_start is not None
                 or self.active_tool_code is not None
                 or self.input_buffer
                 or self.queued_messages
             ):
-                self._live.update(self._render_group(), refresh=True)
+                self._render_current()
 
     def set_input_buffer(self, text: str) -> None:
         if self.plain_output or self.verbose:
             return
         with self.lock:
             self.input_buffer = text
-            if text:
-                self._flushed = False
-                self._ensure_live()
-            elif not self.queued_messages and self.active_thinking_start is None and self.active_tool_code is None:
-                if self._live is not None:
-                    self._live.stop()
-                    self._live = None
-            if self._live is not None:
-                self._live.update(self._render_group(), refresh=True)
+            self._flushed = False
+            self._render_current()
 
     def add_queued_message(self, text: str) -> None:
         if self.plain_output or self.verbose:
@@ -485,30 +625,25 @@ class TurnProgressTracker:
             self.input_buffer = ""
             self.queued_messages.append(text)
             self._flushed = False
-            self._ensure_live()
-            if self._live is not None:
-                self._live.update(self._render_group(), refresh=True)
+            self._render_current()
 
     def clear_queued_messages(self) -> None:
         if self.plain_output or self.verbose:
             return
         with self.lock:
             self.queued_messages.clear()
-            if not self.input_buffer and self.active_thinking_start is None and self.active_tool_code is None:
-                if self._live is not None:
-                    self._live.stop()
-                    self._live = None
-            elif self._live is not None:
-                self._live.update(self._render_group(), refresh=True)
+            self._render_current()
 
     def close(self) -> None:
         self.flush()
         with self.lock:
             self.input_buffer = ""
             self.queued_messages.clear()
-            if self._live is not None:
-                self._live.stop()
-                self._live = None
+            self.screen.clear()
+            if self.printer.before_print == self._before_print:
+                self.printer.before_print = None
+            if self.printer.after_print == self._after_print:
+                self.printer.after_print = None
 
     def start_thinking(self) -> None:
         if self.plain_output or self.verbose:
@@ -518,9 +653,7 @@ class TurnProgressTracker:
                 return
             self._flushed = False
             self.active_thinking_start = time.monotonic()
-            self._ensure_live()
-            if self._live is not None:
-                self._live.update(self._render_group(), refresh=True)
+            self._render_current()
 
     def stop_thinking(self) -> float | None:
         if self.plain_output or self.verbose:
@@ -532,8 +665,7 @@ class TurnProgressTracker:
             self.active_thinking_start = None
             self.thinking_intervals.append(elapsed)
             self.step_history.append(("thought", elapsed))
-            if self._live is not None:
-                self._live.update(self._render_group(), refresh=True)
+            self._render_current()
             return elapsed
 
     def start_tool(self, code: str) -> None:
@@ -548,9 +680,7 @@ class TurnProgressTracker:
             self._flushed = False
             self.active_tool_code = code
             self.active_tool_start = time.monotonic()
-            self._ensure_live()
-            if self._live is not None:
-                self._live.update(self._render_group(), refresh=True)
+            self._render_current()
 
     def add_tool_result(self, index: int, code: str, res: CellResult, duration: float) -> None:
         if self.plain_output or self.verbose:
@@ -566,8 +696,7 @@ class TurnProgressTracker:
             entry = (index, code, res, duration)
             self.tool_entries.append(entry)
             self.step_history.append(("tool", entry))
-            if self._live is not None:
-                self._live.update(self._render_group(), refresh=True)
+            self._render_current()
 
     def flush(self) -> None:
         if self.plain_output:
@@ -581,9 +710,8 @@ class TurnProgressTracker:
                 self.thinking_intervals.append(elapsed)
             self.active_tool_code = None
             self.active_tool_start = None
-            if self._live is not None:
-                self._live.stop()
-                self._live = None
+
+            self.screen.clear()
 
             total_thought = sum(self.thinking_intervals)
             entries = list(self.tool_entries)
@@ -607,9 +735,7 @@ class TurnProgressTracker:
 
             if (self.input_buffer or self.queued_messages) and not self.plain_output and not self.verbose:
                 self._flushed = False
-                self._ensure_live()
-                if self._live is not None:
-                    self._live.update(self._render_group(), refresh=True)
+                self._render_current()
 
 
 def _parse_expand_range(arg: str, total: int) -> tuple[int, int]:
