@@ -74,7 +74,11 @@ def render_markdown_block(target: Console, block: str) -> Text | None:
     """Render one Markdown block to Text with no leading or trailing blank lines."""
     options = target.options.update(width=target.width)
     rendered: list[Text] = []
-    for segments in target.render_lines(Markdown(block), options, pad=False):
+    try:
+        lines_iter = target.render_lines(Markdown(block), options, pad=False)
+    except Exception:
+        lines_iter = target.render_lines(Text(block), options, pad=False)
+    for segments in lines_iter:
         line = Text()
         for segment in segments:
             if segment.control:
