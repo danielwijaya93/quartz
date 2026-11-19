@@ -68,10 +68,12 @@ def find(pattern: str = "*", path: str = ".", limit: int = 200) -> list[str]:
     return hits
 
 
-def rg(pattern: str, path: str = ".", glob: str | None = None, max_hits: int = 100) -> str:
-    """Search files for a regex pattern and return `file:line:text` matches."""
+def rg(pattern: str, path: str = ".", glob: str | None = None, max_hits: int = 100, fixed: bool = False) -> str:
+    """Search files for a regex pattern (or literal string if fixed=True) and return `file:line:text` matches."""
     if shutil.which("rg"):
         cmd = ["rg", "-n", "--no-heading", "--color=never", "-m", str(max_hits)]
+        if fixed:
+            cmd.append("-F")
         if glob:
             cmd.extend(["-g", glob])
         cmd.extend([pattern, path])
@@ -84,7 +86,8 @@ def rg(pattern: str, path: str = ".", glob: str | None = None, max_hits: int = 1
             return "(no matches)"
         return proc.stderr.strip() or f"rg exited with code {proc.returncode}"
 
-    regex = re.compile(pattern)
+    regex_pattern = re.escape(pattern) if fixed else pattern
+    regex = re.compile(regex_pattern)
     root = Path(path).expanduser()
     if root.is_file():
         files = [root]
@@ -212,6 +215,14 @@ PROTECTED_NAMES: frozenset[str] = frozenset({
     "BashResult",
     "mcp",
     "gather",
+    "Path",
+    "os",
+    "sys",
+    "json",
+    "re",
+    "asyncio",
+    "time",
+    "shutil",
     "__name__",
     "__builtins__",
     "_",
@@ -367,7 +378,9 @@ def format_helpers_for_prompt(loaded: LoadedHelpers) -> str:
         "- `bash(command, timeout=600) -> BashHandle`: runs a shell command in the background; "
         "`await handle -> BashResult(.exit_code, .output, .duration)`. Also `.pid`, `.running`, "
         "`.tail(n=50)`, `.output()`, `.poll()`, `.kill()`. Commands outliving a cell emit `[bash-done]`.",
-        "- `ls(path='.')`, `find(pattern='*', path='.', limit=200)`, `rg(pattern, path='.', glob=None, max_hits=100)`",
+        "- `ls(path='.')`, `find(pattern='*', path='.', limit=200)`, `rg(pattern, path='.', glob=None, max_hits=100, fixed=False)` "
+        "(use raw strings r'...' for regex patterns with backslashes to avoid Python SyntaxWarning, or fixed=True for literal string search)",
+
         "- `read(path, start=1, end=200)`, `edit(path, old, new)`, `write(path, content)`, `view_image(path)`, `gather(*coros)`",
     ]
 
