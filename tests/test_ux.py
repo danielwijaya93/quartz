@@ -759,18 +759,18 @@ def test_turn_progress_tracker_interactive_steering() -> None:
     plain_texts = [getattr(r, "plain", getattr(getattr(r, "text", None), "plain", "")) for r in grp.renderables]
     assert any("▌ Actually check logs█" in t for t in plain_texts)
 
-    # User presses Enter -> queued message
-    tracker.add_queued_message("Actually check logs")
+    # User presses Enter -> steering message
+    tracker.add_steering_message("Actually check logs")
     grp2 = tracker._render_group()
     plain_texts2 = [getattr(r, "plain", getattr(getattr(r, "text", None), "plain", "")) for r in grp2.renderables]
-    assert any("[queued] Actually check logs" in t for t in plain_texts2)
+    assert any("[steering] Actually check logs" in t for t in plain_texts2)
     assert not any("▌ " in t for t in plain_texts2)
 
     # Steering drained
-    tracker.clear_queued_messages()
+    tracker.clear_steering_messages()
     grp3 = tracker._render_group()
     plain_texts3 = [getattr(r, "plain", getattr(getattr(r, "text", None), "plain", "")) for r in grp3.renderables]
-    assert not any("[queued]" in t for t in plain_texts3)
+    assert not any("[steering]" in t for t in plain_texts3)
 
     tracker.close()
 
@@ -782,13 +782,13 @@ def test_mid_turn_input_watcher_processing() -> None:
 
     abort_ev = threading.Event()
     steer_q: queue.Queue[str] = queue.Queue()
-    queued_calls: list[str] = []
+    steering_calls: list[str] = []
     change_calls: list[str] = []
 
     watcher = _MidTurnInputWatcher(
         abort_ev,
         steer_q,
-        on_queued=queued_calls.append,
+        on_steering=steering_calls.append,
         on_change=change_calls.append,
     )
 
@@ -812,7 +812,7 @@ def test_mid_turn_input_watcher_processing() -> None:
     assert watcher._process_text("steer me\n", buf) is True
     assert "".join(buf) == ""
     assert steer_q.get_nowait() == "steer me"
-    assert queued_calls == ["steer me"]
+    assert steering_calls == ["steer me"]
 
     # Test arrow keys (escape sequence ignored, does not abort)
     assert watcher._process_text("\x1b[A", buf) is True
