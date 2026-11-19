@@ -149,6 +149,7 @@ __all__ = [
 def _run_turn(
     rt: _CLIRuntime,
     *,
+    tracker: TurnProgressTracker | None = None,
     abort_event: threading.Event | None = None,
     steering_queue: queue.Queue[str] | None = None,
     on_steering: Callable[[str], None] | None = None,
@@ -168,12 +169,13 @@ def _run_turn(
     active_printer = _sym("printer")
     active_console = _sym("console")
     md_streamer = MarkdownBlockStreamer(active_printer.markdown)
-    tracker: TurnProgressTracker = _sym("TurnProgressTracker")(
-        active_console,
-        active_printer,
-        verbose=rt.verbose,
-        plain_output=rt.plain_output,
-    )
+    if tracker is None:
+        tracker = _sym("TurnProgressTracker")(
+            active_console,
+            active_printer,
+            verbose=rt.verbose,
+            plain_output=rt.plain_output,
+        )
     turn_stop = threading.Event()
 
     def _tick_tracker() -> None:
@@ -253,7 +255,7 @@ def _run_turn(
         )
     finally:
         turn_stop.set()
-        tracker.flush()
+        tracker.close()
         if rt.plain_output:
             if streamed_any[0]:
                 sys.stdout.write("\n")
@@ -317,17 +319,31 @@ def _run_headless(
 def _execute_interactive_turn(rt: _CLIRuntime) -> None:
     from rich.text import Text
 
-    from agent.ui import _MidTurnInputWatcher, _format_turn_footer, _format_turn_timing
+    from agent.ui import TurnProgressTracker, _MidTurnInputWatcher, _format_turn_footer, _format_turn_timing
 
     active_printer = _sym("printer")
+    active_console = _sym("console")
     abort_event = threading.Event()
     steering_queue: queue.Queue[str] = queue.Queue()
 
+    tracker: TurnProgressTracker = _sym("TurnProgressTracker")(
+        active_console,
+        active_printer,
+        verbose=rt.verbose,
+        plain_output=rt.plain_output,
+    )
+
+    def _on_change(text: str) -> None:
+        tracker.set_input_buffer(text)
+
     def _on_queued(text: str) -> None:
-        preview = text[:60] + ("..." if len(text) > 60 else "")
-        active_printer.block(Text(f"[queued] {preview}", style="dim cyan"))
+        tracker.add_queued_message(text)
+        if rt.plain_output or rt.verbose:
+            preview = text[:60] + ("..." if len(text) > 60 else "")
+            active_printer.block(Text(f"[queued] {preview}", style="dim cyan"))
 
     def _on_steering(text: str) -> None:
+        tracker.clear_queued_messages()
         preview = text[:60] + ("..." if len(text) > 60 else "")
         active_printer.block(Text(f"[steering] {preview}", style="cyan"))
 
@@ -337,9 +353,11 @@ def _execute_interactive_turn(rt: _CLIRuntime) -> None:
         steering_queue,
         on_abort=rt.kernel.interrupt,
         on_queued=_on_queued,
+        on_change=_on_change,
     ):
         _, rt.messages, tokens = _run_turn(
             rt,
+            tracker=tracker,
             abort_event=abort_event,
             steering_queue=steering_queue,
             on_steering=_on_steering,

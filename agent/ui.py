@@ -109,11 +109,13 @@ class _MidTurnInputWatcher:
         *,
         on_abort: Callable[[], None] | None = None,
         on_queued: Callable[[str], None] | None = None,
+        on_change: Callable[[str], None] | None = None,
     ) -> None:
         self._abort_event = abort_event
         self._steering_queue = steering_queue
         self._on_abort = on_abort
         self._on_queued = on_queued
+        self._on_change = on_change
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._fd: int | None = None
@@ -144,6 +146,72 @@ class _MidTurnInputWatcher:
             except Exception:
                 pass
 
+    def _process_text(self, text: str, buf: list[str]) -> bool:
+        """Process incoming decoded characters. Return False if aborted."""
+        i = 0
+        n = len(text)
+        while i < n:
+            ch = text[i]
+            if ch == "\x1b":
+                if i + 1 < n:
+                    i += 1
+                    while i < n and text[i] not in ("A", "B", "C", "D", "H", "F", "~"):
+                        i += 1
+                    i += 1
+                    continue
+                if self._fd is not None:
+                    more, _, _ = select.select([self._fd], [], [], 0.05)
+                    if not more:
+                        self._abort_event.set()
+                        if self._on_abort:
+                            self._on_abort()
+                        return False
+                    while select.select([self._fd], [], [], 0.005)[0]:
+                        os.read(self._fd, 16)
+                else:
+                    self._abort_event.set()
+                    if self._on_abort:
+                        self._on_abort()
+                    return False
+                i += 1
+                continue
+            if ch in ("\r", "\n"):
+                msg = "".join(buf).strip()
+                buf.clear()
+                if self._on_change:
+                    self._on_change("")
+                if msg:
+                    self._steering_queue.put(msg)
+                    if self._on_queued:
+                        self._on_queued(msg)
+                i += 1
+                continue
+            if ch in ("\x7f", "\x08"):
+                if buf:
+                    buf.pop()
+                    if self._on_change:
+                        self._on_change("".join(buf))
+                i += 1
+                continue
+            if ch == "\x15":  # Ctrl+U: clear input line
+                if buf:
+                    buf.clear()
+                    if self._on_change:
+                        self._on_change("")
+                i += 1
+                continue
+            if ch == "\x03":  # Ctrl+C: abort
+                self._abort_event.set()
+                if self._on_abort:
+                    self._on_abort()
+                return False
+            if ch >= " ":
+                buf.append(ch)
+                if self._on_change:
+                    self._on_change("".join(buf))
+            i += 1
+        return True
+
     def _run(self) -> None:
         assert self._fd is not None
         buf: list[str] = []
@@ -156,38 +224,14 @@ class _MidTurnInputWatcher:
             if not ready:
                 continue
             try:
-                raw = os.read(self._fd, 1)
+                raw = os.read(self._fd, 64)
             except OSError:
                 return
             if not raw:
                 return
             text = decoder.decode(raw)
-            for ch in text:
-                if ch == "\x1b":
-                    more, _, _ = select.select([self._fd], [], [], 0.05)
-                    if not more:
-                        self._abort_event.set()
-                        if self._on_abort:
-                            self._on_abort()
-                        return
-                    while select.select([self._fd], [], [], 0.005)[0]:
-                        os.read(self._fd, 16)
-                    continue
-                if ch in ("\r", "\n"):
-                    msg = "".join(buf).strip()
-                    buf.clear()
-                    if msg:
-                        self._steering_queue.put(msg)
-                        if self._on_queued:
-                            self._on_queued(msg)
-                    continue
-                if ch in ("\x7f", "\x08"):
-                    if buf:
-                        buf.pop()
-                    continue
-                if ch >= " ":
-                    buf.append(ch)
-
+            if not self._process_text(text, buf):
+                return
 
 class BlockPrinter:
     """Print Markdown blocks, cells, and notices separated by exactly one blank line."""
@@ -366,6 +410,8 @@ class TurnProgressTracker:
         self.active_tool_code: str | None = None
         self.active_tool_start: float | None = None
         self.tool_entries: list[tuple[int, str, CellResult, float]] = []
+        self.input_buffer: str = ""
+        self.queued_messages: list[str] = []
         self._flushed = False
 
     def _ensure_live(self) -> None:
@@ -396,14 +442,73 @@ class TurnProgressTracker:
             action = describe_cell_actions(self.active_tool_code) if self.active_tool_code else "Run Python"
             items.append(Spinner("dots", text=Text(f"{action}...", style="dim")))
 
+        for q_msg in self.queued_messages:
+            preview = q_msg[:60] + ("..." if len(q_msg) > 60 else "")
+            items.append(Text(f"[queued] {preview}", style="dim cyan"))
+
+        if self.input_buffer:
+            items.append(Text(f"▌ {self.input_buffer}█", style="cyan"))
+
         return Group(*items)
 
     def tick(self) -> None:
         if self.plain_output or self.verbose:
             return
         with self.lock:
-            if self._live is not None and (self.active_thinking_start is not None or self.active_tool_code is not None):
+            if self._live is not None and (
+                self.active_thinking_start is not None
+                or self.active_tool_code is not None
+                or self.input_buffer
+                or self.queued_messages
+            ):
                 self._live.update(self._render_group(), refresh=True)
+
+    def set_input_buffer(self, text: str) -> None:
+        if self.plain_output or self.verbose:
+            return
+        with self.lock:
+            self.input_buffer = text
+            if text:
+                self._flushed = False
+                self._ensure_live()
+            elif not self.queued_messages and self.active_thinking_start is None and self.active_tool_code is None:
+                if self._live is not None:
+                    self._live.stop()
+                    self._live = None
+            if self._live is not None:
+                self._live.update(self._render_group(), refresh=True)
+
+    def add_queued_message(self, text: str) -> None:
+        if self.plain_output or self.verbose:
+            return
+        with self.lock:
+            self.input_buffer = ""
+            self.queued_messages.append(text)
+            self._flushed = False
+            self._ensure_live()
+            if self._live is not None:
+                self._live.update(self._render_group(), refresh=True)
+
+    def clear_queued_messages(self) -> None:
+        if self.plain_output or self.verbose:
+            return
+        with self.lock:
+            self.queued_messages.clear()
+            if not self.input_buffer and self.active_thinking_start is None and self.active_tool_code is None:
+                if self._live is not None:
+                    self._live.stop()
+                    self._live = None
+            elif self._live is not None:
+                self._live.update(self._render_group(), refresh=True)
+
+    def close(self) -> None:
+        self.flush()
+        with self.lock:
+            self.input_buffer = ""
+            self.queued_messages.clear()
+            if self._live is not None:
+                self._live.stop()
+                self._live = None
 
     def start_thinking(self) -> None:
         if self.plain_output or self.verbose:
@@ -499,6 +604,12 @@ class TurnProgressTracker:
             elif entries:
                 summary, all_ok = format_grouped_cell_summary(entries)
                 self.printer.block(Text(summary, style="dim" if all_ok else "red"))
+
+            if (self.input_buffer or self.queued_messages) and not self.plain_output and not self.verbose:
+                self._flushed = False
+                self._ensure_live()
+                if self._live is not None:
+                    self._live.update(self._render_group(), refresh=True)
 
 
 def _parse_expand_range(arg: str, total: int) -> tuple[int, int]:

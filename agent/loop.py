@@ -6,6 +6,7 @@ import dataclasses
 import json
 import queue
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
@@ -173,6 +174,7 @@ def _call_model(
     on_status: Callable[[str | None], None] | None,
     on_text_delta: Callable[[str], None] | None,
     abort_event: threading.Event | None = None,
+    steering_queue: queue.Queue[str] | None = None,
 ) -> tuple[dict[str, Any], Any]:
     """Call chat completions (streaming or non-streaming) and return (assistant_dict, usage)."""
     if abort_event is not None and abort_event.is_set():
@@ -238,10 +240,10 @@ def _call_model(
             else:
                 raise
 
-        if abort_event is not None:
-            def _watch_abort() -> None:
+        if abort_event is not None or steering_queue is not None:
+            def _watch_preempt() -> None:
                 while not stream_done.is_set():
-                    if abort_event.wait(timeout=0.05):
+                    if abort_event is not None and abort_event.is_set():
                         try:
                             close_fn = getattr(stream_resp, "close", None)
                             if callable(close_fn):
@@ -249,8 +251,18 @@ def _call_model(
                         except Exception:
                             pass
                         return
+                    if steering_queue is not None and not steering_queue.empty():
+                        try:
+                            close_fn = getattr(stream_resp, "close", None)
+                            if callable(close_fn):
+                                close_fn()
+                        except Exception:
+                            pass
+                        return
+                    if stream_done.wait(timeout=0.05):
+                        return
 
-            threading.Thread(target=_watch_abort, daemon=True).start()
+            threading.Thread(target=_watch_preempt, daemon=True).start()
 
         content_parts: list[str] = []
         tool_calls_acc: dict[int, dict[str, str]] = {}
@@ -260,6 +272,14 @@ def _call_model(
         for chunk in stream_resp:
             if abort_event is not None and abort_event.is_set():
                 raise TurnAborted()
+            if steering_queue is not None and not steering_queue.empty():
+                try:
+                    close_fn = getattr(stream_resp, "close", None)
+                    if callable(close_fn):
+                        close_fn()
+                except Exception:
+                    pass
+                break
             if getattr(chunk, "usage", None) is not None:
                 usage = chunk.usage
             choices = getattr(chunk, "choices", None) or []
@@ -301,6 +321,9 @@ def _call_model(
         stream_done.set()
         if on_status:
             on_status(None)
+
+    if steering_queue is not None and not steering_queue.empty():
+        tool_calls_acc.clear()
 
     assistant_dict: dict[str, Any] = {
         "role": "assistant",
@@ -423,6 +446,7 @@ def agent_loop(
                 on_status=on_status,
                 on_text_delta=on_text_delta,
                 abort_event=abort_event,
+                steering_queue=steering_queue,
             )
         except ContextOverflowError:
             # The provider says the prompt is too long: compact harder, retry once.
