@@ -289,3 +289,10 @@ def test_format_helpers_for_prompt_includes_fixed_option() -> None:
     assert "rg(pattern, path='.', glob=None, max_hits=100, fixed=False)" in prompt
     assert "fixed=True for literal string search" in prompt
 
+def test_prompt_rules_include_chaining_and_helper_prioritization() -> None:
+    from agent.prompt import PROMPT_RULES
+
+    assert "Batch and chain operations generously into one cell" in PROMPT_RULES
+    assert "Prioritize available REPL helpers and primitives" in PROMPT_RULES
+
+

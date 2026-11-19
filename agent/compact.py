@@ -191,19 +191,26 @@ def _serialize_for_summary(messages: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def format_python_state_notice(vars_info: dict[str, str]) -> str:
+def format_python_state_notice(
+    vars_info: dict[str, str], helper_names: list[str] | None = None
+) -> str:
     """Format Unharnessed's [python-state] notice for the model."""
+    parts: list[str] = ["[python-state]\n"]
     if not vars_info:
-        return (
-            "[python-state]\n\n"
+        parts.append(
             "Your Python kernel persisted through compaction, and currently has no user-defined variables."
         )
-    names = ", ".join(f"{k} ({v})" for k, v in vars_info.items())
-    return (
-        "[python-state]\n\n"
-        "Your Python kernel persisted through compaction; its remaining variables, imports, "
-        f"and helpers are still available. These names are still defined: {names}."
-    )
+    else:
+        names = ", ".join(f"{k} ({v})" for k, v in vars_info.items())
+        parts.append(
+            "Your Python kernel persisted through compaction; its remaining variables, imports, "
+            f"and helpers are still available. These names are still defined: {names}."
+        )
+    if helper_names:
+        parts.append(
+            f"Loaded REPL helpers are also still available: {', '.join(f'{h}()' for h in sorted(helper_names))}."
+        )
+    return "\n".join(parts)
 
 
 def _summarize(
@@ -275,7 +282,16 @@ def compact_messages(
     summary_text = _summarize(client, model, older, focus)
 
     vars_info = kernel.list_vars()
-    state_notice = format_python_state_notice(vars_info)
+    try:
+        helpers_data = kernel.list_helpers()
+        custom_helpers = [
+            h["name"]
+            for h in helpers_data.get("helpers", [])
+            if h.get("source") in ("global", "project")
+        ]
+    except Exception:
+        custom_helpers = []
+    state_notice = format_python_state_notice(vars_info, helper_names=custom_helpers)
 
     compacted_header = {
         "role": "user",

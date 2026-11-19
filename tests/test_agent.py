@@ -170,6 +170,17 @@ def test_compaction_safe_split_and_python_state() -> None:
     assert "df (DataFrame)" in notice
     assert "helper (function)" in notice
 
+    notice_with_helpers = format_python_state_notice(
+        {"df": "DataFrame"}, helper_names=["read_json", "sh"]
+    )
+    assert "[python-state]" in notice_with_helpers
+    assert "df (DataFrame)" in notice_with_helpers
+    assert "Loaded REPL helpers are also still available: read_json(), sh()." in notice_with_helpers
+
+    empty_notice_with_helpers = format_python_state_notice({}, helper_names=["my_helper"])
+    assert "[python-state]" in empty_notice_with_helpers
+    assert "Loaded REPL helpers are also still available: my_helper()." in empty_notice_with_helpers
+
 
 def test_turn_usage_telemetry() -> None:
     class _Details:

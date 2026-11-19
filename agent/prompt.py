@@ -16,8 +16,9 @@ PROMPT_HEADER = """# Quartz
 You have one tool, `ipython`: a persistent CPython REPL with top-level `await`. Variables, `os.chdir()`, and `os.environ` persist across cells and compaction. Messages starting with `[<kind>]` come from the harness."""
 
 PROMPT_RULES = """## Rules
-- Batch independent work into one cell. Multiple `ipython` calls in one message run in parallel; put dependent steps in one cell.
-- Use `bash()` (not `subprocess`/`os.system`) to run programs; do not block a cell with `sleep` or minutes-long awaits (let long jobs finish in the background).
+- Batch and chain operations generously into one cell: read multiple related files, inspect state, make edits, and verify results together rather than executing piecemeal single-call turns.
+- Prioritize available REPL helpers and primitives over verbose standard-library boilerplate or multi-turn external commands.
+- Use `bash()` for long-running or background processes; do not block a cell with `sleep` or minutes-long awaits (let long jobs finish in the background).
 - Follow `## Project Instructions` strictly."""
 
 
