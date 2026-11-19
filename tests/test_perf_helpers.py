@@ -99,3 +99,73 @@ def test_parallel_cells_isolate_trailing_expr(tmp_path: Path) -> None:
         assert rb.result == "'result_from_B'"
     finally:
         kernel.close()
+
+
+def test_kernel_suppresses_syntax_warning(tmp_path: Path) -> None:
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        # Cell code with invalid escape sequences "\." that triggers SyntaxWarning in Python 3.12+
+        res = kernel.exec_cell('x = "\\."\nrg_like = "\\d+"\nx')
+        assert res.ok
+        assert "SyntaxWarning" not in res.stderr
+        assert res.result == repr("\\.")
+    finally:
+        kernel.close()
+
+
+def test_kernel_preimported_stdlib_available_without_imports(tmp_path: Path) -> None:
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        res = kernel.exec_cell(
+            "p = Path('file.txt')\n"
+            "d = json.dumps({'key': 42})\n"
+            "m = re.match(r'\\d+', '100')\n"
+            "t = time.monotonic()\n"
+            "o = os.path.join('a', 'b')\n"
+            "s = sys.version_info.major\n"
+            "sh = shutil.which('python3')\n"
+            "is_async = asyncio.iscoroutinefunction(asyncio.sleep)\n"
+            "(p.name, d, bool(m), o, is_async)"
+        )
+        assert res.ok
+        assert "('file.txt', '{\"key\": 42}', True, 'a/b', True)" in (res.result or "")
+
+        # Default bindings should not be listed as user variables in list_vars IPC
+        vars_info = kernel.list_vars()
+        assert "Path" not in vars_info
+        assert "os" not in vars_info
+        assert "json" not in vars_info
+        assert "p" in vars_info
+        assert "d" in vars_info
+    finally:
+        kernel.close()
+
+
+def test_kernel_preimported_stdlib_preserved_across_snapshot(tmp_path: Path) -> None:
+    kernel1 = KernelClient(cwd=tmp_path)
+    kernel1.start()
+    snap_dir = tmp_path / "snap"
+    try:
+        kernel1.exec_cell("user_num = 99")
+        snap_res = kernel1.snapshot(snap_dir)
+        assert "user_num" in snap_res.get("saved", [])
+        # Pre-imported stdlibs should not be serialized into snapshot
+        assert "Path" not in snap_res.get("saved", [])
+        assert "os" not in snap_res.get("saved", [])
+    finally:
+        kernel1.close()
+
+    kernel2 = KernelClient(cwd=tmp_path)
+    kernel2.start()
+    try:
+        rest_res = kernel2.restore(snap_dir)
+        assert "user_num" in rest_res.get("restored", [])
+        # Check both restored user var and pre-imported stdlibs work in restored kernel
+        res = kernel2.exec_cell("user_num == 99 and Path('.').is_dir() and os.name is not None and json.loads('1') == 1")
+        assert res.ok
+        assert res.result == "True"
+    finally:
+        kernel2.close()
+

@@ -245,3 +245,47 @@ def test_edit_and_write_atomic_and_crlf_safe(tmp_path: Path) -> None:
     raw2 = f.read_bytes()
     assert b"greeting\r\ngalaxy\r\n" == raw2
     assert b"\n" not in raw2.replace(b"\r\n", b"")
+
+def test_rg_fixed_literal_search(tmp_path: Path) -> None:
+    from unittest.mock import patch
+    from agent.helpers import rg
+
+    test_file = tmp_path / "sample.txt"
+    test_file.write_text("prefix.middle\nprefix1middle\n[tag] item\ntag item\n", encoding="utf-8")
+
+    # 1. Ripgrep branch (fixed=True should match dot literally)
+    out_fixed = rg("prefix.middle", str(tmp_path), fixed=True)
+    assert "prefix.middle" in out_fixed
+    assert "prefix1middle" not in out_fixed
+
+    # Regex search without fixed=True matches both
+    out_regex = rg("prefix.middle", str(tmp_path), fixed=False)
+    assert "prefix.middle" in out_regex
+    assert "prefix1middle" in out_regex
+
+    # Bracket literal search
+    out_bracket = rg("[tag]", str(tmp_path), fixed=True)
+    assert "[tag] item" in out_bracket
+    assert "tag item" not in out_bracket
+
+    # 2. Fallback Python re branch
+    with patch("shutil.which", return_value=None):
+        fb_fixed = rg("prefix.middle", str(tmp_path), fixed=True)
+        assert "prefix.middle" in fb_fixed
+        assert "prefix1middle" not in fb_fixed
+
+        fb_regex = rg("prefix.middle", str(tmp_path), fixed=False)
+        assert "prefix.middle" in fb_regex
+        assert "prefix1middle" in fb_regex
+
+        fb_bracket = rg("[tag]", str(tmp_path), fixed=True)
+        assert "[tag] item" in fb_bracket
+        assert "tag item" not in fb_bracket
+
+
+def test_format_helpers_for_prompt_includes_fixed_option() -> None:
+    loaded = load_helpers(global_helpers_path=Path("/nonexistent/helpers.py"))
+    prompt = format_helpers_for_prompt(loaded)
+    assert "rg(pattern, path='.', glob=None, max_hits=100, fixed=False)" in prompt
+    assert "fixed=True for literal string search" in prompt
+
