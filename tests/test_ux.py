@@ -748,3 +748,150 @@ def test_mid_turn_input_watcher_processing() -> None:
     # Test Ctrl+C abort
     assert watcher._process_text("\x03", buf) is False
     assert abort_ev.is_set()
+
+
+def test_inline_screen_differential_rendering() -> None:
+    from agent.ui import InlineScreen
+
+    buf = io.StringIO()
+    test_console = Console(file=buf, force_terminal=True, width=80)
+    screen = InlineScreen(test_console, enabled=True)
+
+    assert not screen.is_active()
+
+    # 1. Initial render of 2 lines
+    screen.render(["Line 1", "Line 2"])
+    assert screen.is_active()
+    out1 = buf.getvalue()
+    assert "\x1b[?2026hLine 1\r\nLine 2\x1b[?2026l" in out1
+
+    # 2. Update with 3 lines (should move up 1 line, clear and rewrite)
+    buf.seek(0)
+    buf.truncate(0)
+    screen.render(["Line 1 updated", "Line 2 updated", "Line 3 added"])
+    out2 = buf.getvalue()
+    assert "\x1b[?2026h" in out2
+    assert "\x1b[1A\r" in out2  # moved up 1 line from bottom of 2-line block
+    assert "\x1b[2KLine 1 updated" in out2
+    assert "\x1b[2KLine 2 updated" in out2
+    assert "\x1b[2KLine 3 added" in out2
+
+    # 3. Shrink back to 1 line
+    buf.seek(0)
+    buf.truncate(0)
+    screen.render(["Only Line 1"])
+    out3 = buf.getvalue()
+    assert "\x1b[2A\r" in out3  # moved up 2 lines from bottom of 3-line block
+    assert "\x1b[2KOnly Line 1" in out3
+
+    # 4. Clear completely
+    buf.seek(0)
+    buf.truncate(0)
+    screen.clear()
+    assert not screen.is_active()
+    out4 = buf.getvalue()
+    assert "\x1b[?2026h" in out4
+    assert "\x1b[2K" in out4
+    assert "\x1b[?2026l" in out4
+
+
+def test_block_printer_lifecycle_hooks() -> None:
+    from rich.text import Text
+
+    buf = io.StringIO()
+    test_console = Console(file=buf, force_terminal=False, width=80)
+    printer = BlockPrinter(test_console)
+
+    events: list[str] = []
+    printer.before_print = lambda: events.append("before")
+    printer.after_print = lambda: events.append("after")
+
+    printer.markdown("Hello world")
+    assert events == ["before", "after"]
+
+    printer.block(Text("Another block"))
+    assert events == ["before", "after", "before", "after"]
+
+
+def test_mid_turn_input_watcher_internal_buffer() -> None:
+    import queue
+    import threading
+    from agent.ui import _MidTurnInputWatcher
+
+    abort_ev = threading.Event()
+    steer_q: queue.Queue[str] = queue.Queue()
+
+    watcher = _MidTurnInputWatcher(abort_ev, steer_q)
+    assert watcher.current_buffer() == ""
+
+    # Simulate typing without external buffer
+    watcher._process_text("partial text")
+    assert watcher.current_buffer() == "partial text"
+
+    # Backspace
+    watcher._process_text("\x7f")
+    assert watcher.current_buffer() == "partial tex"
+
+    # Enter submits and clears internal buffer
+    watcher._process_text("\n")
+    assert watcher.current_buffer() == ""
+    assert steer_q.get_nowait() == "partial tex"
+
+
+def test_execute_interactive_turn_unsubmitted_input_handoff(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+    from agent.loop import TurnUsage
+    import agent.cli as cli
+
+    buf = io.StringIO()
+    test_console = Console(file=buf, force_terminal=False, width=80)
+    test_printer = BlockPrinter(test_console)
+    class _FakeWatcher:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def current_buffer(self):
+            return "unsubmitted thought"
+
+    sym_map = {
+        "console": test_console,
+        "printer": test_printer,
+        "TurnProgressTracker": cli.TurnProgressTracker,
+        "_MidTurnInputWatcher": _FakeWatcher,
+    }
+    monkeypatch.setattr(cli, "_sym", lambda name: sym_map.get(name, getattr(cli, name, None)))
+
+    def _fake_run_turn(rt, **kwargs):
+        tracker = kwargs.get("tracker")
+        if tracker:
+            tracker.set_input_buffer("unsubmitted thought")
+        return "Answer", [], TurnUsage(prompt_tokens=10, completion_tokens=5, cached_tokens=0)
+
+    monkeypatch.setattr(cli, "_run_turn", _fake_run_turn)
+    monkeypatch.setattr(cli, "_MidTurnInputWatcher", _FakeWatcher)
+
+    rt = cli._CLIRuntime(
+        cwd=tmp_path,
+        kernel=SimpleNamespace(interrupt=lambda: None),  # type: ignore[arg-type]
+        client=object(),
+        provider_name="openai",
+        model="gpt-5",
+        effort="",
+        system_prompt="",
+        active_session=SimpleNamespace(save_messages=lambda *a, **k: None),  # type: ignore[arg-type]
+        messages=[],
+        usage_stats=TurnUsage(),
+        max_context_tokens=100_000,
+        compact_reserve_tokens=8_000,
+        keep_recent_tokens=2_000,
+        verbose=False,
+        plain_output=False,
+        headless=False,
+    )
+    monkeypatch.setattr(rt, "persist", lambda *a, **k: None)
+
+    leftover = cli._execute_interactive_turn(rt)
+    assert leftover == "unsubmitted thought"
