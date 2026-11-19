@@ -21,50 +21,8 @@ from typing import Any
 import httpx2
 
 from agent.errors import CredentialError, ProviderError
+from agent.oauth_client import resolve_oauth_client
 from agent.provider_config import resolve_cloudcode_endpoint
-
-
-def get_google_client_id() -> str:
-    """Return active Google Client ID from environment."""
-    return os.getenv("QUARTZ_GOOGLE_CLIENT_ID", "")
-
-
-def get_google_client_secret() -> str:
-    """Return active Google Client Secret from environment."""
-    return os.getenv("QUARTZ_GOOGLE_CLIENT_SECRET", "")
-
-
-def require_client_credentials() -> tuple[str, str]:
-    """Return (client_id, client_secret), or fail with an actionable message.
-
-    Sending an empty client_id to Google yields the opaque error
-    "Could not determine client ID from request" long after the real mistake.
-    """
-    client_id = get_google_client_id().strip()
-    client_secret = get_google_client_secret().strip()
-    missing = [
-        name
-        for name, value in (
-            ("QUARTZ_GOOGLE_CLIENT_ID", client_id),
-            ("QUARTZ_GOOGLE_CLIENT_SECRET", client_secret),
-        )
-        if not value
-    ]
-    if missing:
-        raise CredentialError(
-            f"{' and '.join(missing)} not set. Add "
-            f"{'them' if len(missing) > 1 else 'it'} to ~/.quartz/.env (or your shell), "
-            "then run `quartz auth login google`."
-        )
-    return client_id, client_secret
-
-
-def __getattr__(name: str) -> Any:
-    if name == "CLIENT_ID":
-        return get_google_client_id()
-    if name == "CLIENT_SECRET":
-        return get_google_client_secret()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -249,6 +207,16 @@ def generate_pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
+# Google's wording when the OAuth *application* identity is rejected, as opposed
+# to the user's refresh token being revoked.
+_CLIENT_REJECTED_MARKERS = (
+    "invalid_client",
+    "unauthorized_client",
+    "client_secret is missing",
+    "could not determine client id",
+)
+
+
 def _token_request(fields: dict[str, str], label: str) -> dict[str, Any]:
     resp = httpx2.post(
         TOKEN_URL,
@@ -257,7 +225,22 @@ def _token_request(fields: dict[str, str], label: str) -> dict[str, Any]:
         timeout=30.0,
     )
     if resp.status_code >= 400:
-        raise RuntimeError(f"{label} failed ({resp.status_code}): {resp.text}")
+        body = resp.text
+        lowered = body.lower()
+        if any(marker in lowered for marker in _CLIENT_REJECTED_MARKERS):
+            raise CredentialError(
+                f"{label} was rejected because Google did not accept the OAuth "
+                "application identity. If you registered your own OAuth app, set "
+                "QUARTZ_GOOGLE_CLIENT_ID and QUARTZ_GOOGLE_CLIENT_SECRET in "
+                "~/.quartz/.env, then run `quartz auth login google`.",
+                detail=body,
+            )
+        raise ProviderError(
+            label,
+            provider="google",
+            status_code=resp.status_code,
+            detail=body,
+        )
     return resp.json()
 
 
@@ -342,7 +325,7 @@ def discover_project(access_token: str) -> str:
 def refresh_google_credentials(
     creds: GoogleCredentials, path: Path | None = None
 ) -> GoogleCredentials:
-    client_id, client_secret = require_client_credentials()
+    client_id, client_secret = resolve_oauth_client()
     token = _token_request(
         {
             "grant_type": "refresh_token",
@@ -368,12 +351,8 @@ def get_valid_google_credentials(path: Path | None = None) -> GoogleCredentials:
     return creds
 
 
-def login_google_interactive(path: Path | None = None) -> GoogleCredentials:
-    """Run Google OAuth2 PKCE flow with localhost:51121 callback and manual paste fallback."""
-    client_id, client_secret = require_client_credentials()
-    verifier, challenge = generate_pkce()
-    state = secrets.token_urlsafe(24)
-
+def build_authorization_url(client_id: str, challenge: str, state: str) -> str:
+    """Build the Google consent URL for the PKCE flow."""
     params = urllib.parse.urlencode(
         {
             "response_type": "code",
@@ -387,7 +366,15 @@ def login_google_interactive(path: Path | None = None) -> GoogleCredentials:
             "state": state,
         }
     )
-    auth_url = f"{AUTHORIZE_URL}?{params}"
+    return f"{AUTHORIZE_URL}?{params}"
+
+
+def login_google_interactive(path: Path | None = None) -> GoogleCredentials:
+    """Run Google OAuth2 PKCE flow with localhost:51121 callback and manual paste fallback."""
+    client_id, client_secret = resolve_oauth_client()
+    verifier, challenge = generate_pkce()
+    state = secrets.token_urlsafe(24)
+    auth_url = build_authorization_url(client_id, challenge, state)
 
     result_box: dict[str, str] = {}
     done_event = threading.Event()

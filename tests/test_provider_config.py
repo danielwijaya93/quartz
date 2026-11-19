@@ -15,7 +15,11 @@ from agent.google_auth import (
     GoogleCredentials,
     discover_project,
     refresh_google_credentials,
-    require_client_credentials,
+)
+from agent.oauth_client import (
+    DEFAULT_CLIENT_ID,
+    DEFAULT_CLIENT_SECRET,
+    resolve_oauth_client,
 )
 from agent.provider_config import (
     DAILY_ENDPOINT,
@@ -91,42 +95,92 @@ def test_timeout_rejects_invalid_values(monkeypatch: Any, value: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Credential preconditions
+# OAuth application identity: works out of the box
 # --------------------------------------------------------------------------- #
 
 
-def test_require_client_credentials_names_every_missing_variable(monkeypatch: Any) -> None:
+def test_oauth_client_resolves_without_any_environment(monkeypatch: Any) -> None:
     monkeypatch.delenv("QUARTZ_GOOGLE_CLIENT_ID", raising=False)
     monkeypatch.delenv("QUARTZ_GOOGLE_CLIENT_SECRET", raising=False)
 
+    client_id, client_secret = resolve_oauth_client()
+
+    # A clean machine must be able to run `quartz auth login google`.
+    assert client_id == DEFAULT_CLIENT_ID
+    assert client_secret == DEFAULT_CLIENT_SECRET
+    assert client_id.endswith(".apps.googleusercontent.com")
+    assert client_secret
+
+
+def test_oauth_client_env_overrides_the_bundled_app(monkeypatch: Any) -> None:
+    monkeypatch.setenv("QUARTZ_GOOGLE_CLIENT_ID", "  my-id  ")
+    monkeypatch.setenv("QUARTZ_GOOGLE_CLIENT_SECRET", "  my-secret  ")
+    assert resolve_oauth_client() == ("my-id", "my-secret")
+
+
+def test_oauth_client_env_override_is_per_field(monkeypatch: Any) -> None:
+    monkeypatch.setenv("QUARTZ_GOOGLE_CLIENT_ID", "my-id")
+    monkeypatch.delenv("QUARTZ_GOOGLE_CLIENT_SECRET", raising=False)
+    client_id, client_secret = resolve_oauth_client()
+    assert client_id == "my-id"
+    assert client_secret == DEFAULT_CLIENT_SECRET
+
+
+def test_refresh_uses_the_bundled_client_when_env_is_unset(monkeypatch: Any) -> None:
+    monkeypatch.delenv("QUARTZ_GOOGLE_CLIENT_ID", raising=False)
+    monkeypatch.delenv("QUARTZ_GOOGLE_CLIENT_SECRET", raising=False)
+
+    sent: dict[str, Any] = {}
+
+    class _Resp:
+        status_code = 200
+
+        def json(self) -> Any:
+            return {"access_token": "a", "expires_in": 3600}
+
+    def _post(url: str, **kwargs: Any) -> Any:
+        sent.update(kwargs.get("data") or {})
+        return _Resp()
+
+    monkeypatch.setattr(google_auth.httpx2, "post", _post)
+    monkeypatch.setattr(google_auth, "save_google_credentials", lambda creds, path=None: None)
+
+    refresh_google_credentials(GoogleCredentials("a", "r", 0, "p"))
+
+    assert sent["client_id"] == DEFAULT_CLIENT_ID
+    assert sent["client_secret"] == DEFAULT_CLIENT_SECRET
+
+
+def test_refresh_reports_a_rejected_application_identity(monkeypatch: Any) -> None:
+    monkeypatch.delenv("QUARTZ_GOOGLE_CLIENT_ID", raising=False)
+    monkeypatch.delenv("QUARTZ_GOOGLE_CLIENT_SECRET", raising=False)
+
+    class _Resp:
+        status_code = 400
+        text = '{"error":"invalid_client","error_description":"Could not determine client ID"}'
+
+    monkeypatch.setattr(google_auth.httpx2, "post", lambda *a, **k: _Resp())
+
     with pytest.raises(CredentialError) as excinfo:
-        require_client_credentials()
+        refresh_google_credentials(GoogleCredentials("a", "r", 0, "p"))
 
     message = str(excinfo.value)
+    assert "OAuth application identity" in message
     assert "QUARTZ_GOOGLE_CLIENT_ID" in message
-    assert "QUARTZ_GOOGLE_CLIENT_SECRET" in message
     assert "quartz auth login google" in message
 
 
-def test_require_client_credentials_returns_both(monkeypatch: Any) -> None:
-    monkeypatch.setenv("QUARTZ_GOOGLE_CLIENT_ID", " id ")
-    monkeypatch.setenv("QUARTZ_GOOGLE_CLIENT_SECRET", " secret ")
-    assert require_client_credentials() == ("id", "secret")
+def test_refresh_reports_other_google_failures_as_provider_errors(monkeypatch: Any) -> None:
+    class _Resp:
+        status_code = 503
+        text = "backend unavailable"
 
+    monkeypatch.setattr(google_auth.httpx2, "post", lambda *a, **k: _Resp())
 
-def test_refresh_fails_before_any_http_call_without_client_credentials(
-    monkeypatch: Any,
-) -> None:
-    monkeypatch.delenv("QUARTZ_GOOGLE_CLIENT_ID", raising=False)
-    monkeypatch.delenv("QUARTZ_GOOGLE_CLIENT_SECRET", raising=False)
-
-    def _must_not_post(*args: Any, **kwargs: Any) -> Any:  # pragma: no cover
-        raise AssertionError("no token request should be attempted")
-
-    monkeypatch.setattr(google_auth.httpx2, "post", _must_not_post)
-
-    with pytest.raises(CredentialError):
+    with pytest.raises(ProviderError) as excinfo:
         refresh_google_credentials(GoogleCredentials("a", "r", 0, "p"))
+
+    assert excinfo.value.status_code == 503
 
 
 # --------------------------------------------------------------------------- #

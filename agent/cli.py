@@ -631,7 +631,23 @@ def _context_budget_from_env() -> tuple[int, int, int]:
     )
 
 
+def _load_env_files() -> None:
+    """Load ~/.quartz/.env then the project .env, without overriding real env vars.
+
+    Runs before any subcommand dispatch: `quartz auth`, `quartz mcp` and
+    `quartz acp` all read credentials from the environment.
+    """
+    from dotenv import load_dotenv
+
+    quartz_env = Path.home() / ".quartz" / ".env"
+    if quartz_env.is_file():
+        load_dotenv(quartz_env, override=False)
+    load_dotenv(override=False)
+
+
 def main() -> None:
+    _load_env_files()
+
     if len(sys.argv) > 1 and sys.argv[1] == "mcp":
         _sym("_handle_mcp_cli")(sys.argv[2:])
         return
@@ -648,13 +664,6 @@ def main() -> None:
         signal.signal(signal.SIGTERM, _handle_sigterm)
     except (OSError, ValueError):
         pass
-
-    from dotenv import load_dotenv
-
-    quartz_env = Path.home() / ".quartz" / ".env"
-    if quartz_env.is_file():
-        load_dotenv(quartz_env, override=False)
-    load_dotenv(override=False)
 
     parser = argparse.ArgumentParser(description="quartz — minimal coding agent with a persistent Python REPL.")
     parser.add_argument("-p", "--prompt", help="Run a single prompt in headless mode and exit.")

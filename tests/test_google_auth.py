@@ -292,17 +292,32 @@ def test_build_client_honors_openai_env_model(tmp_path: Path, monkeypatch) -> No
     assert model == "gpt-4.1"
 
 
-def test_google_auth_dynamic_env_getters(monkeypatch) -> None:
-    from agent.google_auth import (
-        get_google_client_id,
-        get_google_client_secret,
-    )
-    import agent.google_auth as ga
+def test_authorization_url_carries_the_bundled_client_id(monkeypatch: Any) -> None:
+    """A clean machine must be able to start login with no configuration."""
+    from urllib.parse import parse_qs, urlparse
 
-    monkeypatch.setenv("QUARTZ_GOOGLE_CLIENT_ID", "test-client-id-123")
-    monkeypatch.setenv("QUARTZ_GOOGLE_CLIENT_SECRET", "test-secret-456")
+    from agent.google_auth import build_authorization_url
+    from agent.oauth_client import DEFAULT_CLIENT_ID
 
-    assert get_google_client_id() == "test-client-id-123"
-    assert get_google_client_secret() == "test-secret-456"
-    assert ga.CLIENT_ID == "test-client-id-123"
-    assert ga.CLIENT_SECRET == "test-secret-456"
+    monkeypatch.delenv("QUARTZ_GOOGLE_CLIENT_ID", raising=False)
+    url = build_authorization_url(DEFAULT_CLIENT_ID, "challenge", "state")
+    query = parse_qs(urlparse(url).query)
+
+    assert query["client_id"] == [DEFAULT_CLIENT_ID]
+    assert query["code_challenge_method"] == ["S256"]
+    assert query["redirect_uri"] == ["http://localhost:51121/oauth-callback"]
+    assert query["access_type"] == ["offline"]
+
+
+def test_authorization_url_honours_an_env_override(monkeypatch: Any) -> None:
+    from urllib.parse import parse_qs, urlparse
+
+    from agent.google_auth import build_authorization_url
+    from agent.oauth_client import resolve_oauth_client
+
+    monkeypatch.setenv("QUARTZ_GOOGLE_CLIENT_ID", "custom-id")
+    monkeypatch.setenv("QUARTZ_GOOGLE_CLIENT_SECRET", "custom-secret")
+
+    client_id, _ = resolve_oauth_client()
+    url = build_authorization_url(client_id, "challenge", "state")
+    assert parse_qs(urlparse(url).query)["client_id"] == ["custom-id"]
