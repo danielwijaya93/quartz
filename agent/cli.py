@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         BlockPrinter,
         CellGroupBuffer,
         MarkdownBlockStreamer,
+        TurnProgressTracker,
         _MidTurnInputWatcher,
         _fmt_duration,
         _fmt_k,
@@ -78,6 +79,7 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "_render_tool_result": ("agent.ui", "_render_tool_result"),
     "_replay_session": ("agent.ui", "_replay_session"),
     "_short_path": ("agent.ui", "_short_path"),
+    "TurnProgressTracker": ("agent.ui", "TurnProgressTracker"),
     "agent_loop": ("agent.loop", "agent_loop"),
     "console": ("agent.ui", "console"),
     "format_compact_cell_summary": ("agent.ui", "format_compact_cell_summary"),
@@ -111,6 +113,7 @@ __all__ = [
     "BlockPrinter",
     "CellGroupBuffer",
     "MarkdownBlockStreamer",
+    "TurnProgressTracker",
     "_CLIRuntime",
     "_MidTurnInputWatcher",
     "_build_client",
@@ -150,14 +153,9 @@ def _run_turn(
     steering_queue: queue.Queue[str] | None = None,
     on_steering: Callable[[str], None] | None = None,
 ) -> tuple[str, list[dict[str, Any]], int]:
-    from rich.text import Text
-
-    from agent.actions import describe_cell_actions
     from agent.ui import (
-        CellGroupBuffer,
         MarkdownBlockStreamer,
-        _fmt_stopwatch,
-        _fmt_thought_duration,
+        TurnProgressTracker,
         _render_bash_notice,
         _render_compaction,
         _render_tool_call,
@@ -166,93 +164,35 @@ def _run_turn(
 
     pending_cell_code: list[str] = []
     pending_cell_start: list[float] = []
-    active_status: list[Status] = []
-    status_lock = threading.Lock()
-    thinking_started: list[float | None] = [None]
-    thinking_stop: list[threading.Event | None] = [None]
-    streak_thought_s = [0.0]
-    has_streak_thought = [False]
     streamed_any = [False]
     active_printer = _sym("printer")
     active_console = _sym("console")
     md_streamer = MarkdownBlockStreamer(active_printer.markdown)
-    cell_group = CellGroupBuffer()
+    tracker: TurnProgressTracker = _sym("TurnProgressTracker")(
+        active_console,
+        active_printer,
+        verbose=rt.verbose,
+        plain_output=rt.plain_output,
+    )
+    turn_stop = threading.Event()
 
-    def _flush_streak() -> None:
-        if has_streak_thought[0]:
-            elapsed = streak_thought_s[0]
-            streak_thought_s[0] = 0.0
-            has_streak_thought[0] = False
-            active_printer.block(Text(f"Thought for {_fmt_thought_duration(elapsed)}", style="dim"))
-        cell_group.flush()
+    def _tick_tracker() -> None:
+        while not turn_stop.wait(0.1):
+            tracker.tick()
 
-    def _tick_thinking(started: float, stop_event: threading.Event) -> None:
-        while not stop_event.wait(0.2):
-            label = f"Thinking... {_fmt_stopwatch(time.monotonic() - started)}"
-            with status_lock:
-                if stop_event.is_set() or not active_status:
-                    return
-                active_status[-1].update(label)
-
-    def _stop_thinking() -> float | None:
-        with status_lock:
-            if thinking_stop[0] is not None:
-                thinking_stop[0].set()
-                thinking_stop[0] = None
-            started = thinking_started[0]
-            thinking_started[0] = None
-            if started is not None and active_status:
-                active_status.pop().__exit__(None, None, None)
-        if started is not None:
-            elapsed = time.monotonic() - started
-            streak_thought_s[0] += elapsed
-            has_streak_thought[0] = True
-            return elapsed
-        return None
+    if not rt.plain_output and not rt.verbose:
+        threading.Thread(target=_tick_tracker, daemon=True).start()
 
     def _on_status(label: str | None) -> None:
         if rt.plain_output:
             return
-        if label is None:
-            _stop_thinking()
-            with status_lock:
-                if active_status:
-                    active_status.pop().__exit__(None, None, None)
-            return
         if label == "Thinking...":
-            with status_lock:
-                if thinking_started[0] is not None:
-                    return
-                started = time.monotonic()
-                thinking_started[0] = started
-                stop_event = threading.Event()
-                thinking_stop[0] = stop_event
-                tick_label = f"Thinking... {_fmt_stopwatch(0.0)}"
-                if active_status:
-                    active_status[-1].update(tick_label)
-                else:
-                    st = active_console.status(tick_label, spinner="dots")
-                    st.__enter__()
-                    active_status.append(st)
-            threading.Thread(target=_tick_thinking, args=(started, stop_event), daemon=True).start()
-            return
-        _stop_thinking()
-        if label == "Running ipython...":
-            action = describe_cell_actions(pending_cell_code[-1]) if pending_cell_code else "Run Python"
-            if cell_group.entries:
-                label = f"{action} #{len(rt.cell_history) + 1} ({len(cell_group.entries)} done)..."
-            else:
-                label = f"{action}..."
-        with status_lock:
-            if active_status:
-                active_status[-1].update(label)
-            else:
-                st = active_console.status(label, spinner="dots")
-                st.__enter__()
-                active_status.append(st)
+            tracker.start_thinking()
+        elif label is None:
+            tracker.stop_thinking()
 
     def _on_text_delta(chunk: str) -> None:
-        _flush_streak()
+        tracker.flush()
         streamed_any[0] = True
         if rt.plain_output:
             sys.stdout.write(chunk)
@@ -271,8 +211,10 @@ def _run_turn(
         pending_cell_code.append(code)
         pending_cell_start.append(time.monotonic())
         if rt.verbose:
-            _flush_streak()
+            tracker.flush()
             _render_tool_call(code)
+        else:
+            tracker.start_tool(code)
 
     def _on_tool_result(res: CellResult) -> None:
         code = pending_cell_code.pop(0) if pending_cell_code else ""
@@ -282,7 +224,7 @@ def _run_turn(
         if rt.verbose:
             _render_tool_result(res)
         else:
-            cell_group.add(len(rt.cell_history), code, res, duration)
+            tracker.add_tool_result(len(rt.cell_history), code, res, duration)
 
     streamed_any[0] = False
     active_printer.reset()
@@ -298,8 +240,8 @@ def _run_turn(
             keep_recent_tokens=rt.keep_recent_tokens,
             on_tool_call=_on_tool_call,
             on_tool_result=_on_tool_result,
-            on_compaction=lambda result: (_flush_streak(), _render_compaction(result)),
-            on_bash_notice=lambda n: (_flush_streak(), _render_bash_notice(n)),
+            on_compaction=lambda result: (tracker.flush(), _render_compaction(result)),
+            on_bash_notice=lambda n: (tracker.flush(), _render_bash_notice(n)),
             on_status=_on_status,
             on_text_delta=_on_text_delta,
             usage_stats=rt.usage_stats,
@@ -310,8 +252,8 @@ def _run_turn(
             on_steering=on_steering,
         )
     finally:
-        _on_status(None)
-        _flush_streak()
+        turn_stop.set()
+        tracker.flush()
         if rt.plain_output:
             if streamed_any[0]:
                 sys.stdout.write("\n")
@@ -518,6 +460,8 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
             attached_images = [*rt.pending_images, *inline_images]
             rt.pending_images.clear()
             rt.messages.append({"role": "user", "content": build_user_content(user_input, attached_images)})
+            if not rt.plain_output:
+                active_console.print()
 
         try:
             _execute_interactive_turn(rt)

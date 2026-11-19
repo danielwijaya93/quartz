@@ -581,3 +581,91 @@ def test_run_turn_thought_line_separate_from_grouped_cells(
     assert lines[0].startswith("Thought for ")
     assert lines[1].startswith("· #1..#2 · ")
     assert lines[2] == "All done."
+
+def test_turn_progress_tracker_in_progress_and_collapsing() -> None:
+    buf = io.StringIO()
+    test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
+    test_printer = BlockPrinter(test_console)
+    test_printer.reset()
+
+    tracker = cli.TurnProgressTracker(test_console, test_printer)
+
+    tracker.start_thinking()
+    grp1 = tracker._render_group()
+    assert len(grp1.renderables) == 1
+
+    tracker.start_tool("read('agent/loop.py')")
+    grp2 = tracker._render_group()
+    assert len(grp2.renderables) == 2
+    assert "Thought for " in grp2.renderables[0].plain
+    assert grp2.renderables[1].text.plain == "Read files..."
+
+    tracker.add_tool_result(1, "read('agent/loop.py')", CellResult(ok=True, stdout="content\n", stderr="", result=None), 0.05)
+    grp3 = tracker._render_group()
+    assert len(grp3.renderables) == 2
+    assert "Thought for " in grp3.renderables[0].plain
+    assert "· #1 · Read files" in grp3.renderables[1].plain
+
+    tracker.start_thinking()
+    grp4 = tracker._render_group()
+    assert len(grp4.renderables) == 3
+    assert "Thought for " in grp4.renderables[0].plain
+    assert "· #1 · Read files" in grp4.renderables[1].plain
+    assert grp4.renderables[2].text.plain.startswith("Thinking... ")
+
+    tracker.start_tool("edit('agent/cli.py', 'a', 'b')")
+    grp5 = tracker._render_group()
+    assert len(grp5.renderables) == 4
+    assert "Thought for " in grp5.renderables[2].plain
+    assert grp5.renderables[3].text.plain == "Edit files..."
+
+    tracker.add_tool_result(2, "edit('agent/cli.py', 'a', 'b')", CellResult(ok=True, stdout="ok\n", stderr="", result=None), 0.04)
+    grp6 = tracker._render_group()
+    assert len(grp6.renderables) == 4
+    assert "· #2 · Edit files" in grp6.renderables[3].plain
+
+    tracker.flush()
+    test_printer.markdown("Final answer text.")
+
+    raw_lines = buf.getvalue().splitlines()
+    assert raw_lines[0].startswith("Thought for ")
+    assert raw_lines[1].startswith("· #1..#2 · Read and Edit files · 2 cells")
+    assert raw_lines[2] == ""
+    assert raw_lines[3].startswith("Final answer text.")
+
+
+def test_turn_progress_tracker_conversational_no_tools() -> None:
+    buf = io.StringIO()
+    test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
+    test_printer = BlockPrinter(test_console)
+    test_printer.reset()
+
+    tracker = cli.TurnProgressTracker(test_console, test_printer)
+    tracker.start_thinking()
+    tracker.stop_thinking()
+    tracker.flush()
+    test_printer.markdown("Hello! How can I help?")
+
+    raw_lines = buf.getvalue().splitlines()
+    assert raw_lines[0].startswith("Thought for ")
+    assert raw_lines[1] == ""
+    assert raw_lines[2].startswith("Hello! How can I help?")
+
+
+def test_turn_progress_tracker_with_tool_failure() -> None:
+    buf = io.StringIO()
+    test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
+    test_printer = BlockPrinter(test_console)
+    test_printer.reset()
+
+    tracker = cli.TurnProgressTracker(test_console, test_printer)
+    tracker.start_thinking()
+    tracker.start_tool("1 / 0")
+    tracker.add_tool_result(1, "1 / 0", CellResult(ok=False, stdout="", stderr="ZeroDivisionError", result=None), 0.02)
+    tracker.flush()
+
+    raw_lines = buf.getvalue().splitlines()
+    assert raw_lines[0].startswith("Thought for ")
+    assert raw_lines[1].startswith("× #1 · Run Python")
+    assert "ZeroDivisionError" in raw_lines[1]
+
