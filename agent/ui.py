@@ -389,11 +389,14 @@ def format_grouped_cell_summary(
 class CellGroupBuffer:
     """Buffers consecutive ipython cell results and flushes them as one summary block."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_group_size: int = 5) -> None:
         self.entries: list[tuple[int, str, CellResult, float]] = []
+        self.max_group_size = max_group_size
 
     def add(self, index: int, code: str, res: CellResult, duration: float) -> None:
         self.entries.append((index, code, res, duration))
+        if len(self.entries) >= self.max_group_size:
+            self.flush()
 
     def flush(self) -> None:
         if not self.entries:
@@ -514,11 +517,13 @@ class TurnProgressTracker:
         console: Console,
         printer: BlockPrinter,
         *,
+        chunk_size: int = 5,
         verbose: bool = False,
         plain_output: bool = False,
     ) -> None:
         self.console = console
         self.printer = printer
+        self.chunk_size = chunk_size
         self.verbose = verbose
         self.plain_output = plain_output
         self.lock = threading.RLock()
@@ -696,6 +701,37 @@ class TurnProgressTracker:
             entry = (index, code, res, duration)
             self.tool_entries.append(entry)
             self.step_history.append(("tool", entry))
+            if len(self.tool_entries) >= self.chunk_size:
+                self._flush_chunk()
+            else:
+                self._flushed = False
+                self._render_current()
+
+    def _flush_chunk(self) -> None:
+        self.screen.clear()
+
+        total_thought = sum(self.thinking_intervals)
+        entries = list(self.tool_entries)
+        self.thinking_intervals.clear()
+        self.step_history.clear()
+        self.tool_entries.clear()
+        self._flushed = True
+
+        if total_thought > 0 and entries:
+            summary, all_ok = format_grouped_cell_summary(entries)
+            header = Group(
+                Text(f"Thought for {_fmt_thought_duration(total_thought)}", style="dim"),
+                Text(summary, style="dim" if all_ok else "red"),
+            )
+            self.printer.block(header)
+        elif total_thought > 0:
+            self.printer.block(Text(f"Thought for {_fmt_thought_duration(total_thought)}", style="dim"))
+        elif entries:
+            summary, all_ok = format_grouped_cell_summary(entries)
+            self.printer.block(Text(summary, style="dim" if all_ok else "red"))
+
+        if (self.input_buffer or self.queued_messages) and not self.plain_output and not self.verbose:
+            self._flushed = False
             self._render_current()
 
     def flush(self) -> None:
@@ -710,32 +746,7 @@ class TurnProgressTracker:
                 self.thinking_intervals.append(elapsed)
             self.active_tool_code = None
             self.active_tool_start = None
-
-            self.screen.clear()
-
-            total_thought = sum(self.thinking_intervals)
-            entries = list(self.tool_entries)
-            self.thinking_intervals.clear()
-            self.step_history.clear()
-            self.tool_entries.clear()
-            self._flushed = True
-
-            if total_thought > 0 and entries:
-                summary, all_ok = format_grouped_cell_summary(entries)
-                header = Group(
-                    Text(f"Thought for {_fmt_thought_duration(total_thought)}", style="dim"),
-                    Text(summary, style="dim" if all_ok else "red"),
-                )
-                self.printer.block(header)
-            elif total_thought > 0:
-                self.printer.block(Text(f"Thought for {_fmt_thought_duration(total_thought)}", style="dim"))
-            elif entries:
-                summary, all_ok = format_grouped_cell_summary(entries)
-                self.printer.block(Text(summary, style="dim" if all_ok else "red"))
-
-            if (self.input_buffer or self.queued_messages) and not self.plain_output and not self.verbose:
-                self._flushed = False
-                self._render_current()
+            self._flush_chunk()
 
 
 def _parse_expand_range(arg: str, total: int) -> tuple[int, int]:

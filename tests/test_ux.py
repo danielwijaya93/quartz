@@ -434,6 +434,26 @@ def test_cell_group_buffer_flushes_once_per_run(monkeypatch: pytest.MonkeyPatch)
     ]
 
 
+def test_cell_group_buffer_chunking_every_five(monkeypatch: pytest.MonkeyPatch) -> None:
+    console, buf = _recording_console()
+    monkeypatch.setattr(cli, "printer", BlockPrinter(console))
+
+    cli.printer.reset()
+    group = cli.CellGroupBuffer(max_group_size=5)
+    for i in range(1, 13):
+        group.add(i, f"x = {i}", CellResult(True, "", "", None), 0.1)
+    group.flush()
+
+    lines = _visible_lines(buf.getvalue())
+    assert lines == [
+        "· #1..#5 · Run Python · 5 cells · 0.50s · /expand 1..5",
+        "",
+        "· #6..#10 · Run Python · 5 cells · 0.50s · /expand 6..10",
+        "",
+        "· #11..#12 · Run Python · 2 cells · 0.20s · /expand 11..12",
+    ]
+
+
 def test_parse_expand_range() -> None:
     assert cli._parse_expand_range("", 5) == (5, 5)
     assert cli._parse_expand_range("3", 5) == (3, 3)
@@ -669,6 +689,59 @@ def test_turn_progress_tracker_with_tool_failure() -> None:
     assert raw_lines[1].startswith("× #1 · Run Python")
     assert "ZeroDivisionError" in raw_lines[1]
 
+
+def test_turn_progress_tracker_chunking_every_five() -> None:
+    buf = io.StringIO()
+    test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
+    test_printer = BlockPrinter(test_console)
+    test_printer.reset()
+
+    tracker = cli.TurnProgressTracker(test_console, test_printer, chunk_size=5)
+
+    # 12 steps of thinking + tool calls
+    for i in range(1, 13):
+        tracker.start_thinking()
+        tracker.start_tool(f"x = {i}")
+        tracker.add_tool_result(i, f"x = {i}", CellResult(ok=True, stdout="", stderr="", result=None), 0.05)
+        if i < 5:
+            assert len(tracker.tool_entries) == i
+            assert buf.getvalue() == ""
+        elif i == 5:
+            # Chunk 1 (#1..#5) must have auto-flushed
+            assert len(tracker.tool_entries) == 0
+            assert "· #1..#5 · Run Python · 5 cells" in buf.getvalue()
+        elif 6 <= i < 10:
+            assert len(tracker.tool_entries) == i - 5
+        elif i == 10:
+            # Chunk 2 (#6..#10) must have auto-flushed
+            assert len(tracker.tool_entries) == 0
+            assert "· #6..#10 · Run Python · 5 cells" in buf.getvalue()
+        elif i > 10:
+            assert len(tracker.tool_entries) == i - 10
+
+    # Before end-of-turn flush, chunk 3 (#11..#12) is still buffered
+    assert len(tracker.tool_entries) == 2
+    assert "· #11..#12" not in buf.getvalue()
+
+    # Flush remaining chunk at end of turn
+    tracker.flush()
+    assert len(tracker.tool_entries) == 0
+    assert "· #11..#12 · Run Python · 2 cells" in buf.getvalue()
+
+    # Repeated flush should do nothing (no duplicate blocks)
+    curr_len = len(buf.getvalue())
+    tracker.flush()
+    assert len(buf.getvalue()) == curr_len
+
+    # Verify order of blocks
+    lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
+    thought_lines = [ln for ln in lines if ln.startswith("Thought for ")]
+    cell_lines = [ln for ln in lines if ln.startswith("· #")]
+    assert len(thought_lines) == 3
+    assert len(cell_lines) == 3
+    assert cell_lines[0].startswith("· #1..#5")
+    assert cell_lines[1].startswith("· #6..#10")
+    assert cell_lines[2].startswith("· #11..#12")
 
 
 def test_turn_progress_tracker_interactive_steering() -> None:
