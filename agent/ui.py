@@ -15,7 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from prompt_toolkit import Application
+from prompt_toolkit import Application, prompt as pt_prompt
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import Window
@@ -399,6 +399,126 @@ def _pick_option(
         full_screen=False,
     )
     return app.run()
+
+
+def _pick_searchable_option(
+    title: str,
+    options: list[tuple[str, str]],
+    current: str | None = None,
+    *,
+    allow_custom: bool = True,
+    max_visible: int = 15,
+) -> str | None:
+    """Filterable inline picker for large option lists (type to filter, ↑/↓, Enter, Esc)."""
+    query = [""]
+    selected_idx = [0]
+
+    def _filtered() -> list[tuple[str, str]]:
+        q = query[0].strip().lower()
+        if not q:
+            return options
+        tokens = q.split()
+        return [
+            (val, lbl)
+            for val, lbl in options
+            if all(tok in val.lower() or tok in lbl.lower() for tok in tokens)
+        ]
+
+    if current:
+        for i, (val, _) in enumerate(options):
+            if val == current:
+                selected_idx[0] = i
+                break
+
+    def _get_text() -> list[tuple[str, str]]:
+        matches = _filtered()
+        if matches and selected_idx[0] >= len(matches):
+            selected_idx[0] = len(matches) - 1
+        frags: list[tuple[str, str]] = [
+            ("bold", f"{title} (type to filter, ↑/↓ to move, Enter to select, Esc to cancel):\n"),
+            ("cyan", f"Filter: {query[0]}▌\n"),
+        ]
+        if not matches:
+            if allow_custom and query[0].strip():
+                frags.append(("yellow", f"  No matches — press Enter to use custom ID: {query[0].strip()}\n"))
+            else:
+                frags.append(("dim", "  No matching options.\n"))
+            return frags
+
+        total = len(matches)
+        half = max_visible // 2
+        start = max(0, min(selected_idx[0] - half, total - max_visible))
+        end = min(total, start + max_visible)
+        if start > 0:
+            frags.append(("dim", f"  ↑ {start} more above\n"))
+        for i in range(start, end):
+            _, label = matches[i]
+            is_sel = i == selected_idx[0]
+            marker = "❯ " if is_sel else "  "
+            style = "reverse bold cyan" if is_sel else ""
+            frags.append((style, f"{marker}{label}\n"))
+        if end < total:
+            frags.append(("dim", f"  ↓ {total - end} more below ({total} total)\n"))
+        return frags
+
+    kb = KeyBindings()
+
+    @kb.add("up")
+    @kb.add("c-p")
+    def _(event: Any) -> None:
+        matches = _filtered()
+        if matches:
+            selected_idx[0] = (selected_idx[0] - 1) % len(matches)
+
+    @kb.add("down")
+    @kb.add("c-n")
+    def _(event: Any) -> None:
+        matches = _filtered()
+        if matches:
+            selected_idx[0] = (selected_idx[0] + 1) % len(matches)
+
+    @kb.add("backspace")
+    def _(event: Any) -> None:
+        if query[0]:
+            query[0] = query[0][:-1]
+            selected_idx[0] = 0
+
+    @kb.add("enter")
+    def _(event: Any) -> None:
+        matches = _filtered()
+        if matches:
+            idx = min(selected_idx[0], len(matches) - 1)
+            event.app.exit(result=matches[idx][0])
+        elif allow_custom and query[0].strip():
+            event.app.exit(result=query[0].strip())
+
+    @kb.add("escape")
+    @kb.add("c-c")
+    def _(event: Any) -> None:
+        event.app.exit(result=None)
+
+    @kb.add("<any>")
+    def _(event: Any) -> None:
+        data = event.data
+        if data and len(data) == 1 and data.isprintable():
+            query[0] += data
+            selected_idx[0] = 0
+
+    app: Application[str | None] = Application(
+        layout=Layout(Window(content=FormattedTextControl(_get_text), always_hide_cursor=True)),
+        key_bindings=kb,
+        full_screen=False,
+    )
+    return app.run()
+
+
+def _prompt_input(label: str, *, secret: bool = False, default: str = "") -> str | None:
+    """Prompt for a single line of text (optionally masked); returns None on cancel."""
+    try:
+        val = pt_prompt(label, is_password=secret, default=default)
+    except (KeyboardInterrupt, EOFError):
+        return None
+    return val.strip()
 
 
 def _replay_session(

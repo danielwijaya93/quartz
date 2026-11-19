@@ -10,6 +10,8 @@ from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 
 SLASH_COMMANDS: dict[str, str] = {
+    "/login": "Log in to a provider (OAuth or API key)",
+    "/logout": "Log out and remove stored provider credentials",
     "/model": "Choose provider, model, and reasoning effort",
     "/image": "Attach an image file (or /image clear)",
     "/paste": "Attach an image from the system clipboard",

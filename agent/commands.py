@@ -32,13 +32,24 @@ from agent.mcp_client import (
     remove_mcp_server,
     set_mcp_server_enabled,
 )
-from agent.models import PROVIDERS, load_model_config, save_model_config
+from agent.models import (
+    PROVIDERS,
+    delete_provider_auth,
+    discover_models,
+    list_logged_in_providers,
+    load_model_config,
+    resolve_provider_credentials,
+    save_model_config,
+    save_provider_auth,
+)
 from agent.session import Session
 from agent.ui import (
     _active_printer,
     _format_turn_footer,
     _parse_expand_range,
     _pick_option,
+    _pick_searchable_option,
+    _prompt_input,
     _render_compaction,
     _render_tool_call,
     _render_tool_result,
@@ -81,30 +92,62 @@ class _CLIRuntime:
             self.active_session.save_kernel(self.kernel)
 
 
+def _provider_ready(provider: str) -> bool:
+    pspec = PROVIDERS.get(provider)
+    if not pspec:
+        return False
+    if pspec.get("auth_type") == "oauth":
+        return load_google_credentials() is not None
+    api_key, _, _ = resolve_provider_credentials(provider)
+    return bool(api_key)
+
+
+def _provider_status_label(provider: str) -> str:
+    pspec = PROVIDERS[provider]
+    if pspec.get("auth_type") == "oauth":
+        return "logged in • oauth" if load_google_credentials() is not None else "not logged in • oauth"
+    _, _, source = resolve_provider_credentials(provider)
+    if source == "auth.json":
+        return "logged in • api key"
+    if source == "env":
+        return "configured via env • api key"
+    return "not configured • api key"
+
+
 def _build_client(
     provider: str = "auto",
     model_override: str | None = None,
     effort_override: str | None = None,
 ) -> tuple[Any, str, str, str]:
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key_env = os.getenv("OPENAI_API_KEY")
     has_google = load_google_credentials() is not None
+    logged_in = list_logged_in_providers()
     saved = load_model_config()
     env_model = model_override or os.getenv("MODEL")
 
     if provider == "auto":
         saved_provider = saved.get("provider")
-        if saved_provider in PROVIDERS:
+        if saved_provider in PROVIDERS and _provider_ready(saved_provider):
             chosen_provider = saved_provider
         elif env_model and env_model.startswith("gemini-") and has_google:
             chosen_provider = "google"
-        elif not api_key and has_google:
+        elif any(p in PROVIDERS and p != "google" for p in logged_in):
+            chosen_provider = next(p for p in PROVIDERS if p != "google" and p in logged_in)
+        elif api_key_env:
+            chosen_provider = "deepseek"
+        elif os.getenv("OPENROUTER_API_KEY"):
+            chosen_provider = "openrouter"
+        elif os.getenv("DEEPSEEK_API_KEY"):
+            chosen_provider = "deepseek"
+        elif has_google:
             chosen_provider = "google"
         else:
             chosen_provider = "deepseek"
-    elif provider == "openai":
-        chosen_provider = "deepseek"
-    else:
+    elif provider in PROVIDERS:
         chosen_provider = provider
+    else:
+        console.print(f"[red]Error: Unknown provider '{escape(provider)}'.[/red]")
+        sys.exit(1)
 
     spec = PROVIDERS[chosen_provider]
     if model_override:
@@ -125,65 +168,147 @@ def _build_client(
 
     if spec["backend"] == "google":
         if not has_google:
-            console.print("[red]Error: Not logged in to Google. Run `quartz auth login google` first.[/red]")
+            console.print("[red]Error: Not logged in to Google. Run `/login google` or `quartz auth login google` first.[/red]")
             sys.exit(1)
         return GoogleAntigravityClient(), chosen_provider, model, effort
 
+    api_key, base_url, _ = resolve_provider_credentials(chosen_provider)
     if not api_key:
         console.print(
-            "[red]Error: No credentials found. Either add OPENAI_API_KEY to ~/.quartz/.env or run `quartz auth login google`.[/red]"
+            f"[red]Error: No credentials found for '{escape(chosen_provider)}'. "
+            f"Run `/login {escape(chosen_provider)}` or `quartz auth login {escape(chosen_provider)}`.[/red]"
         )
         sys.exit(1)
-    base_url = os.getenv("OPENAI_BASE_URL") or None
     client = OpenAI(api_key=api_key, base_url=base_url)
     return client, chosen_provider, model, effort
+
+
+def _login_provider(target_provider: str | None = None) -> str | None:
+    """Interactive login flow differentiating OAuth vs API-key providers."""
+    if target_provider is None:
+        opts = [(pname, f"{pspec['label']} ({_provider_status_label(pname)})") for pname, pspec in PROVIDERS.items()]
+        target_provider = _pick_option("Log in to Provider", opts)
+        if not target_provider:
+            console.print("[dim]Cancelled.[/dim]")
+            return None
+
+    if target_provider not in PROVIDERS:
+        console.print(
+            f"[red]Unknown provider '{escape(target_provider)}'. "
+            f"Available: {', '.join(PROVIDERS.keys())}[/red]"
+        )
+        return None
+
+    spec = PROVIDERS[target_provider]
+    if spec.get("auth_type") == "oauth":
+        try:
+            creds = login_google_interactive()
+        except Exception as exc:
+            console.print(f"[red]Login failed: {escape(str(exc))}[/red]")
+            return None
+        console.print(
+            f"[green]Logged in to Google (OAuth)![/green] Project: [bold]{escape(creds.project_id)}[/bold] "
+            f"(saved to {auth_file_path()})"
+        )
+        return target_provider
+
+    api_key = _prompt_input(f"{target_provider} API key: ", secret=True)
+    if not api_key:
+        console.print("[dim]Cancelled.[/dim]")
+        return None
+
+    base_url: str | None = spec.get("base_url") or None
+    if target_provider == "custom":
+        entered_url = _prompt_input("Base URL (e.g. https://api.example.com/v1): ")
+        if not entered_url:
+            console.print("[dim]Cancelled.[/dim]")
+            return None
+        base_url = entered_url
+
+    saved_path = save_provider_auth(target_provider, api_key, base_url)
+    with console.status(f"[dim]Verifying {target_provider} & discovering models...[/dim]"):
+        models, err = discover_models(target_provider)
+    if err:
+        console.print(
+            f"[yellow]Saved API key for [bold]{escape(target_provider)}[/bold] to {saved_path}, "
+            f"but model discovery failed: {escape(err)}[/yellow]"
+        )
+    else:
+        console.print(
+            f"[green]Logged in to [bold]{escape(target_provider)}[/bold] (API key)![/green] "
+            f"Discovered [bold]{len(models)}[/bold] model(s) (saved to {saved_path})."
+        )
+    return target_provider
+
+
+def _logout_provider(target_provider: str | None = None) -> bool:
+    """Remove stored credentials for a provider from ~/.quartz/auth.json."""
+    logged_in = list_logged_in_providers()
+    if target_provider is None:
+        if not logged_in:
+            console.print(f"[dim]No stored provider logins found in {auth_file_path()}.[/dim]")
+            return False
+        opts = [
+            (pname, f"{PROVIDERS[pname]['label'] if pname in PROVIDERS else pname} ({atype})")
+            for pname, atype in logged_in.items()
+        ]
+        target_provider = _pick_option("Log out from Provider", opts)
+        if not target_provider:
+            console.print("[dim]Cancelled.[/dim]")
+            return False
+
+    if target_provider == "google":
+        removed = delete_google_credentials()
+    else:
+        removed = delete_provider_auth(target_provider)
+
+    if removed:
+        console.print(f"[green]Logged out from [bold]{escape(target_provider)}[/bold].[/green]")
+    else:
+        console.print(f"[dim]No stored credentials found for {escape(target_provider)}.[/dim]")
+    return removed
 
 
 def _handle_auth_cli(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(
         prog="quartz auth",
-        description="Manage subscription logins in ~/.quartz/auth.json",
+        description="Manage provider logins (OAuth and API keys) in ~/.quartz/auth.json",
     )
     sub = parser.add_subparsers(dest="action", required=True)
 
-    login_p = sub.add_parser("login", help="Log in with a subscription provider")
-    login_p.add_argument("provider", choices=["google"], help="Provider to authenticate")
+    provider_choices = list(PROVIDERS.keys())
+    login_p = sub.add_parser("login", help="Log in with an OAuth or API-key provider")
+    login_p.add_argument("provider", nargs="?", choices=provider_choices, help="Provider to authenticate")
 
     sub.add_parser("status", help="Show current authentication status")
 
     logout_p = sub.add_parser("logout", help="Remove stored credentials")
-    logout_p.add_argument("provider", choices=["google"], help="Provider to log out")
+    logout_p.add_argument("provider", nargs="?", choices=provider_choices, help="Provider to log out")
 
     args = parser.parse_args(argv)
 
     if args.action == "login":
-        try:
-            creds = login_google_interactive()
-        except Exception as exc:
-            console.print(f"[red]Login failed: {exc}[/red]")
+        if not _login_provider(args.provider):
             sys.exit(1)
-        console.print(
-            f"[green]Logged in to Google![/green] Project: [bold]{creds.project_id}[/bold] "
-            f"(saved to {auth_file_path()})"
-        )
         return
 
     if args.action == "status":
         creds = load_google_credentials()
         if creds is None:
-            console.print(f"[dim]Google: not logged in ({auth_file_path()})[/dim]")
+            console.print(f"[dim]google (oauth): not logged in ({auth_file_path()})[/dim]")
         else:
             status = "expired (will auto-refresh)" if creds.is_expired() else "active"
             console.print(
-                f"[green]Google: logged in[/green] | project: [bold]{creds.project_id}[/bold] | token: {status}"
+                f"[green]google (oauth): logged in[/green] | project: [bold]{creds.project_id}[/bold] | token: {status}"
             )
+        for pname, pspec in PROVIDERS.items():
+            if pspec.get("auth_type") == "oauth":
+                continue
+            console.print(f"  [cyan]{pname}[/cyan]: {_provider_status_label(pname)}")
         return
 
     if args.action == "logout":
-        if delete_google_credentials():
-            console.print("[green]Logged out from Google.[/green]")
-        else:
-            console.print("[dim]No Google credentials found.[/dim]")
+        _logout_provider(args.provider)
 
 
 def _parse_kv_pairs(items: list[str], flag_name: str) -> dict[str, str]:
@@ -315,6 +440,8 @@ def _handle_slash_command(rt: _CLIRuntime, user_input: str) -> bool | None:
     if user_input == "/help":
         console.print(
             Text(
+                "/login [prov]    Log in to a provider (OAuth or API key)\n"
+                "/logout [prov]   Log out and remove stored provider credentials\n"
                 "/model           Choose provider, model, and reasoning effort\n"
                 "/continue [id]   Pick and resume a previous session in this directory\n"
                 "/image [path]    Attach an image for the next message (or: clear)\n"
@@ -369,29 +496,64 @@ def _handle_slash_command(rt: _CLIRuntime, user_input: str) -> bool | None:
             f"{len(rt.pending_images)} image(s) queued for next message.[/green]"
         )
         return False
+    if user_input == "/login" or user_input.startswith("/login "):
+        arg = user_input[len("/login") :].strip() or None
+        logged = _login_provider(arg)
+        if logged:
+            console.print(f"[dim]Run /model to select a model from {escape(logged)}.[/dim]")
+        return False
+    if user_input == "/logout" or user_input.startswith("/logout "):
+        arg = user_input[len("/logout") :].strip() or None
+        _logout_provider(arg)
+        return False
     if user_input == "/model":
-        provider_opts: list[tuple[str, str]] = []
-        for pname, pspec in PROVIDERS.items():
-            if pspec["backend"] == "google":
-                ready = "logged in" if load_google_credentials() is not None else "not logged in"
-            else:
-                ready = "configured" if os.getenv("OPENAI_API_KEY") else "no API key"
-            provider_opts.append((pname, f"{pspec['label']} ({ready})"))
+        provider_opts: list[tuple[str, str]] = [
+            (pname, f"{pspec['label']} ({_provider_status_label(pname)})")
+            for pname, pspec in PROVIDERS.items()
+        ]
 
         picked_provider = _pick_option("Provider", provider_opts, current=rt.provider_name)
         if not picked_provider:
             console.print("[dim]Cancelled.[/dim]")
             return False
 
+        if not _provider_ready(picked_provider):
+            console.print(
+                f"[yellow]Provider '{escape(picked_provider)}' is not configured yet. "
+                f"Run /login {escape(picked_provider)} first.[/yellow]"
+            )
+            return False
+
         pspec = PROVIDERS[picked_provider]
-        if len(pspec["models"]) > 1:
-            model_opts = [(m, m) for m in pspec["models"]]
+        if pspec["backend"] == "openai":
+            with console.status(f"[dim]Discovering models from {picked_provider}...[/dim]"):
+                models, err = discover_models(picked_provider)
+            if err:
+                console.print(
+                    f"[yellow]Model discovery warning ({escape(err)}); showing fallback/custom options.[/yellow]"
+                )
+        else:
+            models, _ = discover_models(picked_provider)
+
+        if pspec["backend"] == "openai" or len(models) > 10:
+            model_opts = [(m, m) for m in models]
+            picked_model = _pick_searchable_option(
+                "Model",
+                model_opts,
+                current=rt.model if picked_provider == rt.provider_name else None,
+                allow_custom=(pspec["backend"] == "openai"),
+            )
+            if not picked_model:
+                console.print("[dim]Cancelled.[/dim]")
+                return False
+        elif len(models) > 1:
+            model_opts = [(m, m) for m in models]
             picked_model = _pick_option("Model", model_opts, current=rt.model)
             if not picked_model:
                 console.print("[dim]Cancelled.[/dim]")
                 return False
         else:
-            picked_model = pspec["models"][0]
+            picked_model = models[0]
 
         effort_opts = [(e, e) for e in pspec["efforts"]]
         picked_effort = _pick_option(

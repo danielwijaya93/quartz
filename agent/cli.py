@@ -40,6 +40,7 @@ from agent.images import (
 )
 from agent.kernel_client import CellResult, KernelClient
 from agent.loop import TurnAborted, TurnUsage, agent_loop, format_bash_done_events
+from agent.models import PROVIDERS
 from agent.prompt import build_system_prompt
 from agent.session import Session
 from agent.ui import (
@@ -560,7 +561,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--provider",
-        choices=["auto", "deepseek", "google", "openai"],
+        choices=["auto", *PROVIDERS.keys()],
         default=os.getenv("PROVIDER", "auto"),
         help="LLM provider backend (default: auto).",
     )
