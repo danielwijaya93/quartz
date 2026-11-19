@@ -661,7 +661,7 @@ def main() -> None:
         else:
             _run_interactive(rt, resumed)
     finally:
-        if rt.messages and not rt.headless:
+        if rt.messages and not rt.headless and rt.kernel.dirty:
             try:
                 rt.active_session.save_kernel(rt.kernel)
             except Exception:

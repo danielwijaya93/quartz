@@ -53,6 +53,7 @@ class KernelClient:
         self._worker_exited = False
         self._reader_thread: threading.Thread | None = None
         self._atexit_registered = False
+        self.dirty = False
 
     def start(self, timeout: float = 10.0) -> None:
         if self._proc is not None and self._proc.poll() is None:
@@ -159,6 +160,7 @@ class KernelClient:
                 self._pending.pop(req_id, None)
 
     def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
+        self.dirty = True
         resp = self._request({"type": "exec", "code": code}, timeout=timeout)
         if resp.get("type") == "error":
             return CellResult(ok=False, stdout="", stderr=resp.get("error", "Unknown kernel error"), result=None)
@@ -180,6 +182,7 @@ class KernelClient:
         if self._proc is None or self._proc.poll() is not None:
             return {"saved": [], "skipped": []}
         resp = self._request({"type": "snapshot", "dir": str(snapshot_dir)}, timeout=timeout)
+        self.dirty = False
         return resp.get("manifest", {"saved": [], "skipped": []})
 
     def restore(self, snapshot_dir: Path, timeout: float = 30.0) -> dict[str, list[str]]:
@@ -235,6 +238,7 @@ class KernelClient:
     def close(self) -> None:
         proc = self._proc
         self._proc = None
+        self.dirty = False
         if proc is None:
             return
         pid = proc.pid
@@ -243,6 +247,7 @@ class KernelClient:
                 if proc.stdin:
                     proc.stdin.write(json.dumps({"type": "shutdown"}) + "\n")
                     proc.stdin.flush()
+                    proc.stdin.close()
                 proc.wait(timeout=4.0)
             except Exception:
                 pass

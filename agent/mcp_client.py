@@ -389,11 +389,9 @@ class MCPManager:
         return unwrapped
 
     async def close(self) -> None:
-        """Close all active MCP client sessions."""
-        for stack in list(self._stacks.values()):
-            try:
-                await stack.aclose()
-            except Exception:
-                pass
+        """Close all active MCP client sessions concurrently."""
+        stacks = list(self._stacks.values())
         self._stacks.clear()
         self._sessions.clear()
+        if stacks:
+            await asyncio.gather(*(stack.aclose() for stack in stacks), return_exceptions=True)
