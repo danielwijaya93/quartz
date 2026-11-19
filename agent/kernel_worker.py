@@ -257,6 +257,13 @@ class KernelWorker:
             **self._loaded_helpers.functions,
         }
         self._reserved_names = set(self._namespace.keys()) | {"_"}
+        for h in self._loaded_helpers.infos.values():
+            if h.source in ("global", "project") and hasattr(h.func, "__globals__"):
+                h.func.__globals__.setdefault("bash", self._namespace["bash"])
+                h.func.__globals__.setdefault("BashHandle", BashHandle)
+                h.func.__globals__.setdefault("BashResult", BashResult)
+                h.func.__globals__.setdefault("mcp", self.mcp)
+                h.func.__globals__.setdefault("gather", asyncio.gather)
 
     def _start_bash(self, command: str, timeout: float | None = 600) -> BashHandle:
         """Start a shell command in the background and return a BashHandle immediately."""
@@ -305,6 +312,8 @@ class KernelWorker:
         result_repr: str | None = None
         ok = True
 
+        safe_cid = re.sub(r"[^A-Za-z0-9_]", "_", cell_id or "cell")
+        last_expr_key = f"__last_expr_{safe_cid}__"
         try:
             tree = ast.parse(code, "<ipython>", "exec")
             has_trailing_expr = bool(tree.body and isinstance(tree.body[-1], ast.Expr))
@@ -312,7 +321,7 @@ class KernelWorker:
                 last_expr = tree.body[-1]
                 assert isinstance(last_expr, ast.Expr)
                 tree.body[-1] = ast.Assign(
-                    targets=[ast.Name(id="__last_expr__", ctx=ast.Store())],
+                    targets=[ast.Name(id=last_expr_key, ctx=ast.Store())],
                     value=last_expr.value,
                 )
                 ast.fix_missing_locations(tree)
@@ -333,12 +342,13 @@ class KernelWorker:
                 if inspect.isawaitable(coro):
                     await coro
 
-                if has_trailing_expr and "__last_expr__" in self._namespace:
-                    val = self._namespace.pop("__last_expr__")
+                if has_trailing_expr and last_expr_key in self._namespace:
+                    val = self._namespace.pop(last_expr_key)
                     if val is not None:
                         self._namespace["_"] = val
                         result_repr = _spill_or_truncate(repr(val), MAX_REPR_CHARS, "result", cell_id)
             finally:
+                self._namespace.pop(last_expr_key, None)
                 _CELL_ID_VAR.reset(tok_cid)
                 _STDOUT_VAR.reset(tok_out)
                 _STDERR_VAR.reset(tok_err)
@@ -394,7 +404,6 @@ class KernelWorker:
         """Serialize user-defined variables to `snapshot_dir` using C pickle first, falling back to dill."""
         import pickle
         import shutil
-        import pickle
         from pathlib import Path
 
         import dill

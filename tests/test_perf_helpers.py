@@ -80,3 +80,22 @@ def test_single_ipython_tool_and_headless_prompt(tmp_path: Path) -> None:
     headless = build_system_prompt(tmp_path, headless=True)
     assert "## Headless Mode" not in interactive
     assert "## Headless Mode" in headless
+
+
+def test_parallel_cells_isolate_trailing_expr(tmp_path: Path) -> None:
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        code_a = "import asyncio\nawait asyncio.sleep(0.04)\n'result_from_A'"
+        code_b = "import asyncio\nawait asyncio.sleep(0.02)\n'result_from_B'"
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fa = pool.submit(kernel.exec_cell, code_a)
+            fb = pool.submit(kernel.exec_cell, code_b)
+            ra = fa.result()
+            rb = fb.result()
+
+        assert ra.ok and rb.ok
+        assert ra.result == "'result_from_A'"
+        assert rb.result == "'result_from_B'"
+    finally:
+        kernel.close()

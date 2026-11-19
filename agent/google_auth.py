@@ -20,8 +20,22 @@ from typing import Any
 
 import httpx2
 
-CLIENT_ID = os.getenv("QUARTZ_GOOGLE_CLIENT_ID", "")
-CLIENT_SECRET = os.getenv("QUARTZ_GOOGLE_CLIENT_SECRET", "")
+def get_google_client_id() -> str:
+    """Return active Google Client ID from environment."""
+    return os.getenv("QUARTZ_GOOGLE_CLIENT_ID", "")
+
+
+def get_google_client_secret() -> str:
+    """Return active Google Client Secret from environment."""
+    return os.getenv("QUARTZ_GOOGLE_CLIENT_SECRET", "")
+
+
+def __getattr__(name: str) -> Any:
+    if name == "CLIENT_ID":
+        return get_google_client_id()
+    if name == "CLIENT_SECRET":
+        return get_google_client_secret()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPES = (
@@ -283,8 +297,8 @@ def refresh_google_credentials(
     token = _token_request(
         {
             "grant_type": "refresh_token",
-            "client_id": CLIENT_ID,
-            "client_secret": CLIENT_SECRET,
+            "client_id": get_google_client_id(),
+            "client_secret": get_google_client_secret(),
             "refresh_token": creds.refresh,
         },
         "Google token refresh",
@@ -313,7 +327,7 @@ def login_google_interactive(path: Path | None = None) -> GoogleCredentials:
     params = urllib.parse.urlencode(
         {
             "response_type": "code",
-            "client_id": CLIENT_ID,
+            "client_id": get_google_client_id(),
             "redirect_uri": REDIRECT_URI,
             "scope": SCOPES,
             "code_challenge": challenge,
@@ -414,8 +428,8 @@ def login_google_interactive(path: Path | None = None) -> GoogleCredentials:
             "grant_type": "authorization_code",
             "code": auth_code,
             "redirect_uri": REDIRECT_URI,
-            "client_id": CLIENT_ID,
-            "client_secret": CLIENT_SECRET,
+            "client_id": get_google_client_id(),
+            "client_secret": get_google_client_secret(),
             "code_verifier": verifier,
         },
         "Google token exchange",

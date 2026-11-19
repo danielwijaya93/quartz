@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -122,17 +123,58 @@ def read(path: str, start: int = 1, end: int = 200) -> str:
     return "\n".join(out)
 
 
+def _atomic_write(path: Path, content: str, newline: str | None = None) -> None:
+    """Atomically write content to path using a temp file in the same directory."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        newline=newline,
+        dir=path.parent,
+        delete=False,
+    )
+    tmp_path = Path(tmp.name)
+    try:
+        tmp.write(content)
+        tmp.flush()
+        os.fsync(tmp.fileno())
+        tmp.close()
+        os.replace(tmp_path, path)
+    except BaseException:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
+
+
 def edit(path: str, old: str, new: str) -> str:
     """Replace an exact unique occurrence of `old` with `new` in `path` and return a unified diff."""
     p = Path(path).expanduser()
-    text = p.read_text(encoding="utf-8")
+    raw_bytes = p.read_bytes()
+    has_crlf = b"\r\n" in raw_bytes
+    text = raw_bytes.decode("utf-8")
+
+    # If the file has CRLF but old was provided with LF, or vice versa, adapt old
+    if old not in text:
+        if has_crlf and "\r\n" not in old and "\n" in old:
+            adapted_old = old.replace("\n", "\r\n")
+            if adapted_old in text:
+                old = adapted_old
+        elif not has_crlf and "\r\n" in old:
+            adapted_old = old.replace("\r\n", "\n")
+            if adapted_old in text:
+                old = adapted_old
+
+    # If the file uses CRLF, ensure replacement new maintains CRLF consistency
+    if has_crlf and "\r\n" not in new and "\n" in new:
+        new = new.replace("\n", "\r\n")
+
     count = text.count(old)
     if count == 0:
         raise ValueError(f"Target text not found in {path}")
     if count > 1:
         raise ValueError(f"Target text matched {count} times in {path}; provide more context")
     updated = text.replace(old, new, 1)
-    p.write_text(updated, encoding="utf-8")
+    _atomic_write(p, updated, newline="")
     diff_lines = list(
         difflib.unified_diff(
             text.splitlines(),
@@ -151,8 +193,7 @@ def edit(path: str, old: str, new: str) -> str:
 def write(path: str, content: str) -> str:
     """Write `content` to `path`, creating parent directories as needed."""
     p = Path(path).expanduser()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content, encoding="utf-8")
+    _atomic_write(p, content)
     return f"Wrote {len(content)} chars to {path}"
 
 
@@ -233,6 +274,12 @@ def _load_helper_file(
             target.warnings.append(f"Could not load spec for helper file: {file_path}")
             return
         mod = importlib.util.module_from_spec(spec)
+        # Pre-inject built-in helpers so custom helpers can call them directly
+        for name, fn in BUILTIN_HELPERS.items():
+            mod.__dict__.setdefault(name, fn)
+        # Also pre-inject any already-registered custom functions from prior files
+        for name, fn in target.functions.items():
+            mod.__dict__.setdefault(name, fn)
         spec.loader.exec_module(mod)
     except Exception as exc:
         target.warnings.append(f"Failed to load helpers from {file_path}: {exc}")
@@ -245,7 +292,9 @@ def _load_helper_file(
         candidates = [
             attr
             for attr in dir(mod)
-            if not attr.startswith("_") and inspect.isfunction(getattr(mod, attr))
+            if not attr.startswith("_")
+            and inspect.isfunction(getattr(mod, attr))
+            and getattr(getattr(mod, attr), "__module__", None) == mod.__name__
         ]
 
     for attr_name in candidates:
