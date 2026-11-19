@@ -8,23 +8,19 @@ import re
 import sys
 from pathlib import Path
 
+from agent.helpers import format_helpers_for_prompt, load_helpers
 from agent.mcp_client import load_mcp_servers, load_mcp_tool_cache
 
-STATIC_SYSTEM_PROMPT = """# Quartz
+PROMPT_HEADER = """# Quartz
 
-You have one tool, `ipython`: a persistent CPython REPL with top-level `await`. Variables, `os.chdir()`, and `os.environ` persist across cells and compaction. Messages starting with `[<kind>]` come from the harness.
+You have one tool, `ipython`: a persistent CPython REPL with top-level `await`. Variables, `os.chdir()`, and `os.environ` persist across cells and compaction. Messages starting with `[<kind>]` come from the harness."""
 
-## REPL Functions
-- `bash(command, timeout=600) -> BashHandle`: runs a shell command in the background; `await handle -> BashResult(.exit_code, .output, .duration)`. Also `.pid`, `.running`, `.tail(n=50)`, `.output()`, `.poll()`, `.kill()`. Commands outliving a cell emit `[bash-done]`.
-- `ls(path=".")`, `find(pattern="*", path=".", limit=200)`, `rg(pattern, path=".", glob=None, max_hits=100)`
-- `read(path, start=1, end=200)`, `edit(path, old, new)`, `write(path, content)`, `view_image(path)`, `gather(*coros)`
-
-## Rules
+PROMPT_RULES = """## Rules
 - Batch independent work into one cell. Multiple `ipython` calls in one message run in parallel; put dependent steps in one cell.
 - Use `bash()` (not `subprocess`/`os.system`) to run programs; do not block a cell with `sleep` or minutes-long awaits (let long jobs finish in the background).
 - Follow `## Project Instructions` strictly."""
 
-
+STATIC_SYSTEM_PROMPT = f"{PROMPT_HEADER}\n\n{format_helpers_for_prompt(load_helpers())}\n\n{PROMPT_RULES}"
 def _ancestor_dirs(cwd: Path) -> list[Path]:
     """Return directories from filesystem/git root down to cwd."""
     resolved = cwd.resolve()
@@ -139,11 +135,20 @@ def build_system_prompt(
     *,
     skills_dir: Path | None = None,
     global_agents_path: Path | None = None,
+    global_helpers_path: Path | None = None,
+    project_helpers_path: Path | None = None,
     headless: bool = False,
 ) -> str:
     """Assemble the static prompt plus dynamic environment, skills, and context files."""
     work_dir = (cwd or Path.cwd()).resolve()
-    sections = [STATIC_SYSTEM_PROMPT]
+    loaded_helpers = load_helpers(
+        cwd=work_dir,
+        global_helpers_path=global_helpers_path,
+        project_helpers_path=project_helpers_path,
+    )
+    helpers_block = format_helpers_for_prompt(loaded_helpers)
+    prompt_base = f"{PROMPT_HEADER}\n\n{helpers_block}\n\n{PROMPT_RULES}"
+    sections = [prompt_base]
 
     env_block = (
         "## Environment\n\n"

@@ -30,6 +30,12 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from agent.helpers import (
+    _IMAGES_VAR,
+    _record_cell_image,
+    _truncate,
+    load_helpers,
+)
 from agent.images import load_image_file
 from agent.mcp_client import MCPManager
 
@@ -38,25 +44,9 @@ MAX_REPR_CHARS = 128_000
 MAX_VAR_BYTES = 16 * 1024 * 1024
 MAX_TOTAL_SNAPSHOT_BYTES = 256 * 1024 * 1024
 
-_IGNORE_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", ".mypy_cache"}
-
 _STDOUT_VAR: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar("quartz_stdout", default=None)
 _STDERR_VAR: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar("quartz_stderr", default=None)
-_IMAGES_VAR: contextvars.ContextVar[list[dict[str, str]] | None] = contextvars.ContextVar("quartz_images", default=None)
 _CELL_ID_VAR: contextvars.ContextVar[str | None] = contextvars.ContextVar("quartz_cell_id", default=None)
-
-
-def _record_cell_image(img: dict[str, str]) -> None:
-    sink = _IMAGES_VAR.get()
-    if sink is not None:
-        sink.append(img)
-
-
-def _helper_view_image(path: str) -> str:
-    """Attach an image file from disk so the model can inspect it on the next step."""
-    att = load_image_file(Path(path))
-    _record_cell_image({"mime_type": att.mime_type, "data": att.data_b64})
-    return f"Attached {att.label} ({att.mime_type}) for viewing"
 
 
 class _ContextStreamProxy:
@@ -81,126 +71,24 @@ class _ContextStreamProxy:
         return getattr(buf if buf is not None else self._fallback, name)
 
 
-def _helper_ls(path: str = ".") -> list[str]:
-    """List sorted entries in a directory (trailing `/` for directories)."""
-    p = Path(path).expanduser()
-    entries = []
-    for item in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
-        entries.append(f"{item.name}/" if item.is_dir() else item.name)
-    return entries
 
+from agent.helpers import (
+    edit,
+    find,
+    ls,
+    read,
+    rg,
+    view_image,
+    write,
+)
 
-def _helper_find(pattern: str = "*", path: str = ".", limit: int = 200) -> list[str]:
-    """Find files matching a glob pattern, skipping .git/.venv/node_modules."""
-    root = Path(path).expanduser().resolve()
-    hits: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in _IGNORE_DIRS)
-        rel_dir = Path(dirpath).relative_to(root)
-        for fname in sorted(filenames):
-            rel = str(rel_dir / fname) if str(rel_dir) != "." else fname
-            if fnmatch.fnmatch(fname, pattern) or fnmatch.fnmatch(rel, pattern):
-                hits.append(rel)
-                if len(hits) >= limit:
-                    return hits
-    return hits
-
-
-def _helper_rg(pattern: str, path: str = ".", glob: str | None = None, max_hits: int = 100) -> str:
-    """Search files for a regex pattern and return `file:line:text` matches."""
-    if shutil.which("rg"):
-        cmd = ["rg", "-n", "--no-heading", "--color=never", "-m", str(max_hits)]
-        if glob:
-            cmd.extend(["-g", glob])
-        cmd.extend([pattern, path])
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        out = proc.stdout.strip()
-        if proc.returncode == 0:
-            lines = out.splitlines()[:max_hits]
-            return "\n".join(lines)
-        if proc.returncode == 1:
-            return "(no matches)"
-        return proc.stderr.strip() or f"rg exited with code {proc.returncode}"
-
-    regex = re.compile(pattern)
-    root = Path(path).expanduser()
-    if root.is_file():
-        files = [root]
-    else:
-        files = [root / rel for rel in _helper_find(glob or "*", str(root), limit=2000)]
-    hits: list[str] = []
-    for fpath in files:
-        try:
-            text = fpath.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        for idx, line in enumerate(text.splitlines(), 1):
-            if regex.search(line):
-                hits.append(f"{fpath}:{idx}:{line}")
-                if len(hits) >= max_hits:
-                    return "\n".join(hits)
-    return "\n".join(hits) if hits else "(no matches)"
-
-
-def _helper_read(path: str, start: int = 1, end: int = 200) -> str:
-    """Read 1-based inclusive line range from a file with line numbers."""
-    p = Path(path).expanduser()
-    s = max(1, start)
-    out: list[str] = []
-    total_lines = 0
-    with p.open("r", encoding="utf-8", errors="replace") as fh:
-        for idx, raw_line in enumerate(fh, 1):
-            total_lines = idx
-            if idx < s:
-                continue
-            if end is not None and idx > end:
-                break
-            out.append(f"{idx}: {raw_line.rstrip(chr(10)).rstrip(chr(13))}")
-    if s > total_lines:
-        return f"(EOF: file has {total_lines} lines)"
-    return "\n".join(out)
-
-
-def _helper_edit(path: str, old: str, new: str) -> str:
-    """Replace an exact unique occurrence of `old` with `new` in `path` and return a unified diff."""
-    p = Path(path).expanduser()
-    text = p.read_text(encoding="utf-8")
-    count = text.count(old)
-    if count == 0:
-        raise ValueError(f"Target text not found in {path}")
-    if count > 1:
-        raise ValueError(f"Target text matched {count} times in {path}; provide more context")
-    updated = text.replace(old, new, 1)
-    p.write_text(updated, encoding="utf-8")
-    diff_lines = list(
-        difflib.unified_diff(
-            text.splitlines(),
-            updated.splitlines(),
-            fromfile=f"a/{path}",
-            tofile=f"b/{path}",
-            n=2,
-            lineterm="",
-        )
-    )
-    if not diff_lines:
-        return f"Updated {path} (no changes)"
-    return f"Updated {path}\n{_truncate(chr(10).join(diff_lines), 8000)}"
-
-
-def _helper_write(path: str, content: str) -> str:
-    """Write `content` to `path`, creating parent directories as needed."""
-    p = Path(path).expanduser()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content, encoding="utf-8")
-    return f"Wrote {len(content)} chars to {path}"
-
-
-def _truncate(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    half = limit // 2
-    omitted = len(text) - limit
-    return f"{text[:half]}\n... [{omitted} chars truncated] ...\n{text[-half:]}"
+_helper_ls = ls
+_helper_find = find
+_helper_rg = rg
+_helper_read = read
+_helper_edit = edit
+_helper_write = write
+_helper_view_image = view_image
 
 
 def _spill_or_truncate(text: str, limit: int, kind: str, cell_id: str) -> str:
@@ -357,6 +245,7 @@ class KernelWorker:
         if not isinstance(sys.stderr, _ContextStreamProxy):
             sys.stderr = _ContextStreamProxy(_STDERR_VAR, sys.stderr)  # type: ignore[assignment]
 
+        self._loaded_helpers = load_helpers(cwd=Path.cwd())
         self._namespace: dict[str, Any] = {
             "__name__": "__main__",
             "__builtins__": __builtins__,
@@ -364,14 +253,8 @@ class KernelWorker:
             "BashHandle": BashHandle,
             "BashResult": BashResult,
             "mcp": self.mcp,
-            "ls": _helper_ls,
-            "find": _helper_find,
-            "rg": _helper_rg,
-            "read": _helper_read,
-            "edit": _helper_edit,
-            "write": _helper_write,
-            "view_image": _helper_view_image,
             "gather": asyncio.gather,
+            **self._loaded_helpers.functions,
         }
         self._reserved_names = set(self._namespace.keys()) | {"_"}
 
@@ -481,6 +364,22 @@ class KernelWorker:
             "result": result_repr,
             "images": cell_images,
             "running_bash": sum(1 for h in self._handles if h.running),
+        }
+
+    def list_helpers(self) -> dict[str, Any]:
+        """Return serialized info on loaded helpers and loading warnings."""
+        return {
+            "helpers": [
+                {
+                    "name": h.name,
+                    "source": h.source,
+                    "signature": h.signature,
+                    "doc": h.doc,
+                    "file_path": h.file_path,
+                }
+                for h in self._loaded_helpers.infos.values()
+            ],
+            "warnings": list(self._loaded_helpers.warnings),
         }
 
     def list_vars(self) -> dict[str, str]:
@@ -667,6 +566,8 @@ async def _main() -> None:
             task = asyncio.create_task(_run_and_send(req_id, code))
             active_cell_tasks.add(task)
             task.add_done_callback(active_cell_tasks.discard)
+        elif msg_type == "list_helpers":
+            worker._send({"type": "helpers_result", "id": req_id, **worker.list_helpers()})
         elif msg_type == "list_vars":
             worker._send({"type": "vars_result", "id": req_id, "vars": worker.list_vars()})
         elif msg_type == "running_bash":

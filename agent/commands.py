@@ -464,6 +464,7 @@ def _handle_slash_command(rt: _CLIRuntime, user_input: str) -> bool | None:
                 "/image [path]    Attach an image for the next message (or: clear)\n"
                 "/paste           Attach an image from the system clipboard\n"
                 "/vars            List live Python variables in the kernel\n"
+                "/helpers         List available REPL helper functions (built-in and custom)\n"
                 "/session         Show active session ID and file paths\n"
                 "/usage           Show context window usage and cache hit rate\n"
                 "/expand [n|a..b] Expand a collapsed ipython cell or range (default: latest)\n"
@@ -694,6 +695,47 @@ def _handle_slash_command(rt: _CLIRuntime, user_input: str) -> bool | None:
                 line.append(name, style="cyan")
                 line.append(f": {typ}")
                 console.print(line)
+        return False
+    if user_input == "/helpers":
+        from agent.helpers import load_helpers
+        from rich.table import Table
+
+        if rt.kernel is not None:
+            data = rt.kernel.list_helpers()
+            helpers_list = data.get("helpers", [])
+            warnings = data.get("warnings", [])
+        else:
+            loaded = load_helpers(cwd=rt.cwd)
+            helpers_list = [
+                {
+                    "name": h.name,
+                    "source": h.source,
+                    "signature": h.signature,
+                    "doc": h.doc,
+                    "file_path": h.file_path,
+                }
+                for h in loaded.infos.values()
+            ]
+            warnings = loaded.warnings
+
+        table = Table(title="REPL Helper Functions", show_header=True, header_style="bold magenta")
+        table.add_column("Name", style="cyan", no_wrap=True)
+        table.add_column("Source", style="green")
+        table.add_column("Signature", style="dim")
+        table.add_column("Description", style="white")
+
+        for h in sorted(helpers_list, key=lambda x: (x.get("source") != "builtin", x.get("name", ""))):
+            table.add_row(
+                h.get("name", ""),
+                h.get("source", ""),
+                h.get("signature", ""),
+                h.get("doc", ""),
+            )
+
+        console.print(table)
+        if warnings:
+            for w in warnings:
+                console.print(f"[yellow]Warning: {escape(w)}[/yellow]")
         return False
     if user_input == "/prompt":
         console.print(Panel(Text(rt.system_prompt), title="System Prompt", border_style="dim"))

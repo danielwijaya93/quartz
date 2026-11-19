@@ -18,6 +18,7 @@ SLASH_COMMANDS: dict[str, str] = {
     "/paste": "Attach an image from the system clipboard",
     "/continue": "Pick and resume a previous session in this directory",
     "/vars": "List live Python variables in the kernel",
+    "/helpers": "List available REPL helper functions (built-in and custom)",
     "/session": "Show active session ID and file paths",
     "/usage": "Show context window usage and cache hit rate",
     "/expand": "Expand a collapsed ipython cell (default: latest)",
