@@ -20,7 +20,7 @@ PROMPT_RULES = """## Rules
 - Use `bash()` (not `subprocess`/`os.system`) to run programs; do not block a cell with `sleep` or minutes-long awaits (let long jobs finish in the background).
 - Follow `## Project Instructions` strictly."""
 
-STATIC_SYSTEM_PROMPT = f"{PROMPT_HEADER}\n\n{format_helpers_for_prompt(load_helpers())}\n\n{PROMPT_RULES}"
+
 def _ancestor_dirs(cwd: Path) -> list[Path]:
     """Return directories from filesystem/git root down to cwd."""
     resolved = cwd.resolve()

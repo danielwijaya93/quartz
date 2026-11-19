@@ -180,3 +180,68 @@ def test_slash_command_helpers_execution(tmp_path: Path) -> None:
     )
     result = _handle_slash_command(rt, "/helpers")
     assert result is False
+
+
+def test_custom_helper_can_compose_builtin_helpers(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("first line\nsecond line\n", encoding="utf-8")
+
+    project_dir = tmp_path / ".quartz"
+    project_dir.mkdir(parents=True)
+    project_file = project_dir / "helpers.py"
+    project_file.write_text(
+        "def read_first_line(p):\n"
+        "    \"\"\"Read first line using builtin read helper.\"\"\"\n"
+        "    return read(p, 1, 1)\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_helpers(cwd=tmp_path, global_helpers_path=Path("/nonexistent"))
+    assert "read_first_line" in loaded.functions
+    res = loaded.functions["read_first_line"](str(sample_file))
+    assert "1: first line" in res
+
+
+def test_custom_helper_can_call_bash_in_kernel(tmp_path: Path) -> None:
+    project_dir = tmp_path / ".quartz"
+    project_dir.mkdir(parents=True)
+    project_file = project_dir / "helpers.py"
+    project_file.write_text(
+        "async def custom_pwd():\n"
+        "    \"\"\"Run pwd using bash helper.\"\"\"\n"
+        "    h = bash('pwd')\n"
+        "    res = await h\n"
+        "    return res.output.strip()\n",
+        encoding="utf-8",
+    )
+
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        res = kernel.exec_cell("await custom_pwd()")
+        assert res.ok
+        assert str(tmp_path.resolve()) == res.result.strip("'\"")
+    finally:
+        kernel.close()
+
+
+def test_edit_and_write_atomic_and_crlf_safe(tmp_path: Path) -> None:
+    from agent.helpers import edit, write
+
+    # Test atomic write
+    f = tmp_path / "crlf_test.txt"
+    write(str(f), "hello\r\nworld\r\n")
+    assert f.read_bytes() == b"hello\r\nworld\r\n"
+
+    # Test edit with LF old/new string adapting to CRLF file
+    edit(str(f), "world", "quartz")
+    raw = f.read_bytes()
+    assert b"hello\r\nquartz\r\n" == raw
+    assert b"\r\n" in raw
+    assert raw.count(b"\r\n") == 2
+
+    # Test multiline edit with LF in arguments preserves CRLF in file
+    edit(str(f), "hello\nquartz", "greeting\ngalaxy")
+    raw2 = f.read_bytes()
+    assert b"greeting\r\ngalaxy\r\n" == raw2
+    assert b"\n" not in raw2.replace(b"\r\n", b"")

@@ -253,3 +253,19 @@ def test_build_client_honors_openai_env_model(tmp_path: Path, monkeypatch) -> No
     _, provider, model, _ = _build_client(provider="auto")
     assert provider == "deepseek"
     assert model == "gpt-4.1"
+
+
+def test_google_auth_dynamic_env_getters(monkeypatch) -> None:
+    from agent.google_auth import (
+        get_google_client_id,
+        get_google_client_secret,
+    )
+    import agent.google_auth as ga
+
+    monkeypatch.setenv("QUARTZ_GOOGLE_CLIENT_ID", "test-client-id-123")
+    monkeypatch.setenv("QUARTZ_GOOGLE_CLIENT_SECRET", "test-secret-456")
+
+    assert get_google_client_id() == "test-client-id-123"
+    assert get_google_client_secret() == "test-secret-456"
+    assert ga.CLIENT_ID == "test-client-id-123"
+    assert ga.CLIENT_SECRET == "test-secret-456"
