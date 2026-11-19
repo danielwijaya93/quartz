@@ -107,13 +107,14 @@ class _MidTurnInputWatcher:
         steering_queue: queue.Queue[str],
         *,
         on_abort: Callable[[], None] | None = None,
-        on_queued: Callable[[str], None] | None = None,
+        on_steering: Callable[[str], None] | None = None,
         on_change: Callable[[str], None] | None = None,
+        on_queued: Callable[[str], None] | None = None,
     ) -> None:
         self._abort_event = abort_event
         self._steering_queue = steering_queue
         self._on_abort = on_abort
-        self._on_queued = on_queued
+        self._on_steering = on_steering or on_queued
         self._on_change = on_change
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -189,8 +190,8 @@ class _MidTurnInputWatcher:
                     self._on_change("")
                 if msg:
                     self._steering_queue.put(msg)
-                    if self._on_queued:
-                        self._on_queued(msg)
+                    if self._on_steering:
+                        self._on_steering(msg)
                 i += 1
                 continue
             if ch in ("\x7f", "\x08"):
@@ -538,7 +539,7 @@ class TurnProgressTracker:
         self.active_tool_start: float | None = None
         self.tool_entries: list[tuple[int, str, CellResult, float]] = []
         self.input_buffer: str = ""
-        self.queued_messages: list[str] = []
+        self.steering_messages: list[str] = []
         self._flushed = False
 
         if not self.plain_output and not self.verbose:
@@ -560,10 +561,14 @@ class TurnProgressTracker:
                     self.active_thinking_start is not None
                     or self.active_tool_code is not None
                     or self.input_buffer
-                    or self.queued_messages
+                    or self.steering_messages
                 )
             ):
                 self._render_current()
+
+    @property
+    def queued_messages(self) -> list[str]:
+        return self.steering_messages
 
     def _render_current(self) -> None:
         if self.plain_output or self.verbose:
@@ -589,9 +594,9 @@ class TurnProgressTracker:
             action = describe_cell_actions(self.active_tool_code) if self.active_tool_code else "Run Python"
             items.append(Spinner("dots", text=Text(f"{action}...", style="dim")))
 
-        for q_msg in self.queued_messages:
-            preview = q_msg[:60] + ("..." if len(q_msg) > 60 else "")
-            items.append(Text(f"[queued] {preview}", style="dim cyan"))
+        for s_msg in self.steering_messages:
+            preview = s_msg[:60] + ("..." if len(s_msg) > 60 else "")
+            items.append(Text(f"[steering] {preview}", style="cyan"))
 
         if self.input_buffer:
             width = self.console.width or 80
@@ -618,7 +623,7 @@ class TurnProgressTracker:
                 self.active_thinking_start is not None
                 or self.active_tool_code is not None
                 or self.input_buffer
-                or self.queued_messages
+                or self.steering_messages
             ):
                 self._render_current()
 
@@ -630,27 +635,31 @@ class TurnProgressTracker:
             self._flushed = False
             self._render_current()
 
-    def add_queued_message(self, text: str) -> None:
+    def add_steering_message(self, text: str) -> None:
         if self.plain_output or self.verbose:
             return
         with self.lock:
             self.input_buffer = ""
-            self.queued_messages.append(text)
+            self.steering_messages.append(text)
             self._flushed = False
             self._render_current()
 
-    def clear_queued_messages(self) -> None:
+    add_queued_message = add_steering_message
+
+    def clear_steering_messages(self) -> None:
         if self.plain_output or self.verbose:
             return
         with self.lock:
-            self.queued_messages.clear()
+            self.steering_messages.clear()
             self._render_current()
+
+    clear_queued_messages = clear_steering_messages
 
     def close(self) -> None:
         self.flush()
         with self.lock:
             self.input_buffer = ""
-            self.queued_messages.clear()
+            self.steering_messages.clear()
             self.screen.clear()
             if self.printer.before_print == self._before_print:
                 self.printer.before_print = None
@@ -737,7 +746,7 @@ class TurnProgressTracker:
             summary, all_ok = format_grouped_cell_summary(entries)
             self.printer.block(Text(summary, style="dim" if all_ok else "red"))
 
-        if (self.input_buffer or self.queued_messages) and not self.plain_output and not self.verbose:
+        if (self.input_buffer or self.steering_messages) and not self.plain_output and not self.verbose:
             self._flushed = False
             self._render_current()
 

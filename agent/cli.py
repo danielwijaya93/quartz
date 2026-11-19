@@ -363,16 +363,17 @@ def _execute_interactive_turn(rt: _CLIRuntime) -> str:
     def _on_change(text: str) -> None:
         tracker.set_input_buffer(text)
 
-    def _on_queued(text: str) -> None:
-        tracker.add_queued_message(text)
+    def _on_steering_submitted(text: str) -> None:
+        tracker.add_steering_message(text)
         if rt.plain_output or rt.verbose:
             preview = text[:60] + ("..." if len(text) > 60 else "")
-            active_printer.block(Text(f"[queued] {preview}", style="dim cyan"))
+            active_printer.block(Text(f"[steering] {preview}", style="cyan"))
 
     def _on_steering(text: str) -> None:
-        tracker.clear_queued_messages()
-        preview = text[:60] + ("..." if len(text) > 60 else "")
-        active_printer.block(Text(f"[steering] {preview}", style="cyan"))
+        tracker.clear_steering_messages()
+        if not (rt.plain_output or rt.verbose):
+            preview = text[:60] + ("..." if len(text) > 60 else "")
+            active_printer.block(Text(f"[steering] {preview}", style="cyan"))
 
     t0 = time.monotonic()
     leftover_buffer = ""
@@ -382,7 +383,7 @@ def _execute_interactive_turn(rt: _CLIRuntime) -> str:
             abort_event,
             steering_queue,
             on_abort=rt.kernel.interrupt,
-            on_queued=_on_queued,
+            on_steering=_on_steering_submitted,
             on_change=_on_change,
         ) as watcher:
             _, rt.messages, tokens = _run_turn(
