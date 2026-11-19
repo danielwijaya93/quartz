@@ -10,6 +10,7 @@ import select
 import sys
 import termios
 import threading
+import time
 import tty
 from collections.abc import Callable
 from pathlib import Path
@@ -20,8 +21,10 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import Window
 from prompt_toolkit.layout.controls import FormattedTextControl
-from rich.console import Console
+from rich.console import Console, Group
+from rich.live import Live
 from rich.markdown import Markdown
+from rich.spinner import Spinner
 from rich.text import Text
 
 from agent.actions import describe_cell_actions, describe_group_actions
@@ -337,6 +340,165 @@ class CellGroupBuffer:
         summary, all_ok = format_grouped_cell_summary(self.entries)
         self.entries.clear()
         _active_printer().block(Text(summary, style="dim" if all_ok else "red"))
+
+
+class TurnProgressTracker:
+    """Tracks and renders in-progress thinking and tool execution with turn-end collapsing."""
+
+    def __init__(
+        self,
+        console: Console,
+        printer: BlockPrinter,
+        *,
+        verbose: bool = False,
+        plain_output: bool = False,
+    ) -> None:
+        self.console = console
+        self.printer = printer
+        self.verbose = verbose
+        self.plain_output = plain_output
+        self.lock = threading.Lock()
+
+        self._live: Live | None = None
+        self.step_history: list[tuple[str, Any]] = []
+        self.thinking_intervals: list[float] = []
+        self.active_thinking_start: float | None = None
+        self.active_tool_code: str | None = None
+        self.active_tool_start: float | None = None
+        self.tool_entries: list[tuple[int, str, CellResult, float]] = []
+        self._flushed = False
+
+    def _ensure_live(self) -> None:
+        if self._live is None and not self.plain_output and not self.verbose:
+            self._live = Live(
+                self._render_group(),
+                console=self.console,
+                transient=True,
+                auto_refresh=False,
+            )
+            self._live.start()
+
+    def _render_group(self) -> Group:
+        items: list[Any] = []
+        for kind, val in self.step_history:
+            if kind == "thought":
+                dur: float = val
+                items.append(Text(f"Thought for {_fmt_thought_duration(dur)}", style="dim"))
+            elif kind == "tool":
+                idx, code, res, dur = val
+                summary = format_compact_cell_summary(idx, code, res, dur)
+                items.append(Text(summary, style="dim" if res.ok else "red"))
+
+        if self.active_thinking_start is not None:
+            elapsed = time.monotonic() - self.active_thinking_start
+            items.append(Spinner("dots", text=Text(f"Thinking... {_fmt_stopwatch(elapsed)}", style="dim")))
+        elif self.active_tool_code is not None:
+            action = describe_cell_actions(self.active_tool_code) if self.active_tool_code else "Run Python"
+            items.append(Spinner("dots", text=Text(f"{action}...", style="dim")))
+
+        return Group(*items)
+
+    def tick(self) -> None:
+        if self.plain_output or self.verbose:
+            return
+        with self.lock:
+            if self._live is not None and (self.active_thinking_start is not None or self.active_tool_code is not None):
+                self._live.update(self._render_group(), refresh=True)
+
+    def start_thinking(self) -> None:
+        if self.plain_output or self.verbose:
+            return
+        with self.lock:
+            if self.active_thinking_start is not None:
+                return
+            self._flushed = False
+            self.active_thinking_start = time.monotonic()
+            self._ensure_live()
+            if self._live is not None:
+                self._live.update(self._render_group(), refresh=True)
+
+    def stop_thinking(self) -> float | None:
+        if self.plain_output or self.verbose:
+            return None
+        with self.lock:
+            if self.active_thinking_start is None:
+                return None
+            elapsed = time.monotonic() - self.active_thinking_start
+            self.active_thinking_start = None
+            self.thinking_intervals.append(elapsed)
+            self.step_history.append(("thought", elapsed))
+            if self._live is not None:
+                self._live.update(self._render_group(), refresh=True)
+            return elapsed
+
+    def start_tool(self, code: str) -> None:
+        if self.plain_output or self.verbose:
+            return
+        with self.lock:
+            if self.active_thinking_start is not None:
+                elapsed = time.monotonic() - self.active_thinking_start
+                self.active_thinking_start = None
+                self.thinking_intervals.append(elapsed)
+                self.step_history.append(("thought", elapsed))
+            self._flushed = False
+            self.active_tool_code = code
+            self.active_tool_start = time.monotonic()
+            self._ensure_live()
+            if self._live is not None:
+                self._live.update(self._render_group(), refresh=True)
+
+    def add_tool_result(self, index: int, code: str, res: CellResult, duration: float) -> None:
+        if self.plain_output or self.verbose:
+            return
+        with self.lock:
+            if self.active_thinking_start is not None:
+                elapsed = time.monotonic() - self.active_thinking_start
+                self.active_thinking_start = None
+                self.thinking_intervals.append(elapsed)
+                self.step_history.append(("thought", elapsed))
+            self.active_tool_code = None
+            self.active_tool_start = None
+            entry = (index, code, res, duration)
+            self.tool_entries.append(entry)
+            self.step_history.append(("tool", entry))
+            if self._live is not None:
+                self._live.update(self._render_group(), refresh=True)
+
+    def flush(self) -> None:
+        if self.plain_output:
+            return
+        with self.lock:
+            if self._flushed:
+                return
+            if self.active_thinking_start is not None:
+                elapsed = time.monotonic() - self.active_thinking_start
+                self.active_thinking_start = None
+                self.thinking_intervals.append(elapsed)
+            self.active_tool_code = None
+            self.active_tool_start = None
+            if self._live is not None:
+                self._live.stop()
+                self._live = None
+
+            total_thought = sum(self.thinking_intervals)
+            entries = list(self.tool_entries)
+            self.thinking_intervals.clear()
+            self.step_history.clear()
+            self.tool_entries.clear()
+            self._flushed = True
+
+            if total_thought > 0 and entries:
+                summary, all_ok = format_grouped_cell_summary(entries)
+                header = Group(
+                    Text(f"Thought for {_fmt_thought_duration(total_thought)}", style="dim"),
+                    Text(summary, style="dim" if all_ok else "red"),
+                )
+                self.printer.block(header)
+            elif total_thought > 0:
+                self.printer.block(Text(f"Thought for {_fmt_thought_duration(total_thought)}", style="dim"))
+            elif entries:
+                summary, all_ok = format_grouped_cell_summary(entries)
+                self.printer.block(Text(summary, style="dim" if all_ok else "red"))
 
 
 def _parse_expand_range(arg: str, total: int) -> tuple[int, int]:
