@@ -48,6 +48,14 @@ class ContextOverflowError(ProviderError):
 class CredentialError(AgentError):
     """Required credentials are missing or unusable; retrying cannot help."""
 
+    def __init__(self, message: str, *, detail: str = "") -> None:
+        super().__init__(message)
+        self.message = message
+        self.detail = detail
+
+    def __str__(self) -> str:
+        return f"{self.message}: {self.detail}" if self.detail else self.message
+
 
 class EndpointConfigError(AgentError):
     """The configured provider endpoint is unknown or contradictory."""
