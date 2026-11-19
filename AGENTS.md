@@ -65,6 +65,28 @@ All non-trivial changes **must** follow the branch and Pull Request flow:
 - Direct commits to `main` are permitted for documentation, prompt templates, or instruction files (e.g. `AGENTS.md`, `README.md`).
 - Ensure changes are pushed immediately: `git push origin main`.
 
+### 3. Parallel Worker & Worktree Workflow (Accelerated Workflow)
+When the user requests working on a feature, bug fix, or investigation in parallel without blocking the main interactive session:
+1. **Isolated Worktree**: Create a temporary git worktree under `.worktrees/<branch-name>`:
+   ```bash
+   git worktree add -b <branch-name> .worktrees/<branch-name> main
+   ```
+2. **Session Forking**: Spawn a background worker using `bash(...)` with session forking so the worker inherits the warm context and kernel snapshot:
+   ```python
+   from agent.session import Session
+   sid = Session.latest_id()
+   handle = bash(f"uv run quartz -p '<clear, actionable instructions>' -r {sid} --fork --cwd .worktrees/<branch-name>")
+   ```
+3. **Background Execution**:
+   - The cell returns immediately with `handle.pid`, leaving the main session free to continue interacting with the user.
+   - The worker runs headlessly in `.worktrees/<branch-name>`, implements the task, executes tests (`uv run pytest`), commits, and opens a PR.
+4. **Harness Wake-up & Cleanup**:
+   - When the worker finishes, the harness automatically emits `[bash-done pid:... exit:...]`, waking Quartz up to review the outcome.
+   - Once complete or merged, clean up the worktree:
+     ```bash
+     git worktree remove .worktrees/<branch-name>
+     ```
+
 ---
 
 ## Security & Environment Rules
