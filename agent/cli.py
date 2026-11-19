@@ -11,67 +11,92 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from dotenv import load_dotenv
-from prompt_toolkit import PromptSession
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.styles import Style
-from rich.markup import escape
-from rich.status import Status
-from rich.text import Text
-
-from agent.actions import describe_cell_actions
-from agent.commands import (
-    _CLIRuntime,
-    _build_client,
-    _handle_auth_cli,
-    _handle_mcp_cli,
-    _handle_slash_command,
-    _parse_kv_pairs,
-)
-from agent.completer import AgentCompleter
-from agent.images import (
-    ImageAttachment,
-    build_user_content,
-    extract_inline_image_mentions,
-    load_image_file,
-)
-from agent.kernel_client import CellResult, KernelClient
-from agent.loop import TurnAborted, TurnUsage, agent_loop, format_bash_done_events
 from agent.models import PROVIDERS
-from agent.prompt import build_system_prompt
-from agent.session import Session
-from agent.ui import (
-    BlockPrinter,
-    CellGroupBuffer,
-    MarkdownBlockStreamer,
-    _MidTurnInputWatcher,
-    _fmt_duration,
-    _fmt_k,
-    _fmt_stopwatch,
-    _fmt_thought_duration,
-    _format_toolbar,
-    _format_turn_footer,
-    _format_turn_timing,
-    _parse_expand_range,
-    _pick_option,
-    _render_bash_notice,
-    _render_compaction,
-    _render_gutter_block,
-    _render_tool_call,
-    _render_tool_result,
-    _replay_session,
-    _short_path,
-    console,
-    format_compact_cell_summary,
-    format_grouped_cell_summary,
-    printer,
-    render_markdown_block,
-)
+
+if TYPE_CHECKING:
+    from rich.status import Status
+
+    from agent.commands import _CLIRuntime
+    from agent.kernel_client import CellResult
+    from agent.ui import (
+        BlockPrinter,
+        CellGroupBuffer,
+        MarkdownBlockStreamer,
+        _MidTurnInputWatcher,
+        _fmt_duration,
+        _fmt_k,
+        _fmt_stopwatch,
+        _fmt_thought_duration,
+        _format_toolbar,
+        _format_turn_footer,
+        _format_turn_timing,
+        _parse_expand_range,
+        _pick_option,
+        _render_bash_notice,
+        _render_compaction,
+        _render_gutter_block,
+        _render_tool_call,
+        _render_tool_result,
+        _replay_session,
+        _short_path,
+        console,
+        format_compact_cell_summary,
+        format_grouped_cell_summary,
+        printer,
+        render_markdown_block,
+    )
 
 _WAKEUP_SENTINEL = "__MINIMAL_AGENT_WAKEUP__"
+
+_LAZY_EXPORTS: dict[str, tuple[str, str]] = {
+    "BlockPrinter": ("agent.ui", "BlockPrinter"),
+    "CellGroupBuffer": ("agent.ui", "CellGroupBuffer"),
+    "MarkdownBlockStreamer": ("agent.ui", "MarkdownBlockStreamer"),
+    "_CLIRuntime": ("agent.commands", "_CLIRuntime"),
+    "_MidTurnInputWatcher": ("agent.ui", "_MidTurnInputWatcher"),
+    "_build_client": ("agent.commands", "_build_client"),
+    "_fmt_duration": ("agent.ui", "_fmt_duration"),
+    "_fmt_k": ("agent.ui", "_fmt_k"),
+    "_fmt_stopwatch": ("agent.ui", "_fmt_stopwatch"),
+    "_fmt_thought_duration": ("agent.ui", "_fmt_thought_duration"),
+    "_format_toolbar": ("agent.ui", "_format_toolbar"),
+    "_format_turn_footer": ("agent.ui", "_format_turn_footer"),
+    "_format_turn_timing": ("agent.ui", "_format_turn_timing"),
+    "_handle_auth_cli": ("agent.commands", "_handle_auth_cli"),
+    "_handle_mcp_cli": ("agent.commands", "_handle_mcp_cli"),
+    "_handle_slash_command": ("agent.commands", "_handle_slash_command"),
+    "_parse_expand_range": ("agent.ui", "_parse_expand_range"),
+    "_parse_kv_pairs": ("agent.commands", "_parse_kv_pairs"),
+    "_pick_option": ("agent.ui", "_pick_option"),
+    "_render_bash_notice": ("agent.ui", "_render_bash_notice"),
+    "_render_compaction": ("agent.ui", "_render_compaction"),
+    "_render_gutter_block": ("agent.ui", "_render_gutter_block"),
+    "_render_tool_call": ("agent.ui", "_render_tool_call"),
+    "_render_tool_result": ("agent.ui", "_render_tool_result"),
+    "_replay_session": ("agent.ui", "_replay_session"),
+    "_short_path": ("agent.ui", "_short_path"),
+    "agent_loop": ("agent.loop", "agent_loop"),
+    "console": ("agent.ui", "console"),
+    "format_compact_cell_summary": ("agent.ui", "format_compact_cell_summary"),
+    "format_grouped_cell_summary": ("agent.ui", "format_grouped_cell_summary"),
+    "printer": ("agent.ui", "printer"),
+    "render_markdown_block": ("agent.ui", "render_markdown_block"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    target = _LAZY_EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    mod_name, attr_name = target
+    import importlib
+
+    mod = importlib.import_module(mod_name)
+    val = getattr(mod, attr_name)
+    globals()[name] = val
+    return val
 
 __all__ = [
     "BlockPrinter",
@@ -116,6 +141,10 @@ def _run_turn(
     steering_queue: queue.Queue[str] | None = None,
     on_steering: Callable[[str], None] | None = None,
 ) -> tuple[str, list[dict[str, Any]], int]:
+    from rich.text import Text
+
+    from agent.actions import describe_cell_actions
+
     pending_cell_code: list[str] = []
     pending_cell_start: list[float] = []
     active_status: list[Status] = []
@@ -280,6 +309,16 @@ def _run_turn(
 def _run_headless(
     rt: _CLIRuntime, prompt: str, image_args: list[str], background_wait: float
 ) -> None:
+    from rich.markup import escape
+
+    from agent.images import (
+        ImageAttachment,
+        build_user_content,
+        extract_inline_image_mentions,
+        load_image_file,
+    )
+    from agent.loop import format_bash_done_events
+
     cli_images: list[ImageAttachment] = []
     for raw_img in image_args:
         img_path = Path(raw_img).expanduser()
@@ -311,6 +350,8 @@ def _run_headless(
 
 
 def _execute_interactive_turn(rt: _CLIRuntime) -> None:
+    from rich.text import Text
+
     abort_event = threading.Event()
     steering_queue: queue.Queue[str] = queue.Queue()
 
@@ -348,6 +389,17 @@ def _execute_interactive_turn(rt: _CLIRuntime) -> None:
 
 
 def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.history import FileHistory
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.styles import Style
+    from rich.markup import escape
+    from rich.text import Text
+
+    from agent.completer import AgentCompleter
+    from agent.images import build_user_content, extract_inline_image_mentions
+    from agent.loop import TurnAborted, format_bash_done_events
+
     console.print(Text.assemble(("quartz", "bold"), (" v0.1.0 · Run /help for commands", "dim")))
 
     if resumed:
@@ -446,6 +498,13 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
 
 
 def _build_runtime(args: argparse.Namespace) -> tuple[_CLIRuntime, bool]:
+    from rich.markup import escape
+
+    from agent.kernel_client import KernelClient
+    from agent.loop import TurnUsage
+    from agent.prompt import build_system_prompt
+    from agent.session import Session
+
     cwd = args.cwd.resolve()
     max_context_tokens = int(os.getenv("MAX_CONTEXT_TOKENS", "128000"))
     compact_reserve_tokens = int(os.getenv("COMPACT_RESERVE_TOKENS", "16384"))
@@ -534,6 +593,8 @@ def main() -> None:
         signal.signal(signal.SIGTERM, _handle_sigterm)
     except (OSError, ValueError):
         pass
+
+    from dotenv import load_dotenv
 
     quartz_env = Path.home() / ".quartz" / ".env"
     if quartz_env.is_file():

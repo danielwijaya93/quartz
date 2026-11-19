@@ -6,9 +6,10 @@ import dataclasses
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from openai import OpenAI
+if TYPE_CHECKING:
+    from openai import OpenAI
 
 from agent.google_auth import auth_file_path, load_google_credentials
 
@@ -227,6 +228,8 @@ def discover_models(
         api_key, base_url, _ = resolve_provider_credentials(provider)
         if not api_key:
             return fallback, "No API key configured"
+        from openai import OpenAI
+
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout_s)
 
     try:

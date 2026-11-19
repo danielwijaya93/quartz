@@ -7,12 +7,14 @@ import dataclasses
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from openai import OpenAI
 from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
+
+if TYPE_CHECKING:
+    from openai import OpenAI
 
 from agent.compact import compact_messages
 from agent.google_auth import (
@@ -179,6 +181,8 @@ def _build_client(
             f"Run `/login {escape(chosen_provider)}` or `quartz auth login {escape(chosen_provider)}`.[/red]"
         )
         sys.exit(1)
+    from openai import OpenAI
+
     client = OpenAI(api_key=api_key, base_url=base_url)
     return client, chosen_provider, model, effort
 
