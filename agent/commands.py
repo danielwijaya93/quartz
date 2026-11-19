@@ -6,6 +6,7 @@ import argparse
 import dataclasses
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -85,13 +86,25 @@ class _CLIRuntime:
     pending_images: list[ImageAttachment] = dataclasses.field(default_factory=list)
     total_elapsed_s: float = 0.0
     turn_count: int = 0
+    _snapshot_thread: threading.Thread | None = dataclasses.field(default=None, repr=False)
+
+    def wait_snapshot(self) -> None:
+        t = self._snapshot_thread
+        if t is not None and t.is_alive():
+            t.join(timeout=30.0)
+        self._snapshot_thread = None
 
     def persist(self, *, compacted: bool = False) -> None:
         self.active_session.save_messages(self.messages, compacted=compacted)
         if self.usage_stats.prompt_tokens > 0 or self.usage_stats.total_prompt_tokens > 0:
             self.active_session.save_usage(self.usage_stats.to_dict())
-        if not self.headless:
-            self.active_session.save_kernel(self.kernel)
+        if not self.headless and getattr(self.kernel, "dirty", True):
+            self.wait_snapshot()
+            session = self.active_session
+            kernel = self.kernel
+            t = threading.Thread(target=session.save_kernel, args=(kernel,), daemon=True)
+            self._snapshot_thread = t
+            t.start()
 
 
 def _provider_ready(provider: str) -> bool:
@@ -621,6 +634,7 @@ def _handle_slash_command(rt: _CLIRuntime, user_input: str) -> bool | None:
         rt.cell_history.clear()
         rt.total_elapsed_s = 0.0
         rt.turn_count = 0
+        rt.wait_snapshot()
         rt.kernel.restart()
         restored_notice = rt.active_session.restore_kernel(rt.kernel)
         if restored_notice:
@@ -691,6 +705,7 @@ def _handle_slash_command(rt: _CLIRuntime, user_input: str) -> bool | None:
         rt.usage_stats = TurnUsage()
         rt.total_elapsed_s = 0.0
         rt.turn_count = 0
+        rt.wait_snapshot()
         rt.kernel.restart()
         rt.active_session = Session.create(rt.cwd)
         console.print("[yellow]Conversation cleared, kernel restarted.[/yellow]")

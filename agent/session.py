@@ -68,16 +68,19 @@ class Session:
         has_msgs = False
         session_cwd: str | None = None
         try:
-            for line in jsonl_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                rec = json.loads(line)
-                rec_type = rec.get("type")
-                if rec_type == "meta" and session_cwd is None:
-                    session_cwd = rec.get("cwd")
-                elif rec_type in ("message", "compaction"):
-                    has_msgs = True
+            with jsonl_path.open("r", encoding="utf-8") as fh:
+                for raw_line in fh:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    rec = json.loads(line)
+                    rec_type = rec.get("type")
+                    if rec_type == "meta" and session_cwd is None:
+                        session_cwd = rec.get("cwd")
+                    elif rec_type in ("message", "compaction"):
+                        has_msgs = True
+                    if session_cwd is not None and has_msgs:
+                        break
         except (OSError, json.JSONDecodeError):
             return False, None
         return has_msgs, session_cwd
@@ -214,8 +217,13 @@ class Session:
             return
 
         new_msgs = messages[self._persisted_count :]
-        for msg in new_msgs:
-            self._append_record({"type": "message", "message": msg})
+        if new_msgs:
+            lines = "".join(
+                json.dumps({"type": "message", "message": msg}, ensure_ascii=False) + "\n"
+                for msg in new_msgs
+            )
+            with self.jsonl_path.open("a", encoding="utf-8") as f:
+                f.write(lines)
         self._persisted_count = len(messages)
 
     def save_usage(self, usage: dict[str, int]) -> None:

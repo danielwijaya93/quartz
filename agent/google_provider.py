@@ -336,6 +336,14 @@ def parse_sse_payload(payload: dict[str, Any], tc_counter: list[int]) -> _Chunk 
 
 
 class _GoogleCompletions:
+    def __init__(self) -> None:
+        self._http: Any = None
+
+    def _get_http(self) -> Any:
+        if self._http is None:
+            self._http = httpx2.Client(timeout=120.0)
+        return self._http
+
     def _stream_sse(
         self,
         model: str,
@@ -359,8 +367,8 @@ class _GoogleCompletions:
                     "Content-Type": "application/json",
                     "Accept": "text/event-stream",
                 }
-                with httpx2.Client(timeout=120.0) as http:
-                    with http.stream("POST", url, json=body, headers=headers) as resp:
+                http = self._get_http()
+                with http.stream("POST", url, json=body, headers=headers) as resp:
                         if resp.status_code == 401 and not refreshed:
                             creds = refresh_google_credentials(creds)
                             refreshed = True
@@ -455,3 +463,11 @@ class GoogleAntigravityClient:
 
     def __init__(self) -> None:
         self.chat = _GoogleChat()
+
+    def close(self) -> None:
+        http = self.chat.completions._http
+        if http is not None:
+            self.chat.completions._http = None
+            close_fn = getattr(http, "close", None)
+            if callable(close_fn):
+                close_fn()

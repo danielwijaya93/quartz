@@ -661,6 +661,7 @@ def main() -> None:
         else:
             _run_interactive(rt, resumed)
     finally:
+        rt.wait_snapshot()
         if rt.messages and not rt.headless and rt.kernel.dirty:
             try:
                 rt.active_session.save_kernel(rt.kernel)
