@@ -172,6 +172,15 @@ class KernelClient:
             images=list(resp.get("images") or []),
         )
 
+    def list_helpers(self, timeout: float = 5.0) -> dict[str, Any]:
+        if self._proc is None or self._proc.poll() is not None:
+            return {"helpers": [], "warnings": []}
+        resp = self._request({"type": "list_helpers"}, timeout=timeout)
+        return {
+            "helpers": list(resp.get("helpers", [])),
+            "warnings": list(resp.get("warnings", [])),
+        }
+
     def list_vars(self, timeout: float = 5.0) -> dict[str, str]:
         if self._proc is None or self._proc.poll() is not None:
             return {}
