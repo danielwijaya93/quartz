@@ -26,6 +26,7 @@ import tempfile
 import threading
 import time
 import traceback
+import warnings
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -246,9 +247,15 @@ class KernelWorker:
             sys.stderr = _ContextStreamProxy(_STDERR_VAR, sys.stderr)  # type: ignore[assignment]
 
         self._loaded_helpers = load_helpers(cwd=Path.cwd())
-        self._namespace: dict[str, Any] = {
-            "__name__": "__main__",
-            "__builtins__": __builtins__,
+        self._default_bindings: dict[str, Any] = {
+            "Path": Path,
+            "os": os,
+            "sys": sys,
+            "json": json,
+            "re": re,
+            "asyncio": asyncio,
+            "time": time,
+            "shutil": shutil,
             "bash": lambda command, timeout=600: self._start_bash(command, timeout),
             "BashHandle": BashHandle,
             "BashResult": BashResult,
@@ -256,14 +263,16 @@ class KernelWorker:
             "gather": asyncio.gather,
             **self._loaded_helpers.functions,
         }
+        self._namespace: dict[str, Any] = {
+            "__name__": "__main__",
+            "__builtins__": __builtins__,
+            **self._default_bindings,
+        }
         self._reserved_names = set(self._namespace.keys()) | {"_"}
         for h in self._loaded_helpers.infos.values():
             if h.source in ("global", "project") and hasattr(h.func, "__globals__"):
-                h.func.__globals__.setdefault("bash", self._namespace["bash"])
-                h.func.__globals__.setdefault("BashHandle", BashHandle)
-                h.func.__globals__.setdefault("BashResult", BashResult)
-                h.func.__globals__.setdefault("mcp", self.mcp)
-                h.func.__globals__.setdefault("gather", asyncio.gather)
+                for k, v in self._default_bindings.items():
+                    h.func.__globals__.setdefault(k, v)
 
     def _start_bash(self, command: str, timeout: float | None = 600) -> BashHandle:
         """Start a shell command in the background and return a BashHandle immediately."""
@@ -315,44 +324,46 @@ class KernelWorker:
         safe_cid = re.sub(r"[^A-Za-z0-9_]", "_", cell_id or "cell")
         last_expr_key = f"__last_expr_{safe_cid}__"
         try:
-            tree = ast.parse(code, "<ipython>", "exec")
-            has_trailing_expr = bool(tree.body and isinstance(tree.body[-1], ast.Expr))
-            if has_trailing_expr:
-                last_expr = tree.body[-1]
-                assert isinstance(last_expr, ast.Expr)
-                tree.body[-1] = ast.Assign(
-                    targets=[ast.Name(id=last_expr_key, ctx=ast.Store())],
-                    value=last_expr.value,
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=SyntaxWarning)
+                tree = ast.parse(code, "<ipython>", "exec")
+                has_trailing_expr = bool(tree.body and isinstance(tree.body[-1], ast.Expr))
+                if has_trailing_expr:
+                    last_expr = tree.body[-1]
+                    assert isinstance(last_expr, ast.Expr)
+                    tree.body[-1] = ast.Assign(
+                        targets=[ast.Name(id=last_expr_key, ctx=ast.Store())],
+                        value=last_expr.value,
+                    )
+                    ast.fix_missing_locations(tree)
+
+                compiled = compile(
+                    tree,
+                    "<ipython>",
+                    "exec",
+                    flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT,
                 )
-                ast.fix_missing_locations(tree)
 
-            compiled = compile(
-                tree,
-                "<ipython>",
-                "exec",
-                flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT,
-            )
+                tok_out = _STDOUT_VAR.set(stdout_buf)
+                tok_err = _STDERR_VAR.set(stderr_buf)
+                tok_img = _IMAGES_VAR.set(cell_images)
+                tok_cid = _CELL_ID_VAR.set(cell_id)
+                try:
+                    coro = eval(compiled, self._namespace, self._namespace)
+                    if inspect.isawaitable(coro):
+                        await coro
 
-            tok_out = _STDOUT_VAR.set(stdout_buf)
-            tok_err = _STDERR_VAR.set(stderr_buf)
-            tok_img = _IMAGES_VAR.set(cell_images)
-            tok_cid = _CELL_ID_VAR.set(cell_id)
-            try:
-                coro = eval(compiled, self._namespace, self._namespace)
-                if inspect.isawaitable(coro):
-                    await coro
-
-                if has_trailing_expr and last_expr_key in self._namespace:
-                    val = self._namespace.pop(last_expr_key)
-                    if val is not None:
-                        self._namespace["_"] = val
-                        result_repr = _spill_or_truncate(repr(val), MAX_REPR_CHARS, "result", cell_id)
-            finally:
-                self._namespace.pop(last_expr_key, None)
-                _CELL_ID_VAR.reset(tok_cid)
-                _STDOUT_VAR.reset(tok_out)
-                _STDERR_VAR.reset(tok_err)
-                _IMAGES_VAR.reset(tok_img)
+                    if has_trailing_expr and last_expr_key in self._namespace:
+                        val = self._namespace.pop(last_expr_key)
+                        if val is not None:
+                            self._namespace["_"] = val
+                            result_repr = _spill_or_truncate(repr(val), MAX_REPR_CHARS, "result", cell_id)
+                finally:
+                    self._namespace.pop(last_expr_key, None)
+                    _CELL_ID_VAR.reset(tok_cid)
+                    _STDOUT_VAR.reset(tok_out)
+                    _STDERR_VAR.reset(tok_err)
+                    _IMAGES_VAR.reset(tok_img)
         except KeyboardInterrupt:
             ok = False
             stderr_buf.write("KeyboardInterrupt: cell execution interrupted\n")
@@ -395,7 +406,7 @@ class KernelWorker:
     def list_vars(self) -> dict[str, str]:
         vars_info: dict[str, str] = {}
         for name, val in self._namespace.items():
-            if name in self._reserved_names or name.startswith("__"):
+            if (name in self._reserved_names and val is self._default_bindings.get(name)) or name.startswith("__"):
                 continue
             vars_info[name] = type(val).__name__
         return vars_info
@@ -424,7 +435,7 @@ class KernelWorker:
 
         try:
             for name, val in list(self._namespace.items()):
-                if name in self._reserved_names or name.startswith("__"):
+                if (name in self._reserved_names and val is self._default_bindings.get(name)) or name.startswith("__"):
                     continue
                 if isinstance(val, BashHandle):
                     skipped.append(f"{name} (running/process handle)")
@@ -505,6 +516,10 @@ class KernelWorker:
                 restored.append(name)
             except Exception:
                 skipped.append(f"{name} (unpickle error)")
+
+        for name, val in self._default_bindings.items():
+            if name not in self._namespace:
+                self._namespace[name] = val
 
         return {"restored": restored, "skipped": skipped}
 
