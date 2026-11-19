@@ -8,11 +8,22 @@ import queue
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from agent.compact import compact_messages
+if TYPE_CHECKING:
+    from agent.openai_client import OpenAICompatClient
+
+from agent.compact import (
+    DEFAULT_KEEP_RECENT_TOKENS,
+    CompactionReason,
+    CompactionResult,
+    compact_messages,
+    estimate_context_tokens,
+)
+from agent.errors import ContextOverflowError
 from agent.kernel_client import CellResult, KernelClient
 from agent.openai_client import BadRequestError
+
 
 class TurnAborted(Exception):
     """Raised when the user aborts an active turn (e.g., by pressing Esc)."""
@@ -153,7 +164,7 @@ def _assistant_msg_to_dict(msg: Any) -> dict[str, Any]:
 
 
 def _call_model(
-    client: OpenAI,
+    client: OpenAICompatClient,
     model: str,
     full_messages: list[dict[str, Any]],
     *,
@@ -334,7 +345,7 @@ def _drain_steering(
 
 
 def agent_loop(
-    client: OpenAI,
+    client: OpenAICompatClient,
     model: str,
     system_prompt: str,
     messages: list[dict[str, Any]],
@@ -342,11 +353,11 @@ def agent_loop(
     *,
     max_context_tokens: int = 128_000,
     compact_reserve_tokens: int = 16_384,
-    keep_recent_messages: int = 10,
+    keep_recent_tokens: int = DEFAULT_KEEP_RECENT_TOKENS,
     stream: bool = True,
     on_tool_call: Callable[[str], None] | None = None,
     on_tool_result: Callable[[CellResult], None] | None = None,
-    on_compaction: Callable[[int, int], None] | None = None,
+    on_compaction: Callable[[CompactionResult], None] | None = None,
     on_bash_notice: Callable[[str], None] | None = None,
     on_status: Callable[[str | None], None] | None = None,
     on_text_delta: Callable[[str], None] | None = None,
@@ -362,7 +373,33 @@ def agent_loop(
     Returns (final_text, updated_messages, last_prompt_tokens).
     """
     last_prompt_tokens = initial_prompt_tokens
+    # Number of leading messages already covered by `last_prompt_tokens`.
+    measured_message_count = 0
+    system_tokens = estimate_context_tokens([{"role": "system", "content": system_prompt}])
     compact_threshold = max(4096, max_context_tokens - compact_reserve_tokens)
+    overflow_recoveries = 0
+
+    def projected_prompt_tokens() -> int:
+        """Provider-reported size plus an estimate for messages appended since."""
+        return last_prompt_tokens + estimate_context_tokens(messages[measured_message_count:])
+
+    def run_compaction(*, budget: int | None, keep_tokens: int) -> CompactionResult:
+        nonlocal messages, last_prompt_tokens, measured_message_count
+        result = compact_messages(
+            client,
+            model,
+            messages,
+            kernel,
+            budget_tokens=budget,
+            keep_recent_tokens=keep_tokens,
+        )
+        messages = result.messages
+        if result.changed:
+            last_prompt_tokens = system_tokens + result.estimated_tokens_after
+            measured_message_count = 0
+            if on_compaction:
+                on_compaction(result)
+        return result
 
     while True:
         if abort_event is not None and abort_event.is_set():
@@ -372,12 +409,8 @@ def agent_loop(
         if notice and on_bash_notice:
             on_bash_notice(notice)
 
-        if last_prompt_tokens >= compact_threshold and len(messages) > keep_recent_messages:
-            messages, summarized, kept = compact_messages(
-                client, model, messages, kernel, keep_recent=keep_recent_messages
-            )
-            if summarized > 0 and on_compaction:
-                on_compaction(summarized, kept)
+        if projected_prompt_tokens() >= compact_threshold and len(messages) > 1:
+            run_compaction(budget=compact_threshold, keep_tokens=keep_recent_tokens)
 
         full_messages = [{"role": "system", "content": system_prompt}, *messages]
         try:
@@ -391,33 +424,22 @@ def agent_loop(
                 on_text_delta=on_text_delta,
                 abort_event=abort_event,
             )
-        except BadRequestError as exc:
-            err_msg = str(exc).lower()
-            if ("context" in err_msg or "token" in err_msg or "length" in err_msg) and len(messages) > keep_recent_messages:
-                messages, summarized, kept = compact_messages(
-                    client, model, messages, kernel, keep_recent=keep_recent_messages
-                )
-                if summarized > 0:
-                    if on_compaction:
-                        on_compaction(summarized, kept)
-                    full_messages = [{"role": "system", "content": system_prompt}, *messages]
-                    assistant_dict, usage = _call_model(
-                        client,
-                        model,
-                        full_messages,
-                        stream=stream,
-                        effort=effort,
-                        on_status=on_status,
-                        on_text_delta=on_text_delta,
-                        abort_event=abort_event,
-                    )
-                else:
-                    raise
-            else:
+        except ContextOverflowError:
+            # The provider says the prompt is too long: compact harder, retry once.
+            if overflow_recoveries >= 1:
                 raise
+            overflow_recoveries += 1
+            forced = run_compaction(
+                budget=None,
+                keep_tokens=max(4_000, keep_recent_tokens // 2),
+            )
+            if forced.reason is not CompactionReason.SUMMARIZED:
+                raise
+            continue
 
         if usage and getattr(usage, "prompt_tokens", None):
             last_prompt_tokens = int(usage.prompt_tokens)
+        measured_message_count = len(messages)
         if usage_stats is not None and usage is not None:
             usage_stats.update(usage)
 

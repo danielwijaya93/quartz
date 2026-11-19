@@ -26,6 +26,7 @@ from rich.text import Text
 
 from agent.actions import describe_cell_actions, describe_group_actions
 from agent.images import content_to_text
+from agent.compact import CompactionReason, CompactionResult
 from agent.kernel_client import CellResult
 from agent.loop import TurnUsage
 
@@ -271,13 +272,18 @@ def format_compact_cell_summary(
     return f"× #{index} · {action} ({len(code_lines)}L: {code_preview}) · {err_preview} · {duration:.2f}s"
 
 
-def _render_compaction(summarized: int, kept: int) -> None:
-    _active_printer().block(
-        Text(
-            f"· compact · summarized {summarized} older messages · kept {kept} recent",
-            style="dim",
+def _render_compaction(result: CompactionResult) -> None:
+    saved = max(0, result.estimated_tokens_before - result.estimated_tokens_after)
+    if result.reason is CompactionReason.SUMMARIZED:
+        label = (
+            f"· compact · summarized {result.summarized} older messages"
+            f" · kept {result.kept} recent"
         )
-    )
+    elif result.reason is CompactionReason.CLEARED_TOOL_RESULTS:
+        label = f"· compact · cleared {result.cleared} stale tool results"
+    else:
+        return
+    _active_printer().block(Text(f"{label} · ~{_fmt_k(saved)} tokens freed", style="dim"))
 
 
 def _render_bash_notice(notice: str) -> None:

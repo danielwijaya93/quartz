@@ -13,6 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from agent.compact import DEFAULT_KEEP_RECENT_TOKENS
 from agent.models import PROVIDERS
 
 if TYPE_CHECKING:
@@ -294,10 +295,10 @@ def _run_turn(
             rt.kernel,
             max_context_tokens=rt.max_context_tokens,
             compact_reserve_tokens=rt.compact_reserve_tokens,
-            keep_recent_messages=rt.keep_recent_messages,
+            keep_recent_tokens=rt.keep_recent_tokens,
             on_tool_call=_on_tool_call,
             on_tool_result=_on_tool_result,
-            on_compaction=lambda s, k: (_flush_streak(), _render_compaction(s, k)),
+            on_compaction=lambda result: (_flush_streak(), _render_compaction(result)),
             on_bash_notice=lambda n: (_flush_streak(), _render_bash_notice(n)),
             on_status=_on_status,
             on_text_delta=_on_text_delta,
@@ -544,9 +545,7 @@ def _build_runtime(args: argparse.Namespace) -> tuple[_CLIRuntime, bool]:
     active_console = _sym("console")
     build_client_fn = _sym("_build_client")
     cwd = args.cwd.resolve()
-    max_context_tokens = int(os.getenv("MAX_CONTEXT_TOKENS", "128000"))
-    compact_reserve_tokens = int(os.getenv("COMPACT_RESERVE_TOKENS", "16384"))
-    keep_recent_messages = int(os.getenv("COMPACT_KEEP_RECENT_MESSAGES", "10"))
+    max_context_tokens, compact_reserve_tokens, keep_recent_tokens = _context_budget_from_env()
 
     kernel = KernelClient(cwd=cwd)
     kernel_err: list[BaseException] = []
@@ -606,12 +605,30 @@ def _build_runtime(args: argparse.Namespace) -> tuple[_CLIRuntime, bool]:
         usage_stats=TurnUsage.from_dict(active_session.last_usage),
         max_context_tokens=max_context_tokens,
         compact_reserve_tokens=compact_reserve_tokens,
-        keep_recent_messages=keep_recent_messages,
+        keep_recent_tokens=keep_recent_tokens,
         verbose=args.verbose,
         plain_output=bool(args.prompt) or not sys.stdout.isatty(),
         headless=bool(args.prompt),
     )
     return rt, resumed
+
+
+def _context_budget_from_env() -> tuple[int, int, int]:
+    """Read (max_context_tokens, compact_reserve_tokens, keep_recent_tokens) from env."""
+    def _env_int(name: str, default: int) -> int:
+        raw = os.getenv(name)
+        if raw is None or not raw.strip():
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            return default
+
+    return (
+        _env_int("MAX_CONTEXT_TOKENS", 128_000),
+        _env_int("COMPACT_RESERVE_TOKENS", 16_384),
+        _env_int("COMPACT_KEEP_RECENT_TOKENS", DEFAULT_KEEP_RECENT_TOKENS),
+    )
 
 
 def main() -> None:
@@ -681,13 +698,14 @@ def main() -> None:
     if args.acp:
         from agent.acp import ACPServer
 
+        max_context_tokens, compact_reserve_tokens, keep_recent_tokens = _context_budget_from_env()
         server = ACPServer(
             lambda: _sym("_build_client")(
                 provider=args.provider, model_override=args.model, effort_override=args.effort
             ),
-            max_context_tokens=int(os.getenv("MAX_CONTEXT_TOKENS", "128000")),
-            compact_reserve_tokens=int(os.getenv("COMPACT_RESERVE_TOKENS", "16384")),
-            keep_recent_messages=int(os.getenv("COMPACT_KEEP_RECENT_MESSAGES", "10")),
+            max_context_tokens=max_context_tokens,
+            compact_reserve_tokens=compact_reserve_tokens,
+            keep_recent_tokens=keep_recent_tokens,
         )
         server.serve()
         return

@@ -154,10 +154,16 @@ def test_compaction_safe_split_and_python_state() -> None:
         {"role": "assistant", "content": None, "tool_calls": [{"id": "2"}]},
         {"role": "tool", "tool_call_id": "2", "content": "r2"},
     ]
-    # keep_recent=3 would land on index 4 ("u2"), which is safe
-    assert _find_safe_split_index(messages, 3) == 4
-    # keep_recent=2 would land on index 5 (assistant tool_calls), so it walks back to index 4 ("u2")
-    assert _find_safe_split_index(messages, 2) == 4
+    # A small keep budget cuts inside the last tool loop; the split walks back to
+    # the assistant owning the tool call so the pair is never orphaned.
+    split = _find_safe_split_index(messages, 3)
+    assert split == 5
+    assert messages[split]["role"] == "assistant"
+    assert messages[split]["tool_calls"][0]["id"] == "2"
+    assert messages[split + 1]["role"] == "tool"
+
+    # A budget larger than the whole conversation leaves everything intact.
+    assert _find_safe_split_index(messages, 10_000) == 0
 
     notice = format_python_state_notice({"df": "DataFrame", "helper": "function"})
     assert "[python-state]" in notice
@@ -318,7 +324,7 @@ def test_multiline_skill_frontmatter_discovery(tmp_path: Path) -> None:
 
 def test_compact_messages_summarizes_and_keeps_kernel(tmp_path: Path) -> None:
     from types import SimpleNamespace
-    from agent.compact import compact_messages
+    from agent.compact import CompactionReason, compact_messages
 
     dummy_client = SimpleNamespace(
         chat=SimpleNamespace(
@@ -340,14 +346,15 @@ def test_compact_messages_summarizes_and_keeps_kernel(tmp_path: Path) -> None:
             {"role": "assistant", "content": "reply 2"},
             {"role": "user", "content": "msg 3"},
         ]
-        new_msgs, summarized, kept = compact_messages(
-            dummy_client, "m", msgs, kernel, keep_recent=2  # type: ignore[arg-type]
+        result = compact_messages(
+            dummy_client, "m", msgs, kernel, keep_recent_tokens=16  # type: ignore[arg-type]
         )
-        assert summarized == 2
-        assert kept == 3
-        assert "[compaction-summary]" in new_msgs[0]["content"]
-        assert "Summary of earlier work." in new_msgs[0]["content"]
-        assert "answer (int)" in new_msgs[0]["content"]
+        assert result.summarized == 2
+        assert result.kept == 3
+        assert result.reason is CompactionReason.SUMMARIZED
+        assert "[compaction-summary]" in result.messages[0]["content"]
+        assert "Summary of earlier work." in result.messages[0]["content"]
+        assert "answer (int)" in result.messages[0]["content"]
     finally:
         kernel.close()
 
