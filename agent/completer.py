@@ -10,24 +10,9 @@ from pathlib import Path
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 
-SLASH_COMMANDS: dict[str, str] = {
-    "/login": "Log in to a provider (OAuth or API key)",
-    "/logout": "Log out and remove stored provider credentials",
-    "/model": "Choose provider, model, and reasoning effort",
-    "/image": "Attach an image file (or /image clear)",
-    "/paste": "Attach an image from the system clipboard",
-    "/continue": "Pick and resume a previous session in this directory",
-    "/vars": "List live Python variables in the kernel",
-    "/helpers": "List available REPL helper functions (built-in and custom)",
-    "/session": "Show active session ID and file paths",
-    "/usage": "Show context window usage and cache hit rate",
-    "/expand": "Expand a collapsed ipython cell (default: latest)",
-    "/compact": "Summarize older messages while keeping the kernel alive",
-    "/prompt": "Show the assembled system prompt",
-    "/reset": "Clear history, start a new session, and restart the kernel",
-    "/help": "Show available slash commands",
-    "/exit": "Exit the agent",
-}
+from agent.commands import COMMAND_REGISTRY
+
+SLASH_COMMANDS: dict[str, str] = COMMAND_REGISTRY.to_completion_dict()
 
 _IGNORE_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", ".mypy_cache"}
 
@@ -50,7 +35,7 @@ class AgentCompleter(Completer):
 
     def __init__(self, cwd: Path, commands: dict[str, str] | None = None, *, cache_ttl_s: float = 5.0) -> None:
         self.cwd = cwd.resolve()
-        self.commands = commands or SLASH_COMMANDS
+        self.commands = commands
         self._cache_ttl_s = cache_ttl_s
         self._files_cache: list[str] | None = None
         self._files_cache_ts: float = 0.0
@@ -68,9 +53,10 @@ class AgentCompleter(Completer):
         text = document.text_before_cursor
 
         # Slash commands at start of input (before first space)
+        active_commands = self.commands if self.commands is not None else COMMAND_REGISTRY.to_completion_dict()
         if text.startswith("/") and " " not in text:
             prefix = text.lower()
-            for cmd, desc in self.commands.items():
+            for cmd, desc in active_commands.items():
                 if cmd.startswith(prefix):
                     yield Completion(cmd, start_position=-len(text), display_meta=desc)
             return
