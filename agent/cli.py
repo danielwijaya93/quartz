@@ -98,6 +98,14 @@ def __getattr__(name: str) -> Any:
     globals()[name] = val
     return val
 
+
+def _sym(name: str) -> Any:
+    """Resolve a lazily-exported symbol, respecting any monkeypatch in globals()."""
+    val = globals().get(name)
+    if val is not None:
+        return val
+    return __getattr__(name)
+
 __all__ = [
     "BlockPrinter",
     "CellGroupBuffer",
@@ -144,6 +152,16 @@ def _run_turn(
     from rich.text import Text
 
     from agent.actions import describe_cell_actions
+    from agent.ui import (
+        CellGroupBuffer,
+        MarkdownBlockStreamer,
+        _fmt_stopwatch,
+        _fmt_thought_duration,
+        _render_bash_notice,
+        _render_compaction,
+        _render_tool_call,
+        _render_tool_result,
+    )
 
     pending_cell_code: list[str] = []
     pending_cell_start: list[float] = []
@@ -154,7 +172,9 @@ def _run_turn(
     streak_thought_s = [0.0]
     has_streak_thought = [False]
     streamed_any = [False]
-    md_streamer = MarkdownBlockStreamer(printer.markdown)
+    active_printer = _sym("printer")
+    active_console = _sym("console")
+    md_streamer = MarkdownBlockStreamer(active_printer.markdown)
     cell_group = CellGroupBuffer()
 
     def _flush_streak() -> None:
@@ -162,7 +182,7 @@ def _run_turn(
             elapsed = streak_thought_s[0]
             streak_thought_s[0] = 0.0
             has_streak_thought[0] = False
-            printer.block(Text(f"Thought for {_fmt_thought_duration(elapsed)}", style="dim"))
+            active_printer.block(Text(f"Thought for {_fmt_thought_duration(elapsed)}", style="dim"))
         cell_group.flush()
 
     def _tick_thinking(started: float, stop_event: threading.Event) -> None:
@@ -210,7 +230,7 @@ def _run_turn(
                 if active_status:
                     active_status[-1].update(tick_label)
                 else:
-                    st = console.status(tick_label, spinner="dots")
+                    st = active_console.status(tick_label, spinner="dots")
                     st.__enter__()
                     active_status.append(st)
             threading.Thread(target=_tick_thinking, args=(started, stop_event), daemon=True).start()
@@ -226,7 +246,7 @@ def _run_turn(
             if active_status:
                 active_status[-1].update(label)
             else:
-                st = console.status(label, spinner="dots")
+                st = active_console.status(label, spinner="dots")
                 st.__enter__()
                 active_status.append(st)
 
@@ -264,9 +284,9 @@ def _run_turn(
             cell_group.add(len(rt.cell_history), code, res, duration)
 
     streamed_any[0] = False
-    printer.reset()
+    active_printer.reset()
     try:
-        answer, updated_msgs, tokens = agent_loop(
+        answer, updated_msgs, tokens = _sym("agent_loop")(
             rt.client,
             rt.model,
             rt.system_prompt,
@@ -302,7 +322,7 @@ def _run_turn(
             sys.stdout.write(answer.rstrip() + "\n")
             sys.stdout.flush()
         else:
-            printer.markdown(answer)
+            active_printer.markdown(answer)
     return answer, updated_msgs, tokens
 
 
@@ -318,7 +338,9 @@ def _run_headless(
         load_image_file,
     )
     from agent.loop import format_bash_done_events
+    from agent.ui import _render_bash_notice
 
+    active_console = _sym("console")
     cli_images: list[ImageAttachment] = []
     for raw_img in image_args:
         img_path = Path(raw_img).expanduser()
@@ -327,7 +349,7 @@ def _run_headless(
         try:
             cli_images.append(load_image_file(img_path))
         except (FileNotFoundError, ValueError) as exc:
-            console.print(f"[red]Error: {escape(str(exc))}[/red]")
+            active_console.print(f"[red]Error: {escape(str(exc))}[/red]")
             return
     cli_images.extend(extract_inline_image_mentions(prompt, rt.cwd))
     rt.messages.append({"role": "user", "content": build_user_content(prompt, cli_images)})
@@ -352,16 +374,19 @@ def _run_headless(
 def _execute_interactive_turn(rt: _CLIRuntime) -> None:
     from rich.text import Text
 
+    from agent.ui import _MidTurnInputWatcher, _format_turn_footer, _format_turn_timing
+
+    active_printer = _sym("printer")
     abort_event = threading.Event()
     steering_queue: queue.Queue[str] = queue.Queue()
 
     def _on_queued(text: str) -> None:
         preview = text[:60] + ("..." if len(text) > 60 else "")
-        printer.block(Text(f"[queued] {preview}", style="dim cyan"))
+        active_printer.block(Text(f"[queued] {preview}", style="dim cyan"))
 
     def _on_steering(text: str) -> None:
         preview = text[:60] + ("..." if len(text) > 60 else "")
-        printer.block(Text(f"[steering] {preview}", style="cyan"))
+        active_printer.block(Text(f"[steering] {preview}", style="cyan"))
 
     t0 = time.monotonic()
     with _MidTurnInputWatcher(
@@ -385,7 +410,7 @@ def _execute_interactive_turn(rt: _CLIRuntime) -> None:
         footer = f"{timing} · {_format_turn_footer(rt.usage_stats, rt.max_context_tokens)}"
     else:
         footer = timing
-    printer.block(Text(footer, style="dim"))
+    active_printer.block(Text(footer, style="dim"))
 
 
 def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
@@ -396,16 +421,25 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
     from rich.markup import escape
     from rich.text import Text
 
+    from agent.commands import _handle_slash_command
     from agent.completer import AgentCompleter
     from agent.images import build_user_content, extract_inline_image_mentions
     from agent.loop import TurnAborted, format_bash_done_events
+    from agent.ui import (
+        _format_toolbar,
+        _format_turn_footer,
+        _render_bash_notice,
+        _replay_session,
+    )
 
-    console.print(Text.assemble(("quartz", "bold"), (" v0.1.0 · Run /help for commands", "dim")))
+    active_console = _sym("console")
+    active_printer = _sym("printer")
+    active_console.print(Text.assemble(("quartz", "bold"), (" v0.1.0 · Run /help for commands", "dim")))
 
     if resumed:
         _replay_session(rt.messages, rt.cell_history, verbose=rt.verbose)
         if rt.usage_stats.prompt_tokens > 0:
-            printer.block(Text(_format_turn_footer(rt.usage_stats, rt.max_context_tokens), style="dim"))
+            active_printer.block(Text(_format_turn_footer(rt.usage_stats, rt.max_context_tokens), style="dim"))
 
     kb = KeyBindings()
 
@@ -457,7 +491,7 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
                 )
                 user_input = prompt_session.prompt("\n▌ ", bottom_toolbar=toolbar).strip()
             except (EOFError, KeyboardInterrupt):
-                console.print("\n[dim]Exiting.[/dim]")
+                active_console.print("\n[dim]Exiting.[/dim]")
                 break
             finally:
                 stop_watcher.set()
@@ -489,22 +523,26 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
         except TurnAborted:
             rt.kernel.interrupt()
             rt.persist()
-            console.print("\n[yellow]Aborted (Esc).[/yellow]")
+            active_console.print("\n[yellow]Aborted (Esc).[/yellow]")
         except KeyboardInterrupt:
             rt.kernel.interrupt()
-            console.print("\n[yellow]Interrupted.[/yellow]")
+            active_console.print("\n[yellow]Interrupted.[/yellow]")
         except Exception as exc:
-            console.print(f"[red]Error: {escape(str(exc))}[/red]")
+            active_console.print(f"[red]Error: {escape(str(exc))}[/red]")
 
 
 def _build_runtime(args: argparse.Namespace) -> tuple[_CLIRuntime, bool]:
     from rich.markup import escape
 
+    from agent.commands import _CLIRuntime
     from agent.kernel_client import KernelClient
     from agent.loop import TurnUsage
     from agent.prompt import build_system_prompt
     from agent.session import Session
+    from agent.ui import _short_path
 
+    active_console = _sym("console")
+    build_client_fn = _sym("_build_client")
     cwd = args.cwd.resolve()
     max_context_tokens = int(os.getenv("MAX_CONTEXT_TOKENS", "128000"))
     compact_reserve_tokens = int(os.getenv("COMPACT_RESERVE_TOKENS", "16384"))
@@ -522,7 +560,7 @@ def _build_runtime(args: argparse.Namespace) -> tuple[_CLIRuntime, bool]:
     kernel_thread = threading.Thread(target=_start_kernel, daemon=True)
     kernel_thread.start()
     try:
-        client, provider_name, model, effort = _build_client(
+        client, provider_name, model, effort = build_client_fn(
             provider=args.provider, model_override=args.model, effort_override=args.effort
         )
         system_prompt = build_system_prompt(cwd, headless=bool(args.prompt))
@@ -537,7 +575,7 @@ def _build_runtime(args: argparse.Namespace) -> tuple[_CLIRuntime, bool]:
         target_id = args.resume or Session.latest_id(cwd=cwd)
         if not target_id:
             kernel.close()
-            console.print(f"[red]Error: No previous session found for {escape(_short_path(cwd))}.[/red]")
+            active_console.print(f"[red]Error: No previous session found for {escape(_short_path(cwd))}.[/red]")
             sys.exit(1)
         try:
             if args.fork:
@@ -546,7 +584,7 @@ def _build_runtime(args: argparse.Namespace) -> tuple[_CLIRuntime, bool]:
                 active_session, messages = Session.load(target_id)
         except FileNotFoundError as exc:
             kernel.close()
-            console.print(f"[red]Error: {escape(str(exc))}[/red]")
+            active_console.print(f"[red]Error: {escape(str(exc))}[/red]")
             sys.exit(1)
         resumed = True
         restored_notice = active_session.restore_kernel(kernel)
@@ -578,10 +616,10 @@ def _build_runtime(args: argparse.Namespace) -> tuple[_CLIRuntime, bool]:
 
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "mcp":
-        _handle_mcp_cli(sys.argv[2:])
+        _sym("_handle_mcp_cli")(sys.argv[2:])
         return
     if len(sys.argv) > 1 and sys.argv[1] == "auth":
-        _handle_auth_cli(sys.argv[2:])
+        _sym("_handle_auth_cli")(sys.argv[2:])
         return
     if len(sys.argv) > 1 and sys.argv[1] == "acp":
         sys.argv[1] = "--acp"
@@ -644,7 +682,7 @@ def main() -> None:
         from agent.acp import ACPServer
 
         server = ACPServer(
-            lambda: _build_client(
+            lambda: _sym("_build_client")(
                 provider=args.provider, model_override=args.model, effort_override=args.effort
             ),
             max_context_tokens=int(os.getenv("MAX_CONTEXT_TOKENS", "128000")),
