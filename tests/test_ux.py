@@ -669,3 +669,82 @@ def test_turn_progress_tracker_with_tool_failure() -> None:
     assert raw_lines[1].startswith("× #1 · Run Python")
     assert "ZeroDivisionError" in raw_lines[1]
 
+
+
+def test_turn_progress_tracker_interactive_steering() -> None:
+    buf = io.StringIO()
+    test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
+    test_printer = BlockPrinter(test_console)
+    test_printer.reset()
+
+    tracker = cli.TurnProgressTracker(test_console, test_printer)
+    tracker.start_thinking()
+
+    # User types partial steering message
+    tracker.set_input_buffer("Actually check logs")
+    grp = tracker._render_group()
+    plain_texts = [getattr(r, "plain", getattr(getattr(r, "text", None), "plain", "")) for r in grp.renderables]
+    assert any("▌ Actually check logs█" in t for t in plain_texts)
+
+    # User presses Enter -> queued message
+    tracker.add_queued_message("Actually check logs")
+    grp2 = tracker._render_group()
+    plain_texts2 = [getattr(r, "plain", getattr(getattr(r, "text", None), "plain", "")) for r in grp2.renderables]
+    assert any("[queued] Actually check logs" in t for t in plain_texts2)
+    assert not any("▌ " in t for t in plain_texts2)
+
+    # Steering drained
+    tracker.clear_queued_messages()
+    grp3 = tracker._render_group()
+    plain_texts3 = [getattr(r, "plain", getattr(getattr(r, "text", None), "plain", "")) for r in grp3.renderables]
+    assert not any("[queued]" in t for t in plain_texts3)
+
+    tracker.close()
+
+
+def test_mid_turn_input_watcher_processing() -> None:
+    import queue
+    import threading
+    from agent.ui import _MidTurnInputWatcher
+
+    abort_ev = threading.Event()
+    steer_q: queue.Queue[str] = queue.Queue()
+    queued_calls: list[str] = []
+    change_calls: list[str] = []
+
+    watcher = _MidTurnInputWatcher(
+        abort_ev,
+        steer_q,
+        on_queued=queued_calls.append,
+        on_change=change_calls.append,
+    )
+
+    buf: list[str] = []
+    # Test normal typing
+    assert watcher._process_text("hello", buf) is True
+    assert "".join(buf) == "hello"
+    assert change_calls[-1] == "hello"
+
+    # Test backspace
+    assert watcher._process_text("\x7f", buf) is True
+    assert "".join(buf) == "hell"
+    assert change_calls[-1] == "hell"
+
+    # Test Ctrl+U (line clear)
+    assert watcher._process_text("\x15", buf) is True
+    assert "".join(buf) == ""
+    assert change_calls[-1] == ""
+
+    # Test Enter
+    assert watcher._process_text("steer me\n", buf) is True
+    assert "".join(buf) == ""
+    assert steer_q.get_nowait() == "steer me"
+    assert queued_calls == ["steer me"]
+
+    # Test arrow keys (escape sequence ignored, does not abort)
+    assert watcher._process_text("\x1b[A", buf) is True
+    assert not abort_ev.is_set()
+
+    # Test Ctrl+C abort
+    assert watcher._process_text("\x03", buf) is False
+    assert abort_ev.is_set()

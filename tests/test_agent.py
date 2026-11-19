@@ -541,3 +541,62 @@ def test_kernel_snapshot_rejects_empty_dir() -> None:
     worker = KernelWorker()
     with pytest.raises(ValueError, match="snapshot_dir"):
         worker.snapshot_vars("")
+
+
+def test_agent_loop_streaming_steering_preemption(tmp_path: Path) -> None:
+    import queue
+    from types import SimpleNamespace
+    from agent.loop import agent_loop
+
+    steering_q: queue.Queue[str] = queue.Queue()
+    seen_steering: list[str] = []
+    calls = [0]
+    chunks_yielded = [0]
+
+    class _DummyChunkChoice:
+        def __init__(self, text: str) -> None:
+            self.delta = SimpleNamespace(content=text, tool_calls=None)
+
+    class _DummyChunk:
+        def __init__(self, text: str) -> None:
+            self.choices = [_DummyChunkChoice(text)]
+            self.usage = None
+
+    class _DummyCompletions:
+        def create(self, **kwargs: object) -> object:
+            calls[0] += 1
+            if calls[0] == 1:
+                def _gen():
+                    for i in range(10):
+                        chunks_yielded[0] += 1
+                        if i == 1:
+                            steering_q.put("Stop and do Y instead")
+                        yield _DummyChunk(f"Chunk {i} ")
+                return _gen()
+            else:
+                def _gen2():
+                    yield _DummyChunk("Handled Y instead")
+                return _gen2()
+
+    dummy_client = SimpleNamespace(chat=SimpleNamespace(completions=_DummyCompletions()))
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        messages = [{"role": "user", "content": "do X"}]
+        answer, updated, _ = agent_loop(
+            dummy_client,  # type: ignore[arg-type]
+            "m",
+            "sys",
+            messages,
+            kernel,
+            stream=True,
+            steering_queue=steering_q,
+            on_steering=seen_steering.append,
+        )
+        assert answer == "Handled Y instead"
+        assert calls[0] == 2
+        assert seen_steering == ["Stop and do Y instead"]
+        assert chunks_yielded[0] < 10
+        assert any(m.get("role") == "user" and m.get("content") == "Stop and do Y instead" for m in updated)
+    finally:
+        kernel.close()
