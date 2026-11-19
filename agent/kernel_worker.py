@@ -492,8 +492,10 @@ class KernelWorker:
         return vars_info
 
     def snapshot_vars(self, snapshot_dir: str) -> dict[str, Any]:
-        """Serialize user-defined variables to `snapshot_dir` using dill."""
+        """Serialize user-defined variables to `snapshot_dir` using C pickle first, falling back to dill."""
+        import pickle
         import shutil
+        import pickle
         from pathlib import Path
 
         import dill
@@ -520,10 +522,13 @@ class KernelWorker:
                     skipped.append(f"{name} (running/process handle)")
                     continue
                 try:
-                    blob = dill.dumps(val, recurse=True)
+                    blob = pickle.dumps(val, protocol=pickle.HIGHEST_PROTOCOL)
                 except Exception:
-                    skipped.append(f"{name} ({type(val).__name__})")
-                    continue
+                    try:
+                        blob = dill.dumps(val, recurse=True)
+                    except Exception:
+                        skipped.append(f"{name} ({type(val).__name__})")
+                        continue
 
                 if len(blob) > MAX_VAR_BYTES:
                     skipped.append(f"{name} (>16 MiB)")
@@ -549,6 +554,7 @@ class KernelWorker:
 
     def restore_vars(self, snapshot_dir: str) -> dict[str, Any]:
         """Restore variables from `snapshot_dir` into the kernel namespace."""
+        import pickle
         from pathlib import Path
 
         import dill
@@ -572,7 +578,11 @@ class KernelWorker:
                 skipped.append(f"{name} (missing)")
                 continue
             try:
-                loaded = dill.loads(var_file.read_bytes())
+                raw = var_file.read_bytes()
+                try:
+                    loaded = pickle.loads(raw)
+                except Exception:
+                    loaded = dill.loads(raw)
                 if inspect.isfunction(loaded):
                     import types
 

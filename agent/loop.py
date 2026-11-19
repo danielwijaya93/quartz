@@ -10,10 +10,9 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from openai import BadRequestError, OpenAI
-
 from agent.compact import compact_messages
 from agent.kernel_client import CellResult, KernelClient
+from agent.openai_client import BadRequestError
 
 class TurnAborted(Exception):
     """Raised when the user aborts an active turn (e.g., by pressing Esc)."""

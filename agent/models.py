@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from openai import OpenAI
+    from agent.openai_client import OpenAICompatClient
 
 from agent.google_auth import auth_file_path, load_google_credentials
 
@@ -228,9 +228,9 @@ def discover_models(
         api_key, base_url, _ = resolve_provider_credentials(provider)
         if not api_key:
             return fallback, "No API key configured"
-        from openai import OpenAI
+        from agent.openai_client import OpenAICompatClient
 
-        client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout_s)
+        client = OpenAICompatClient(api_key=api_key, base_url=base_url, timeout=timeout_s)
 
     try:
         resp = client.models.list()

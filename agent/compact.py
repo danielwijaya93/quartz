@@ -6,7 +6,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from openai import OpenAI
+    from agent.openai_client import OpenAICompatClient
 
 from agent.images import content_to_text
 from agent.kernel_client import KernelClient
