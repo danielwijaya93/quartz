@@ -5,8 +5,12 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from agent.cli import _build_client
+from agent.errors import ProviderError
 from agent.google_auth import (
     GoogleCredentials,
     delete_google_credentials,
@@ -167,61 +171,68 @@ def test_saved_model_config_overrides_env_defaults(tmp_path: Path, monkeypatch) 
     assert effort == "xhigh"
 
 
-def test_google_provider_stream_refresh_fallback_and_non_stream_tools(
+class _FakeResp:
+    """Minimal httpx2 streaming response stand-in."""
+
+    def __init__(self, status_code: int, lines: list[str] | None = None, body: bytes = b"") -> None:
+        self.status_code = status_code
+        self._lines = lines or []
+        self._body = body
+
+    def __enter__(self) -> "_FakeResp":
+        return self
+
+    def __exit__(self, *args: Any) -> bool:
+        return False
+
+    def read(self) -> bytes:
+        return self._body
+
+    def iter_lines(self) -> Any:
+        return iter(self._lines)
+
+
+_SSE_WITH_TOOL = (
+    'data: {"response": {"candidates": [{"content": {"parts": ['
+    '{"text": "hi "}, '
+    '{"functionCall": {"name": "ipython", "args": {"code": "1+1"}}}'
+    ']}}]}}'
+)
+
+
+def _fake_google_http(monkeypatch: Any, responses: list[_FakeResp]) -> list[tuple[str, str]]:
+    """Install a fake httpx2.Client that replays `responses` in order."""
+    calls: list[tuple[str, str]] = []
+
+    class _FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            self.timeout = kwargs.get("timeout")
+
+        def stream(self, method: str, url: str, json: dict, headers: dict) -> _FakeResp:
+            del method, json
+            calls.append((url, headers["Authorization"]))
+            return responses[len(calls) - 1]
+
+    monkeypatch.setattr("agent.google_provider.httpx2.Client", _FakeClient)
+    return calls
+
+
+def test_google_provider_refreshes_once_and_stays_on_one_host(
     tmp_path: Path, monkeypatch
 ) -> None:
-    auth_path = tmp_path / "auth.json"
-    monkeypatch.setenv("QUARTZ_AUTH_FILE", str(auth_path))
+    monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "auth.json"))
+    monkeypatch.delenv("QUARTZ_CLOUDCODE_ENDPOINT", raising=False)
     save_google_credentials(
         GoogleCredentials("old-tok", "ref-tok", int(time.time() * 1000) + 600_000, "proj-1")
     )
 
-    calls: list[tuple[str, str]] = []
-
-    class _FakeResp:
-        def __init__(self, status_code: int, lines: list[str] | None = None, body: bytes = b"") -> None:
-            self.status_code = status_code
-            self._lines = lines or []
-            self._body = body
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self) -> bytes:
-            return self._body
-
-        def iter_lines(self):
-            return iter(self._lines)
-
-    class _FakeClient:
-        def __init__(self, **kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def stream(self, method: str, url: str, json: dict, headers: dict):
-            del method, json
-            calls.append((url, headers["Authorization"]))
-            if len(calls) == 1:
-                return _FakeResp(401, body=b"expired")
-            if len(calls) == 2:
-                return _FakeResp(429, body=b"rate limited")
-            sse_line = (
-                'data: {"response": {"candidates": [{"content": {"parts": ['
-                '{"text": "hi "}, '
-                '{"functionCall": {"name": "ipython", "args": {"code": "1+1"}}}'
-                ']}}]}}'
-            )
-            return _FakeResp(200, lines=[sse_line, "data: [DONE]"])
-
-    monkeypatch.setattr("agent.google_provider.httpx2.Client", _FakeClient)
+    calls = _fake_google_http(
+        monkeypatch,
+        [
+            _FakeResp(401, body=b"expired"),
+            _FakeResp(200, lines=[_SSE_WITH_TOOL, "data: [DONE]"]),
+        ],
+    )
     monkeypatch.setattr(
         "agent.google_provider.refresh_google_credentials",
         lambda creds: GoogleCredentials("new-tok", creds.refresh, creds.expires_ms, creds.project_id),
@@ -233,14 +244,40 @@ def test_google_provider_stream_refresh_fallback_and_non_stream_tools(
         messages=[{"role": "user", "content": "hi"}],
         stream=False,
     )
-    assert len(calls) == 3
+
+    assert len(calls) == 2
     assert calls[0][1] == "Bearer old-tok"
     assert calls[1][1] == "Bearer new-tok"
-    assert "daily-cloudcode-pa" in calls[1][0]
-    assert "cloudcode-pa.googleapis.com" in calls[2][0]
+    # Same host on both attempts: a 401 is a token problem, not a routing problem.
+    assert calls[0][0] == calls[1][0]
+    assert "daily-cloudcode-pa" in calls[0][0]
     assert resp.choices[0].message.content == "hi "
     assert resp.choices[0].message.tool_calls is not None
     assert resp.choices[0].message.tool_calls[0].function.name == "ipython"
+
+
+def test_google_provider_does_not_fall_back_to_another_host(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "auth.json"))
+    monkeypatch.delenv("QUARTZ_CLOUDCODE_ENDPOINT", raising=False)
+    save_google_credentials(
+        GoogleCredentials("tok", "ref", int(time.time() * 1000) + 600_000, "proj-1")
+    )
+
+    calls = _fake_google_http(monkeypatch, [_FakeResp(429, body=b"rate limited")])
+
+    client = GoogleAntigravityClient()
+    with pytest.raises(ProviderError) as excinfo:
+        client.chat.completions.create(
+            model="gemini-3.8-flash-medium",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=False,
+        )
+
+    assert len(calls) == 1
+    assert excinfo.value.status_code == 429
+    assert "daily-cloudcode-pa" in str(excinfo.value)
 
 
 def test_build_client_honors_openai_env_model(tmp_path: Path, monkeypatch) -> None:

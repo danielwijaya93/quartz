@@ -10,6 +10,7 @@ from typing import Any
 import httpx2
 
 from agent.errors import ContextOverflowError, is_context_overflow
+from agent.provider_config import resolve_http_timeout
 
 
 class BadRequestError(RuntimeError):
@@ -286,11 +287,11 @@ class OpenAICompatClient:
         *,
         api_key: str,
         base_url: str | None = None,
-        timeout: float = 120.0,
+        timeout: httpx2.Timeout | float | None = None,
     ) -> None:
         self.api_key = api_key
         self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
-        self._http = httpx2.Client(timeout=timeout)
+        self._http = httpx2.Client(timeout=timeout or resolve_http_timeout())
         self.chat = _Chat(self)
         self.models = _Models(self)
 
