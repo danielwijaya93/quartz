@@ -24,7 +24,7 @@ from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.text import Text
 
-from agent.actions import describe_cell_actions, describe_group_actions
+from agent.actions import describe_cell_intent, describe_group_actions
 from agent.banner import _fmt_k, _short_path
 from agent.compact import CompactionReason, CompactionResult
 from agent.images import content_to_text
@@ -325,26 +325,20 @@ def format_compact_cell_summary(
     index: int, code: str, res: CellResult, duration: float
 ) -> str:
     """Format a 1-line collapsible summary chip for an executed ipython cell."""
-    code_lines = [ln.strip() for ln in code.strip().splitlines() if ln.strip()]
-    code_preview = (
-        (code_lines[0][:50] + "...")
-        if code_lines and len(code_lines[0]) > 50
-        else (code_lines[0] if code_lines else "")
-    )
     out_text = res.format_for_model().strip()
     out_lines = out_text.splitlines() if out_text and out_text != "(ok, no output)" else []
 
-    action = describe_cell_actions(code)
+    intent = describe_cell_intent(code)
     if res.ok:
         out_summary = (
             f"{len(out_lines)} lines out"
             if len(out_lines) > 1
             else (out_lines[0][:50] if out_lines else "no output")
         )
-        return f"· #{index} · {action} ({len(code_lines)}L: {code_preview}) · {out_summary} · {duration:.2f}s"
+        return f"· #{index} · {intent} · {out_summary} · {duration:.2f}s"
     err_lines = [ln.strip() for ln in (res.stderr or out_text).splitlines() if ln.strip()]
     err_preview = err_lines[-1][:70] if err_lines else "error"
-    return f"× #{index} · {action} ({len(code_lines)}L: {code_preview}) · {err_preview} · {duration:.2f}s"
+    return f"× #{index} · {intent} · {err_preview} · {duration:.2f}s"
 
 
 def _render_compaction(result: CompactionResult) -> None:
@@ -496,7 +490,7 @@ class TurnProgressTracker:
             items.append(Text(f"{_spinner_frame(elapsed)} Thinking... {_fmt_stopwatch(elapsed)}", style="dim"))
         elif self.active_tool_code is not None:
             elapsed_tool = time.monotonic() - self.active_tool_start if self.active_tool_start is not None else 0.0
-            action = describe_cell_actions(self.active_tool_code) if self.active_tool_code else "Run Python"
+            action = describe_cell_intent(self.active_tool_code) if self.active_tool_code else "Run Python"
             items.append(Text(f"{_spinner_frame(elapsed_tool)} {action}... {_fmt_stopwatch(elapsed_tool)}", style="dim"))
 
         for s_msg in self.steering_messages:

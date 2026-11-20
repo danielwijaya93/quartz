@@ -48,11 +48,11 @@ def test_at_file_autocomplete(tmp_path: Path) -> None:
 def test_compact_cell_summary() -> None:
     ok_res = CellResult(ok=True, stdout="line1\nline2\nline3\n", stderr="", result=None)
     s1 = format_compact_cell_summary(1, "x = 1\nprint('line1')\nprint('line2')", ok_res, 0.12)
-    assert "· #1 · Run Python (3L: x = 1) · 3 lines out · 0.12s" == s1
+    assert "· #1 · Run Python · 3 lines out · 0.12s" == s1
 
     err_res = CellResult(ok=False, stdout="", stderr="Traceback...\nNameError: name 'foo' is not defined\n", result=None)
     s2 = format_compact_cell_summary(2, "foo", err_res, 0.04)
-    assert "× #2 · Run Python (1L: foo) · NameError: name 'foo' is not defined · 0.04s" == s2
+    assert "× #2 · Run Python · NameError: name 'foo' is not defined · 0.04s" == s2
 
 
 def test_streaming_agent_loop_with_tool_call(tmp_path: Path) -> None:
@@ -342,7 +342,7 @@ def test_cell_summary_chip_keeps_cell_index(monkeypatch: pytest.MonkeyPatch) -> 
     assert lines == [
         "Running a cell now.",
         "",
-        "· #1 · Run Python (1L: print('hello')) · hello · 0.01s",
+        "· #1 · Run Python · hello · 0.01s",
     ]
 
 
@@ -365,7 +365,7 @@ def test_grouped_cell_summary_single_and_multi() -> None:
         [(1, "x = 1", CellResult(True, "", "", None), 0.02)]
     )
     assert ok1 is True
-    assert single == "· #1 · Run Python (1L: x = 1) · no output · 0.02s"
+    assert single == "· #1 · Run Python · no output · 0.02s"
 
     multi, ok_multi = ui.format_grouped_cell_summary(
         [
@@ -467,6 +467,98 @@ def test_action_classifier_single_and_combined() -> None:
         describe_group_actions(["bash('rg foo')", "Path('a.py').read_text()"])
         == "Find and Read files"
     )
+
+
+def test_cell_intent_sh_bash() -> None:
+    from agent.actions import describe_cell_intent
+
+    assert describe_cell_intent("print(sh('uv run pytest -q'))") == "Run pytest"
+    assert describe_cell_intent("bash('pytest -q')") == "Run pytest"
+    assert describe_cell_intent("bash('python -m pytest tests/')") == "Run pytest"
+    assert describe_cell_intent("sh('git log --oneline -5')") == "git log"
+    assert describe_cell_intent("sh('gh pr list')") == "gh pr list"
+    assert describe_cell_intent("sh('uv run ruff check')") == "Run ruff"
+    assert describe_cell_intent("sh('cat agent/ui.py')") == "Read agent/ui.py"
+    assert describe_cell_intent("sh('grep -rn foo agent/')") == 'Search "foo" in agent/'
+    assert describe_cell_intent("sh('ls /tmp')") == "List /tmp"
+    # Non-constant command: nothing identifiable.
+    assert describe_cell_intent("sh(cmd_var)") == "Run Python"
+    # SyntaxError fallback: sh()/bash() string args rescued via regex.
+    assert describe_cell_intent("def broken(:\n    sh('pytest -q')") == "Run pytest"
+
+
+def test_cell_intent_read_edit_write_helpers() -> None:
+    from agent.actions import describe_cell_intent
+
+    assert describe_cell_intent("read('agent/ui.py', 200, 400)") == "Read agent/ui.py (200-400)"
+    assert describe_cell_intent("read('agent/ui.py', 200)") == "Read agent/ui.py (from 200)"
+    assert describe_cell_intent("read('agent/ui.py')") == "Read agent/ui.py"
+    assert describe_cell_intent("read('agent/ui.py', 1, 50)") == "Read agent/ui.py"
+    assert describe_cell_intent("print(read('agent/ui.py', 200, 400))") == "Read agent/ui.py (200-400)"
+    assert describe_cell_intent("edit('agent/ui.py', 'a', 'b')") == "Edit agent/ui.py"
+    assert describe_cell_intent("write('/tmp/x.py', 'hi')") == "Write /tmp/x.py"
+    assert describe_cell_intent("view_image('/tmp/a.png')") == "View /tmp/a.png"
+    assert describe_cell_intent("ls('.')") == "List"
+    assert describe_cell_intent("ls('agent')") == "List agent"
+    assert describe_cell_intent("find('*.py', 'src')") == "Find *.py in src"
+    assert describe_cell_intent("find('*.py')") == "Find *.py"
+    assert describe_cell_intent("rg('Spinner', 'agent')") == 'Search "Spinner" in agent'
+    assert describe_cell_intent("rg('Spinner')") == 'Search "Spinner"'
+
+
+def test_cell_intent_mcp_and_now() -> None:
+    from agent.actions import describe_cell_intent
+
+    assert (
+        describe_cell_intent("await mcp.exa.web_search_exa(query='S&P 500 level')")
+        == "Web search: S&P 500 level"
+    )
+    assert describe_cell_intent("mcp.exa.web_fetch_exa(url='https://example.com/page?x=1')") == (
+        "Fetch example.com/page"
+    )
+    assert describe_cell_intent("mcp.github.get_issue(id=1)") == "MCP github.get_issue"
+    assert describe_cell_intent("now('America/New_York')") == "Check date/time"
+    # now() loses to any real operation present.
+    assert describe_cell_intent("print(now('UTC'))\nread('a.py')") == "Read a.py"
+
+
+def test_cell_intent_boilerplate_and_combination() -> None:
+    from agent.actions import describe_cell_intent
+
+    # Boilerplate only: imports, assignments, print wrappers, comments.
+    assert describe_cell_intent("import subprocess") == "Run Python"
+    assert describe_cell_intent("x = 1\nprint(x)") == "Run Python"
+    assert describe_cell_intent("print('hello')") == "Run Python"
+    assert describe_cell_intent("# just a comment\n") == "Run Python"
+    assert describe_cell_intent("") == "Run Python"
+    assert describe_cell_intent("def sh(cmd, timeout=20):\n    ...") == "Run Python"
+    # The motivating case: boilerplate around a real shell op.
+    assert describe_cell_intent("import subprocess\nprint(sh('uv run pytest -q'))") == "Run pytest"
+
+    # Two ops combine with "·"; dedupe collapses repeats.
+    assert describe_cell_intent("read('a.py')\nedit('b.py', 'x', 'y')") == "Read a.py · Edit b.py"
+    assert describe_cell_intent("read('a.py')\nread('a.py')") == "Read a.py"
+
+    # Three or more: first two plus "+N more".
+    multi = "read('a.py')\nedit('b.py', 'x', 'y')\nwrite('c.py', 'z')\nrg('foo', 'agent')"
+    assert describe_cell_intent(multi) == "Read a.py · Edit b.py · +2 more"
+    assert describe_cell_intent("read('a.py')\nedit('b.py', 'x', 'y')\nwrite('c.py', 'z')") == (
+        "Read a.py · Edit b.py · +1 more"
+    )
+
+
+def test_cell_intent_never_raises_and_truncates() -> None:
+    from agent.actions import describe_cell_intent
+
+    for bad in ["", " ", "(((", "\x00\x01", "read(", "sh(unclosed", "mcp.."]:
+        assert isinstance(describe_cell_intent(bad), str)
+        assert describe_cell_intent(bad)
+
+    long_label = describe_cell_intent(
+        "read('/very/long/path/that/keeps/going/and/going/agent/some_module.py', 200, 400)"
+    )
+    assert len(long_label) <= 60
+    assert long_label.endswith("…")
 
 
 def test_short_path_collapses_home(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -622,20 +714,20 @@ def test_turn_progress_tracker_in_progress_and_collapsing() -> None:
     grp2 = tracker._render_group()
     assert len(grp2.renderables) == 2
     assert "Thought for " in grp2.renderables[0].plain
-    assert "Read files..." in grp2.renderables[1].plain
+    assert "Read agent/loop.py... " in grp2.renderables[1].plain
     assert grp2.renderables[1].plain[0] in ui._SPINNER_FRAMES
 
     tracker.add_tool_result(1, "read('agent/loop.py')", CellResult(ok=True, stdout="content\n", stderr="", result=None), 0.05)
     grp3 = tracker._render_group()
     assert len(grp3.renderables) == 2
     assert "Thought for " in grp3.renderables[0].plain
-    assert "· #1 · Read files" in grp3.renderables[1].plain
+    assert "· #1 · Read agent/loop.py" in grp3.renderables[1].plain
 
     tracker.start_thinking()
     grp4 = tracker._render_group()
     assert len(grp4.renderables) == 3
     assert "Thought for " in grp4.renderables[0].plain
-    assert "· #1 · Read files" in grp4.renderables[1].plain
+    assert "· #1 · Read agent/loop.py" in grp4.renderables[1].plain
     assert "Thinking... " in grp4.renderables[2].plain
     assert grp4.renderables[2].plain[0] in ui._SPINNER_FRAMES
 
@@ -643,13 +735,13 @@ def test_turn_progress_tracker_in_progress_and_collapsing() -> None:
     grp5 = tracker._render_group()
     assert len(grp5.renderables) == 4
     assert "Thought for " in grp5.renderables[2].plain
-    assert "Edit files..." in grp5.renderables[3].plain
+    assert "Edit agent/cli.py... " in grp5.renderables[3].plain
     assert grp5.renderables[3].plain[0] in ui._SPINNER_FRAMES
 
     tracker.add_tool_result(2, "edit('agent/cli.py', 'a', 'b')", CellResult(ok=True, stdout="ok\n", stderr="", result=None), 0.04)
     grp6 = tracker._render_group()
     assert len(grp6.renderables) == 4
-    assert "· #2 · Edit files" in grp6.renderables[3].plain
+    assert "· #2 · Edit agent/cli.py" in grp6.renderables[3].plain
 
     tracker.flush()
     test_printer.markdown("Final answer text.")
@@ -929,7 +1021,7 @@ def test_turn_progress_tracker_spinner_animates(monkeypatch: pytest.MonkeyPatch)
     grp_c = tracker._render_group()
     tool_line = grp_c.renderables[-1].plain
     assert tool_line[0] in ui._SPINNER_FRAMES
-    assert "Read files..." in tool_line
+    assert "Read agent/loop.py... " in tool_line
     frame_c = tool_line[0]
     clock[0] += 0.09
     grp_d = tracker._render_group()
