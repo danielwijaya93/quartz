@@ -120,11 +120,16 @@ MODEL_CONTEXT_TOKENS: dict[str, int] = {
     "gemini-3-flash": 1_048_576,
     "gemini-2.5-pro": 1_048_576,
     "gemini-2.5-flash": 1_048_576,
+    # Legacy DeepSeek V3-era ids (the direct API no longer serves them).
     "deepseek-chat": 64_000,
     "deepseek-reasoner": 64_000,
-    "deepseek-flash": 64_000,
-    # OpenRouter namespaced ids (bare ids above are the direct DeepSeek API,
-    # 64k input). OpenRouter /models (verified 2026-11-20): deepseek-chat
+    # Direct DeepSeek API /models (verified 2026-11-20) reports
+    # context_window=1048576 for deepseek-flash (DeepSeek-V4.1-Flash); the old
+    # 64k here was the V3 window and made the ctx denominator show 64k offline.
+    "deepseek-flash": 1_048_576,
+    "deepseek-v4-pro": 1_048_576,
+    # OpenRouter namespaced ids (bare ids above are the direct DeepSeek API).
+    # OpenRouter /models (verified 2026-11-20): deepseek-chat
     # context_length=163840; muse-ember context_length=1048576.
     "deepseek/deepseek-chat": 163_840,
     "deepseek/deepseek-flash": 163_840,
@@ -185,6 +190,9 @@ def _discovered_context_length(client: Any, model: str) -> int | None:
                         value = raw.get("context_length")
                         if value is None:
                             value = raw.get("max_context_tokens")
+                        if value is None:
+                            # DeepSeek's direct API uses ``context_window``.
+                            value = raw.get("context_window")
                     else:
                         value = getattr(raw, "context_length", None)
                     coerced = _coerce_context_length(value)
@@ -203,6 +211,9 @@ def _discovered_context_length(client: Any, model: str) -> int | None:
                     value = item.get("context_length")
                     if value is None:
                         value = item.get("max_context_tokens")
+                    if value is None:
+                        # DeepSeek's direct API uses ``context_window``.
+                        value = item.get("context_window")
                     coerced = _coerce_context_length(value)
                     if coerced is not None:
                         return coerced

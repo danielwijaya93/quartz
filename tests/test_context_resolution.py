@@ -12,7 +12,7 @@ from agent.models import (
     PROVIDERS,
     resolve_context_tokens,
 )
-from agent.openai_client import ModelDetails, parse_model_detail
+from agent.openai_client import ModelDetails, parse_model_detail, parse_model_details
 
 
 class _DetailsClient:
@@ -98,7 +98,10 @@ def test_resolve_static_table_entries() -> None:
     assert resolve_context_tokens("google", "gemini-2.5-flash") == 1_048_576
     assert resolve_context_tokens("deepseek", "deepseek-chat") == 64_000
     assert resolve_context_tokens("deepseek", "deepseek-reasoner") == 64_000
-    assert resolve_context_tokens("deepseek", "deepseek-flash") == 64_000
+    # Live DeepSeek /models (2026-11-20): deepseek-flash context_window=1048576
+    # (DeepSeek-V4.1-Flash); the V3-era 64k fallback made the ctx show 64k.
+    assert resolve_context_tokens("deepseek", "deepseek-flash") == 1_048_576
+    assert resolve_context_tokens("deepseek", "deepseek-v4-pro") == 1_048_576
     # Namespaced OpenRouter ids (bare ids above are the direct DeepSeek API).
     assert resolve_context_tokens("openrouter", "deepseek/deepseek-chat") == 163_840
     assert resolve_context_tokens("openrouter", "deepseek/deepseek-flash") == 163_840
@@ -151,6 +154,31 @@ def test_resolve_discovered_dicts_and_list_models_shapes() -> None:
     assert resolve_context_tokens("openai", "gpt-4.1", list_client) == 333_333
 
 
+def test_parse_model_detail_context_window_alias() -> None:
+    """DeepSeek's direct API spells the field ``context_window``."""
+    details = parse_model_detail({"id": "deepseek-flash", "context_window": 1_048_576})
+    assert details is not None and details.context_length == 1_048_576
+
+
+def test_parse_model_detail_context_length_wins_over_context_window() -> None:
+    details = parse_model_detail(
+        {"id": "x", "context_length": 200_000, "context_window": 1_048_576}
+    )
+    assert details is not None and details.context_length == 200_000
+
+
+def test_resolve_discovered_context_window_alias() -> None:
+    """End-to-end: DeepSeek /models payload (context_window) must win over static."""
+    parsed = parse_model_details([{"id": "deepseek-flash", "context_window": 1_048_576}])
+    assert resolve_context_tokens("deepseek", "deepseek-flash", _DetailsClient(parsed)) == 1_048_576
+
+    raw_dicts = _DetailsClient([{"id": "deepseek-v4-pro", "context_window": 1_048_576}])
+    assert resolve_context_tokens("deepseek", "deepseek-v4-pro", raw_dicts) == 1_048_576
+
+    list_client = _ListModelsClient([{"id": "deepseek-flash", "context_window": 1_048_576}])
+    assert resolve_context_tokens("deepseek", "deepseek-flash", list_client) == 1_048_576
+
+
 def test_resolve_non_throwing_on_client_errors() -> None:
     # Raising /models fetch -> fall through to static table, never raise.
     assert resolve_context_tokens("openai", "gpt-4.1", _RaisingClient()) == 1_047_576
@@ -168,7 +196,7 @@ def test_max_context_tokens_env_no_longer_affects_resolution(
     """MAX_CONTEXT_TOKENS is ignored: resolution never reads the env."""
     monkeypatch.setenv("MAX_CONTEXT_TOKENS", "999999999")
     assert resolve_context_tokens("openai", "gpt-4.1") == 1_047_576
-    assert resolve_context_tokens("deepseek", "deepseek-flash") == 64_000
+    assert resolve_context_tokens("deepseek", "deepseek-flash") == 1_048_576
     assert resolve_context_tokens("openai", "unknown-model") == 128_000
 
     # And the CLI budget helper no longer reads it either.
