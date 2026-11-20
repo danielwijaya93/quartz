@@ -92,15 +92,11 @@ def test_build_client_uses_stored_openrouter_auth(tmp_path: Path, monkeypatch) -
 
 def test_discover_models_dynamic_and_fallback() -> None:
     fake_client = SimpleNamespace(
-        models=SimpleNamespace(
-            list=lambda: SimpleNamespace(
-                data=[
-                    SimpleNamespace(id="openai/gpt-4.1"),
-                    SimpleNamespace(id="anthropic/claude-sonnet-4"),
-                    SimpleNamespace(id="openai/gpt-4.1"),
-                ]
-            )
-        )
+        list_models=lambda: [
+            "openai/gpt-4.1",
+            "anthropic/claude-sonnet-4",
+            "openai/gpt-4.1",
+        ]
     )
     models, err = discover_models("openrouter", client=fake_client)
     assert err is None
@@ -109,7 +105,7 @@ def test_discover_models_dynamic_and_fallback() -> None:
     def _boom():
         raise RuntimeError("network down")
 
-    broken_client = SimpleNamespace(models=SimpleNamespace(list=_boom))
+    broken_client = SimpleNamespace(list_models=_boom)
     fallback_models, err = discover_models("openrouter", client=broken_client)
     assert err == "network down"
     assert "anthropic/claude-sonnet-4" in fallback_models

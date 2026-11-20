@@ -177,24 +177,32 @@ def test_kernel_view_image_and_loop_forwards_mid_turn(tmp_path: Path) -> None:
         calls = [0]
         seen_messages: list[list[dict[str, object]]] = []
 
-        class _DummyCompletions:
-            def create(self, **kwargs: object) -> object:
+        from agent.provider import CompletionResult, ToolCall, Usage
+
+        class _DummyClient:
+            def complete(self, model: str, messages: list[dict[str, object]], tools: object = None, *, effort: str | None = None) -> CompletionResult:
+                del model, tools, effort
                 calls[0] += 1
-                seen_messages.append(list(kwargs["messages"]))  # type: ignore[arg-type]
+                seen_messages.append(list(messages))
                 if calls[0] == 1:
-                    tc = SimpleNamespace(
-                        id="call_1",
-                        function=SimpleNamespace(name="ipython", arguments='{"code": "view_image(\'shot.png\')"}'),
+                    return CompletionResult(
+                        text="",
+                        tool_calls=[
+                            ToolCall(
+                                id="call_1",
+                                name="ipython",
+                                arguments='{"code": "view_image(\'shot.png\')"}',
+                            )
+                        ],
+                        usage=Usage(input_tokens=10, output_tokens=5),
                     )
-                    msg = SimpleNamespace(content=None, tool_calls=[tc])
-                else:
-                    msg = SimpleNamespace(content="I see the PNG.", tool_calls=None)
-                return SimpleNamespace(
-                    choices=[SimpleNamespace(message=msg)],
-                    usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, prompt_tokens_details=None),
+                return CompletionResult(
+                    text="I see the PNG.",
+                    tool_calls=[],
+                    usage=Usage(input_tokens=10, output_tokens=5),
                 )
 
-        dummy_client = SimpleNamespace(chat=SimpleNamespace(completions=_DummyCompletions()))
+        dummy_client = _DummyClient()
         answer, _, _ = agent_loop(
             dummy_client,  # type: ignore[arg-type]
             "m",

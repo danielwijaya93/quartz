@@ -1,4 +1,4 @@
-"""Google Antigravity (Cloud Code Assist) streaming provider with OpenAI-compatible interface."""
+"""Google Antigravity (Cloud Code Assist) streaming provider."""
 
 from __future__ import annotations
 
@@ -11,24 +11,24 @@ from typing import Any
 
 import httpx2
 
-from agent.errors import ContextOverflowError, ProviderError, is_context_overflow
+from agent.errors import parse_retry_after, provider_error
 from agent.google_auth import (
     antigravity_user_agent,
     get_valid_google_credentials,
     refresh_google_credentials,
 )
 from agent.images import parse_data_url
-from agent.openai_client import (
-    _Choice,
-    _Chunk,
-    _Delta,
-    _Function,
-    _Message,
-    _PromptDetails,
-    _Response,
-    _StreamChoice,
-    _ToolCall,
-    _Usage,
+from agent.provider import (
+    CompletionResult,
+    ProviderCapabilities,
+    StreamEvent,
+    TextDelta,
+    ThinkingDelta,
+    ToolCallDelta,
+    Usage,
+    UsageEvent,
+    collect_completion,
+    iter_sse_events,
 )
 from agent.provider_config import resolve_cloudcode_endpoint, resolve_http_timeout
 
@@ -228,66 +228,71 @@ def build_cloudcode_request(
     }
 
 
-def parse_sse_payload(payload: dict[str, Any], tc_counter: list[int]) -> _Chunk | None:
-    """Parse one Cloud Code Assist SSE JSON object into an OpenAI-style _Chunk."""
+def parse_sse_payload(payload: dict[str, Any], tc_counter: list[int]) -> list[StreamEvent]:
+    """Parse one Cloud Code Assist SSE JSON object into unified StreamEvents."""
+    events: list[StreamEvent] = []
     resp = payload.get("response", payload)
     usage_meta = resp.get("usageMetadata")
-    usage: _Usage | None = None
     if isinstance(usage_meta, dict):
         pt = int(usage_meta.get("promptTokenCount") or 0)
         ct = int(usage_meta.get("candidatesTokenCount") or 0)
         cached = int(usage_meta.get("cachedContentTokenCount") or 0)
-        usage = _Usage(
-            prompt_tokens=pt,
-            completion_tokens=ct,
-            prompt_tokens_details=_PromptDetails(cached_tokens=cached),
+        events.append(
+            UsageEvent(
+                usage=Usage(input_tokens=pt, output_tokens=ct, cached_tokens=cached)
+            )
         )
 
     candidates = resp.get("candidates") or []
     if not candidates:
-        return _Chunk(choices=[], usage=usage) if usage else None
+        return events
 
     parts = (candidates[0].get("content") or {}).get("parts") or []
-    text_parts: list[str] = []
-    tc_deltas: list[_ToolCall] = []
-
     for part in parts:
         if not isinstance(part, dict):
             continue
         if part.get("thought"):
+            thought_text = part.get("text")
+            if isinstance(thought_text, str) and thought_text:
+                events.append(ThinkingDelta(text=thought_text))
             continue
-        if "text" in part and isinstance(part["text"], str):
-            text_parts.append(part["text"])
+        if "text" in part and isinstance(part["text"], str) and part["text"]:
+            events.append(TextDelta(text=part["text"]))
         if "functionCall" in part and isinstance(part["functionCall"], dict):
             fc = part["functionCall"]
             idx = tc_counter[0]
             tc_counter[0] += 1
             tc_id = f"call_{secrets.token_hex(6)}"
             args_json = json.dumps(fc.get("args") or {}, ensure_ascii=False)
-            tc_deltas.append(
-                _ToolCall(
+            sig = part.get("thoughtSignature")
+            meta = {"thought_signature": str(sig)} if sig else {}
+            events.append(
+                ToolCallDelta(
                     index=idx,
                     id=tc_id,
-                    function=_Function(name=str(fc.get("name", "")), arguments=args_json),
-                    thought_signature=part.get("thoughtSignature"),
+                    name=str(fc.get("name", "")),
+                    arguments_delta=args_json,
+                    meta=meta,
                 )
             )
 
-    delta = _Delta(
-        content="".join(text_parts) if text_parts else None,
-        tool_calls=tc_deltas or None,
-    )
-    return _Chunk(choices=[_StreamChoice(delta=delta)], usage=usage)
+    return events
 
 
-class _GoogleSSEStream:
-    """Iterator over Cloud Code Assist SSE chunks with `.close()` for immediate abort."""
+class _GoogleStreamHandle:
+    """Iterator over Cloud Code Assist SSE StreamEvents with `.close()` for immediate abort."""
 
     def __init__(self, ctx: Any, resp: Any) -> None:
         self._ctx = ctx
         self._resp = resp
         self._closed = False
         self._lock = threading.Lock()
+
+    def __enter__(self) -> _GoogleStreamHandle:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.close()
 
     def close(self) -> None:
         with self._lock:
@@ -302,45 +307,43 @@ class _GoogleSSEStream:
             except Exception:
                 pass
 
-    def __iter__(self) -> Iterator[_Chunk]:
+    def __iter__(self) -> Iterator[StreamEvent]:
         tc_counter = [0]
         try:
-            for raw_line in self._resp.iter_lines():
-                if self._closed:
-                    break
-                line = raw_line.strip()
-                if not line or not line.startswith("data:"):
-                    continue
-                data_str = line[5:].strip()
-                if data_str == "[DONE]":
-                    break
-                try:
-                    payload = json.loads(data_str)
-                except json.JSONDecodeError:
-                    continue
-                chunk = parse_sse_payload(payload, tc_counter)
-                if chunk is not None:
-                    yield chunk
+            for payload in iter_sse_events(
+                self._resp,
+                provider="google",
+                is_closed=lambda: self._closed,
+            ):
+                yield from parse_sse_payload(payload, tc_counter)
         finally:
             self.close()
 
 
-class _GoogleCompletions:
+class GoogleAntigravityProvider:
+    """LLMProvider backed by Google Antigravity OAuth subscription."""
+
     def __init__(self) -> None:
         self._http: Any = None
+        self.capabilities = ProviderCapabilities(
+            reasoning_effort=True,
+            stream_options=False,
+            vision=True,
+        )
 
     def _get_http(self) -> Any:
         if self._http is None:
             self._http = httpx2.Client(timeout=resolve_http_timeout())
         return self._http
 
-    def _open_stream(
+    def stream(
         self,
         model: str,
         messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None,
+        tools: list[dict[str, Any]] | None = None,
+        *,
         effort: str | None = None,
-    ) -> _GoogleSSEStream:
+    ) -> _GoogleStreamHandle:
         endpoint = resolve_cloudcode_endpoint()
         url = f"{endpoint}/v1internal:streamGenerateContent?alt=sse"
         creds = get_valid_google_credentials()
@@ -376,92 +379,40 @@ class _GoogleCompletions:
                     finally:
                         exited = True
                         ctx.__exit__(None, None, None)
-                    if is_context_overflow(resp.status_code, err_text):
-                        raise ContextOverflowError(
-                            "Prompt exceeds the Gemini context window",
-                            provider="google",
-                            status_code=resp.status_code,
-                            detail=err_text,
-                        )
-                    raise ProviderError(
-                        f"Cloud Code Assist request failed on {endpoint}",
-                        provider="google",
-                        status_code=resp.status_code,
-                        detail=err_text,
+                    raise provider_error(
+                        "google",
+                        resp.status_code,
+                        err_text,
+                        context=f"Cloud Code Assist request failed on {endpoint}",
+                        retry_after=parse_retry_after(getattr(resp, "headers", None)),
                     )
             except BaseException:
                 if not exited:
                     ctx.__exit__(None, None, None)
                 raise
-            return _GoogleSSEStream(ctx, resp)
+            return _GoogleStreamHandle(ctx, resp)
 
-    def create(
+    def complete(
         self,
-        *,
         model: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
-        stream: bool = False,
-        stream_options: dict[str, Any] | None = None,
-        reasoning_effort: str | None = None,
-    ) -> Any:
-        del stream_options
-        sse_stream = self._open_stream(
-            model=model, messages=messages, tools=tools, effort=reasoning_effort
-        )
-        if stream:
-            return sse_stream
-
-        content_parts: list[str] = []
-        tool_calls: list[_ToolCall] = []
-        usage: _Usage | None = None
-        for chunk in sse_stream:
-            if chunk.usage is not None:
-                usage = chunk.usage
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            if delta.content:
-                content_parts.append(delta.content)
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    if tc.function is not None:
-                        tool_calls.append(
-                            _ToolCall(
-                                id=tc.id or f"call_{secrets.token_hex(6)}",
-                                function=tc.function,
-                                thought_signature=tc.thought_signature,
-                            )
-                        )
-        content = "".join(content_parts) if content_parts else None
-        return _Response(
-            choices=[
-                _Choice(
-                    message=_Message(
-                        content=content,
-                        tool_calls=tool_calls or None,
-                    )
-                )
-            ],
-            usage=usage,
+        *,
+        effort: str | None = None,
+    ) -> CompletionResult:
+        return collect_completion(
+            self.stream(model, messages, tools=tools, effort=effort)
         )
 
+    def list_models(self) -> list[str]:
+        from agent.models import PROVIDERS
 
-class _GoogleChat:
-    def __init__(self) -> None:
-        self.completions = _GoogleCompletions()
-
-
-class GoogleAntigravityClient:
-    """Drop-in OpenAI-like client backed by Google Antigravity OAuth subscription."""
-
-    def __init__(self) -> None:
-        self.chat = _GoogleChat()
+        return list(PROVIDERS["google"].models)
 
     def close(self) -> None:
-        http = self.chat.completions._http
+        http = self._http
         if http is not None:
-            self.chat.completions._http = None
+            self._http = None
             close_fn = getattr(http, "close", None)
             if callable(close_fn):
                 close_fn()

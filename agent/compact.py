@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from agent.openai_client import OpenAICompatClient
+    from agent.provider import LLMProvider
 
 from agent.images import content_to_text
 from agent.kernel_client import KernelClient
@@ -257,7 +257,7 @@ def format_python_state_notice(
 
 
 def _summarize(
-    client: OpenAICompatClient,
+    client: LLMProvider,
     model: str,
     older: list[dict[str, Any]],
     focus: str | None,
@@ -266,18 +266,18 @@ def _summarize(
     if focus:
         user_prompt += f"\n\nFocus especially on: {focus}"
 
-    response = client.chat.completions.create(
+    result = client.complete(
         model=model,
         messages=[
             {"role": "system", "content": COMPACT_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
     )
-    return (response.choices[0].message.content or "").strip()
+    return result.text.strip()
 
 
 def compact_messages(
-    client: OpenAICompatClient,
+    client: LLMProvider,
     model: str,
     messages: list[dict[str, Any]],
     kernel: KernelClient,

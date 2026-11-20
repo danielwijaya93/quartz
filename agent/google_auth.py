@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import dataclasses
 import hashlib
 import html
 import http.server
@@ -13,16 +12,27 @@ import re
 import secrets
 import select
 import sys
-import tempfile
 import threading
 import time
 import urllib.parse
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import httpx2
 
+from agent.auth_store import (
+    FALLBACK_PROJECT_ID,
+    GoogleCredentials,
+    auth_file_path,
+    auth_lock,
+    delete_google_credentials,
+    load_google_credentials,
+    read_auth_json,
+    save_google_credentials,
+    write_auth_json,
+)
 from agent.errors import CredentialError, ProviderError
 from agent.oauth_client import resolve_oauth_client
 from agent.provider_config import resolve_cloudcode_endpoint
@@ -41,7 +51,6 @@ CALLBACK_PORT = 51121
 CALLBACK_PATH = "/oauth-callback"
 REDIRECT_URI = f"http://localhost:{CALLBACK_PORT}{CALLBACK_PATH}"
 
-FALLBACK_PROJECT_ID = "rising-fact-p41fc"
 EXPIRY_SKEW_MS = 5 * 60 * 1000
 ANTIGRAVITY_VERSION_FLOOR = "2.31.2"
 ANTIGRAVITY_MANIFEST_URL = (
@@ -112,117 +121,6 @@ def antigravity_user_agent() -> str:
     return f"antigravity/{get_antigravity_version()} linux/amd64"
 
 
-def auth_file_path() -> Path:
-    override = os.getenv("QUARTZ_AUTH_FILE")
-    if override:
-        return Path(override).expanduser().resolve()
-    return (Path.home() / ".quartz" / "auth.json").resolve()
-
-
-@dataclasses.dataclass
-class GoogleCredentials:
-    access: str
-    refresh: str
-    expires_ms: int
-    project_id: str
-
-    def is_expired(self, now_ms: int | None = None) -> bool:
-        current = int(time.time() * 1000) if now_ms is None else now_ms
-        return current >= self.expires_ms
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "access": self.access,
-            "refresh": self.refresh,
-            "expires_ms": self.expires_ms,
-            "project_id": self.project_id,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> GoogleCredentials | None:
-        access = data.get("access")
-        refresh = data.get("refresh")
-        project_id = data.get("project_id")
-        expires_ms = data.get("expires_ms")
-        if not (isinstance(access, str) and access and isinstance(refresh, str) and refresh):
-            return None
-        return cls(
-            access=access,
-            refresh=refresh,
-            expires_ms=int(expires_ms or 0),
-            project_id=str(project_id or FALLBACK_PROJECT_ID),
-        )
-
-
-def read_auth_json(path: Path | None = None) -> dict[str, Any]:
-    cfg = path or auth_file_path()
-    if not cfg.is_file():
-        return {}
-    try:
-        data = json.loads(cfg.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def write_auth_json(data: dict[str, Any], path: Path | None = None) -> Path:
-    cfg = path or auth_file_path()
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=cfg.parent,
-            prefix=".auth.",
-            suffix=".tmp",
-            delete=False,
-        ) as tmp:
-            tmp_path = Path(tmp.name)
-            try:
-                os.chmod(tmp_path, 0o600)
-            except OSError:
-                pass
-            tmp.write(json.dumps(data, indent=2) + "\n")
-            tmp.flush()
-            os.fsync(tmp.fileno())
-        os.replace(tmp_path, cfg)
-    except BaseException:
-        if tmp_path is not None:
-            try:
-                tmp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-        raise
-    return cfg
-
-
-def load_google_credentials(path: Path | None = None) -> GoogleCredentials | None:
-    data = read_auth_json(path)
-    google_data = data.get("google")
-    if not isinstance(google_data, dict):
-        return None
-    return GoogleCredentials.from_dict(google_data)
-
-
-def save_google_credentials(creds: GoogleCredentials, path: Path | None = None) -> Path:
-    data = read_auth_json(path)
-    data["google"] = creds.to_dict()
-    return write_auth_json(data, path)
-
-
-def delete_google_credentials(path: Path | None = None) -> bool:
-    cfg = path or auth_file_path()
-    if not cfg.is_file():
-        return False
-    data = read_auth_json(cfg)
-    if "google" not in data:
-        return False
-    del data["google"]
-    write_auth_json(data, cfg)
-    return True
-
-
 def generate_pkce() -> tuple[str, str]:
     verifier = secrets.token_urlsafe(48)
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
@@ -258,6 +156,12 @@ def _token_request(fields: dict[str, str], label: str) -> dict[str, Any]:
                 "~/.quartz/.env, then run `quartz auth login google`.",
                 detail=body,
             )
+        if "invalid_grant" in lowered:
+            raise CredentialError(
+                f"{label} failed because the Google refresh token was revoked or expired. "
+                "Run `quartz auth login google` to sign in again.",
+                detail=body,
+            )
         raise ProviderError(
             label,
             provider="google",
@@ -272,10 +176,13 @@ def _credentials_from_token(
 ) -> GoogleCredentials:
     access = token.get("access_token")
     if not isinstance(access, str) or not access:
-        raise RuntimeError("Google token response did not include access_token")
+        raise ProviderError(
+            "Google token response did not include access_token",
+            provider="google",
+        )
     refresh = token.get("refresh_token") or stored_refresh
     if not isinstance(refresh, str) or not refresh:
-        raise RuntimeError("No refresh token received. Please try logging in again.")
+        raise CredentialError("No refresh token received. Please try logging in again.")
     expires_in = int(token.get("expires_in") or 3600)
     now_ms = int(time.time() * 1000)
     expires_ms = now_ms + expires_in * 1000 - EXPIRY_SKEW_MS
@@ -348,30 +255,40 @@ def discover_project(access_token: str) -> str:
 def refresh_google_credentials(
     creds: GoogleCredentials, path: Path | None = None
 ) -> GoogleCredentials:
-    client_id, client_secret = resolve_oauth_client()
-    token = _token_request(
-        {
-            "grant_type": "refresh_token",
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "refresh_token": creds.refresh,
-        },
-        "Google token refresh",
-    )
-    updated = _credentials_from_token(token, creds.refresh, creds.project_id)
-    save_google_credentials(updated, path=path)
-    return updated
+    with auth_lock():
+        current = load_google_credentials(path=path)
+        if (
+            current is not None
+            and not current.is_expired()
+            and current.refresh == creds.refresh
+            and current.access != creds.access
+        ):
+            return current
+        client_id, client_secret = resolve_oauth_client()
+        token = _token_request(
+            {
+                "grant_type": "refresh_token",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": creds.refresh,
+            },
+            "Google token refresh",
+        )
+        updated = _credentials_from_token(token, creds.refresh, creds.project_id)
+        save_google_credentials(updated, path=path)
+        return updated
 
 
 def get_valid_google_credentials(path: Path | None = None) -> GoogleCredentials:
-    creds = load_google_credentials(path=path)
-    if creds is None:
-        raise CredentialError(
-            "Not logged in to Google. Run `quartz auth login google` first."
-        )
-    if creds.is_expired():
-        creds = refresh_google_credentials(creds, path=path)
-    return creds
+    with auth_lock():
+        creds = load_google_credentials(path=path)
+        if creds is None:
+            raise CredentialError(
+                "Not logged in to Google. Run `quartz auth login google` first."
+            )
+        if creds.is_expired():
+            creds = refresh_google_credentials(creds, path=path)
+        return creds
 
 
 def build_authorization_url(client_id: str, challenge: str, state: str) -> str:
@@ -392,7 +309,16 @@ def build_authorization_url(client_id: str, challenge: str, state: str) -> str:
     return f"{AUTHORIZE_URL}?{params}"
 
 
-def login_google_interactive(path: Path | None = None) -> GoogleCredentials:
+class _ReuseHTTPServer(http.server.HTTPServer):
+    allow_reuse_address = True
+
+
+def login_google_interactive(
+    path: Path | None = None,
+    *,
+    on_url: Callable[[str], None] | None = None,
+    interactive_paste: bool = True,
+) -> GoogleCredentials:
     """Run Google OAuth2 PKCE flow with localhost:51121 callback and manual paste fallback."""
     client_id, client_secret = resolve_oauth_client()
     verifier, challenge = generate_pkce()
@@ -435,28 +361,19 @@ def login_google_interactive(path: Path | None = None) -> GoogleCredentials:
             self.wfile.write(body.encode("utf-8"))
             done_event.set()
 
-    server = http.server.HTTPServer(("127.0.0.1", CALLBACK_PORT), _Handler)
+    server = _ReuseHTTPServer(("127.0.0.1", CALLBACK_PORT), _Handler)
     server.timeout = 0.5
     srv_thread = threading.Thread(
         target=lambda: _serve_until_done(server, done_event), daemon=True
     )
     srv_thread.start()
 
-    from rich.text import Text
-
-    from agent.ui import console, get_active_tui
-
-    console.print(Text("Open this URL in your browser to sign in with Google:\n"))
-    console.print(Text(f"  {auth_url}\n"))
+    if on_url is not None:
+        on_url(auth_url)
     try:
         webbrowser.open(auth_url)
     except Exception:
         pass
-    console.print(Text(f"Waiting for browser callback on http://localhost:{CALLBACK_PORT} ..."))
-    if get_active_tui() is None:
-        console.print(
-            Text("(If on a remote machine, paste the final redirect URL here and press Enter)")
-        )
 
     # Race browser callback against optional manual paste (only when not in full-screen TUI)
     def _read_paste() -> None:
@@ -485,23 +402,26 @@ def login_google_interactive(path: Path | None = None) -> GoogleCredentials:
                 done_event.set()
                 return
 
-    if get_active_tui() is None:
+    if interactive_paste:
         paste_thread = threading.Thread(target=_read_paste, daemon=True)
         paste_thread.start()
 
     try:
         if not done_event.wait(timeout=300.0):
-            raise RuntimeError("Google OAuth login timed out after 5 minutes.")
+            raise ProviderError(
+                "Google OAuth login timed out after 5 minutes.",
+                provider="google",
+            )
     finally:
         done_event.set()
         srv_thread.join(timeout=1.0)
         server.server_close()
 
     if "error" in result_box:
-        raise RuntimeError(f"Google OAuth error: {result_box['error']}")
+        raise CredentialError(f"Google OAuth error: {result_box['error']}")
     auth_code = result_box.get("code")
     if not auth_code:
-        raise RuntimeError("No authorization code received.")
+        raise CredentialError("No authorization code received.")
 
     token = _token_request(
         {

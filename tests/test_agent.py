@@ -183,27 +183,17 @@ def test_compaction_safe_split_and_python_state() -> None:
 
 
 def test_turn_usage_telemetry() -> None:
-    class _Details:
-        cached_tokens = 750
-
-    class _Usage:
-        prompt_tokens = 1000
-        completion_tokens = 200
-        prompt_tokens_details = _Details()
+    from agent.provider import Usage
 
     stats = TurnUsage()
-    stats.update(_Usage())
+    stats.update(Usage(input_tokens=1000, output_tokens=200, cached_tokens=750))
     assert stats.prompt_tokens == 1000
     assert stats.cached_tokens == 750
     assert stats.cache_hit_rate == 0.75
     assert round(stats.context_pct(10_000), 1) == 10.0
 
-    # Provider without prompt_tokens_details
-    class _BasicUsage:
-        prompt_tokens = 500
-        completion_tokens = 50
-
-    stats.update(_BasicUsage())
+    # Provider without cached_tokens
+    stats.update(Usage(input_tokens=500, output_tokens=50))
     assert stats.total_prompt_tokens == 1500
     assert stats.total_cached_tokens == 750
     assert stats.cache_hit_rate == 0.0
@@ -219,11 +209,11 @@ def test_agent_loop_abort_event(tmp_path: Path) -> None:
     abort_event = threading.Event()
     abort_event.set()
 
-    class _DummyCompletions:
-        def create(self, **kwargs: object) -> object:
+    class _DummyClient:
+        def complete(self, **kwargs: object) -> object:
             raise AssertionError("Should not call API when already aborted")
 
-    dummy_client = SimpleNamespace(chat=SimpleNamespace(completions=_DummyCompletions()))
+    dummy_client = _DummyClient()
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
@@ -253,21 +243,25 @@ def test_agent_loop_steering_queue(tmp_path: Path) -> None:
     seen_steering: list[str] = []
     calls = [0]
 
-    class _DummyCompletions:
-        def create(self, **kwargs: object) -> object:
+    from agent.provider import CompletionResult, Usage
+
+    class _DummyClient:
+        def complete(self, **kwargs: object) -> CompletionResult:
+            del kwargs
             calls[0] += 1
             if calls[0] == 1:
                 # Queue a steering message mid-turn before returning first answer
                 steering_q.put("Actually check bar too")
-                msg = SimpleNamespace(content="First step done", tool_calls=None)
+                text = "First step done"
             else:
-                msg = SimpleNamespace(content="Checked bar as well", tool_calls=None)
-            return SimpleNamespace(
-                choices=[SimpleNamespace(message=msg)],
-                usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, prompt_tokens_details=None),
+                text = "Checked bar as well"
+            return CompletionResult(
+                text=text,
+                tool_calls=[],
+                usage=Usage(input_tokens=10, output_tokens=5),
             )
 
-    dummy_client = SimpleNamespace(chat=SimpleNamespace(completions=_DummyCompletions()))
+    dummy_client = _DummyClient()
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
@@ -334,18 +328,15 @@ def test_multiline_skill_frontmatter_discovery(tmp_path: Path) -> None:
 
 
 def test_compact_messages_summarizes_and_keeps_kernel(tmp_path: Path) -> None:
-    from types import SimpleNamespace
     from agent.compact import CompactionReason, compact_messages
+    from agent.provider import CompletionResult, Usage
 
-    dummy_client = SimpleNamespace(
-        chat=SimpleNamespace(
-            completions=SimpleNamespace(
-                create=lambda **kwargs: SimpleNamespace(
-                    choices=[SimpleNamespace(message=SimpleNamespace(content="Summary of earlier work."))]
-                )
-            )
-        )
-    )
+    class _DummyClient:
+        def complete(self, **kwargs: object) -> CompletionResult:
+            del kwargs
+            return CompletionResult(text="Summary of earlier work.", tool_calls=[], usage=Usage())
+
+    dummy_client = _DummyClient()
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
@@ -499,23 +490,18 @@ def test_agent_loop_abort_during_parallel_ipython(tmp_path: Path) -> None:
     from types import SimpleNamespace
     from agent.loop import TurnAborted, agent_loop
 
-    class _ParallelAbortClient:
-        def __init__(self) -> None:
-            self.chat = SimpleNamespace(completions=self)
+    from agent.provider import CompletionResult, ToolCall, Usage
 
-        def create(self, **kwargs):
+    class _ParallelAbortClient:
+        def complete(self, **kwargs):
             del kwargs
-            tc1 = SimpleNamespace(
-                id="tc_1",
-                function=SimpleNamespace(name="ipython", arguments='{"code": "import asyncio; await asyncio.sleep(5)"}'),
-            )
-            tc2 = SimpleNamespace(
-                id="tc_2",
-                function=SimpleNamespace(name="ipython", arguments='{"code": "import asyncio; await asyncio.sleep(5)"}'),
-            )
-            return SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content=None, tool_calls=[tc1, tc2]))],
-                usage=None,
+            return CompletionResult(
+                text="",
+                tool_calls=[
+                    ToolCall(id="tc_1", name="ipython", arguments='{"code": "import asyncio; await asyncio.sleep(5)"}'),
+                    ToolCall(id="tc_2", name="ipython", arguments='{"code": "import asyncio; await asyncio.sleep(5)"}'),
+                ],
+                usage=Usage(),
             )
 
     kernel = KernelClient(cwd=tmp_path)
@@ -556,25 +542,33 @@ def test_kernel_snapshot_rejects_empty_dir() -> None:
 
 def test_agent_loop_streaming_steering_preemption(tmp_path: Path) -> None:
     import queue
-    from types import SimpleNamespace
     from agent.loop import agent_loop
+    from agent.provider import TextDelta
 
     steering_q: queue.Queue[str] = queue.Queue()
     seen_steering: list[str] = []
     calls = [0]
     chunks_yielded = [0]
 
-    class _DummyChunkChoice:
-        def __init__(self, text: str) -> None:
-            self.delta = SimpleNamespace(content=text, tool_calls=None)
+    class _DummyStream:
+        def __init__(self, gen) -> None:
+            self._gen = gen
 
-    class _DummyChunk:
-        def __init__(self, text: str) -> None:
-            self.choices = [_DummyChunkChoice(text)]
-            self.usage = None
+        def __iter__(self):
+            return self._gen
 
-    class _DummyCompletions:
-        def create(self, **kwargs: object) -> object:
+        def close(self) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            pass
+
+    class _DummyClient:
+        def stream(self, **kwargs: object) -> _DummyStream:
+            del kwargs
             calls[0] += 1
             if calls[0] == 1:
                 def _gen():
@@ -582,14 +576,14 @@ def test_agent_loop_streaming_steering_preemption(tmp_path: Path) -> None:
                         chunks_yielded[0] += 1
                         if i == 1:
                             steering_q.put("Stop and do Y instead")
-                        yield _DummyChunk(f"Chunk {i} ")
-                return _gen()
+                        yield TextDelta(text=f"Chunk {i} ")
+                return _DummyStream(_gen())
             else:
                 def _gen2():
-                    yield _DummyChunk("Handled Y instead")
-                return _gen2()
+                    yield TextDelta(text="Handled Y instead")
+                return _DummyStream(_gen2())
 
-    dummy_client = SimpleNamespace(chat=SimpleNamespace(completions=_DummyCompletions()))
+    dummy_client = _DummyClient()
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:

@@ -19,12 +19,13 @@ from agent.google_auth import (
     save_google_credentials,
 )
 from agent.google_provider import (
-    GoogleAntigravityClient,
+    GoogleAntigravityProvider,
     build_cloudcode_request,
     parse_sse_payload,
 )
 from agent.loop import TOOLS
 from agent.models import load_model_config, save_model_config
+from agent.provider import TextDelta, ToolCallDelta, UsageEvent
 
 
 def test_google_credentials_storage_and_expiry(tmp_path: Path, monkeypatch) -> None:
@@ -93,7 +94,7 @@ def test_build_cloudcode_request_and_parse_sse() -> None:
     assert req["contents"][2]["parts"][0]["functionResponse"]["response"] == {"output": "4"}
 
     tc_counter = [0]
-    chunk = parse_sse_payload(
+    events = parse_sse_payload(
         {
             "response": {
                 "candidates": [
@@ -118,14 +119,14 @@ def test_build_cloudcode_request_and_parse_sse() -> None:
         },
         tc_counter,
     )
-    assert chunk is not None
-    assert chunk.choices[0].delta.content == "Answer: "
-    assert chunk.choices[0].delta.tool_calls is not None
-    assert chunk.choices[0].delta.tool_calls[0].thought_signature == "sig_xyz"
-    assert json.loads(chunk.choices[0].delta.tool_calls[0].function.arguments) == {"code": "print(4)"}
-    assert chunk.usage is not None
-    assert chunk.usage.prompt_tokens == 500
-    assert chunk.usage.prompt_tokens_details.cached_tokens == 300
+    assert len(events) == 3
+    assert isinstance(events[0], UsageEvent)
+    assert events[0].usage.input_tokens == 500
+    assert events[0].usage.cached_tokens == 300
+    assert events[1] == TextDelta(text="Answer: ")
+    assert isinstance(events[2], ToolCallDelta)
+    assert events[2].meta["thought_signature"] == "sig_xyz"
+    assert json.loads(events[2].arguments_delta) == {"code": "print(4)"}
 
 
 def test_build_client_provider_selection(tmp_path: Path, monkeypatch) -> None:
@@ -140,7 +141,7 @@ def test_build_client_provider_selection(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("MODEL", raising=False)
 
     client, pname, model, effort = _build_client(provider="auto")
-    assert isinstance(client, GoogleAntigravityClient)
+    assert isinstance(client, GoogleAntigravityProvider)
     assert pname == "google"
     assert model == "gemini-3.8-flash-medium"
     assert effort == "medium"
@@ -165,7 +166,7 @@ def test_saved_model_config_overrides_env_defaults(tmp_path: Path, monkeypatch) 
     }
 
     client, pname, model, effort = _build_client(provider="auto")
-    assert isinstance(client, GoogleAntigravityClient)
+    assert isinstance(client, GoogleAntigravityProvider)
     assert pname == "google"
     assert model == "gemini-3.8-flash-high"
     assert effort == "xhigh"
@@ -230,7 +231,7 @@ def test_google_provider_refreshes_once_and_stays_on_one_host(
         monkeypatch,
         [
             _FakeResp(401, body=b"expired"),
-            _FakeResp(200, lines=[_SSE_WITH_TOOL, "data: [DONE]"]),
+            _FakeResp(200, lines=[_SSE_WITH_TOOL, "", "data: [DONE]", ""]),
         ],
     )
     monkeypatch.setattr(
@@ -238,11 +239,10 @@ def test_google_provider_refreshes_once_and_stays_on_one_host(
         lambda creds: GoogleCredentials("new-tok", creds.refresh, creds.expires_ms, creds.project_id),
     )
 
-    client = GoogleAntigravityClient()
-    resp = client.chat.completions.create(
+    client = GoogleAntigravityProvider()
+    resp = client.complete(
         model="gemini-3.8-flash-medium",
         messages=[{"role": "user", "content": "hi"}],
-        stream=False,
     )
 
     assert len(calls) == 2
@@ -251,9 +251,9 @@ def test_google_provider_refreshes_once_and_stays_on_one_host(
     # Same host on both attempts: a 401 is a token problem, not a routing problem.
     assert calls[0][0] == calls[1][0]
     assert "daily-cloudcode-pa" in calls[0][0]
-    assert resp.choices[0].message.content == "hi "
-    assert resp.choices[0].message.tool_calls is not None
-    assert resp.choices[0].message.tool_calls[0].function.name == "ipython"
+    assert resp.text == "hi "
+    assert len(resp.tool_calls) == 1
+    assert resp.tool_calls[0].name == "ipython"
 
 
 def test_google_provider_does_not_fall_back_to_another_host(
@@ -267,12 +267,11 @@ def test_google_provider_does_not_fall_back_to_another_host(
 
     calls = _fake_google_http(monkeypatch, [_FakeResp(429, body=b"rate limited")])
 
-    client = GoogleAntigravityClient()
+    client = GoogleAntigravityProvider()
     with pytest.raises(ProviderError) as excinfo:
-        client.chat.completions.create(
+        client.complete(
             model="gemini-3.8-flash-medium",
             messages=[{"role": "user", "content": "hi"}],
-            stream=False,
         )
 
     assert len(calls) == 1
@@ -362,17 +361,18 @@ def test_google_stream_is_closeable_from_another_thread(
 
         def iter_lines(self) -> Any:
             yield 'data: {"response": {"candidates": [{"content": {"parts": [{"text": "one"}]}}]}}'
+            yield ""
             first_yielded.set()
             closed_event.wait(timeout=2.0)
             yield 'data: {"response": {"candidates": [{"content": {"parts": [{"text": "two"}]}}]}}'
+            yield ""
 
     _fake_google_http(monkeypatch, [_BlockingFakeResp(200)])
 
-    client = GoogleAntigravityClient()
-    stream = client.chat.completions.create(
+    client = GoogleAntigravityProvider()
+    stream = client.stream(
         model="gemini-3.8-flash-medium",
         messages=[{"role": "user", "content": "hi"}],
-        stream=True,
     )
     assert not inspect.isgenerator(stream)
     assert callable(getattr(stream, "close", None))
@@ -384,9 +384,9 @@ def test_google_stream_is_closeable_from_another_thread(
     t = threading.Thread(target=_close_after_first, daemon=True)
     t.start()
 
-    chunks = list(stream)
+    events = list(stream)
     t.join(timeout=2.0)
-    assert [c.choices[0].delta.content for c in chunks] == ["one"]
+    assert [e.text for e in events if isinstance(e, TextDelta)] == ["one"]
     # Thread-safe & idempotent: __exit__ called at most once even if close() is called again.
     stream.close()
     assert exit_calls == 1

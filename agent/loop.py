@@ -8,10 +8,7 @@ import queue
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from agent.openai_client import OpenAICompatClient
+from typing import Any
 
 from agent.compact import (
     DEFAULT_KEEP_RECENT_TOKENS,
@@ -22,7 +19,15 @@ from agent.compact import (
 )
 from agent.errors import ContextOverflowError
 from agent.kernel_client import CellResult, KernelClient
-from agent.openai_client import BadRequestError
+from agent.provider import (
+    CompletionResult,
+    LLMProvider,
+    TextDelta,
+    ThinkingDelta,
+    ToolCallDelta,
+    Usage,
+    UsageEvent,
+)
 
 
 class TurnAborted(Exception):
@@ -40,13 +45,12 @@ class TurnUsage:
     total_completion_tokens: int = 0
     total_cached_tokens: int = 0
 
-    def update(self, usage: Any) -> None:
+    def update(self, usage: Usage | None) -> None:
         if usage is None:
             return
-        pt = int(getattr(usage, "prompt_tokens", 0) or 0)
-        ct = int(getattr(usage, "completion_tokens", 0) or 0)
-        details = getattr(usage, "prompt_tokens_details", None)
-        cached = int(getattr(details, "cached_tokens", 0) or 0) if details is not None else 0
+        pt = int(usage.input_tokens or 0)
+        ct = int(usage.output_tokens or 0)
+        cached = int(usage.cached_tokens or 0)
 
         if pt:
             self.prompt_tokens = pt
@@ -146,25 +150,31 @@ def drain_bash_events(kernel: KernelClient, messages: list[dict[str, Any]]) -> s
     return notice
 
 
-def _assistant_msg_to_dict(msg: Any) -> dict[str, Any]:
-    out: dict[str, Any] = {"role": "assistant", "content": msg.content}
-    if msg.tool_calls:
-        out["tool_calls"] = [
-            {
+def _completion_to_dict(result: CompletionResult) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "role": "assistant",
+        "content": result.text if result.text else None,
+    }
+    if result.tool_calls:
+        tc_list: list[dict[str, Any]] = []
+        for tc in result.tool_calls:
+            tc_obj: dict[str, Any] = {
                 "id": tc.id,
                 "type": "function",
                 "function": {
-                    "name": tc.function.name,
-                    "arguments": tc.function.arguments,
+                    "name": tc.name,
+                    "arguments": tc.arguments,
                 },
             }
-            for tc in msg.tool_calls
-        ]
+            if tc.meta.get("thought_signature"):
+                tc_obj["thought_signature"] = tc.meta["thought_signature"]
+            tc_list.append(tc_obj)
+        out["tool_calls"] = tc_list
     return out
 
 
 def _call_model(
-    client: OpenAICompatClient,
+    client: LLMProvider,
     model: str,
     full_messages: list[dict[str, Any]],
     *,
@@ -174,41 +184,27 @@ def _call_model(
     on_text_delta: Callable[[str], None] | None,
     abort_event: threading.Event | None = None,
     steering_queue: queue.Queue[str] | None = None,
-) -> tuple[dict[str, Any], Any]:
-    """Call chat completions (streaming or non-streaming) and return (assistant_dict, usage)."""
+) -> tuple[dict[str, Any], Usage | None]:
+    """Call provider (streaming or non-streaming) and return (assistant_dict, usage)."""
     if abort_event is not None and abort_event.is_set():
         raise TurnAborted()
-
-    extra: dict[str, Any] = {}
-    if effort:
-        extra["reasoning_effort"] = effort
 
     if not stream:
         if on_status:
             on_status("Thinking...")
         try:
-            try:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=full_messages,
-                    tools=TOOLS,
-                    **extra,
-                )
-            except BadRequestError as exc:
-                if extra and "reasoning_effort" in str(exc).lower():
-                    response = client.chat.completions.create(
-                        model=model,
-                        messages=full_messages,
-                        tools=TOOLS,
-                    )
-                else:
-                    raise
+            result = client.complete(
+                model=model,
+                messages=full_messages,
+                tools=TOOLS,
+                effort=effort,
+            )
         finally:
             if on_status:
                 on_status(None)
         if abort_event is not None and abort_event.is_set():
             raise TurnAborted()
-        return _assistant_msg_to_dict(response.choices[0].message), response.usage
+        return _completion_to_dict(result), result.usage
 
     if on_status:
         on_status("Thinking...")
@@ -216,30 +212,12 @@ def _call_model(
     preempted = threading.Event()
     aborted_stream = threading.Event()
     try:
-        try:
-            stream_resp = client.chat.completions.create(
-                model=model,
-                messages=full_messages,
-                tools=TOOLS,
-                stream=True,
-                stream_options={"include_usage": True},
-                **extra,
-            )
-        except BadRequestError as exc:
-            err_lower = str(exc).lower()
-            if "stream_options" in err_lower or (extra and "reasoning_effort" in err_lower):
-                retry_extra = {} if "reasoning_effort" in err_lower else extra
-                retry_opts = {} if "stream_options" in err_lower else {"stream_options": {"include_usage": True}}
-                stream_resp = client.chat.completions.create(
-                    model=model,
-                    messages=full_messages,
-                    tools=TOOLS,
-                    stream=True,
-                    **retry_opts,
-                    **retry_extra,
-                )
-            else:
-                raise
+        stream_handle = client.stream(
+            model=model,
+            messages=full_messages,
+            tools=TOOLS,
+            effort=effort,
+        )
 
         if abort_event is not None or steering_queue is not None:
             def _watch_preempt() -> None:
@@ -247,18 +225,14 @@ def _call_model(
                     if abort_event is not None and abort_event.is_set():
                         aborted_stream.set()
                         try:
-                            close_fn = getattr(stream_resp, "close", None)
-                            if callable(close_fn):
-                                close_fn()
+                            stream_handle.close()
                         except Exception:
                             pass
                         return
                     if steering_queue is not None and not steering_queue.empty():
                         preempted.set()
                         try:
-                            close_fn = getattr(stream_resp, "close", None)
-                            if callable(close_fn):
-                                close_fn()
+                            stream_handle.close()
                         except Exception:
                             pass
                         return
@@ -268,56 +242,49 @@ def _call_model(
             threading.Thread(target=_watch_preempt, daemon=True).start()
 
         content_parts: list[str] = []
-        tool_calls_acc: dict[int, dict[str, str]] = {}
-        usage: Any = None
+        tool_calls_acc: dict[int, dict[str, Any]] = {}
+        usage: Usage | None = None
         status_cleared = False
 
-        for chunk in stream_resp:
-            if abort_event is not None and abort_event.is_set():
-                aborted_stream.set()
-                raise TurnAborted()
-            if steering_queue is not None and not steering_queue.empty():
-                preempted.set()
-                try:
-                    close_fn = getattr(stream_resp, "close", None)
-                    if callable(close_fn):
-                        close_fn()
-                except Exception:
-                    pass
-                break
-            if getattr(chunk, "usage", None) is not None:
-                usage = chunk.usage
-            choices = getattr(chunk, "choices", None) or []
-            if not choices:
-                continue
-            delta = choices[0].delta
+        with stream_handle as events:
+            for event in events:
+                if abort_event is not None and abort_event.is_set():
+                    aborted_stream.set()
+                    raise TurnAborted()
+                if steering_queue is not None and not steering_queue.empty():
+                    preempted.set()
+                    try:
+                        stream_handle.close()
+                    except Exception:
+                        pass
+                    break
 
-            text = getattr(delta, "content", None)
-            if text:
-                if not status_cleared:
-                    if on_status:
-                        on_status(None)
-                    status_cleared = True
-                content_parts.append(text)
-                if on_text_delta:
-                    on_text_delta(text)
-
-            tc_deltas = getattr(delta, "tool_calls", None) or []
-            for tc_delta in tc_deltas:
-                idx = getattr(tc_delta, "index", 0)
-                entry = tool_calls_acc.setdefault(
-                    idx, {"id": "", "name": "", "arguments": "", "thought_signature": ""}
-                )
-                if getattr(tc_delta, "id", None):
-                    entry["id"] = tc_delta.id
-                if getattr(tc_delta, "thought_signature", None):
-                    entry["thought_signature"] = tc_delta.thought_signature
-                fn = getattr(tc_delta, "function", None)
-                if fn is not None:
-                    if getattr(fn, "name", None):
-                        entry["name"] += fn.name
-                    if getattr(fn, "arguments", None):
-                        entry["arguments"] += fn.arguments
+                if isinstance(event, UsageEvent):
+                    usage = event.usage
+                elif isinstance(event, ThinkingDelta):
+                    continue
+                elif isinstance(event, TextDelta):
+                    if event.text:
+                        if not status_cleared:
+                            if on_status:
+                                on_status(None)
+                            status_cleared = True
+                        content_parts.append(event.text)
+                        if on_text_delta:
+                            on_text_delta(event.text)
+                elif isinstance(event, ToolCallDelta):
+                    entry = tool_calls_acc.setdefault(
+                        event.index,
+                        {"id": "", "name": "", "arguments": "", "meta": {}},
+                    )
+                    if event.id:
+                        entry["id"] = event.id
+                    if event.name:
+                        entry["name"] += event.name
+                    if event.arguments_delta:
+                        entry["arguments"] += event.arguments_delta
+                    if event.meta:
+                        entry["meta"].update(event.meta)
     except Exception:
         if aborted_stream.is_set() or (abort_event is not None and abort_event.is_set()):
             raise TurnAborted()
@@ -344,8 +311,8 @@ def _call_model(
                 "type": "function",
                 "function": {"name": entry["name"], "arguments": entry["arguments"]},
             }
-            if entry["thought_signature"]:
-                tc_obj["thought_signature"] = entry["thought_signature"]
+            if entry["meta"].get("thought_signature"):
+                tc_obj["thought_signature"] = entry["meta"]["thought_signature"]
             tc_list.append(tc_obj)
         assistant_dict["tool_calls"] = tc_list
     return assistant_dict, usage
@@ -375,7 +342,7 @@ def _drain_steering(
 
 
 def agent_loop(
-    client: OpenAICompatClient,
+    client: LLMProvider,
     model: str,
     system_prompt: str,
     messages: list[dict[str, Any]],
@@ -468,8 +435,8 @@ def agent_loop(
                 raise
             continue
 
-        if usage and getattr(usage, "prompt_tokens", None):
-            last_prompt_tokens = int(usage.prompt_tokens)
+        if usage and usage.input_tokens:
+            last_prompt_tokens = int(usage.input_tokens)
         measured_message_count = len(messages)
         if usage_stats is not None and usage is not None:
             usage_stats.update(usage)
