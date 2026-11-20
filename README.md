@@ -16,6 +16,8 @@ Early development — version 0.1.0 (see `pyproject.toml`).
   visibility from the interactive prompt and the `/jobs` command.
 - MCP tool support (stdio and streamable HTTP) and an ACP (Agent Client Protocol)
   JSON-RPC stdio server mode for external clients.
+- Login-only credentials: API keys are stored via `/login` in `~/.quartz/auth.json`,
+  never read from `.env`.
 
 ## Installation
 
@@ -35,8 +37,7 @@ install --editable .` from a checkout is the supported path.
 ## Quickstart
 
 ```bash
-cp .env.example .env
-# edit .env and set your API key, e.g. OPENAI_API_KEY=...
+cp .env.example .env   # optional: non-secret config only
 quartz
 ```
 
@@ -54,8 +55,15 @@ quartz -p "What is in this diagram?" --image diagram.png
 
 ## Configuration
 
-Quartz loads environment in this order, without overriding values already set
-in the real environment (see `agent/cli.py::_load_env_files`):
+Credentials are **login-only**: run `/login <provider>` (or
+`quartz auth login <provider>`) to store them in `~/.quartz/auth.json`.
+API keys are never read from environment variables or `.env` files —
+legacy `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `DEEPSEEK_API_KEY` /
+`OPENROUTER_API_KEY` entries are silently ignored.
+
+Quartz loads non-secret environment in this order, without overriding
+values already set in the real environment
+(see `agent/cli.py::_load_env_files`):
 
 1. `~/.quartz/.env`
 2. `./.env` (the project `.env`)
@@ -66,8 +74,6 @@ that reads each variable.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | — | API key for OpenAI-compatible providers. |
-| `OPENAI_BASE_URL` | per provider | Base URL override; defaults e.g. `https://api.openai.com/v1`. |
 | `MODEL` | provider default | Default model; `--model` overrides it. |
 | `PROVIDER` | `auto` | Provider backend; `--provider` overrides it. |
 | `EFFORT` | provider default | Reasoning effort; `--effort` overrides it. |
@@ -169,9 +175,9 @@ to discover the models and reasoning-effort levels the provider exposes.
 
 | Provider | Auth | Example models |
 | --- | --- | --- |
-| `openrouter` | API key (`OPENROUTER_API_KEY`) | `anthropic/claude-sonnet-4`, `openai/gpt-4.1`, `google/gemini-2.5-flash` |
-| `openai` | API key (`OPENAI_API_KEY`) | `gpt-4.1`, `gpt-4.1-mini`, `o4-mini`, `o3` |
-| `deepseek` | API key (`DEEPSEEK_API_KEY`) | `deepseek-chat`, `deepseek-reasoner`, `deepseek-flash` |
+| `openrouter` | API key (`/login openrouter`) | `anthropic/claude-sonnet-4`, `openai/gpt-4.1`, `google/gemini-2.5-flash` |
+| `openai` | API key (`/login openai`) | `gpt-4.1`, `gpt-4.1-mini`, `o4-mini`, `o3` |
+| `deepseek` | API key (`/login deepseek`) | `deepseek-chat`, `deepseek-reasoner`, `deepseek-flash` |
 | `google` | OAuth (Google Antigravity) | `gemini-3.8-flash-medium`, `gemini-2.5-pro`, `gemini-2.5-flash` |
 | `custom` | API key (OpenAI-compatible) | any model on your endpoint |
 

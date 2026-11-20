@@ -413,8 +413,12 @@ def _context_budget_from_env() -> tuple[int, int, int]:
 def _load_env_files() -> None:
     """Load ~/.quartz/.env then the project .env, without overriding real env vars.
 
-    Runs before any subcommand dispatch: `quartz auth`, `quartz mcp` and
-    `quartz acp` all read credentials from the environment.
+    Loads non-secret configuration only (MODEL, COMPACT_*, QUARTZ_*).
+    API-key credentials are never read from .env: they are login-only
+    (auth.json, via /login). Legacy keys such as OPENAI_API_KEY or
+    OPENAI_BASE_URL may still be loaded into the process environment by
+    dotenv, but they are silently ignored and never used.
+    Runs before any subcommand dispatch.
     """
     from dotenv import load_dotenv
 

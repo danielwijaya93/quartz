@@ -161,7 +161,7 @@ def test_discover_model_efforts_caches_per_model(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(oc, "OpenAIProvider", _FakeClient)
     monkeypatch.setattr(
-        models, "resolve_provider_credentials", lambda provider, path=None: ("key", "https://x/v1", "env")
+        models, "resolve_provider_credentials", lambda provider, path=None: ("key", "https://x/v1", "auth.json")
     )
 
     fetched: list[str] = []

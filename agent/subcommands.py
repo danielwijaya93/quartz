@@ -64,8 +64,6 @@ def _provider_status_label(provider: str) -> str:
     _, _, source = resolve_provider_credentials(provider)
     if source == "auth.json":
         return "logged in • api key"
-    if source == "env":
-        return "configured via env • api key"
     return "not configured • api key"
 
 
@@ -79,7 +77,6 @@ def build_provider(
     Raises EndpointConfigError for unknown providers and CredentialError when
     required credentials are missing.
     """
-    api_key_env = os.getenv("OPENAI_API_KEY")
     has_google = load_google_credentials() is not None
     logged_in = list_logged_in_providers()
     saved = load_model_config()
@@ -93,12 +90,6 @@ def build_provider(
             chosen_provider = "google"
         elif any(p in PROVIDERS and p != "google" for p in logged_in):
             chosen_provider = next(p for p in PROVIDERS if p != "google" and p in logged_in)
-        elif os.getenv("DEEPSEEK_API_KEY"):
-            chosen_provider = "deepseek"
-        elif api_key_env:
-            chosen_provider = "openai"
-        elif os.getenv("OPENROUTER_API_KEY"):
-            chosen_provider = "openrouter"
         elif has_google:
             chosen_provider = "google"
         else:
