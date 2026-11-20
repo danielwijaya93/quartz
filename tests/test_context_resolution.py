@@ -159,7 +159,7 @@ def test_resolve_non_throwing_on_client_errors() -> None:
 
 
 def test_max_context_tokens_env_no_longer_affects_resolution(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """MAX_CONTEXT_TOKENS is ignored: resolution never reads the env."""
     monkeypatch.setenv("MAX_CONTEXT_TOKENS", "999999999")
@@ -168,22 +168,25 @@ def test_max_context_tokens_env_no_longer_affects_resolution(
     assert resolve_context_tokens("openai", "unknown-model") == 128_000
 
     # And the CLI budget helper no longer reads it either.
-    from agent.cli import _context_budget_from_env
+    from agent.cli import _context_budget_from_settings
     from agent.compact import DEFAULT_KEEP_RECENT_TOKENS
 
     monkeypatch.delenv("COMPACT_RESERVE_TOKENS", raising=False)
     monkeypatch.delenv("COMPACT_KEEP_RECENT_TOKENS", raising=False)
-    _, reserve, keep = _context_budget_from_env()
+    monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "nope.json"))
+    _, reserve, keep = _context_budget_from_settings()
     assert reserve == 16_384
     assert keep == DEFAULT_KEEP_RECENT_TOKENS
     # Resolution module must not reference the removed env var.
     assert "MAX_CONTEXT_TOKENS" not in open(models.__file__).read()
 
 
-def test_context_budget_still_honors_compaction_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    from agent.cli import _context_budget_from_env
+def test_context_budget_ignores_compaction_env(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """COMPACT_* env vars are silently ignored; settings come from config.json."""
+    from agent.cli import _context_budget_from_settings
 
+    monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "nope.json"))
     monkeypatch.setenv("COMPACT_RESERVE_TOKENS", "999")
     monkeypatch.setenv("COMPACT_KEEP_RECENT_TOKENS", "111")
-    _, reserve, keep = _context_budget_from_env()
-    assert (reserve, keep) == (999, 111)
+    _, reserve, keep = _context_budget_from_settings()
+    assert (reserve, keep) == (16_384, 32_000)

@@ -17,8 +17,8 @@ from rich.markup import escape
 from rich.text import Text
 
 from agent.commands import _handle_slash_command
-from agent.compact import DEFAULT_KEEP_RECENT_TOKENS
 from agent.errors import CredentialError, EndpointConfigError
+from agent.settings import load_settings
 from agent.images import (
     ImageAttachment,
     build_user_content,
@@ -331,7 +331,9 @@ def _build_runtime(args: argparse.Namespace) -> tuple[AgentRuntime, bool]:
             provider=args.provider, model_override=args.model, effort_override=args.effort
         )
         max_context_tokens = resolve_context_tokens(provider_name, model, client)
-        _, compact_reserve_tokens, keep_recent_tokens = _context_budget_from_env()
+        _settings = load_settings()
+        compact_reserve_tokens = _settings.compact_reserve_tokens
+        keep_recent_tokens = _settings.keep_recent_tokens
         system_prompt = build_system_prompt(cwd, headless=bool(args.prompt))
     except (CredentialError, EndpointConfigError) as exc:
         kernel_thread.join()
@@ -390,30 +392,20 @@ def _build_runtime(args: argparse.Namespace) -> tuple[AgentRuntime, bool]:
     return rt, resumed
 
 
-def _context_budget_from_env() -> tuple[int, int, int]:
-    """Read compaction budget from env; context window is now per-model automatic."""
-    def _env_int(name: str, default: int) -> int:
-        raw = os.getenv(name)
-        if raw is None or not raw.strip():
-            return default
-        try:
-            return int(raw)
-        except ValueError:
-            return default
+def _context_budget_from_settings() -> tuple[int, int, int]:
+    """Return (0, reserve, keep) from ~/.quartz/config.json via /settings.
 
-    # Context window is per-model automatic (see resolve_context_tokens);
-    # MAX_CONTEXT_TOKENS is intentionally ignored here.
-    return (
-        0,
-        _env_int("COMPACT_RESERVE_TOKENS", 16_384),
-        _env_int("COMPACT_KEEP_RECENT_TOKENS", DEFAULT_KEEP_RECENT_TOKENS),
-    )
+    Kept for the ACP call site. Legacy COMPACT_* env vars are silently ignored.
+    """
+    settings = load_settings()
+    return (0, settings.compact_reserve_tokens, settings.keep_recent_tokens)
 
 
 def _load_env_files() -> None:
     """Load ~/.quartz/.env then the project .env, without overriding real env vars.
 
-    Loads non-secret configuration only (MODEL, COMPACT_*, QUARTZ_*).
+    Loads non-secret configuration only (MODEL, QUARTZ_*). Compaction
+    preferences live in ~/.quartz/config.json (see /settings), not .env.
     API-key credentials are never read from .env: they are login-only
     (auth.json, via /login). Legacy keys such as OPENAI_API_KEY or
     OPENAI_BASE_URL may still be loaded into the process environment by
@@ -503,7 +495,9 @@ def main() -> None:
     if args.acp:
         from agent.acp import ACPServer
 
-        _, compact_reserve_tokens, keep_recent_tokens = _context_budget_from_env()
+        _settings = load_settings()
+        compact_reserve_tokens = _settings.compact_reserve_tokens
+        keep_recent_tokens = _settings.keep_recent_tokens
 
         def _provider_with_resolved_context():
             client, pname, model_name, effort_name = build_provider(

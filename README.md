@@ -77,8 +77,7 @@ that reads each variable.
 | `MODEL` | provider default | Default model; `--model` overrides it. |
 | `PROVIDER` | `auto` | Provider backend; `--provider` overrides it. |
 | `EFFORT` | provider default | Reasoning effort; `--effort` overrides it. |
-| `COMPACT_RESERVE_TOKENS` | `16384` | Tokens reserved during compaction. |
-| `COMPACT_KEEP_RECENT_TOKENS` | `32000` | Recent tokens kept verbatim after compaction. |
+| (compaction) | `16384` / `32000` | `reserve_tokens` / `keep_recent_tokens` via `/settings` (stored in `~/.quartz/config.json`). |
 | `QUARTZ_CLOUDCODE_ENDPOINT` | `antigravity` | Google Cloud Code host alias (`antigravity`, `gemini-cli`) or an `http(s)` URL. |
 | `QUARTZ_HTTP_TIMEOUT` | `300` | Provider read timeout, in seconds. |
 | `QUARTZ_GOOGLE_CLIENT_ID` | bundled | Optional override for the Google OAuth application. |
