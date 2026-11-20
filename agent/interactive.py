@@ -151,6 +151,7 @@ class InteractiveDock:
         self._turn_running = False
         self._aborting = False
         self._bg_count = 0
+        self._bg_jobs: list[dict[str, Any]] = []
         self._live_renderable: Any | None = None
         self._transient_status: Any | None = None
         self._active_tracker: Any | None = None
@@ -267,6 +268,7 @@ class InteractiveDock:
                 or self._aborting
                 or self._live_renderable is not None
                 or self._transient_status is not None
+                or bool(self._bg_jobs)
             )
 
     def _on_modal_text_changed(self, _: Buffer) -> None:
@@ -358,6 +360,7 @@ class InteractiveDock:
             aborting = self._aborting
             live = self._live_renderable
             status = self._transient_status
+            jobs = list(self._bg_jobs)
 
         if aborting:
             return [("dim", "Aborting...")]
@@ -365,6 +368,24 @@ class InteractiveDock:
             return self._render_ansi_fragments(live)
         if status is not None:
             return self._render_ansi_fragments(status)
+        if jobs:
+            from agent.actions import describe_job_label
+            from agent.ui import _fmt_stopwatch, _spinner_frame
+
+            lines: list[str] = []
+            for job in jobs[:3]:
+                label = describe_job_label(str(job.get("command", "")))
+                elapsed_s = float(job.get("elapsed_s", 0.0) or 0.0)
+                lines.append(
+                    f"{_spinner_frame(elapsed_s)} {label}... {_fmt_stopwatch(elapsed_s)}"
+                    f" (pid {job.get('pid', '?')})"
+                )
+            frags: StyleAndTextTuples = []
+            for idx, line in enumerate(lines):
+                if idx > 0:
+                    frags.append(("", "\n"))
+                frags.append(("dim", line))
+            return frags
         return []
 
     def _get_divider_fragments(self) -> StyleAndTextTuples:
@@ -390,8 +411,17 @@ class InteractiveDock:
         return [("class:prompt", "  ")]
 
     def _get_banner_fragments(self) -> StyleAndTextTuples:
+        from agent.actions import describe_job_label
+        from agent.ui import _fmt_stopwatch
+
         with self._lock:
             bg_count = self._bg_count
+            bg_jobs = list(self._bg_jobs)
+        labels: list[str] = []
+        for job in bg_jobs[:3]:
+            label = describe_job_label(str(job.get("command", "")))
+            elapsed_s = float(job.get("elapsed_s", 0.0) or 0.0)
+            labels.append(f"{label} {_fmt_stopwatch(elapsed_s)}")
         state = BannerState(
             model=self.rt.model,
             effort=self.rt.effort,
@@ -399,6 +429,7 @@ class InteractiveDock:
             usage=self.rt.usage_stats,
             max_context_tokens=self.rt.max_context_tokens,
             bg_count=bg_count,
+            bg_jobs=tuple(labels),
         )
         lines = format_banner_lines(state, self.terminal_width)
         out: StyleAndTextTuples = []
@@ -705,9 +736,15 @@ class InteractiveDock:
             count = int(getattr(self.rt.kernel, "running_bash_count", lambda: 0)())
         except Exception:
             count = 0
+        try:
+            jobs_fn = getattr(self.rt.kernel, "running_bash_jobs", None)
+            jobs = list(jobs_fn()) if callable(jobs_fn) else []
+        except Exception:
+            jobs = []
         with self._lock:
-            changed = count != self._bg_count
+            changed = count != self._bg_count or jobs != self._bg_jobs
             self._bg_count = count
+            self._bg_jobs = jobs
         if changed:
             self._invalidate()
 
@@ -743,16 +780,18 @@ class InteractiveDock:
 
     def _refresh_loop(self) -> None:
         while not self._stop_event.wait(0.1):
+            self._refresh_bg_count()
             with self._lock:
                 turn_running = self._turn_running
                 tracker = self._active_tracker
                 has_status = self._transient_status is not None
+                has_jobs = bool(self._bg_jobs)
             if turn_running:
                 if tracker is not None:
                     tracker.tick()
                 else:
                     self._invalidate()
-            elif has_status:
+            elif has_status or has_jobs:
                 self._invalidate()
 
     def run(self) -> None:

@@ -520,6 +520,34 @@ def _cmd_reset(rt: AgentRuntime, arg: str) -> bool | None:
 
 
 @COMMAND_REGISTRY.register(
+    "/jobs",
+    "List running background bash() jobs with elapsed time and output tail",
+)
+def _cmd_jobs(rt: AgentRuntime, arg: str) -> bool | None:
+    del arg
+    try:
+        jobs_fn = getattr(rt.kernel, "running_bash_jobs", None)
+        jobs = list(jobs_fn()) if callable(jobs_fn) else []
+    except Exception:
+        jobs = []
+    if not jobs:
+        _active_printer().block(Text("No background jobs running.", style="dim"))
+        return False
+    from agent.actions import describe_job_label
+    from agent.ui import _fmt_stopwatch
+
+    for job in jobs:
+        pid = job.get("pid", "?")
+        command = str(job.get("command", ""))
+        label = describe_job_label(command)
+        elapsed_s = float(job.get("elapsed_s", 0.0) or 0.0)
+        header = Text(f"pid {pid} · {label} · {_fmt_stopwatch(elapsed_s)}", style="bold")
+        _active_printer().block(header)
+        _active_printer().block(Text(command, style="dim"))
+    return False
+
+
+@COMMAND_REGISTRY.register(
     "/help",
     "Show available slash commands",
 )

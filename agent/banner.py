@@ -31,6 +31,7 @@ class BannerState:
     usage: TurnUsage
     max_context_tokens: int
     bg_count: int = 0
+    bg_jobs: tuple[str, ...] = ()
     version: str = "0.1.0"
 
 
@@ -131,7 +132,10 @@ def _build_metrics_groups(state: BannerState) -> list[FormattedLine]:
         [(_STYLE_DIM, "ctx "), (_STYLE_METRIC, ctx_value)],
         [(_STYLE_DIM, "cache "), (_STYLE_METRIC, cache_value)],
     ]
-    if state.bg_count > 0:
+    if state.bg_jobs:
+        for label in state.bg_jobs:
+            groups.append([(_STYLE_BG, f"bg {label}")])
+    elif state.bg_count > 0:
         groups.append([(_STYLE_BG, f"bg {state.bg_count}")])
     return groups
 
