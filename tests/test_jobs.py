@@ -42,6 +42,79 @@ def test_describe_job_label_quartz_worker() -> None:
     assert len(out) <= 60
 
 
+def test_describe_job_label_quartz_worker_launcher_plumbing() -> None:
+    """``-p "$(cat <prompt_file>)"`` must not leak into the label (repro)."""
+    # cwd is .worktrees/feat/... so the basename is the leaf worktree name.
+    assert (
+        describe_job_label(
+            'uv run quartz -p "$(cat .worktrees/.worker-prompt-readme.md)" '
+            "-r sid --fork --cwd .worktrees/feat/bottom-bar-compact"
+        )
+        == "Quartz worker · bottom-bar-compact"
+    )
+    # Launched-from-file variants: $(cat ...), backticks, and bare `cat ...`.
+    assert (
+        describe_job_label(
+            'uv run quartz -p "$(cat /tmp/prompt.txt)" -r sid --fork --cwd .worktrees/foo'
+        )
+        == "Quartz worker · foo"
+    )
+    assert (
+        describe_job_label(
+            'uv run quartz -p "`cat /tmp/prompt.txt`" -r sid --fork --cwd .worktrees/foo'
+        )
+        == "Quartz worker · foo"
+    )
+    assert (
+        describe_job_label(
+            'uv run quartz -p "cat prompt.txt" -r sid --fork --cwd .worktrees/foo'
+        )
+        == "Quartz worker · foo"
+    )
+    # Long-form prompt flags carrying the same plumbing behave identically.
+    assert (
+        describe_job_label(
+            'uv run quartz --prompt "$(cat /tmp/p.txt)" --cwd .worktrees/docs-readme'
+        )
+        == "Quartz worker · docs-readme"
+    )
+    assert (
+        describe_job_label(
+            "uv run quartz --prompt=$(cat /tmp/p.txt) --cwd .worktrees/docs-readme"
+        )
+        == "Quartz worker · docs-readme"
+    )
+    assert (
+        describe_job_label(
+            'uv run quartz -p"$(cat /tmp/p.txt)" --cwd .worktrees/docs-readme'
+        )
+        == "Quartz worker · docs-readme"
+    )
+    # Without a cwd the plumbing still collapses to a bare worker label.
+    assert (
+        describe_job_label('uv run quartz -p "$(cat /tmp/prompt.txt)" -r sid --fork')
+        == "Quartz worker"
+    )
+    # The readme-style variant resolves by its worktree.
+    assert (
+        describe_job_label(
+            'uv run quartz -p "$(cat .worktrees/.worker-prompt-readme.md)" '
+            "--cwd .worktrees/docs-readme"
+        )
+        == "Quartz worker · docs-readme"
+    )
+
+
+def test_describe_job_label_quartz_worker_empty_prompt() -> None:
+    """A prompt that was passed but is empty still means a forked worker."""
+    assert describe_job_label("quartz --cwd .worktrees/foo -p ''") == "Quartz worker · foo"
+    assert describe_job_label("quartz -p ''") == "Quartz worker"
+    # ... while a prompt-less invocation keeps the Run quartz fallback.
+    assert describe_job_label("quartz --help") == "Run quartz"
+    assert describe_job_label("quartz") == "Run quartz"
+    assert describe_job_label("uv run quartz") == "Run quartz"
+
+
 def test_describe_job_label_fallback_never_raises() -> None:
     assert describe_job_label("") == "Background job"
     assert describe_job_label("   ") == "Background job"
