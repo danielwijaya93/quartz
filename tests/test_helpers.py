@@ -296,3 +296,70 @@ def test_prompt_rules_include_chaining_and_helper_prioritization() -> None:
     assert "Prioritize available REPL helpers and primitives" in PROMPT_RULES
 
 
+def test_write_and_edit_py_check_missing_import(tmp_path: Path) -> None:
+    from agent.helpers import edit, write
+
+    py_file = tmp_path / "mod.py"
+    out_write = write(str(py_file), "def f():\n    return json.dumps({'a': 1})\n")
+    assert "[python check]" in out_write
+    assert "undefined name 'json'" in out_write
+    assert py_file.exists()
+
+    out_edit = edit(str(py_file), "return json.dumps({'a': 1})", "return Path('.').name")
+    assert "[python check]" in out_edit
+    assert "undefined name 'Path'" in out_edit
+    assert "Path('.').name" in py_file.read_text(encoding="utf-8")
+
+
+def test_write_and_edit_py_check_valid_and_edge_cases(tmp_path: Path) -> None:
+    from agent.helpers import _check_python_source, write
+
+    valid_src = (
+        "from __future__ import annotations\n"
+        "from typing import TYPE_CHECKING\n"
+        "import os\n\n"
+        "if TYPE_CHECKING:\n"
+        "    from missing_mod import ForwardRefType\n\n"
+        "class Box:\n"
+        "    class_attr = 10\n"
+        "    items = [x * 2 for x in range(3)]\n"
+        "    def method(self, x: ForwardRefType) -> ForwardRefType:\n"
+        "        return helper_fn(x)\n\n"
+        "def helper_fn(val):\n"
+        "    return os.path.basename(str(val))\n"
+    )
+    valid_file = tmp_path / "valid.py"
+    out = write(str(valid_file), valid_src)
+    assert "[python check]" not in out
+
+    star_file = tmp_path / "star.py"
+    out_star = write(str(star_file), "from math import *\nx = sin(1)\n")
+    assert "[python check]" not in out_star
+
+    # Real agent/*.py files must produce zero false positives
+    repo_root = Path(__file__).resolve().parent.parent
+    for py_path in sorted((repo_root / "agent").glob("*.py")):
+        warnings = _check_python_source(py_path, py_path.read_text(encoding="utf-8"))
+        assert warnings == [], f"Unexpected warnings for {py_path}: {warnings}"
+
+
+def test_write_py_check_syntax_error_and_non_py_skip(tmp_path: Path) -> None:
+    from agent.helpers import write
+
+    bad_py = tmp_path / "bad.py"
+    out_bad = write(str(bad_py), "def broken(:\n    pass\n")
+    assert "[python check]" in out_bad
+    assert "SyntaxError" in out_bad
+    assert bad_py.exists()
+
+    txt_file = tmp_path / "notes.txt"
+    out_txt = write(str(txt_file), "undefined_name_here()\ndef broken(:\n")
+    assert "[python check]" not in out_txt
+
+
+def test_system_prompt_mentions_stdlib_auto_import_and_explicit_py_imports(tmp_path: Path) -> None:
+    prompt = build_system_prompt(tmp_path, global_helpers_path=Path("/nonexistent"))
+    assert "auto-imported" in prompt
+    assert "explicit imports are still required" in prompt
+
+
