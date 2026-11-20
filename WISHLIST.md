@@ -96,3 +96,15 @@ Defaults must work for a non-expert with **zero** config. The goal: a user enabl
   - Upstream: propose quartz to herdr (quartz.toml manifest + `herdr integration install quartz`) OR ship the reporter inside quartz with a manual install step until herdr adds quartz to its index. Either way quartz owns the reporter, not a herdr-internal plugin.
   - Non-goal: replacing herdr's screen-scraping manifest rules — the socket reporter is the preferred path (same as pi).
 - **Non-goal**: implementing today — this entry is deferred until the user asks.
+
+---
+
+## 5. `kernel/actions.py` reaches into `tui/` — invert it
+- **Status**: Wishlist / Deferred
+- **Where it hurts**: `src/quartz/kernel/actions.py` is 648 lines of *presentation vocabulary* — cell label prose (`describe_cell_actions`, `describe_group_actions`, `describe_cell_intent`, `describe_job_label`, `format_action_labels`, plus 12 private `_describe_*` / `_intent_*` / `_shorten_*` helpers) living in the execution package. Lines 174-648 are that vocabulary; only lines 38-173 (`_attr_chain`, `_classify_bash_command`, `classify_cell_actions`) classify anything.
+- **The cycle workaround**: `src/quartz/kernel/actions.py:222` does `from quartz.tui.banner import _short_path  # local import: no cycle`, followed by a hand-rolled `Path.home()` fallback at `:224-235` inside `_shorten_path` (`:219-239`) that exists only because importing a TUI module from the execution package is wrong. The fallback re-implements `tui/banner.py::_short_path`'s three branches (exact match, prefix match, passthrough) and wraps the whole thing in bare `except Exception`.
+- **Consumers are all views**: the public label/intent functions are imported at `src/quartz/tui/render.py:27`, `src/quartz/tui/dock.py:411`, and `src/quartz/tui/commands.py:662`. Nothing in `kernel/` or `core/` consumes them.
+- **Consequence**: `kernel/` cannot be exercised without importing `tui`, and the fallback duplicates `_short_path` badly for no reason.
+- **Proposed shape**: move the label/intent vocabulary to `tui/` (e.g. `tui/labels.py`), keep in `kernel/actions.py` only what is genuinely about classifying a cell (`classify_cell_actions` and the AST classifiers), and delete the `_shorten_path` fallback. Measured, that relocates ~475 of the file's 648 lines (`:174-648`); the three call sites change import path only.
+- **Why deferred**: identified while landing #44-#46 and deliberately kept out of them, since those PRs were behaviour-neutral moves. Do this as its own PR with the description-text goldens in `tests/tui/test_ux.py` (plus `tests/kernel/test_jobs.py` and `tests/kernel/test_perf_helpers.py`) as the safety net.
+- **Not in this PR**: this entry is a planning note only — do not implement the move here.
