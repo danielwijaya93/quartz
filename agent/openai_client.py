@@ -38,6 +38,7 @@ class ModelDetails:
     default_effort: str | None = None
     reasoning_param_supported: bool | None = None
     reasoning_effort_param_supported: bool | None = None
+    context_length: int | None = None
 
 
 def _string_list(value: Any) -> list[str] | None:
@@ -86,6 +87,23 @@ def parse_model_detail(raw: Any) -> ModelDetails | None:
             default_level = effort_meta.get("default_level")
             if isinstance(default_level, str) and default_level.strip():
                 details.default_effort = default_level.strip()
+
+    ctx_raw = raw.get("context_length")
+    if ctx_raw is None:
+        ctx_raw = raw.get("max_context_tokens")
+    if isinstance(ctx_raw, bool):
+        ctx_raw = None
+    elif isinstance(ctx_raw, int) and ctx_raw > 0:
+        details.context_length = ctx_raw
+    elif isinstance(ctx_raw, float) and ctx_raw > 0:
+        details.context_length = int(ctx_raw)
+    elif isinstance(ctx_raw, str) and ctx_raw.strip():
+        try:
+            parsed = int(ctx_raw.strip())
+        except ValueError:
+            parsed = 0
+        if parsed > 0:
+            details.context_length = parsed
 
     params = _string_list(raw.get("supported_parameters"))
     if params is not None:

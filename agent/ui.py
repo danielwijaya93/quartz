@@ -1209,4 +1209,4 @@ def _format_turn_timing(turn_seconds: float, total_seconds: float, turn_count: i
 def _format_turn_footer(usage: TurnUsage, max_context_tokens: int) -> str:
     pct = usage.context_pct(max_context_tokens)
     cache_pct = usage.cache_hit_rate * 100.0
-    return f"ctx {_fmt_k(usage.prompt_tokens)}/{_fmt_k(max_context_tokens)} ({pct:.1f}%) · cache {cache_pct:.0f}%"
+    return f"ctx {_fmt_k(max_context_tokens)} ({pct:.1f}%) · CH {cache_pct:.0f}%"

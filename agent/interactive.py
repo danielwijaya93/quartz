@@ -461,17 +461,8 @@ class InteractiveDock:
         return [("class:prompt", "  ")]
 
     def _get_banner_fragments(self) -> StyleAndTextTuples:
-        from agent.actions import describe_job_label
-        from agent.ui import _fmt_stopwatch
-
         with self._lock:
             bg_count = self._bg_count
-            bg_jobs = list(self._bg_jobs)
-        labels: list[str] = []
-        for job in bg_jobs[:3]:
-            label = describe_job_label(str(job.get("command", "")))
-            elapsed_s = float(job.get("elapsed_s", 0.0) or 0.0)
-            labels.append(f"{label} {_fmt_stopwatch(elapsed_s)}")
         state = BannerState(
             model=self.rt.model,
             effort=self.rt.effort,
@@ -479,7 +470,6 @@ class InteractiveDock:
             usage=self.rt.usage_stats,
             max_context_tokens=self.rt.max_context_tokens,
             bg_count=bg_count,
-            bg_jobs=tuple(labels),
         )
         lines = format_banner_lines(state, self.terminal_width)
         out: StyleAndTextTuples = []

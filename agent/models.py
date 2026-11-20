@@ -35,6 +35,7 @@ class ProviderSpec:
     default_effort: str = "medium"
     base_url: str = ""
     env_key: str = ""
+    default_context_tokens: int = 128_000
 
 
 PROVIDERS: dict[str, ProviderSpec] = {
@@ -103,6 +104,132 @@ PROVIDERS: dict[str, ProviderSpec] = {
         default_effort="medium",
     ),
 }
+
+
+# Static per-model context windows (total tokens, input + output).
+# Verify against provider docs. Discovery via /models (``context_length``)
+# takes precedence when available; these entries are the offline fallback.
+MODEL_CONTEXT_TOKENS: dict[str, int] = {
+    "gpt-4.1": 1_047_576,
+    "gpt-4.1-mini": 1_047_576,
+    "o3": 200_000,
+    "o4-mini": 200_000,
+    "anthropic/claude-sonnet-4": 200_000,
+    "openai/gpt-4.1": 1_047_576,
+    "google/gemini-2.5-flash": 1_048_576,
+    "gemini-3.8-flash-medium": 1_048_576,
+    "gemini-3.8-flash-high": 1_048_576,
+    "gemini-3.8-flash-low": 1_048_576,
+    "gemini-3-flash": 1_048_576,
+    "gemini-2.5-pro": 1_048_576,
+    "gemini-2.5-flash": 1_048_576,
+    "deepseek-chat": 64_000,
+    "deepseek-reasoner": 64_000,
+    "deepseek-flash": 64_000,
+}
+
+DEFAULT_CONTEXT_TOKENS = 128_000
+
+
+def _coerce_context_length(value: Any) -> int | None:
+    """Return a positive int context length, else None."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float):
+        coerced = int(value)
+        return coerced if coerced > 0 else None
+    if isinstance(value, str) and value.strip():
+        try:
+            coerced = int(value.strip())
+        except ValueError:
+            return None
+        return coerced if coerced > 0 else None
+    return None
+
+
+def _discovered_context_length(client: Any, model: str) -> int | None:
+    """Best-effort discovered ``context_length`` for ``model`` via ``client``.
+
+    Supports OpenAI-compatible clients exposing ``list_model_details()``
+    (returning objects/ dicts with id + context_length) or
+    ``list_models()`` (returning dicts with context_length). Any failure
+    returns None so callers fall through to the static table.
+    """
+    if client is None or not model:
+        return None
+    try:
+        details_fn = getattr(client, "list_model_details", None)
+        if callable(details_fn):
+            details_list = details_fn()
+            if isinstance(details_list, (list, tuple)):
+                for details in details_list:
+                    detail_id: Any = None
+                    raw: Any = None
+                    if isinstance(details, dict):
+                        detail_id = details.get("id")
+                        raw = details
+                    else:
+                        detail_id = getattr(details, "id", None)
+                        raw = details
+                    if detail_id != model:
+                        continue
+                    value: Any = None
+                    if isinstance(raw, dict):
+                        value = raw.get("context_length")
+                        if value is None:
+                            value = raw.get("max_context_tokens")
+                    else:
+                        value = getattr(raw, "context_length", None)
+                    coerced = _coerce_context_length(value)
+                    if coerced is not None:
+                        return coerced
+                return None
+        list_fn = getattr(client, "list_models", None)
+        if callable(list_fn):
+            items = list_fn()
+            if isinstance(items, (list, tuple)):
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("id") != model:
+                        continue
+                    value = item.get("context_length")
+                    if value is None:
+                        value = item.get("max_context_tokens")
+                    coerced = _coerce_context_length(value)
+                    if coerced is not None:
+                        return coerced
+    except Exception:
+        return None
+    return None
+
+
+def resolve_context_tokens(provider: str, model: str, client: Any = None) -> int:
+    """Resolve the effective context window (tokens) for (provider, model).
+
+    Precedence: discovered ``context_length`` from the provider's /models
+    metadata (when ``client`` is passed) > static MODEL_CONTEXT_TOKENS >
+    ProviderSpec.default_context_tokens > 128_000.
+
+    When no client is passed (e.g. the Google provider, which has no
+    /models endpoint), resolution is synchronous and network-free. Startup
+    callers pass the already-built client so discovery reuses the same
+    /models fetch the effort discovery performs; failures fall through
+    silently to the static table.
+    """
+    discovered = _discovered_context_length(client, model)
+    if discovered is not None:
+        return discovered
+    if model in MODEL_CONTEXT_TOKENS:
+        return MODEL_CONTEXT_TOKENS[model]
+    spec = PROVIDERS.get(provider)
+    if spec is not None:
+        return spec.default_context_tokens
+    return DEFAULT_CONTEXT_TOKENS
 
 
 def resolve_provider_credentials(

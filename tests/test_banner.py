@@ -6,7 +6,7 @@ from pathlib import Path
 
 from prompt_toolkit.formatted_text import FormattedText
 
-from agent.banner import BannerState, format_banner_lines, format_banner_plain
+from agent.banner import BannerState, _fmt_k, format_banner_lines, format_banner_plain
 from agent.loop import TurnUsage
 
 
@@ -42,8 +42,8 @@ def test_wide_one_line_layout():
     assert "quartz v0.1.0" in line
     assert "gpt-5.4 (high)" in line
     assert "~/workspace/quartz" in line
-    assert "ctx 12.4k/128.0k (9.7%)" in line
-    assert "cache 50%" in line
+    assert "ctx 128.0k (9.7%)" in line
+    assert "CH 50%" in line
     assert "bg " not in line
     assert len(line) <= 140
 
@@ -54,7 +54,7 @@ def test_narrow_two_line_wrap():
 
     assert len(lines) == 2
     assert lines[0] == "quartz v0.1.0 · gpt-5.4 (high) · ~/workspace/quartz"
-    assert lines[1] == "ctx 12.4k/128.0k (9.7%) · cache 50%"
+    assert lines[1] == "ctx 128.0k (9.7%) · CH 50%"
     assert all(len(line) <= 70 for line in lines)
 
 
@@ -84,12 +84,12 @@ def test_bg_count_shown_when_positive_on_both_layouts():
 
     wide = format_banner_plain(state, width=140)
     assert len(wide) == 1
-    assert wide[0].endswith("· bg 3")
+    assert wide[0].endswith("· bg x3")
 
     narrow = format_banner_plain(state, width=70)
     assert len(narrow) == 2
-    assert "bg 3" not in narrow[0]
-    assert narrow[1].endswith("· bg 3")
+    assert "bg x3" not in narrow[0]
+    assert narrow[1].endswith("· bg x3")
 
 
 def test_home_path_collapse():
@@ -110,8 +110,8 @@ def test_zero_tokens_and_zero_max_context():
     lines = format_banner_plain(state, width=140)
 
     assert len(lines) == 1
-    assert "ctx 0/0 (0.0%)" in lines[0]
-    assert "cache 0%" in lines[0]
+    assert "ctx 0 (0.0%)" in lines[0]
+    assert "CH 0%" in lines[0]
 
 
 def test_extreme_narrow_widths_truncate_gracefully():
@@ -140,3 +140,62 @@ def test_formatted_lines_match_plain_and_prompt_toolkit_compatible():
         for fragments, plain in zip(formatted_lines, plain_lines, strict=True):
             ft = FormattedText(fragments)
             assert "".join(text for _, text in ft) == plain
+
+
+def test_fmt_k_m_format():
+    assert _fmt_k(0) == "0"
+    assert _fmt_k(500) == "500"
+    assert _fmt_k(999) == "999"
+    assert _fmt_k(1000) == "1.0k"
+    assert _fmt_k(12_400) == "12.4k"
+    assert _fmt_k(128_000) == "128.0k"
+    assert _fmt_k(999_999) == "1000.0k"
+    assert _fmt_k(1_000_000) == "1.0M"
+    assert _fmt_k(1_048_576) == "1.0M"
+    assert _fmt_k(1_500_000) == "1.5M"
+    assert _fmt_k(2_000_000) == "2.0M"
+
+
+def test_banner_m_format_context_window():
+    # 1M window -> "ctx 1.0M (...)" (spec example `ctx 1M` is the same value
+    # rendered with one decimal; the formatter keeps ".0" for symmetry).
+    state = _make_state(prompt_tokens=100_000, cached_tokens=50_000, max_context_tokens=1_000_000)
+    line = format_banner_plain(state, width=140)[0]
+    assert "ctx 1.0M (10.0%)" in line
+
+    state_half = _make_state(prompt_tokens=750_000, cached_tokens=0, max_context_tokens=1_500_000)
+    line_half = format_banner_plain(state_half, width=140)[0]
+    assert "ctx 1.5M (50.0%)" in line_half
+
+
+def test_bg_count_only_even_when_bg_jobs_present():
+    state = BannerState(
+        model="gpt-5.4",
+        effort="high",
+        cwd=Path.home() / "workspace" / "quartz",
+        usage=TurnUsage(prompt_tokens=12_400, cached_tokens=6_200),
+        max_context_tokens=128_000,
+        bg_count=4,
+        bg_jobs=("Run pytest 2m", "git log 5s", "Run sleep 1m"),
+        version="0.1.0",
+    )
+    lines = format_banner_plain(state, width=140)
+    assert len(lines) == 1
+    assert lines[0].endswith("· bg x4")
+    assert "Run pytest" not in lines[0]
+    assert "git log" not in lines[0]
+
+    narrow = format_banner_plain(state, width=70)
+    assert len(narrow) == 2
+    assert narrow[1].endswith("· bg x4")
+    assert "Run pytest" not in " ".join(narrow)
+
+
+def test_turn_footer_compact_format():
+    from agent.ui import _format_turn_footer
+
+    usage = TurnUsage(prompt_tokens=12_400, cached_tokens=6_200)
+    assert _format_turn_footer(usage, 128_000) == "ctx 128.0k (9.7%) · CH 50%"
+    assert _format_turn_footer(usage, 1_000_000) == "ctx 1.0M (1.2%) · CH 50%"
+    zero = TurnUsage(prompt_tokens=0, cached_tokens=0)
+    assert _format_turn_footer(zero, 0) == "ctx 0 (0.0%) · CH 0%"

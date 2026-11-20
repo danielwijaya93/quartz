@@ -36,8 +36,16 @@ class BannerState:
 
 
 def _fmt_k(n: int) -> str:
-    """Format token counts compactly using 'k' for >= 1000."""
-    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+    """Format token counts compactly: k for thousands, M for millions.
+
+    Examples: 0 -> "0", 500 -> "500", 12400 -> "12.4k", 128000 -> "128.0k",
+    1000000 -> "1.0M", 1500000 -> "1.5M".
+    """
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1000:
+        return f"{n / 1000:.1f}k"
+    return str(n)
 
 
 def _short_path(path: str | Path) -> str:
@@ -125,18 +133,15 @@ def _build_identity_groups(state: BannerState, cwd_text: str) -> list[FormattedL
 def _build_metrics_groups(state: BannerState) -> list[FormattedLine]:
     pct = state.usage.context_pct(state.max_context_tokens) if state.max_context_tokens > 0 else 0.0
     cache_pct = state.usage.cache_hit_rate * 100.0
-    ctx_value = f"{_fmt_k(state.usage.prompt_tokens)}/{_fmt_k(state.max_context_tokens)} ({pct:.1f}%)"
+    ctx_value = f"{_fmt_k(state.max_context_tokens)} ({pct:.1f}%)"
     cache_value = f"{cache_pct:.0f}%"
 
     groups: list[FormattedLine] = [
         [(_STYLE_DIM, "ctx "), (_STYLE_METRIC, ctx_value)],
-        [(_STYLE_DIM, "cache "), (_STYLE_METRIC, cache_value)],
+        [(_STYLE_DIM, "CH "), (_STYLE_METRIC, cache_value)],
     ]
-    if state.bg_jobs:
-        for label in state.bg_jobs:
-            groups.append([(_STYLE_BG, f"bg {label}")])
-    elif state.bg_count > 0:
-        groups.append([(_STYLE_BG, f"bg {state.bg_count}")])
+    if state.bg_count > 0:
+        groups.append([(_STYLE_BG, f"bg x{state.bg_count}")])
     return groups
 
 
