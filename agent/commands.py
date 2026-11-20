@@ -13,7 +13,16 @@ from rich.text import Text
 from agent.errors import CredentialError, EndpointConfigError
 from agent.images import load_clipboard_image, load_image_file
 from agent.loop import TurnUsage
-from agent.models import PROVIDERS, discover_models, save_model_config
+from agent.models import PROVIDERS, config_file_path, discover_models, save_model_config
+from agent.settings import (
+    DEFAULT_COMPACT_RESERVE_TOKENS,
+    DEFAULT_KEEP_RECENT_TOKENS,
+    Settings,
+    load_settings,
+    save_settings,
+    settings_as_dict,
+    validate_tokens,
+)
 from agent.runtime import AgentRuntime
 from agent.session import Session
 from agent.subcommands import (
@@ -497,6 +506,93 @@ def _cmd_compact(rt: AgentRuntime, arg: str) -> bool | None:
         return False
     _render_compaction(result)
     console_print(f"[dim]Context is now ~{result.estimated_tokens_after:,} tokens.[/dim]")
+    return False
+
+
+@COMMAND_REGISTRY.register(
+    "/settings",
+    "Show or update user preferences (stored in ~/.quartz/config.json)",
+    usage="[reserve|keep <tokens>|reset|list]",
+)
+def _cmd_settings(rt: AgentRuntime, arg: str) -> bool | None:
+    import json
+
+    current = Settings(
+        compact_reserve_tokens=rt.compact_reserve_tokens,
+        keep_recent_tokens=rt.keep_recent_tokens,
+    )
+    parts = (arg or "").split()
+
+    if not parts:
+        console_print(
+            Panel(
+                Text(
+                    f"reserve_tokens: {current.compact_reserve_tokens:,} "
+                    f"(default {DEFAULT_COMPACT_RESERVE_TOKENS:,})\n"
+                    f"keep_recent_tokens: {current.keep_recent_tokens:,} "
+                    f"(default {DEFAULT_KEEP_RECENT_TOKENS:,})\n\n"
+                    f"Stored in {config_file_path()}\n\n"
+                    "Usage: /settings reserve <tokens> | /settings keep <tokens> | "
+                    "/settings reset | /settings list"
+                ),
+                title="Settings",
+                border_style="dim",
+            )
+        )
+        return False
+
+    if parts[0] == "list":
+        try:
+            stored = json.dumps(settings_as_dict(load_settings()), indent=2)
+        except Exception:
+            stored = json.dumps(settings_as_dict(current), indent=2)
+        console_print(Panel(Text(stored), title="Settings (stored)", border_style="dim"))
+        return False
+
+    if parts[0] == "reset":
+        defaults = Settings()
+        save_settings(defaults)
+        rt.compact_reserve_tokens = defaults.compact_reserve_tokens
+        rt.keep_recent_tokens = defaults.keep_recent_tokens
+        console_print(
+            f"[green]Reset settings to defaults. "
+            f"reserve_tokens = {defaults.compact_reserve_tokens:,}, "
+            f"keep_recent_tokens = {defaults.keep_recent_tokens:,}.[/green]"
+        )
+        return False
+
+    if parts[0] in ("reserve", "keep") and len(parts) == 2:
+        try:
+            value = int(parts[1])
+        except ValueError:
+            console_print(
+                f"[red]Invalid value {escape(parts[1])!r}: expected an integer token count.[/red]\n"
+                "[dim]Usage: /settings reserve <tokens> | /settings keep <tokens>[/dim]"
+            )
+            return False
+        if not validate_tokens(value):
+            console_print(
+                f"[red]Invalid value {value:,}: must be between 256 and 10,000,000 tokens.[/red]\n"
+                "[dim]Usage: /settings reserve <tokens> | /settings keep <tokens>[/dim]"
+            )
+            return False
+        if parts[0] == "reserve":
+            updated = Settings(compact_reserve_tokens=value, keep_recent_tokens=current.keep_recent_tokens)
+            rt.compact_reserve_tokens = value
+            label = "reserve_tokens"
+        else:
+            updated = Settings(compact_reserve_tokens=current.compact_reserve_tokens, keep_recent_tokens=value)
+            rt.keep_recent_tokens = value
+            label = "keep_recent_tokens"
+        save_settings(updated)
+        console_print(f"[green]Saved. {label} = {value:,}[/green]")
+        return False
+
+    console_print(
+        f"[red]Unknown settings argument {escape(arg)!r}.[/red]\n"
+        "[dim]Usage: /settings reserve <tokens> | /settings keep <tokens> | "
+        "/settings reset | /settings list[/dim]"
+    )
     return False
 
 
