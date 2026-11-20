@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import dataclasses
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -35,8 +36,29 @@ class ImageAttachment:
         }
 
 
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+_MAGIC_CHECKS: dict[str, Any] = {
+    "image/png": lambda raw: raw.startswith(b"\x89PNG\r\n\x1a\n"),
+    "image/jpeg": lambda raw: raw.startswith(b"\xff\xd8\xff"),
+    "image/gif": lambda raw: raw[:6] in (b"GIF87a", b"GIF89a"),
+    "image/webp": lambda raw: raw[:4] == b"RIFF" and raw[8:12] == b"WEBP",
+}
+
+
+def validate_image_bytes(raw: bytes, mime: str, label: str = "image") -> None:
+    """Raise ValueError when `raw` is empty, oversized, or lacks the magic bytes for `mime`."""
+    if not raw:
+        raise ValueError(f"Image is empty: {label}")
+    if len(raw) > MAX_IMAGE_BYTES:
+        raise ValueError(f"Image too large ({len(raw)} bytes, max {MAX_IMAGE_BYTES}): {label}")
+    check = _MAGIC_CHECKS.get(mime)
+    if check is not None and not check(raw):
+        raise ValueError(f"File content is not a valid {mime} image: {label}")
+
+
 def load_image_file(path: Path) -> ImageAttachment:
-    """Read an image file from disk and base64-encode it."""
+    """Read an image file from disk, validate it, and base64-encode it."""
     resolved = path.expanduser().resolve()
     if not resolved.is_file():
         raise FileNotFoundError(f"Image file not found: {path}")
@@ -44,9 +66,10 @@ def load_image_file(path: Path) -> ImageAttachment:
     if not mime:
         supported = ", ".join(sorted(IMAGE_MIME_TYPES))
         raise ValueError(f"Unsupported image format '{resolved.suffix}'. Supported: {supported}")
+    if resolved.stat().st_size > MAX_IMAGE_BYTES:
+        raise ValueError(f"Image too large (max {MAX_IMAGE_BYTES} bytes): {path}")
     raw = resolved.read_bytes()
-    if not raw:
-        raise ValueError(f"Image file is empty: {path}")
+    validate_image_bytes(raw, mime, resolved.name)
     return ImageAttachment(
         mime_type=mime,
         data_b64=base64.b64encode(raw).decode("ascii"),
@@ -54,71 +77,70 @@ def load_image_file(path: Path) -> ImageAttachment:
     )
 
 
+# (tool, kind, list-types argv, fetch argv template with {mime})
+_CLIPBOARD_TOOLS: tuple[tuple[str, str, list[str], list[str]], ...] = (
+    ("wl-paste", "Wayland", ["wl-paste", "--list-types"], ["wl-paste", "--type", "{mime}"]),
+    (
+        "xclip",
+        "X11",
+        ["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"],
+        ["xclip", "-selection", "clipboard", "-t", "{mime}", "-o"],
+    ),
+)
+
+
+def _read_clipboard_with(kind: str, list_cmd: list[str], fetch_cmd: list[str]) -> ImageAttachment:
+    types_proc = subprocess.run(list_cmd, capture_output=True, text=True, timeout=3)
+    if types_proc.returncode == 0:
+        available = {line.strip() for line in types_proc.stdout.splitlines() if line.strip()}
+        for mime in _CLIPBOARD_MIMES:
+            if mime not in available:
+                continue
+            cmd = [part.format(mime=mime) for part in fetch_cmd]
+            data_proc = subprocess.run(cmd, capture_output=True, timeout=5)
+            if data_proc.returncode == 0 and data_proc.stdout:
+                ext = mime.split("/", 1)[1]
+                validate_image_bytes(data_proc.stdout, mime, f"clipboard.{ext}")
+                return ImageAttachment(
+                    mime_type=mime,
+                    data_b64=base64.b64encode(data_proc.stdout).decode("ascii"),
+                    label=f"clipboard.{ext}",
+                )
+    raise RuntimeError(f"No image found in {kind} clipboard.")
+
+
 def load_clipboard_image() -> ImageAttachment:
     """Capture an image from the system clipboard (Wayland wl-paste or X11 xclip)."""
-    if shutil.which("wl-paste"):
-        types_proc = subprocess.run(
-            ["wl-paste", "--list-types"],
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-        if types_proc.returncode == 0:
-            available = {line.strip() for line in types_proc.stdout.splitlines() if line.strip()}
-            for mime in _CLIPBOARD_MIMES:
-                if mime in available:
-                    data_proc = subprocess.run(
-                        ["wl-paste", "--type", mime],
-                        capture_output=True,
-                        timeout=5,
-                    )
-                    if data_proc.returncode == 0 and data_proc.stdout:
-                        ext = mime.split("/", 1)[1]
-                        return ImageAttachment(
-                            mime_type=mime,
-                            data_b64=base64.b64encode(data_proc.stdout).decode("ascii"),
-                            label=f"clipboard.{ext}",
-                        )
-            raise RuntimeError("No image found in Wayland clipboard.")
-
-    if shutil.which("xclip"):
-        targets_proc = subprocess.run(
-            ["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"],
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-        if targets_proc.returncode == 0:
-            available = {line.strip() for line in targets_proc.stdout.splitlines() if line.strip()}
-            for mime in _CLIPBOARD_MIMES:
-                if mime in available:
-                    data_proc = subprocess.run(
-                        ["xclip", "-selection", "clipboard", "-t", mime, "-o"],
-                        capture_output=True,
-                        timeout=5,
-                    )
-                    if data_proc.returncode == 0 and data_proc.stdout:
-                        ext = mime.split("/", 1)[1]
-                        return ImageAttachment(
-                            mime_type=mime,
-                            data_b64=base64.b64encode(data_proc.stdout).decode("ascii"),
-                            label=f"clipboard.{ext}",
-                        )
-            raise RuntimeError("No image found in X11 clipboard.")
-
+    for tool, kind, list_cmd, fetch_cmd in _CLIPBOARD_TOOLS:
+        if shutil.which(tool):
+            return _read_clipboard_with(kind, list_cmd, fetch_cmd)
     raise RuntimeError("Clipboard image paste requires 'wl-paste' (Wayland) or 'xclip' (X11).")
+
+
+_MENTION_RE = re.compile(r"""@(?:"([^"]+)"|'([^']+)'|(\S+))""")
+_LEADING_DELIMS = "(["
+_TRAILING_PUNCT = ".,;:!?)]"
+
+
+def _mention_paths(text: str) -> list[str]:
+    """Extract raw `@path` mention strings, honoring quotes and surrounding punctuation."""
+    paths: list[str] = []
+    for m in _MENTION_RE.finditer(text):
+        start = m.start()
+        if start > 0 and not (text[start - 1].isspace() or text[start - 1] in _LEADING_DELIMS):
+            continue
+        quoted = m.group(1) or m.group(2)
+        raw = quoted if quoted else (m.group(3) or "").rstrip(_TRAILING_PUNCT)
+        if raw:
+            paths.append(raw)
+    return paths
 
 
 def extract_inline_image_mentions(text: str, cwd: Path) -> list[ImageAttachment]:
     """Find `@path` tokens in `text` that point to existing supported image files."""
     attachments: list[ImageAttachment] = []
     seen: set[Path] = set()
-    for token in text.split():
-        if not token.startswith("@") or len(token) < 2:
-            continue
-        raw_path = token[1:].rstrip(".,;:!?)")
-        if not raw_path:
-            continue
+    for raw_path in _mention_paths(text):
         candidate = Path(raw_path).expanduser()
         if not candidate.is_absolute():
             candidate = cwd / candidate

@@ -676,3 +676,60 @@ def test_kernel_corrupt_manifest_and_invalid_snapshot_keep_kernel_alive(tmp_path
         assert alive.result == "42"
     finally:
         kernel.close()
+
+
+def test_bash_handle_api_zero_threads_and_dropped_lines(tmp_path: Path) -> None:
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        code = (
+            "import threading\n"
+            "before = threading.active_count()\n"
+            "h = bash('for i in $(seq 1 20500); do echo line$i; done')\n"
+            "same_threads = threading.active_count() == before\n"
+            "r = await h\n"
+            "(same_threads, r.exit_code, h.dropped_lines, r.output.count('\\n'), r.output.splitlines()[-1], h.poll() is r)\n"
+        )
+        res = kernel.exec_cell(code)
+        assert res.ok, res.stderr
+        assert res.result == "(True, 0, 500, 20000, 'line20500', True)"
+
+        res = kernel.exec_cell("h2 = bash('printf partial; sleep 5'); await asyncio.sleep(0.5); h2.kill(); r2 = await h2; (r2.output, h2.running)")
+        assert res.ok, res.stderr
+        assert res.result == "('partial', False)"
+    finally:
+        kernel.close()
+
+
+def test_snapshot_skips_modules_and_restore_reimports(tmp_path: Path) -> None:
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        assert kernel.exec_cell("import textwrap as tw\nimport math\nvalue = 5\nfrom json import dumps as jd").ok
+        manifest = kernel.snapshot(tmp_path / "snap")
+        assert "tw" not in manifest["saved"] and "value" in manifest["saved"]
+        assert manifest["modules"]["tw"] == "textwrap"
+        kernel.restart()
+        out = kernel.restore(tmp_path / "snap")
+        assert "tw" in out["restored"] and "value" in out["restored"]
+        res = kernel.exec_cell("(tw.dedent(' a'), value, jd({}))")
+        assert res.ok, res.stderr
+        assert res.result == "('a', 5, '{}')"
+    finally:
+        kernel.close()
+
+
+def test_restore_does_not_rebind_library_function_globals(tmp_path: Path) -> None:
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        assert kernel.exec_cell("from textwrap import dedent as d\ndef mine():\n    return 7").ok
+        manifest = kernel.snapshot(tmp_path / "snap2")
+        assert "mine" in manifest["saved"]
+        out = kernel.restore(tmp_path / "snap2")
+        assert "mine" in out["restored"]
+        res = kernel.exec_cell("import textwrap\n(d.__globals__ is textwrap.__dict__, mine.__globals__ is globals())")
+        assert res.ok, res.stderr
+        assert res.result == "(True, True)"
+    finally:
+        kernel.close()

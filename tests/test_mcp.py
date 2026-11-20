@@ -169,3 +169,104 @@ def test_mcp_http_auth_uses_read_timeout_300(tmp_path: Path, monkeypatch) -> Non
     assert isinstance(timeout, httpx2.Timeout)
     assert timeout.read == 300.0
     assert captured["initialized"] is True
+
+
+def _write_cfg(path: Path, servers: dict) -> None:
+    import json
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+
+
+def test_project_mcp_config_overrides_global(tmp_path: Path, monkeypatch) -> None:
+    global_cfg = tmp_path / "global.json"
+    _write_cfg(global_cfg, {"a": {"command": "ga"}, "b": {"command": "gb"}, "c": {"command": "gc"}})
+    monkeypatch.setenv("MCP_CONFIG", str(global_cfg))
+    project = tmp_path / "proj"
+    _write_cfg(project / ".quartz" / "mcp.json", {"a": {"command": "pa"}, "b": {"enabled": False, "command": "gb"}, "d": {"url": "http://x"}})
+
+    servers = load_mcp_servers(project)
+    assert servers["a"]["command"] == "pa"
+    assert "b" not in servers
+    assert set(servers) == {"a", "c", "d"}
+    assert set(load_mcp_servers()) == {"a", "b", "c"}
+    assert set(load_mcp_servers(tmp_path / "empty")) == {"a", "b", "c"}
+
+
+def test_save_mcp_tool_cache_is_atomic_and_private(tmp_path: Path) -> None:
+    import stat
+
+    from agent.mcp_client import load_mcp_tool_cache, save_mcp_tool_cache
+
+    cache = tmp_path / "sub" / "cache.json"
+    save_mcp_tool_cache({"s": [{"name": "t", "args": []}]}, cache)
+    save_mcp_tool_cache({"s2": []}, cache)
+    assert set(load_mcp_tool_cache(cache)) == {"s", "s2"}
+    assert stat.S_IMODE(cache.stat().st_mode) == 0o600
+    assert [p.name for p in cache.parent.iterdir()] == ["cache.json"]
+
+
+class _FakeSession:
+    def __init__(self, exc: BaseException | None = None, delay: float = 0.0) -> None:
+        self.exc, self.delay = exc, delay
+
+    async def call_tool(self, tool: str, args: dict):
+        import asyncio
+        from types import SimpleNamespace
+
+        await asyncio.sleep(self.delay)
+        if self.exc is not None:
+            raise self.exc
+        return SimpleNamespace(isError=False, structuredContent={"ok": tool}, content=[])
+
+
+def _manager_with(session: _FakeSession, tmp_path: Path, timeout: float | None = None):
+    from agent.mcp_client import MCPManager
+
+    mgr = MCPManager(cwd=tmp_path)
+    spec: dict = {"command": "x"}
+    if timeout is not None:
+        spec["timeout"] = timeout
+    mgr._servers = lambda: {"s": spec}  # type: ignore[method-assign]
+    mgr._sessions["s"] = session
+    return mgr
+
+
+def test_call_tool_keeps_session_on_application_error(tmp_path: Path) -> None:
+    import asyncio
+
+    import pytest
+    from mcp.shared.exceptions import MCPError
+
+    session = _FakeSession(exc=MCPError(-32602, "bad args"))
+    mgr = _manager_with(session, tmp_path)
+    with pytest.raises(MCPError):
+        asyncio.run(mgr.call_tool("s", "t", {}))
+    assert mgr._sessions.get("s") is session
+
+    session.exc = MCPError(-32000, "closed")
+    with pytest.raises(MCPError):
+        asyncio.run(mgr.call_tool("s", "t", {}))
+    assert "s" not in mgr._sessions
+
+    mgr._sessions["s"] = session
+    session.exc = OSError("boom")
+    with pytest.raises(OSError):
+        asyncio.run(mgr.call_tool("s", "t", {}))
+    assert "s" not in mgr._sessions
+
+
+def test_call_tool_timeout_drops_session(tmp_path: Path) -> None:
+    import asyncio
+
+    import pytest
+
+    mgr = _manager_with(_FakeSession(delay=5), tmp_path, timeout=0.05)
+    with pytest.raises(TimeoutError, match="timed out"):
+        asyncio.run(mgr.call_tool("s", "slow", {}))
+    assert "s" not in mgr._sessions
+
+    ok = _manager_with(_FakeSession(), tmp_path, timeout=5)
+    assert asyncio.run(ok.call_tool("s", "fast", {})) == {"ok": "fast"}
+    assert ok._call_timeout("s") == 5.0
+    assert ok._call_timeout("missing") == 60.0

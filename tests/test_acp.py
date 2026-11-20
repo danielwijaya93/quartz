@@ -475,3 +475,117 @@ def test_acp_serve_prunes_finished_worker_threads(tmp_path: Path, monkeypatch) -
     server2.serve()
     assert len(created_threads) == 4
     assert all(not t.is_alive() for t in created_threads)
+
+
+def test_acp_invalid_params_map_to_32602(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
+    reqs = [
+        {"jsonrpc": "2.0", "id": 1, "method": "session/prompt", "params": {"sessionId": "nope"}},
+        {"jsonrpc": "2.0", "id": 2, "method": "session/load", "params": {}},
+    ]
+    out = io.StringIO()
+    ACPServer(_make_fake_client, in_stream=io.StringIO("\n".join(json.dumps(r) for r in reqs) + "\n"), out_stream=out).serve()
+    errors = {m["id"]: m["error"] for m in map(json.loads, out.getvalue().splitlines()) if "error" in m}
+    assert errors[2]["code"] == -32602 and "sessionId" in errors[2]["message"]
+    assert errors[1]["code"] == -32602 and "Unknown sessionId" in errors[1]["message"]
+
+
+def test_acp_image_content_blocks_helper() -> None:
+    from agent.acp import _image_content_blocks
+
+    blocks = _image_content_blocks(
+        [{"mime_type": "image/png", "data": "QUJD"}, {"mime_type": "", "data": "x"}]
+    )
+    assert blocks == [
+        {"type": "content", "content": {"type": "image", "data": "QUJD", "mimeType": "image/png"}}
+    ]
+    assert _image_content_blocks([]) == []
+
+
+def test_acp_tool_result_forwards_images(tmp_path: Path, monkeypatch) -> None:
+    from agent import acp as acp_mod
+    from agent.kernel_client import CellResult
+
+    monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
+    out = io.StringIO()
+    server = ACPServer(_make_fake_client, in_stream=io.StringIO(""), out_stream=out)
+    sid = server._handle_session_new({"cwd": str(tmp_path)})["sessionId"]
+
+    def fake_loop(*_a, on_tool_call=None, on_tool_result=None, **_k):
+        on_tool_call("t1", "view_image('x.png')")
+        on_tool_result(
+            "t1",
+            CellResult(ok=True, stdout="", stderr="", result=None, images=[{"mime_type": "image/png", "data": "QUJD"}]),
+        )
+        return "", [], None
+
+    monkeypatch.setattr(acp_mod, "agent_loop", fake_loop)
+    server._handle_session_prompt({"sessionId": sid, "prompt": [{"type": "text", "text": "hi"}]})
+    updates = [
+        m["params"]["update"]
+        for m in map(json.loads, out.getvalue().splitlines())
+        if m.get("method") == "session/update" and m["params"]["update"]["sessionUpdate"] == "tool_call_update"
+    ]
+    assert updates[0]["content"][0]["content"]["mimeType"] == "image/png"
+    assert "rawOutput" in updates[0]
+    server._retire_session(server._sessions.pop(sid))
+
+
+def test_acp_retire_session_aborts_and_waits_before_closing(tmp_path: Path, monkeypatch) -> None:
+    import threading
+    import time
+
+    monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
+    server = ACPServer(_make_fake_client, in_stream=io.StringIO(""), out_stream=io.StringIO())
+    sid = server._handle_session_new({"cwd": str(tmp_path)})["sessionId"]
+    state = server._sessions[sid]
+    events: list[str] = []
+    real_close = state.kernel.close
+    state.kernel.close = lambda: (events.append("close"), real_close())  # type: ignore[method-assign]
+
+    def worker() -> None:
+        with state.prompt_lock:
+            state.abort_event.wait(timeout=5)
+            time.sleep(0.2)
+            events.append("prompt-done")
+
+    t = threading.Thread(target=worker)
+    t.start()
+    time.sleep(0.05)
+    server._retire_session(state)
+    t.join()
+    assert events == ["prompt-done", "close"]
+    assert state.abort_event.is_set()
+    server._sessions.clear()
+
+
+def test_acp_serve_aborts_active_prompts_on_eof(tmp_path: Path, monkeypatch) -> None:
+    import threading
+
+    from agent import acp as acp_mod
+
+    monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
+    started = threading.Event()
+    saw_abort = threading.Event()
+    out = io.StringIO()
+    server = ACPServer(_make_fake_client, in_stream=io.StringIO(""), out_stream=out)
+    sid = server._handle_session_new({"cwd": str(tmp_path)})["sessionId"]
+
+    def fake_loop(*_a, abort_event=None, **_k):
+        started.set()
+        if abort_event.wait(timeout=5):
+            saw_abort.set()
+        raise acp_mod.TurnAborted()
+
+    monkeypatch.setattr(acp_mod, "agent_loop", fake_loop)
+
+    class _Stream:
+        def __iter__(self):
+            yield json.dumps(
+                {"jsonrpc": "2.0", "id": 9, "method": "session/prompt", "params": {"sessionId": sid, "prompt": []}}
+            ) + "\n"
+            assert started.wait(timeout=5)
+
+    server._in = _Stream()  # type: ignore[assignment]
+    server.serve()
+    assert saw_abort.is_set()

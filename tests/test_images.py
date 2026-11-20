@@ -220,3 +220,72 @@ def test_kernel_view_image_and_loop_forwards_mid_turn(tmp_path: Path) -> None:
         assert img_msg["content"][1]["type"] == "image_url"
     finally:
         kernel.close()
+
+
+def test_load_image_file_rejects_fake_bytes(tmp_path: Path) -> None:
+    fake = tmp_path / "fake.png"
+    fake.write_bytes(b"not an image")
+    with pytest.raises(ValueError, match="not a valid image/png"):
+        load_image_file(fake)
+
+
+@pytest.mark.parametrize(
+    ("name", "data"),
+    [
+        ("a.jpg", b"\xff\xd8\xff\xe0data"),
+        ("a.gif", b"GIF89a\x01\x00"),
+        ("a.webp", b"RIFF\x00\x00\x00\x00WEBPVP8 "),
+    ],
+)
+def test_load_image_file_accepts_magic(tmp_path: Path, name: str, data: bytes) -> None:
+    p = tmp_path / name
+    p.write_bytes(data)
+    assert base64.b64decode(load_image_file(p).data_b64) == data
+
+
+def test_load_image_file_too_large(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("agent.images.MAX_IMAGE_BYTES", 10)
+    p = tmp_path / "big.png"
+    p.write_bytes(_TINY_PNG)
+    with pytest.raises(ValueError, match="too large"):
+        load_image_file(p)
+
+
+def test_clipboard_rejects_oversized_or_fake(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("agent.images.shutil.which", lambda n: "/x/xclip" if n == "xclip" else None)
+
+    def fake_run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+        if "TARGETS" in cmd:
+            return SimpleNamespace(returncode=0, stdout="image/png\n")
+        return SimpleNamespace(returncode=0, stdout=b"garbage")
+
+    monkeypatch.setattr("agent.images.subprocess.run", fake_run)
+    with pytest.raises(ValueError, match="not a valid"):
+        load_clipboard_image()
+
+
+def test_clipboard_xclip_and_no_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("agent.images.shutil.which", lambda n: "/x/xclip" if n == "xclip" else None)
+    state = {"targets": "image/png\n"}
+
+    def fake_run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+        if "TARGETS" in cmd:
+            return SimpleNamespace(returncode=0, stdout=state["targets"])
+        return SimpleNamespace(returncode=0, stdout=_TINY_PNG)
+
+    monkeypatch.setattr("agent.images.subprocess.run", fake_run)
+    assert load_clipboard_image().label == "clipboard.png"
+    state["targets"] = "text/plain\n"
+    with pytest.raises(RuntimeError, match="X11 clipboard"):
+        load_clipboard_image()
+
+
+def test_inline_mentions_quoted_and_delimited(tmp_path: Path) -> None:
+    (tmp_path / "my shot.png").write_bytes(_TINY_PNG)
+    (tmp_path / "b.png").write_bytes(_TINY_PNG)
+    (tmp_path / "c.png").write_bytes(_TINY_PNG)
+    found = extract_inline_image_mentions('see @"my shot.png" and (@b.png) then [@c.png] ok', tmp_path)
+    assert sorted(f.label for f in found) == ["b.png", "c.png", "my shot.png"]
+    found = extract_inline_image_mentions("see @'my shot.png'", tmp_path)
+    assert [f.label for f in found] == ["my shot.png"]
+    assert extract_inline_image_mentions("mail me@b.png", tmp_path) == []

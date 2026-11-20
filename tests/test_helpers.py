@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from agent.commands import _handle_slash_command
 from agent.runtime import AgentRuntime as _CLIRuntime
 from agent.helpers import (
@@ -398,3 +400,123 @@ def test_rg_leading_dash_patterns(tmp_path: Path) -> None:
     assert "-n line" in out_regex
 
 
+
+
+def _pycheck(src: str, name: str = "m.py") -> list[str]:
+    from agent.pycheck import check_python_source
+
+    return check_python_source(Path("/tmp") / name, src)
+
+
+def test_pycheck_symtable_scoping_cases() -> None:
+    assert _pycheck("def f():\n    return missing_a\n") == [
+        "line 2: undefined name 'missing_a' (missing import?)"
+    ]
+    # class body vs. method scope
+    src = "class A:\n    x = 1\n    y = x + 1\n    def m(self):\n        return y\n"
+    assert [w for w in _pycheck(src) if "'y'" in w] == ["line 5: undefined name 'y' (missing import?)"]
+    # comprehensions (PEP 709), walrus, match, type alias, future annotations
+    ok = (
+        "from __future__ import annotations\n"
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n    from collections import OrderedDict\n"
+        "def f(a: OrderedDict, b: Later) -> Later:\n"
+        "    vals = [y for y in range(3) if (z := y)]\n"
+        "    match a:\n        case {'k': v, **rest}:\n            print(v, rest, z)\n"
+        "        case [first, *others] | first:\n            print(first, others)\n"
+        "    return vals\n"
+    )
+    assert _pycheck(ok) == []
+    assert _pycheck("type Alias[T] = list[T]\nx: Alias[int] = []\n") == []
+    assert _pycheck("def f(:\n") and _pycheck("def f(:\n")[0].startswith("SyntaxError")
+    assert _pycheck("x = 1\n", "notes.txt") == []
+
+
+def test_pycheck_quartz_helpers_allows_builtins(tmp_path: Path) -> None:
+    from agent.pycheck import check_python_source
+
+    p = tmp_path / ".quartz" / "helpers.py"
+    assert check_python_source(p, "def h():\n    return read('x') + str(Path('.'))\n") == []
+    assert check_python_source(tmp_path / "other.py", "def h():\n    return read('x')\n")
+
+
+def test_atomic_write_never_touches_process_umask(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+    import stat
+
+    from agent.helpers import _atomic_write
+
+    def boom(_mask: int) -> int:
+        raise AssertionError("os.umask must not be called")
+
+    monkeypatch.setattr(os, "umask", boom)
+    target = tmp_path / "new.txt"
+    _atomic_write(target, "hi\n")
+    assert stat.S_IMODE(target.stat().st_mode) in (0o644, 0o664, 0o666 & ~0o022, 0o666 & ~0o002)
+    assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+
+
+def test_atomic_write_cleans_tmp_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    from agent.helpers import _atomic_write
+
+    def bad_replace(*_a: object) -> None:
+        raise OSError("nope")
+
+    monkeypatch.setattr(os, "replace", bad_replace)
+    with pytest.raises(OSError):
+        _atomic_write(tmp_path / "f.txt", "x")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_ls_find_rg_error_handling(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    from agent import helpers
+
+    f = tmp_path / "a.txt"
+    f.write_text("hello\n")
+    with pytest.raises(FileNotFoundError, match="No such directory"):
+        helpers.ls(str(tmp_path / "nope"))
+    with pytest.raises(NotADirectoryError):
+        helpers.ls(str(f))
+    with pytest.raises(NotADirectoryError):
+        helpers.find("*", str(f))
+    assert helpers.rg("x", str(tmp_path / "nope")).startswith("Path not found")
+
+    # python fallback: invalid regex handled, fixed search works
+    monkeypatch.setattr(helpers.shutil, "which", lambda _n: None)
+    assert helpers.rg("(", str(tmp_path)).startswith("Invalid regex")
+    assert "a.txt:1:hello" in helpers.rg("hello", str(tmp_path))
+    assert helpers.rg("(", str(tmp_path), fixed=True) == "(no matches)"
+
+    # external rg timeout
+    monkeypatch.setattr(helpers.shutil, "which", lambda _n: "/usr/bin/rg")
+
+    def slow(*_a: object, **_k: object) -> None:
+        raise subprocess.TimeoutExpired("rg", 15)
+
+    monkeypatch.setattr(helpers.subprocess, "run", slow)
+    assert "timed out" in helpers.rg("hello", str(tmp_path))
+
+
+def test_find_skips_unreadable_and_symlink_dirs(tmp_path: Path) -> None:
+    import os
+
+    from agent.helpers import find
+
+    (tmp_path / "real").mkdir()
+    (tmp_path / "real" / "x.py").write_text("")
+    os.symlink(tmp_path / "real", tmp_path / "link")
+    os.symlink(tmp_path / "missing", tmp_path / "broken.py")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "y.py").write_text("")
+    os.chmod(locked, 0)
+    try:
+        hits = find("*.py", str(tmp_path))
+    finally:
+        os.chmod(locked, 0o755)
+    assert "real/x.py" in hits
+    assert not any(h.startswith("link/") for h in hits)

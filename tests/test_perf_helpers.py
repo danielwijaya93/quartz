@@ -267,3 +267,45 @@ def test_kernel_lazy_auto_import_inside_function_and_blocklist(tmp_path: Path) -
     finally:
         kernel.close()
 
+
+
+def test_kernel_auto_imports_dotted_stdlib_chains(tmp_path: Path) -> None:
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        res = kernel.exec_cell("xml.etree.ElementTree.fromstring('<a><b/></a>').tag")
+        assert res.ok, res.stderr
+        assert res.result == "'a'"
+        res = kernel.exec_cell("urllib.parse.quote('a b')")
+        assert res.ok, res.stderr
+        assert res.result == "'a%20b'"
+        res = kernel.exec_cell("isinstance({}, collections.abc.Mapping)")
+        assert res.ok, res.stderr
+        assert res.result == "True"
+        # locally bound name shadows stdlib module: no auto-import, no false binding
+        res = kernel.exec_cell("def f(xml):\n    return xml.strip()\nf(' x ')")
+        assert res.ok, res.stderr
+        assert res.result == "'x'"
+        res = kernel.exec_cell("antigravity.foo")
+        assert not res.ok and "NameError" in res.stderr
+    finally:
+        kernel.close()
+
+
+def test_concurrent_cells_are_serialized_without_cwd_interleaving(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        code_a = f"import asyncio, os\nos.chdir({str(tmp_path / 'a')!r})\nawait asyncio.sleep(0.15)\nos.path.basename(os.getcwd())"
+        code_b = f"import os\nos.chdir({str(tmp_path / 'b')!r})\nos.path.basename(os.getcwd())"
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fa = pool.submit(kernel.exec_cell, code_a)
+            fb = pool.submit(kernel.exec_cell, code_b)
+            ra, rb = fa.result(), fb.result()
+        assert ra.ok and rb.ok
+        assert {ra.result, rb.result} == {"'a'", "'b'"}
+        assert ra.result == "'a'" and rb.result == "'b'"
+    finally:
+        kernel.close()

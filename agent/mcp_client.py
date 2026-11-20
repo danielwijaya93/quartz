@@ -46,8 +46,7 @@ def save_mcp_tool_cache(
     existing = load_mcp_tool_cache(path)
     existing.update(updates)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+        _write_mcp_json(path, existing)
     except Exception:
         pass
 
@@ -156,11 +155,36 @@ def set_mcp_server_enabled(
     return True
 
 
+def project_mcp_config_path(cwd: Path) -> Path:
+    """Return the project-local MCP config path (`<cwd>/.quartz/mcp.json`)."""
+    return (cwd / ".quartz" / "mcp.json").resolve()
+
+
 def load_mcp_servers(cwd: Path | None = None) -> dict[str, dict[str, Any]]:
-    """Discover enabled MCP server definitions from ~/.quartz/mcp.json (and MCP_CONFIG if set)."""
-    del cwd
+    """Discover enabled MCP servers: global config (or MCP_CONFIG) overlaid by `<cwd>/.quartz/mcp.json`.
+
+    Project entries replace global entries of the same name; `enabled: false` in the project
+    file disables a globally-defined server.
+    """
     raw = load_raw_mcp_config()
+    if cwd is not None:
+        project_path = project_mcp_config_path(cwd)
+        if project_path != default_mcp_config_path():
+            raw = {**raw, **load_raw_mcp_config(project_path)}
     return {name: spec for name, spec in raw.items() if spec.get("enabled", True) is not False}
+
+
+DEFAULT_CALL_TIMEOUT = 60.0
+_TRANSPORT_ERROR_CODES = {-32001, -32000}  # REQUEST_TIMEOUT, CONNECTION_CLOSED
+
+
+def _is_application_error(exc: BaseException) -> bool:
+    """True for MCP JSON-RPC errors returned by a healthy server (the session stays usable)."""
+    try:
+        from mcp.shared.exceptions import MCPError
+    except ImportError:  # pragma: no cover - older SDKs
+        return False
+    return isinstance(exc, MCPError) and getattr(exc, "code", None) not in _TRANSPORT_ERROR_CODES
 
 
 def _unwrap_tool_result(
@@ -353,8 +377,9 @@ class MCPManager:
             session = await self._get_session(srv)
             try:
                 resp = await session.list_tools()
-            except Exception:
-                await self._drop_session(srv)
+            except Exception as exc:
+                if not _is_application_error(exc):
+                    await self._drop_session(srv, session)
                 raise
             return [
                 {
@@ -393,24 +418,42 @@ class MCPManager:
                 matched.append(tool)
         return matched
 
-    async def _drop_session(self, server: str) -> None:
-        self._sessions.pop(server, None)
-        stack = self._stacks.pop(server, None)
+    async def _drop_session(self, server: str, session: Any | None = None) -> None:
+        """Tear down a server session under its lock (skipped if already replaced by `session`'s successor)."""
+        lock = self._locks.setdefault(server, asyncio.Lock())
+        async with lock:
+            if session is not None and self._sessions.get(server) is not session:
+                return
+            self._sessions.pop(server, None)
+            stack = self._stacks.pop(server, None)
         if stack is not None:
             try:
                 await stack.aclose()
             except Exception:
                 pass
 
+    def _call_timeout(self, server: str) -> float:
+        raw = self._servers().get(server, {}).get("timeout", DEFAULT_CALL_TIMEOUT)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return DEFAULT_CALL_TIMEOUT
+        return value if value > 0 else DEFAULT_CALL_TIMEOUT
+
     async def call_tool(
         self, server: str, tool: str, arguments: dict[str, Any] | None = None
     ) -> Any:
         """Call a tool on an MCP server and return the unwrapped Python result."""
         session = await self._get_session(server)
+        timeout = self._call_timeout(server)
         try:
-            result = await session.call_tool(tool, arguments or {})
-        except Exception:
-            await self._drop_session(server)
+            result = await asyncio.wait_for(session.call_tool(tool, arguments or {}), timeout=timeout)
+        except asyncio.TimeoutError:
+            await self._drop_session(server, session)
+            raise TimeoutError(f"MCP tool {server}.{tool} timed out after {timeout:g}s") from None
+        except Exception as exc:
+            if not _is_application_error(exc):
+                await self._drop_session(server, session)
             raise
         images: list[dict[str, str]] = []
         unwrapped = _unwrap_tool_result(result, image_sink=images)

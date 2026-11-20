@@ -15,16 +15,15 @@ import re
 import shutil
 import stat
 import subprocess
-import tempfile
-import threading
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from agent.images import load_image_file
+from agent.pycheck import check_python_source
 
 _IGNORE_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", ".mypy_cache"}
-_UMASK_LOCK = threading.Lock()
 
 _IMAGES_VAR: contextvars.ContextVar[list[dict[str, str]] | None] = contextvars.ContextVar(
     "quartz_images", default=None
@@ -48,20 +47,35 @@ def _truncate(text: str, limit: int) -> str:
 # --- Built-in Helpers ---
 
 
+def _require_dir(path: str) -> Path:
+    """Expand `path` and raise a clear error unless it is an existing directory."""
+    p = Path(path).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"No such directory: {path}")
+    if not p.is_dir():
+        raise NotADirectoryError(f"Not a directory: {path}")
+    return p
+
+
 def ls(path: str = ".") -> list[str]:
     """List sorted entries in a directory (trailing `/` for directories)."""
-    p = Path(path).expanduser()
-    entries = []
-    for item in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
-        entries.append(f"{item.name}/" if item.is_dir() else item.name)
-    return entries
+    p = _require_dir(path)
+    try:
+        items = list(p.iterdir())
+    except PermissionError as exc:
+        raise PermissionError(f"Permission denied: {path}") from exc
+    items.sort(key=lambda x: (not x.is_dir(), x.name.lower()))
+    return [f"{item.name}/" if item.is_dir() else item.name for item in items]
 
 
 def find(pattern: str = "*", path: str = ".", limit: int = 200) -> list[str]:
-    """Find files matching a glob pattern, skipping .git/.venv/node_modules."""
-    root = Path(path).expanduser().resolve()
+    """Find files matching a glob pattern, skipping .git/.venv/node_modules.
+
+    Symlinked directories are not followed; unreadable directories are skipped.
+    """
+    root = _require_dir(path).resolve()
     hits: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = sorted(d for d in dirnames if d not in _IGNORE_DIRS)
         rel_dir = Path(dirpath).relative_to(root)
         for fname in sorted(filenames):
@@ -73,26 +87,32 @@ def find(pattern: str = "*", path: str = ".", limit: int = 200) -> list[str]:
     return hits
 
 
-def rg(pattern: str, path: str = ".", glob: str | None = None, max_hits: int = 100, fixed: bool = False) -> str:
-    """Search files for a regex pattern (or literal string if fixed=True) and return `file:line:text` matches."""
-    if shutil.which("rg"):
-        cmd = ["rg", "-n", "--no-heading", "--color=never", "-m", str(max_hits)]
-        if fixed:
-            cmd.append("-F")
-        if glob:
-            cmd.extend(["-g", glob])
-        cmd.extend(["--", pattern, path])
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        out = proc.stdout.strip()
-        if proc.returncode == 0:
-            lines = out.splitlines()[:max_hits]
-            return "\n".join(lines)
-        if proc.returncode == 1:
-            return "(no matches)"
-        return proc.stderr.strip() or f"rg exited with code {proc.returncode}"
+_RG_TIMEOUT = 15
 
-    regex_pattern = re.escape(pattern) if fixed else pattern
-    regex = re.compile(regex_pattern)
+
+def _rg_external(pattern: str, path: str, glob: str | None, max_hits: int, fixed: bool) -> str:
+    cmd = ["rg", "-n", "--no-heading", "--color=never", "-m", str(max_hits)]
+    if fixed:
+        cmd.append("-F")
+    if glob:
+        cmd.extend(["-g", glob])
+    cmd.extend(["--", pattern, path])
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_RG_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return f"rg timed out after {_RG_TIMEOUT}s; narrow the pattern or path"
+    if proc.returncode == 0:
+        return "\n".join(proc.stdout.strip().splitlines()[:max_hits])
+    if proc.returncode == 1:
+        return "(no matches)"
+    return proc.stderr.strip() or f"rg exited with code {proc.returncode}"
+
+
+def _rg_python(pattern: str, path: str, glob: str | None, max_hits: int, fixed: bool) -> str:
+    try:
+        regex = re.compile(re.escape(pattern) if fixed else pattern)
+    except re.error as exc:
+        return f"Invalid regex {pattern!r}: {exc}"
     root = Path(path).expanduser()
     if root.is_file():
         files = [root]
@@ -110,6 +130,15 @@ def rg(pattern: str, path: str = ".", glob: str | None = None, max_hits: int = 1
                 if len(hits) >= max_hits:
                     return "\n".join(hits)
     return "\n".join(hits) if hits else "(no matches)"
+
+
+def rg(pattern: str, path: str = ".", glob: str | None = None, max_hits: int = 100, fixed: bool = False) -> str:
+    """Search files for a regex pattern (or literal string if fixed=True) and return `file:line:text` matches."""
+    if not Path(path).expanduser().exists():
+        return f"Path not found: {path}"
+    if shutil.which("rg"):
+        return _rg_external(pattern, path, glob, max_hits, fixed)
+    return _rg_python(pattern, path, glob, max_hits, fixed)
 
 
 def read(path: str, start: int = 1, end: int = 200) -> str:
@@ -132,33 +161,25 @@ def read(path: str, start: int = 1, end: int = 200) -> str:
 
 
 def _atomic_write(path: Path, content: str, newline: str | None = None) -> None:
-    """Atomically write content to path using a temp file in the same directory."""
+    """Atomically write content to path using a temp file in the same directory.
+
+    New files get the process umask applied by the kernel at `open(2)` time (no global
+    `os.umask` mutation); existing files keep their current permission bits.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        mode = stat.S_IMODE(path.stat().st_mode)
-    else:
-        with _UMASK_LOCK:
-            cur_umask = os.umask(0o077)
-            os.umask(cur_umask)
-        mode = 0o666 & ~cur_umask
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        newline=newline,
-        dir=path.parent,
-        delete=False,
-    )
-    tmp_path = Path(tmp.name)
+    existing_mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else None
+    tmp_path = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
     try:
-        tmp.write(content)
-        tmp.flush()
-        os.fsync(tmp.fileno())
-        tmp.close()
-        os.chmod(tmp_path, mode)
+        with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as tmp:
+            tmp.write(content)
+            tmp.flush()
+            if existing_mode is not None:
+                os.fchmod(tmp.fileno(), existing_mode)
+            os.fsync(tmp.fileno())
         os.replace(tmp_path, path)
     except BaseException:
-        if tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
+        tmp_path.unlink(missing_ok=True)
         raise
 
 
@@ -262,289 +283,9 @@ BUILTIN_HELPERS: dict[str, Callable[..., Any]] = {
     "view_image": view_image,
 }
 
-_STD_MODULE_DUNDERS: frozenset[str] = frozenset(
-    {
-        "__name__",
-        "__file__",
-        "__doc__",
-        "__package__",
-        "__spec__",
-        "__all__",
-        "__builtins__",
-        "__annotations__",
-        "__cached__",
-        "__loader__",
-    }
-)
-_BUILTIN_NAMES: frozenset[str] = frozenset(dir(builtins)) | _STD_MODULE_DUNDERS
-
-
-def _is_type_checking_if(node: ast.If) -> bool:
-    test = node.test
-    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
-        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
-    )
-
-
-def _collect_walrus_targets(node: ast.AST, bound: set[str]) -> None:
-    """Collect NamedExpr (:=) targets inside comprehensions, stopping at def/class/lambda."""
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
-            continue
-        if isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
-            bound.add(child.target.id)
-        _collect_walrus_targets(child, bound)
-
-
-def _collect_scope_bindings(nodes: list[ast.stmt] | ast.AST, *, is_comprehension: bool = False) -> set[str]:
-    """Collect names bound directly in the current scope without descending into child scopes."""
-    bound: set[str] = set()
-    stack: list[ast.AST] = list(nodes) if isinstance(nodes, list) else [nodes]
-    while stack:
-        node = stack.pop()
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            bound.add(node.id)
-        elif isinstance(node, ast.ExceptHandler):
-            if node.name:
-                bound.add(node.name)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            bound.add(node.name)
-            continue
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            for alias in node.names:
-                if alias.name != "*":
-                    bound.add(alias.asname or alias.name.split(".")[0])
-            continue
-        elif isinstance(node, ast.MatchAs):
-            if node.name:
-                bound.add(node.name)
-        elif isinstance(node, ast.MatchStar):
-            if node.name:
-                bound.add(node.name)
-        elif isinstance(node, ast.MatchMapping):
-            if node.rest:
-                bound.add(node.rest)
-        elif hasattr(ast, "TypeAlias") and isinstance(node, ast.TypeAlias):
-            if isinstance(node.name, ast.Name):
-                bound.add(node.name.id)
-            continue
-        elif isinstance(node, ast.Lambda):
-            continue
-        elif isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-            if not is_comprehension:
-                _collect_walrus_targets(node, bound)
-            continue
-        stack.extend(ast.iter_child_nodes(node))
-    return bound
-
-
-def _arg_names(args: ast.arguments) -> set[str]:
-    names = {a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)}
-    if args.vararg:
-        names.add(args.vararg.arg)
-    if args.kwarg:
-        names.add(args.kwarg.arg)
-    return names
-
-
-def _type_param_names(node: ast.AST) -> set[str]:
-    return {tp.name for tp in getattr(node, "type_params", ()) if hasattr(tp, "name")}
-
-
-class _UndefinedNameChecker(ast.NodeVisitor):
-    """Lightweight scope-aware AST pass detecting unbound Name(ctx=Load) references."""
-
-    def __init__(self, allowed: frozenset[str], skip_annotations: bool) -> None:
-        self._allowed = allowed
-        self._skip_annotations = skip_annotations
-        self._scopes: list[set[str]] = []
-        self._class_scope: set[str] | None = None
-        self.undefined: list[tuple[int, str]] = []
-        self._seen_names: set[str] = set()
-
-    def _is_bound(self, name: str) -> bool:
-        if name in self._allowed:
-            return True
-        if self._class_scope is not None and name in self._class_scope:
-            return True
-        return any(name in scope for scope in self._scopes)
-
-    def _visit_in_scope(self, nodes: list[ast.AST] | ast.AST, extra_bindings: set[str]) -> None:
-        self._scopes.append(extra_bindings)
-        saved_class = self._class_scope
-        self._class_scope = None
-        try:
-            if isinstance(nodes, list):
-                for item in nodes:
-                    self.visit(item)
-            else:
-                self.visit(nodes)
-        finally:
-            self._class_scope = saved_class
-            self._scopes.pop()
-
-    def visit_Module(self, node: ast.Module) -> None:
-        bindings = _collect_scope_bindings(node.body)
-        self._visit_in_scope(list(node.body), bindings)
-
-    def visit_If(self, node: ast.If) -> None:
-        self.visit(node.test)
-        if not _is_type_checking_if(node):
-            for stmt in node.body:
-                self.visit(stmt)
-        for stmt in node.orelse:
-            self.visit(stmt)
-
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        self.visit(node.target)
-        if not self._skip_annotations:
-            self.visit(node.annotation)
-        if node.value is not None:
-            self.visit(node.value)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._visit_func(node)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self._visit_func(node)
-
-    def _visit_func(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        for dec in node.decorator_list:
-            self.visit(dec)
-        for d in node.args.defaults:
-            self.visit(d)
-        for d in node.args.kw_defaults:
-            if d is not None:
-                self.visit(d)
-
-        tp_names = _type_param_names(node)
-        self._scopes.append(tp_names)
-        saved_class = self._class_scope
-        self._class_scope = None
-        try:
-            if not self._skip_annotations:
-                for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs):
-                    if arg.annotation is not None:
-                        self.visit(arg.annotation)
-                if node.args.vararg and node.args.vararg.annotation is not None:
-                    self.visit(node.args.vararg.annotation)
-                if node.args.kwarg and node.args.kwarg.annotation is not None:
-                    self.visit(node.args.kwarg.annotation)
-                if node.returns is not None:
-                    self.visit(node.returns)
-
-            func_bindings = _arg_names(node.args) | _collect_scope_bindings(node.body)
-            self._visit_in_scope(list(node.body), func_bindings)
-        finally:
-            self._class_scope = saved_class
-            self._scopes.pop()
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        for dec in node.decorator_list:
-            self.visit(dec)
-        tp_names = _type_param_names(node)
-        self._scopes.append(tp_names)
-        saved_class = self._class_scope
-        self._class_scope = None
-        try:
-            for base in node.bases:
-                self.visit(base)
-            for kw in node.keywords:
-                self.visit(kw.value)
-            # Class body bindings are visible inside the class body itself,
-            # but NOT to nested functions/classes/methods inside it.
-            self._class_scope = _collect_scope_bindings(node.body)
-            for stmt in node.body:
-                self.visit(stmt)
-        finally:
-            self._class_scope = saved_class
-            self._scopes.pop()
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        for d in node.args.defaults:
-            self.visit(d)
-        for d in node.args.kw_defaults:
-            if d is not None:
-                self.visit(d)
-        self._visit_in_scope(node.body, _arg_names(node.args))
-
-    def _visit_comprehension(self, generators: list[ast.comprehension], body_nodes: list[ast.AST]) -> None:
-        if generators:
-            self.visit(generators[0].iter)
-        comp_bindings: set[str] = set()
-        for gen in generators:
-            comp_bindings |= _collect_scope_bindings(gen.target, is_comprehension=True)
-        self._scopes.append(comp_bindings)
-        saved_class = self._class_scope
-        self._class_scope = None
-        try:
-            for i, gen in enumerate(generators):
-                if i > 0:
-                    self.visit(gen.iter)
-                for cond in gen.ifs:
-                    self.visit(cond)
-            for b in body_nodes:
-                self.visit(b)
-        finally:
-            self._class_scope = saved_class
-            self._scopes.pop()
-
-    def visit_ListComp(self, node: ast.ListComp) -> None:
-        self._visit_comprehension(node.generators, [node.elt])
-
-    def visit_SetComp(self, node: ast.SetComp) -> None:
-        self._visit_comprehension(node.generators, [node.elt])
-
-    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
-        self._visit_comprehension(node.generators, [node.elt])
-
-    def visit_DictComp(self, node: ast.DictComp) -> None:
-        self._visit_comprehension(node.generators, [node.key, node.value])
-
-    def visit_TypeAlias(self, node: Any) -> None:
-        if not self._skip_annotations:
-            self._visit_in_scope(node.value, _type_param_names(node))
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if isinstance(node.ctx, ast.Load) and not self._is_bound(node.id):
-            if node.id not in self._seen_names:
-                self._seen_names.add(node.id)
-                self.undefined.append((node.lineno, node.id))
-
-
 def _check_python_source(path: Path, content: str) -> list[str]:
-    """Run a fast stdlib-AST check on `.py` source, returning up to 10 warnings."""
-    if path.suffix != ".py":
-        return []
-    try:
-        tree = ast.parse(content, filename=str(path))
-    except SyntaxError as exc:
-        return [f"SyntaxError at line {exc.lineno}: {exc.msg}"]
-
-    has_star_import = any(
-        isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names)
-        for node in ast.walk(tree)
-    )
-    if has_star_import:
-        return []
-
-    has_future_annotations = any(
-        isinstance(stmt, ast.ImportFrom)
-        and stmt.module == "__future__"
-        and any(alias.name == "annotations" for alias in stmt.names)
-        for stmt in tree.body
-    )
-
-    allowed = _BUILTIN_NAMES
-    if path.name == "helpers.py" and path.parent.name == ".quartz":
-        allowed = _BUILTIN_NAMES | frozenset(BUILTIN_HELPERS.keys()) | PROTECTED_NAMES
-
-    checker = _UndefinedNameChecker(allowed=allowed, skip_annotations=has_future_annotations)
-    checker.visit(tree)
-    return [
-        f"line {lineno}: undefined name '{name}' (missing import?)"
-        for lineno, name in checker.undefined[:10]
-    ]
+    """Run a fast stdlib-symtable check on `.py` source, returning up to 10 warnings."""
+    return check_python_source(path, content)
 
 
 @dataclasses.dataclass
