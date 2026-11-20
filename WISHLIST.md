@@ -83,3 +83,16 @@ Defaults must work for a non-expert with **zero** config. The goal: a user enabl
   - Secrets stay outside the boundary: auth files (`~/.quartz/auth.json`, `~/.claude.json`, SSH keys) never mounted into the workspace bind.
   - Pairs with `quartz --sandbox` (item 2): the boundary isolates *execution*, mediation controls *credentials*. Either alone is weaker than both.
   - Non-goal: defending against a malicious host or local user; DoS from the guest is out of scope.
+
+---
+
+## 4. Herdr integration — report agent state so herdr recognizes quartz as an agent
+- **Status**: Wishlist / Deferred
+- **Reference**: herdr (herdr.dev, `herdr integration install pi` writes ~/.pi/agent/extensions/herdr-agent-state.ts — streams JSON over HERDR_SOCKET_PATH: pane.report_agent {pane_id, source, agent, state}, pane.report_agent_session, pane.release_agent; states working|blocked|idle; gated on HERDR_ENV=1 && HERDR_SOCKET_PATH && HERDR_PANE_ID, no-op outside herdr). Agent-detection manifest: https://herdr.dev/agent-detection/index.toml (quartz is NOT in it — 0 matches — so quartz renders as a plain terminal today).
+- **Goal**: Quartz shows in herdr's agent panel with correct working/blocked/idle state when run inside a herdr pane, like pi/agy/codex do.
+- **Key Concepts / Approach** (from the pi reference):
+  - Quartz-side reporter (agent/herdr.py, stdlib socket client, no deps): connect to $HERDR_SOCKET_PATH on startup when HERDR_ENV/HERDR_SOCKET_PATH/HERDR_PANE_ID present; send `pane.report_agent` on the same lifecycle points pi uses: agent_start -> working, agent_end -> debounced idle, blocked for confirmation/edit prompts and retryable provider errors, `pane.report_agent_session` with the quartz session id, `pane.release_agent` on exit. Outside herdr: zero overhead, zero behavior change.
+  - Branch/diff badges come from herdr's own git scan of cwd — no quartz work needed; correct state reporting alone lights up the panel.
+  - Upstream: propose quartz to herdr (quartz.toml manifest + `herdr integration install quartz`) OR ship the reporter inside quartz with a manual install step until herdr adds quartz to its index. Either way quartz owns the reporter, not a herdr-internal plugin.
+  - Non-goal: replacing herdr's screen-scraping manifest rules — the socket reporter is the preferred path (same as pi).
+- **Non-goal**: implementing today — this entry is deferred until the user asks.
