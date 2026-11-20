@@ -1,27 +1,25 @@
-"""Terminal rendering, Markdown streaming, cell summaries, and interactive input helpers."""
+"""Terminal rendering, Markdown streaming, cell summaries, shared inline modals, and session replay."""
 
 from __future__ import annotations
 
-import codecs
+import dataclasses
 import json
-import os
-import queue
-import select
-import sys
-import termios
 import threading
 import time
-import tty
 from collections.abc import Callable
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from prompt_toolkit import Application, prompt as pt_prompt
+from prompt_toolkit import Application
+from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.filters import Condition, Filter
+from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.containers import Window
-from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
+from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl, UIContent, UIControl
+from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.layout.processors import BeforeInput, DynamicProcessor, PasswordProcessor
+from prompt_toolkit.styles import Style
 from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.spinner import Spinner
@@ -29,96 +27,93 @@ from rich.text import Text
 
 from agent.actions import describe_cell_actions, describe_group_actions
 from agent.banner import _fmt_k, _short_path
-from agent.images import content_to_text
 from agent.compact import CompactionReason, CompactionResult
+from agent.images import content_to_text
 from agent.kernel_client import CellResult
 from agent.loop import TurnUsage
 
-_active_tui: Any | None = None
-_active_tui_lock = threading.RLock()
+console = Console()
+
+_active_dock: Any | None = None
+_active_dock_lock = threading.RLock()
+
+DOCK_STYLE = Style.from_dict(
+    {
+        "banner.brand": "bold",
+        "banner.dim": "dim",
+        "banner.model": "bold ansicyan",
+        "banner.cwd": "",
+        "banner.metric": "",
+        "banner.bg": "bold ansiyellow",
+        "divider": "dim",
+        "hint": "dim",
+        "prompt": "bold ansicyan",
+        "comp.selected": "reverse bold ansicyan",
+        "comp.item": "",
+        "comp.meta": "dim",
+        "modal": "",
+        "modal.title": "bold ansicyan",
+        "modal.selected": "reverse bold ansicyan",
+        "modal.dim": "dim",
+    }
+)
 
 
-def set_active_tui(tui: Any | None) -> None:
-    """Register or clear the active full-screen QuartzTUI instance."""
-    global _active_tui
-    with _active_tui_lock:
-        _active_tui = tui
+def set_active_dock(dock: Any | None) -> None:
+    """Register or clear the active InteractiveDock instance."""
+    global _active_dock
+    with _active_dock_lock:
+        _active_dock = dock
 
 
-def get_active_tui() -> Any | None:
-    """Return the active QuartzTUI instance, if any."""
-    with _active_tui_lock:
-        return _active_tui
+def get_active_dock() -> Any | None:
+    """Return the active InteractiveDock instance, if any."""
+    with _active_dock_lock:
+        return _active_dock
 
 
-class _TUIStatus:
-    """Context manager routing `console.status(...)` to the active QuartzTUI."""
+class _DockStatus:
+    """Context manager routing status updates to the active InteractiveDock."""
 
-    def __init__(self, tui: Any, status: Any) -> None:
-        self._tui = tui
+    def __init__(self, dock: Any, status: Any) -> None:
+        self._dock = dock
         self._status = status
 
-    def __enter__(self) -> _TUIStatus:
-        self._tui.set_transient_status(self._status)
+    def __enter__(self) -> _DockStatus:
+        self._dock.set_transient_status(self._status)
         return self
 
     def __exit__(self, *_: Any) -> None:
-        self._tui.set_transient_status(None)
+        self._dock.set_transient_status(None)
 
     def update(self, status: Any = None, **_: Any) -> None:
         if status is not None:
             self._status = status
-            self._tui.set_transient_status(status)
+            self._dock.set_transient_status(status)
 
 
-class _TUIAwareConsole(Console):
-    """Rich Console that routes output to the active QuartzTUI when running."""
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self._capture_state = threading.local()
-
-    def _is_capturing(self) -> bool:
-        return getattr(self._capture_state, "depth", 0) > 0
-
-    @contextmanager
-    def capture(self) -> Any:
-        depth = getattr(self._capture_state, "depth", 0)
-        self._capture_state.depth = depth + 1
-        try:
-            with super().capture() as cap:
-                yield cap
-        finally:
-            self._capture_state.depth = depth
-
-    @property
-    def width(self) -> int:
-        if not self._is_capturing():
-            tui = get_active_tui()
-            if tui is not None:
-                return max(20, int(tui.content_width))
-        return super().width
-
-    @width.setter
-    def width(self, value: int) -> None:
-        Console.width.fset(self, value)  # type: ignore[misc]
-
-    def print(self, *objects: Any, **kwargs: Any) -> None:
-        if not self._is_capturing():
-            tui = get_active_tui()
-            if tui is not None:
-                tui.append_console_print(*objects, **kwargs)
-                return
-        super().print(*objects, **kwargs)
-
-    def status(self, status: Any, **kwargs: Any) -> Any:
-        tui = get_active_tui()
-        if tui is not None:
-            return _TUIStatus(tui, status)
-        return super().status(status, **kwargs)
+def console_print(*objects: Any, **kwargs: Any) -> None:
+    """Print to the active InteractiveDock scrollback if running, else `console.print`."""
+    dock = get_active_dock()
+    if dock is not None:
+        dock.emit_renderable(*objects, **kwargs)
+        return
+    console.print(*objects, **kwargs)
 
 
-console = _TUIAwareConsole()
+def dock_status(status: Any, **kwargs: Any) -> Any:
+    """Return a status context manager routed to the active dock when running."""
+    dock = get_active_dock()
+    if dock is not None:
+        return _DockStatus(dock, status)
+    return console.status(status, **kwargs)
+
+
+def _active_width() -> int:
+    dock = get_active_dock()
+    if dock is not None:
+        return max(20, int(dock.terminal_width))
+    return max(20, int(console.width or 80))
 
 
 class MarkdownBlockStreamer:
@@ -161,7 +156,8 @@ class MarkdownBlockStreamer:
 
 def render_markdown_block(target: Console, block: str) -> Text | None:
     """Render one Markdown block to Text with no leading or trailing blank lines."""
-    options = target.options.update(width=target.width)
+    width = _active_width() if target is console else target.width
+    options = target.options.update(width=width)
     rendered: list[Text] = []
     try:
         lines_iter = target.render_lines(Markdown(block), options, pad=False)
@@ -183,148 +179,6 @@ def render_markdown_block(target: Console, block: str) -> Text | None:
         return None
     return Text("\n").join(rendered)
 
-
-class _MidTurnInputWatcher:
-    """Listens for Esc (abort) and typed steering lines while a turn is executing."""
-
-    def __init__(
-        self,
-        abort_event: threading.Event,
-        steering_queue: queue.Queue[str],
-        *,
-        on_abort: Callable[[], None] | None = None,
-        on_steering: Callable[[str], None] | None = None,
-        on_change: Callable[[str], None] | None = None,
-    ) -> None:
-        self._abort_event = abort_event
-        self._steering_queue = steering_queue
-        self._on_abort = on_abort
-        self._on_steering = on_steering
-        self._on_change = on_change
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._fd: int | None = None
-        self._old_attrs: list[Any] | None = None
-        self._buffer: list[str] = []
-        self._lock = threading.RLock()
-
-    def current_buffer(self) -> str:
-        """Return the current uncommitted input buffer text."""
-        with self._lock:
-            return "".join(self._buffer)
-
-    def __enter__(self) -> _MidTurnInputWatcher:
-        if not sys.stdin.isatty():
-            return self
-        try:
-            self._fd = sys.stdin.fileno()
-            self._old_attrs = termios.tcgetattr(self._fd)
-            tty.setcbreak(self._fd)
-        except Exception:
-            self._fd = None
-            self._old_attrs = None
-            return self
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-        return self
-
-    def __exit__(self, *_: Any) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=0.3)
-        if self._fd is not None and self._old_attrs is not None:
-            try:
-                termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old_attrs)
-            except Exception:
-                pass
-
-    def _process_text(self, text: str, buf: list[str] | None = None) -> bool:
-        """Process incoming decoded characters. Return False if aborted."""
-        target_buf = self._buffer if buf is None else buf
-        i = 0
-        n = len(text)
-        while i < n:
-            ch = text[i]
-            if ch == "\x1b":
-                if i + 1 < n:
-                    i += 1
-                    while i < n and text[i] not in ("A", "B", "C", "D", "H", "F", "~"):
-                        i += 1
-                    i += 1
-                    continue
-                if self._fd is not None:
-                    more, _, _ = select.select([self._fd], [], [], 0.05)
-                    if not more:
-                        self._abort_event.set()
-                        if self._on_abort:
-                            self._on_abort()
-                        return False
-                    while select.select([self._fd], [], [], 0.005)[0]:
-                        os.read(self._fd, 16)
-                else:
-                    self._abort_event.set()
-                    if self._on_abort:
-                        self._on_abort()
-                    return False
-                i += 1
-                continue
-            if ch in ("\r", "\n"):
-                msg = "".join(target_buf).strip()
-                target_buf.clear()
-                if self._on_change:
-                    self._on_change("")
-                if msg:
-                    self._steering_queue.put(msg)
-                    if self._on_steering:
-                        self._on_steering(msg)
-                i += 1
-                continue
-            if ch in ("\x7f", "\x08"):
-                if target_buf:
-                    target_buf.pop()
-                    if self._on_change:
-                        self._on_change("".join(target_buf))
-                i += 1
-                continue
-            if ch == "\x15":  # Ctrl+U: clear input line
-                if target_buf:
-                    target_buf.clear()
-                    if self._on_change:
-                        self._on_change("")
-                i += 1
-                continue
-            if ch == "\x03":  # Ctrl+C: abort
-                self._abort_event.set()
-                if self._on_abort:
-                    self._on_abort()
-                return False
-            if ch >= " ":
-                target_buf.append(ch)
-                if self._on_change:
-                    self._on_change("".join(target_buf))
-            i += 1
-        return True
-
-    def _run(self) -> None:
-        assert self._fd is not None
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="ignore")
-        while not self._stop.is_set():
-            try:
-                ready, _, _ = select.select([self._fd], [], [], 0.05)
-            except Exception:
-                return
-            if not ready:
-                continue
-            try:
-                raw = os.read(self._fd, 64)
-            except OSError:
-                return
-            if not raw:
-                return
-            text = decoder.decode(raw)
-            with self._lock:
-                if not self._process_text(text, self._buffer):
-                    return
 
 class BlockPrinter:
     """Print Markdown blocks, cells, and notices separated by exactly one blank line."""
@@ -350,16 +204,28 @@ class BlockPrinter:
             return
         if self.before_print:
             self.before_print()
-        self._separate()
-        self._console.print(text, soft_wrap=True)
+        dock = get_active_dock() if self._console is console else None
+        if dock is not None:
+            leading = self._started
+            self._started = True
+            dock.emit_renderable(text, leading_newline=leading, soft_wrap=True)
+        else:
+            self._separate()
+            self._console.print(text, soft_wrap=True)
         if self.after_print:
             self.after_print()
 
     def block(self, renderable: Any) -> None:
         if self.before_print:
             self.before_print()
-        self._separate()
-        self._console.print(renderable)
+        dock = get_active_dock() if self._console is console else None
+        if dock is not None:
+            leading = self._started
+            self._started = True
+            dock.emit_renderable(renderable, leading_newline=leading)
+        else:
+            self._separate()
+            self._console.print(renderable)
         if self.after_print:
             self.after_print()
 
@@ -368,20 +234,73 @@ printer = BlockPrinter(console)
 
 
 def _active_printer() -> BlockPrinter:
+    import sys
+
     cli_mod = sys.modules.get("agent.cli")
     if cli_mod is not None and hasattr(cli_mod, "printer"):
         return cli_mod.printer
     return printer
 
 
-def _render_gutter_block(title: str, content: str, *, title_style: str = "dim", bar_style: str = "dim") -> None:
-    """Render a borderless left-gutter block (fx-style, no Panel box)."""
-    out = Text()
-    out.append("│ ", style=bar_style)
-    out.append(title, style=title_style)
-    for line in content.rstrip("\n").splitlines() or [""]:
-        out.append("\n│ ", style=bar_style)
-        out.append(line)
+def _render_prefixed_lines(
+    text_or_str: str | Text,
+    *,
+    prefix: str = "│ ",
+    prefix_style: str = "dim",
+    text_style: str = "",
+    width: int | None = None,
+) -> Text:
+    """Wrap content lines to fit inside `width` and prepend `prefix` to every wrapped line."""
+    target_width = max(20, int(width if width is not None else _active_width()))
+    inner_width = max(20, target_width - len(prefix))
+    source = text_or_str if isinstance(text_or_str, Text) else Text(text_or_str, style=text_style)
+
+    raw_lines = source.split("\n", allow_blank=True) or [Text("", style=text_style)]
+    wrapped_lines: list[Text] = []
+    wrap_console = Console(width=inner_width, color_system=None)
+    for raw_line in raw_lines:
+        parts = raw_line.wrap(wrap_console, inner_width) if raw_line.plain else []
+        if not parts:
+            parts = [Text("", style=text_style)]
+        for part in parts:
+            prefixed = Text()
+            prefixed.append(prefix, style=prefix_style)
+            prefixed.append_text(part)
+            wrapped_lines.append(prefixed)
+
+    return Text("\n").join(wrapped_lines)
+
+
+def render_user_prompt(text: str, *, width: int | None = None) -> Text:
+    """Render a committed user prompt with wrap-safe `▌ ` left bar."""
+    return _render_prefixed_lines(
+        text.rstrip("\n"),
+        prefix="▌ ",
+        prefix_style="bold",
+        text_style="bold",
+        width=width,
+    )
+
+
+def _render_gutter_block(
+    title: str,
+    content: str,
+    *,
+    title_style: str = "dim",
+    bar_style: str = "dim",
+    width: int | None = None,
+) -> None:
+    """Render a borderless wrap-safe left-gutter block (fx-style, no Panel box)."""
+    header = Text()
+    header.append("│ ", style=bar_style)
+    header.append(title, style=title_style)
+    body = _render_prefixed_lines(
+        content.rstrip("\n"),
+        prefix="│ ",
+        prefix_style=bar_style,
+        width=width,
+    )
+    out = Text.assemble(header, "\n", body)
     _active_printer().block(out)
 
 
@@ -492,135 +411,31 @@ class CellGroupBuffer:
         _active_printer().block(Text(summary, style="dim" if all_ok else "red"))
 
 
-class InlineScreen:
-    """Differential inline terminal renderer using synchronized output and cursor repositioning.
-
-    Inspired by modern inline differential TUI engines (e.g. pi-tui), this renderer manages
-    a dynamic viewport at the bottom of the terminal screen:
-      - Uses Mode 2026 (\x1b[?2026h / \x1b[?2026l) for atomic, flicker-free redraws on supported terminals.
-      - Calculates line diffs between the previous frame and new frame to reposition the cursor.
-      - Can be atomically cleared before permanent blocks (markdown chunks, tool execution chips) are written.
-    """
-
-    def __init__(self, console: Console, *, enabled: bool | None = None) -> None:
-        self.console = console
-        self._enabled = console.is_terminal if enabled is None else enabled
-        self._previous_lines: list[str] = []
-        self._lock = threading.RLock()
-
-    def is_active(self) -> bool:
-        with self._lock:
-            return bool(self._previous_lines)
-
-    def render(self, lines: list[str]) -> None:
-        """Atomically render or update lines at the bottom of the terminal."""
-        with self._lock:
-            if not self._enabled:
-                return
-            if not lines:
-                self._clear_locked()
-                return
-
-            n_prev = len(self._previous_lines)
-            n_new = len(lines)
-            out: list[str] = ["\x1b[?2026h"]  # Begin synchronized output
-
-            if n_prev == 0:
-                for i, line in enumerate(lines):
-                    if i > 0:
-                        out.append("\r\n")
-                    out.append(line)
-            else:
-                if n_prev > 1:
-                    out.append(f"\x1b[{n_prev - 1}A\r")
-                else:
-                    out.append("\r")
-
-                max_lines = max(n_prev, n_new)
-                for i in range(max_lines):
-                    out.append("\x1b[2K")
-                    if i < n_new:
-                        out.append(lines[i])
-                    if i < max_lines - 1:
-                        out.append("\r\n")
-
-                if max_lines > n_new:
-                    diff = max_lines - n_new
-                    out.append(f"\x1b[{diff}A\r")
-
-            out.append("\x1b[?2026l")  # End synchronized output
-            self.console.file.write("".join(out))
-            self.console.file.flush()
-            self._previous_lines = list(lines)
-
-    def clear(self) -> None:
-        """Atomically erase the dynamic viewport and reposition cursor at its top row."""
-        with self._lock:
-            self._clear_locked()
-
-    def _clear_locked(self) -> None:
-        if not self._enabled:
-            self._previous_lines.clear()
-            return
-        n_prev = len(self._previous_lines)
-        if n_prev == 0:
-            return
-
-        out: list[str] = ["\x1b[?2026h"]
-        if n_prev > 1:
-            out.append(f"\x1b[{n_prev - 1}A\r")
-        else:
-            out.append("\r")
-
-        for i in range(n_prev):
-            out.append("\x1b[2K")
-            if i < n_prev - 1:
-                out.append("\x1b[1B\r")
-
-        if n_prev > 1:
-            out.append(f"\x1b[{n_prev - 1}A\r")
-        else:
-            out.append("\r")
-
-        out.append("\x1b[?2026l")
-        self.console.file.write("".join(out))
-        self.console.file.flush()
-        self._previous_lines.clear()
-
-
-def _render_renderable_to_lines(console: Console, renderable: Any) -> list[str]:
-    with console.capture() as capture:
-        console.print(renderable, end="")
-    text = capture.get()
-    return text.splitlines() if text else []
-
-
 class TurnProgressTracker:
     """Tracks and renders in-progress thinking and tool execution with turn-end collapsing."""
 
     def __init__(
         self,
-        console: Console,
-        printer: BlockPrinter,
+        target_console: Console,
+        target_printer: BlockPrinter,
         *,
         chunk_size: int = 5,
         verbose: bool = False,
         plain_output: bool = False,
         live_renderer: Callable[[Group | None], None] | None = None,
     ) -> None:
-        self.console = console
-        self.printer = printer
+        self.console = target_console
+        self.printer = target_printer
         self.chunk_size = chunk_size
         self.verbose = verbose
         self.plain_output = plain_output
         self.lock = threading.RLock()
 
         if live_renderer is None:
-            tui = get_active_tui()
-            if tui is not None:
-                live_renderer = tui.set_live_renderable
+            dock = get_active_dock()
+            if dock is not None:
+                live_renderer = dock.set_live_renderable
         self._live_renderer = live_renderer
-        self.screen = InlineScreen(console, enabled=False if self._live_renderer is not None else None)
         self.step_history: list[tuple[str, Any]] = []
         self.thinking_intervals: list[float] = []
         self.active_thinking_start: float | None = None
@@ -636,14 +451,7 @@ class TurnProgressTracker:
             self.printer.after_print = self._after_print
 
     def _before_print(self) -> None:
-        with self.lock:
-            if (
-                not self.plain_output
-                and not self.verbose
-                and self._live_renderer is None
-                and self.screen.is_active()
-            ):
-                self.screen.clear()
+        pass
 
     def _after_print(self) -> None:
         with self.lock:
@@ -661,14 +469,10 @@ class TurnProgressTracker:
                 self._render_current()
 
     def _render_current(self) -> None:
-        if self.plain_output or self.verbose:
+        if self.plain_output or self.verbose or self._live_renderer is None:
             return
         group = self._render_group()
-        if self._live_renderer is not None:
-            self._live_renderer(group if group.renderables else None)
-            return
-        lines = _render_renderable_to_lines(self.console, group)
-        self.screen.render(lines)
+        self._live_renderer(group if group.renderables else None)
 
     def _render_group(self) -> Group:
         items: list[Any] = []
@@ -693,7 +497,7 @@ class TurnProgressTracker:
             items.append(Text(f"[steering] {preview}", style="cyan"))
 
         if self.input_buffer:
-            width = self.console.width or 80
+            width = _active_width()
             max_buf_len = max(10, width - 6)
             displayed = (
                 self.input_buffer
@@ -747,8 +551,6 @@ class TurnProgressTracker:
             self.steering_messages.clear()
             if self._live_renderer is not None:
                 self._live_renderer(None)
-            else:
-                self.screen.clear()
             if self.printer.before_print == self._before_print:
                 self.printer.before_print = None
             if self.printer.after_print == self._after_print:
@@ -814,8 +616,6 @@ class TurnProgressTracker:
     def _flush_chunk(self) -> None:
         if self._live_renderer is not None:
             self._live_renderer(None)
-        else:
-            self.screen.clear()
 
         total_thought = sum(self.thinking_intervals)
         entries = list(self.tool_entries)
@@ -873,58 +673,297 @@ def _parse_expand_range(arg: str, total: int) -> tuple[int, int]:
     return idx, idx
 
 
+# ---------------------------------------------------------------------------
+# Shared inline modal state, layout, and keybindings
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class InlineModalState:
+    """Shared state for inline option, searchable, and text-input modals."""
+
+    kind: str  # "option" | "searchable" | "input"
+    title: str
+    buffer: Buffer
+    options: list[tuple[str, str]] = dataclasses.field(default_factory=list)
+    selected_idx: int = 0
+    allow_custom: bool = True
+    max_visible: int = 15
+    secret: bool = False
+    done: threading.Event = dataclasses.field(default_factory=threading.Event)
+    result: str | None = None
+
+    def filtered_options(self) -> list[tuple[str, str]]:
+        if self.kind != "searchable":
+            return self.options
+        q = self.buffer.text.strip().lower()
+        if not q:
+            return self.options
+        tokens = q.split()
+        return [
+            (val, lbl)
+            for val, lbl in self.options
+            if all(tok in val.lower() or tok in lbl.lower() for tok in tokens)
+        ]
+
+
+def _clamp_line(text: str, max_width: int) -> str:
+    if max_width <= 0:
+        return ""
+    if len(text) <= max_width:
+        return text
+    if max_width == 1:
+        return "…"
+    return text[: max_width - 1] + "…"
+
+
+class _ModalListControl(UIControl):
+    """Renders modal option lists with full-width highlight and right-edge ellipsis."""
+
+    def __init__(self, get_modal: Callable[[], InlineModalState | None]) -> None:
+        self._get_modal = get_modal
+
+    def is_focusable(self) -> bool:
+        modal = self._get_modal()
+        return modal is not None and modal.kind == "option"
+
+    def preferred_height(
+        self,
+        width: int,
+        max_available_height: int,
+        wrap_lines: bool,
+        get_line_prefix: Any = None,
+    ) -> int | None:
+        del wrap_lines, get_line_prefix
+        content = self.create_content(width, max_available_height)
+        return min(max_available_height, content.line_count)
+
+    def create_content(self, width: int, height: int) -> UIContent:
+        modal = self._get_modal()
+        w = max(20, int(width))
+        lines: list[StyleAndTextTuples] = []
+
+        if modal is not None and modal.kind in ("option", "searchable"):
+            if modal.kind == "option":
+                header = _clamp_line(f" {modal.title} (↑/↓, Enter, Esc)", w)
+                lines.append([("class:modal.title", header)])
+                matches = modal.options
+            else:
+                matches = modal.filtered_options()
+
+            if not matches:
+                q = modal.buffer.text.strip()
+                if modal.kind == "searchable" and modal.allow_custom and q:
+                    msg = _clamp_line(f"   No matches — Enter to use: {q}", w)
+                    lines.append([("ansicyan", msg)])
+                else:
+                    lines.append([("class:modal.dim", _clamp_line("   No matching options.", w))])
+            else:
+                total = len(matches)
+                idx = max(0, min(modal.selected_idx, total - 1))
+                max_vis = max(1, modal.max_visible) if modal.kind == "searchable" else total
+                half = max_vis // 2
+                start = max(0, min(idx - half, total - max_vis))
+                end = min(total, start + max_vis)
+                if start > 0:
+                    lines.append([("class:modal.dim", _clamp_line(f"   ↑ {start} more above", w))])
+                for i in range(start, end):
+                    _, label = matches[i]
+                    is_sel = i == idx
+                    prefix = " ❯ " if is_sel else "   "
+                    row = _clamp_line(f"{prefix}{label}", w)
+                    if is_sel:
+                        row = row.ljust(w)
+                        lines.append([("class:modal.selected", row)])
+                    else:
+                        lines.append([("class:modal", row)])
+                if end < total:
+                    lines.append(
+                        [("class:modal.dim", _clamp_line(f"   ↓ {total - end} more below ({total} total)", w))]
+                    )
+
+        return UIContent(
+            get_line=lambda i: lines[i] if i < len(lines) else [],
+            line_count=len(lines),
+            show_cursor=False,
+        )
+
+
+def build_modal_container(
+    get_modal: Callable[[], InlineModalState | None],
+    modal_buffer: Buffer,
+) -> tuple[HSplit, Window, Window]:
+    """Build the shared inline modal HSplit and return `(container, input_window, list_window)`."""
+
+    def _title_fragments() -> StyleAndTextTuples:
+        modal = get_modal()
+        if modal is None:
+            return []
+        if modal.kind == "searchable":
+            return [("class:modal.title", f" {modal.title} (type to filter, ↑/↓, Enter, Esc)")]
+        if modal.kind == "input":
+            return [("class:modal.title", f" {modal.title} (Enter to confirm, Esc to cancel)")]
+        return []
+
+    def _select_processor() -> Any:
+        modal = get_modal()
+        if modal is not None and modal.kind == "searchable":
+            return BeforeInput([("ansicyan", "Filter: ")])
+        if modal is not None and modal.kind == "input" and modal.secret:
+            return PasswordProcessor()
+        return None
+
+    def _has_text_input() -> bool:
+        m = get_modal()
+        return m is not None and m.kind in ("searchable", "input")
+
+    def _has_list() -> bool:
+        m = get_modal()
+        return m is not None and m.kind in ("option", "searchable")
+
+    has_text_input = Condition(_has_text_input)
+    has_list = Condition(_has_list)
+
+    title_window = Window(
+        content=FormattedTextControl(_title_fragments),
+        height=1,
+        dont_extend_height=True,
+    )
+    input_window = Window(
+        content=BufferControl(
+            buffer=modal_buffer,
+            input_processors=[DynamicProcessor(lambda: _select_processor())],
+        ),
+        height=1,
+        dont_extend_height=True,
+        get_line_prefix=lambda *_: [("", " ")],
+    )
+    list_window = Window(
+        content=_ModalListControl(get_modal),
+        dont_extend_height=True,
+        always_hide_cursor=True,
+    )
+
+    container = HSplit(
+        [
+            ConditionalContainer(HSplit([title_window, input_window]), filter=has_text_input),
+            ConditionalContainer(list_window, filter=has_list),
+        ]
+    )
+    return container, input_window, list_window
+
+
+def build_modal_key_bindings(
+    get_modal: Callable[[], InlineModalState | None],
+    close_modal: Callable[[str | None], None],
+    active_filter: Filter,
+) -> KeyBindings:
+    """Build shared key bindings for inline modals."""
+    kb = KeyBindings()
+    def _is_option() -> bool:
+        m = get_modal()
+        return m is not None and m.kind == "option"
+
+    is_option = Condition(_is_option)
+
+    def _move(delta: int) -> None:
+        modal = get_modal()
+        if modal is None or modal.kind == "input":
+            return
+        matches = modal.filtered_options()
+        if matches:
+            modal.selected_idx = (modal.selected_idx + delta) % len(matches)
+
+    @kb.add("up", filter=active_filter)
+    @kb.add("c-p", filter=active_filter)
+    def _(event: Any) -> None:
+        _move(-1)
+
+    @kb.add("k", filter=active_filter & is_option)
+    def _(event: Any) -> None:
+        _move(-1)
+
+    @kb.add("down", filter=active_filter)
+    @kb.add("c-n", filter=active_filter)
+    def _(event: Any) -> None:
+        _move(1)
+
+    @kb.add("j", filter=active_filter & is_option)
+    def _(event: Any) -> None:
+        _move(1)
+
+    @kb.add("enter", filter=active_filter)
+    def _(event: Any) -> None:
+        modal = get_modal()
+        if modal is None:
+            return
+        if modal.kind == "input":
+            close_modal(modal.buffer.text.strip())
+            return
+        matches = modal.filtered_options()
+        if matches:
+            idx = max(0, min(modal.selected_idx, len(matches) - 1))
+            close_modal(matches[idx][0])
+        elif modal.kind == "searchable" and modal.allow_custom and modal.buffer.text.strip():
+            close_modal(modal.buffer.text.strip())
+
+    @kb.add("escape", filter=active_filter)
+    @kb.add("c-c", filter=active_filter)
+    def _(event: Any) -> None:
+        close_modal(None)
+
+    return kb
+
+
+def _run_standalone_modal(state: InlineModalState) -> str | None:
+    """Run a single-use inline modal Application when InteractiveDock is not active."""
+    holder: list[InlineModalState | None] = [state]
+    container, input_window, list_window = build_modal_container(lambda: holder[0], state.buffer)
+    result_box: list[str | None] = [None]
+    app_ref: list[Application[str | None]] = []
+
+    def _close(val: str | None) -> None:
+        result_box[0] = val
+        if app_ref:
+            app_ref[0].exit(result=val)
+
+    kb = build_modal_key_bindings(lambda: holder[0], _close, Condition(lambda: True))
+    focus_target = list_window if state.kind == "option" else input_window
+    app: Application[str | None] = Application(
+        layout=Layout(container, focused_element=focus_target),
+        key_bindings=kb,
+        style=DOCK_STYLE,
+        full_screen=False,
+        erase_when_done=True,
+    )
+    app_ref.append(app)
+    return app.run()
+
+
 def _pick_option(
     title: str, options: list[tuple[str, str]], current: str | None = None
 ) -> str | None:
     """Generic inline arrow-key picker (Up/Down, Enter, Esc) returning the chosen value."""
-    tui = get_active_tui()
-    if tui is not None:
-        return tui.pick_option(title, options, current=current)
-    selected_idx = [0]
+    dock = get_active_dock()
+    if dock is not None:
+        return dock.pick_option(title, options, current=current)
+    if not options:
+        return None
+    selected_idx = 0
     if current:
         for i, (val, _) in enumerate(options):
             if val == current:
-                selected_idx[0] = i
+                selected_idx = i
                 break
-
-    def _get_text() -> list[tuple[str, str]]:
-        frags: list[tuple[str, str]] = [
-            ("bold", f"{title} (↑/↓ to move, Enter to select, Esc to cancel):\n")
-        ]
-        for i, (_, label) in enumerate(options):
-            is_sel = i == selected_idx[0]
-            marker = "❯ " if is_sel else "  "
-            style = "reverse bold cyan" if is_sel else ""
-            frags.append((style, f"{marker}{label}\n"))
-        return frags
-
-    kb = KeyBindings()
-
-    @kb.add("up")
-    @kb.add("k")
-    def _(event: Any) -> None:
-        selected_idx[0] = (selected_idx[0] - 1) % len(options)
-
-    @kb.add("down")
-    @kb.add("j")
-    def _(event: Any) -> None:
-        selected_idx[0] = (selected_idx[0] + 1) % len(options)
-
-    @kb.add("enter")
-    def _(event: Any) -> None:
-        event.app.exit(result=options[selected_idx[0]][0])
-
-    @kb.add("escape")
-    @kb.add("c-c")
-    def _(event: Any) -> None:
-        event.app.exit(result=None)
-
-    app: Application[str | None] = Application(
-        layout=Layout(Window(content=FormattedTextControl(_get_text), always_hide_cursor=True)),
-        key_bindings=kb,
-        full_screen=False,
+    return _run_standalone_modal(
+        InlineModalState(
+            kind="option",
+            title=title,
+            buffer=Buffer(multiline=False),
+            options=options,
+            selected_idx=selected_idx,
+        )
     )
-    return app.run()
 
 
 def _pick_searchable_option(
@@ -936,127 +975,52 @@ def _pick_searchable_option(
     max_visible: int = 15,
 ) -> str | None:
     """Filterable inline picker for large option lists (type to filter, ↑/↓, Enter, Esc)."""
-    tui = get_active_tui()
-    if tui is not None:
-        return tui.pick_searchable_option(
+    dock = get_active_dock()
+    if dock is not None:
+        return dock.pick_searchable_option(
             title,
             options,
             current=current,
             allow_custom=allow_custom,
             max_visible=max_visible,
         )
-    query = [""]
-    selected_idx = [0]
-
-    def _filtered() -> list[tuple[str, str]]:
-        q = query[0].strip().lower()
-        if not q:
-            return options
-        tokens = q.split()
-        return [
-            (val, lbl)
-            for val, lbl in options
-            if all(tok in val.lower() or tok in lbl.lower() for tok in tokens)
-        ]
-
+    selected_idx = 0
     if current:
         for i, (val, _) in enumerate(options):
             if val == current:
-                selected_idx[0] = i
+                selected_idx = i
                 break
-
-    def _get_text() -> list[tuple[str, str]]:
-        matches = _filtered()
-        if matches and selected_idx[0] >= len(matches):
-            selected_idx[0] = len(matches) - 1
-        frags: list[tuple[str, str]] = [
-            ("bold", f"{title} (type to filter, ↑/↓ to move, Enter to select, Esc to cancel):\n"),
-            ("cyan", f"Filter: {query[0]}▌\n"),
-        ]
-        if not matches:
-            if allow_custom and query[0].strip():
-                frags.append(("yellow", f"  No matches — press Enter to use custom ID: {query[0].strip()}\n"))
-            else:
-                frags.append(("dim", "  No matching options.\n"))
-            return frags
-
-        total = len(matches)
-        half = max_visible // 2
-        start = max(0, min(selected_idx[0] - half, total - max_visible))
-        end = min(total, start + max_visible)
-        if start > 0:
-            frags.append(("dim", f"  ↑ {start} more above\n"))
-        for i in range(start, end):
-            _, label = matches[i]
-            is_sel = i == selected_idx[0]
-            marker = "❯ " if is_sel else "  "
-            style = "reverse bold cyan" if is_sel else ""
-            frags.append((style, f"{marker}{label}\n"))
-        if end < total:
-            frags.append(("dim", f"  ↓ {total - end} more below ({total} total)\n"))
-        return frags
-
-    kb = KeyBindings()
-
-    @kb.add("up")
-    @kb.add("c-p")
-    def _(event: Any) -> None:
-        matches = _filtered()
-        if matches:
-            selected_idx[0] = (selected_idx[0] - 1) % len(matches)
-
-    @kb.add("down")
-    @kb.add("c-n")
-    def _(event: Any) -> None:
-        matches = _filtered()
-        if matches:
-            selected_idx[0] = (selected_idx[0] + 1) % len(matches)
-
-    @kb.add("backspace")
-    def _(event: Any) -> None:
-        if query[0]:
-            query[0] = query[0][:-1]
-            selected_idx[0] = 0
-
-    @kb.add("enter")
-    def _(event: Any) -> None:
-        matches = _filtered()
-        if matches:
-            idx = min(selected_idx[0], len(matches) - 1)
-            event.app.exit(result=matches[idx][0])
-        elif allow_custom and query[0].strip():
-            event.app.exit(result=query[0].strip())
-
-    @kb.add("escape")
-    @kb.add("c-c")
-    def _(event: Any) -> None:
-        event.app.exit(result=None)
-
-    @kb.add("<any>")
-    def _(event: Any) -> None:
-        data = event.data
-        if data and len(data) == 1 and data.isprintable():
-            query[0] += data
-            selected_idx[0] = 0
-
-    app: Application[str | None] = Application(
-        layout=Layout(Window(content=FormattedTextControl(_get_text), always_hide_cursor=True)),
-        key_bindings=kb,
-        full_screen=False,
+    modal_buf = Buffer(multiline=False)
+    state = InlineModalState(
+        kind="searchable",
+        title=title,
+        buffer=modal_buf,
+        options=options,
+        selected_idx=selected_idx,
+        allow_custom=allow_custom,
+        max_visible=max_visible,
     )
-    return app.run()
+    modal_buf.on_text_changed += lambda _: setattr(state, "selected_idx", 0)
+    return _run_standalone_modal(state)
 
 
 def _prompt_input(label: str, *, secret: bool = False, default: str = "") -> str | None:
     """Prompt for a single line of text (optionally masked); returns None on cancel."""
-    tui = get_active_tui()
-    if tui is not None:
-        return tui.prompt_input(label, secret=secret, default=default)
-    try:
-        val = pt_prompt(label, is_password=secret, default=default)
-    except (KeyboardInterrupt, EOFError):
-        return None
-    return val.strip()
+    dock = get_active_dock()
+    if dock is not None:
+        return dock.prompt_input(label, secret=secret, default=default)
+    modal_buf = Buffer(multiline=False)
+    if default:
+        modal_buf.text = default
+        modal_buf.cursor_position = len(default)
+    return _run_standalone_modal(
+        InlineModalState(
+            kind="input",
+            title=label.rstrip(),
+            buffer=modal_buf,
+            secret=secret,
+        )
+    )
 
 
 def _replay_session(
@@ -1064,6 +1028,8 @@ def _replay_session(
     cell_history: list[tuple[str, CellResult, float]],
     *,
     verbose: bool = False,
+    cell_meta: dict[str, dict[str, Any]] | None = None,
+    steering_indices: set[int] | None = None,
 ) -> None:
     """Replay a resumed session's full conversation and tool cells into the terminal."""
     p = _active_printer()
@@ -1075,7 +1041,7 @@ def _replay_session(
         if m.get("role") == "tool" and m.get("tool_call_id")
     }
 
-    for msg in messages:
+    for idx, msg in enumerate(messages):
         role = msg.get("role")
         content = msg.get("content") or ""
 
@@ -1090,8 +1056,11 @@ def _replay_session(
                 or text.startswith("[python-state")
             ):
                 _render_bash_notice(text)
+            elif steering_indices and idx in steering_indices:
+                preview = text[:60] + ("..." if len(text) > 60 else "")
+                p.block(Text(f"[steering] {preview}", style="cyan"))
             else:
-                console.print(Text("\n> " + text, style="bold"))
+                p.block(render_user_prompt(text))
         elif role == "assistant":
             if content:
                 cell_group.flush()
@@ -1104,20 +1073,33 @@ def _replay_session(
                     code = json.loads(fn.get("arguments") or "{}").get("code", "")
                 except json.JSONDecodeError:
                     code = fn.get("arguments") or ""
-                raw_out = tool_outputs.get(tc.get("id", ""), "")
-                is_err = "[stderr]" in raw_out and "Traceback" in raw_out
+                tc_id = str(tc.get("id", ""))
+                raw_out = tool_outputs.get(tc_id, "")
+                meta = (cell_meta or {}).get(tc_id)
+                if meta is not None:
+                    is_ok = bool(meta.get("ok", True))
+                    duration = float(meta.get("duration_s", 0.0))
+                else:
+                    is_err = (
+                        "[stderr]" in raw_out
+                        or raw_out.startswith("[error]")
+                        or raw_out.startswith("[aborted")
+                        or raw_out.startswith("[interrupted")
+                    )
+                    is_ok = not is_err
+                    duration = 0.0
                 cell_res = CellResult(
-                    ok=not is_err,
-                    stdout="" if is_err else raw_out,
-                    stderr=raw_out if is_err else "",
+                    ok=is_ok,
+                    stdout="" if not is_ok else raw_out,
+                    stderr=raw_out if not is_ok else "",
                     result=None,
                 )
-                cell_history.append((code, cell_res, 0.0))
+                cell_history.append((code, cell_res, duration))
                 if verbose:
                     _render_tool_call(code)
                     _render_tool_result(cell_res)
                 else:
-                    cell_group.add(len(cell_history), code, cell_res, 0.0)
+                    cell_group.add(len(cell_history), code, cell_res, duration)
     cell_group.flush()
 
 
@@ -1164,4 +1146,3 @@ def _format_turn_footer(usage: TurnUsage, max_context_tokens: int) -> str:
     pct = usage.context_pct(max_context_tokens)
     cache_pct = usage.cache_hit_rate * 100.0
     return f"ctx {_fmt_k(usage.prompt_tokens)}/{_fmt_k(max_context_tokens)} ({pct:.1f}%) · cache {cache_pct:.0f}%"
-

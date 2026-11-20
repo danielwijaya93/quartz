@@ -59,7 +59,9 @@ from agent.ui import (
     _replay_session,
     _short_path,
     console,
-    get_active_tui,
+    console_print,
+    dock_status,
+    get_active_dock,
 )
 
 
@@ -97,6 +99,8 @@ class _CLIRuntime:
 
     def persist(self, *, compacted: bool = False) -> None:
         self.active_session.save_messages(self.messages, compacted=compacted)
+        if hasattr(self.active_session, "save_ui_meta"):
+            self.active_session.save_ui_meta()
         if self.usage_stats.prompt_tokens > 0 or self.usage_stats.total_prompt_tokens > 0:
             self.active_session.save_usage(self.usage_stats.to_dict())
         if not self.headless and getattr(self.kernel, "dirty", True):
@@ -219,21 +223,21 @@ def _login_provider(target_provider: str | None = None) -> str | None:
 
     spec = PROVIDERS[target_provider]
     if spec.auth_type == "oauth":
-        in_tui = get_active_tui() is not None
+        in_dock = get_active_dock() is not None
 
         def _on_url(auth_url: str) -> None:
-            console.print(Text("Open this URL in your browser to sign in with Google:\n"))
-            console.print(Text(f"  {auth_url}\n"))
-            console.print(Text(f"Waiting for browser callback on http://localhost:{CALLBACK_PORT} ..."))
-            if not in_tui:
-                console.print(
+            console_print(Text("Open this URL in your browser to sign in with Google:\n"))
+            console_print(Text(f"  {auth_url}\n"))
+            console_print(Text(f"Waiting for browser callback on http://localhost:{CALLBACK_PORT} ..."))
+            if not in_dock:
+                console_print(
                     Text("(If on a remote machine, paste the final redirect URL here and press Enter)")
                 )
 
         try:
             creds = login_google_interactive(
                 on_url=_on_url,
-                interactive_paste=not in_tui,
+                interactive_paste=not in_dock,
             )
         except Exception as exc:
             console.print(f"[red]Login failed: {escape(str(exc))}[/red]")
@@ -258,7 +262,7 @@ def _login_provider(target_provider: str | None = None) -> str | None:
         base_url = entered_url
 
     saved_path = save_provider_auth(target_provider, api_key, base_url)
-    with console.status(f"[dim]Verifying {target_provider} & discovering models...[/dim]"):
+    with dock_status(f"[dim]Verifying {target_provider} & discovering models...[/dim]"):
         models, err = discover_models(target_provider)
     if err:
         console.print(
@@ -525,6 +529,18 @@ class CommandRegistry:
                 continue
             cmd_str = f"{cmd.name} {cmd.usage}".strip()
             lines.append(f"{cmd_str:<17}{cmd.description}")
+        lines.extend(
+            [
+                "",
+                "Keybindings:",
+                "  Enter            Submit prompt or steer running turn",
+                "  Ctrl+J / \\+Enter Insert newline",
+                "  Esc              Abort running turn or cancel modal/completion",
+                "  Ctrl+C           Clear draft / abort turn / exit",
+                "  Ctrl+D           Exit when input is empty",
+                "  @path            Attach or mention a file",
+            ]
+        )
         return "\n".join(lines)
 
     def handle(self, rt: _CLIRuntime, user_input: str) -> bool | None:
@@ -593,10 +609,10 @@ def _cmd_model(rt: _CLIRuntime, arg: str) -> bool | None:
 
     pspec = PROVIDERS[picked_provider]
     if pspec.backend == "openai":
-        with console.status(f"[dim]Discovering models from {picked_provider}...[/dim]"):
+        with dock_status(f"[dim]Discovering models from {picked_provider}...[/dim]"):
             models, err = discover_models(picked_provider)
         if err:
-            console.print(
+            console_print(
                 f"[yellow]Model discovery warning ({escape(err)}); showing fallback/custom options.[/yellow]"
             )
     else:
@@ -641,7 +657,7 @@ def _cmd_model(rt: _CLIRuntime, arg: str) -> bool | None:
     except SystemExit:
         return False
     save_model_config(rt.provider_name, rt.model, rt.effort)
-    console.print(
+    console_print(
         f"[green]Switched to [bold]{rt.provider_name}[/bold] / [bold]{rt.model}[/bold] "
         f"(effort: [bold]{rt.effort}[/bold])[/green]"
     )
@@ -696,8 +712,14 @@ def _cmd_continue(rt: _CLIRuntime, arg: str) -> bool | None:
     if restored_notice:
         rt.messages.append({"role": "user", "content": restored_notice})
     rt.usage_stats = TurnUsage.from_dict(rt.active_session.last_usage)
-    console.print(f"\n[bold cyan]Switched to session {rt.active_session.id}[/bold cyan]")
-    _replay_session(rt.messages, rt.cell_history, verbose=rt.verbose)
+    console_print(f"\n[bold cyan]Switched to session {rt.active_session.id}[/bold cyan]")
+    _replay_session(
+        rt.messages,
+        rt.cell_history,
+        verbose=rt.verbose,
+        cell_meta=getattr(rt.active_session, "cell_meta", None),
+        steering_indices=getattr(rt.active_session, "steering_indices", None),
+    )
     if rt.usage_stats.prompt_tokens > 0:
         _active_printer().block(Text(_format_turn_footer(rt.usage_stats, rt.max_context_tokens), style="dim"))
     return False
@@ -763,13 +785,16 @@ def _cmd_vars(rt: _CLIRuntime, arg: str) -> bool | None:
     del arg
     vars_info = rt.kernel.list_vars()
     if not vars_info:
-        console.print("[dim]No user-defined variables in the kernel.[/dim]")
+        _active_printer().block(Text("No user-defined variables in the kernel.", style="dim"))
     else:
-        for name, typ in vars_info.items():
-            line = Text("  ")
-            line.append(name, style="cyan")
-            line.append(f": {typ}")
-            console.print(line)
+        out = Text()
+        for i, (name, typ) in enumerate(vars_info.items()):
+            if i > 0:
+                out.append("\n")
+            out.append("  ")
+            out.append(name, style="cyan")
+            out.append(f": {typ}")
+        _active_printer().block(out)
     return False
 
 
@@ -814,10 +839,10 @@ def _cmd_helpers(rt: _CLIRuntime, arg: str) -> bool | None:
             h.get("doc", ""),
         )
 
-    console.print(table)
+    _active_printer().block(table)
     if warnings:
         for w in warnings:
-            console.print(f"[yellow]Warning: {escape(w)}[/yellow]")
+            _active_printer().block(Text(f"Warning: {w}", style="yellow"))
     return False
 
 
@@ -827,7 +852,7 @@ def _cmd_helpers(rt: _CLIRuntime, arg: str) -> bool | None:
 )
 def _cmd_session(rt: _CLIRuntime, arg: str) -> bool | None:
     del arg
-    console.print(
+    console_print(
         f"Session ID: [bold]{escape(rt.active_session.id)}[/bold]\n"
         f"Log:        {escape(_short_path(rt.active_session.jsonl_path))}\n"
         f"Snapshot:   {escape(_short_path(rt.active_session.snapshot_dir))}"
@@ -848,7 +873,7 @@ def _cmd_usage(rt: _CLIRuntime, arg: str) -> bool | None:
         if rt.usage_stats.total_prompt_tokens > 0
         else 0.0
     )
-    console.print(
+    console_print(
         f"Last context:  {rt.usage_stats.prompt_tokens:,} / {rt.max_context_tokens:,} ({pct:.1f}%)\n"
         f"Last cache:    {rt.usage_stats.cached_tokens:,} cached ({cache_pct:.1f}%)\n"
         f"Session total: {rt.usage_stats.total_prompt_tokens:,} in / "
@@ -866,16 +891,16 @@ def _cmd_usage(rt: _CLIRuntime, arg: str) -> bool | None:
 )
 def _cmd_expand(rt: _CLIRuntime, arg: str) -> bool | None:
     if not rt.cell_history:
-        console.print("[dim]No ipython cells executed in this session yet.[/dim]")
+        _active_printer().block(Text("No ipython cells executed in this session yet.", style="dim"))
         return False
     try:
         start_idx, end_idx = _parse_expand_range(arg, len(rt.cell_history))
     except ValueError:
-        console.print(f"[red]Invalid cell index or range. Choose 1..{len(rt.cell_history)}.[/red]")
+        _active_printer().block(Text(f"Invalid cell index or range. Choose 1..{len(rt.cell_history)}.", style="red"))
         return False
     for idx in range(start_idx, end_idx + 1):
         code, res, duration = rt.cell_history[idx - 1]
-        console.print(f"[dim]Cell #{idx} ({duration:.2f}s)[/dim]")
+        _active_printer().block(Text(f"Cell #{idx} ({duration:.2f}s)", style="dim"))
         _render_tool_call(code)
         _render_tool_result(res)
     return False
@@ -898,12 +923,12 @@ def _cmd_compact(rt: _CLIRuntime, arg: str) -> bool | None:
     )
     rt.messages = result.messages
     if not result.changed:
-        console.print("[dim]Nothing to compact yet.[/dim]")
+        console_print("[dim]Nothing to compact yet.[/dim]")
         return False
     rt.usage_stats.prompt_tokens = estimate_context_tokens(result.messages) + estimate_text_tokens(rt.system_prompt)
     rt.persist(compacted=True)
     _render_compaction(result)
-    console.print(f"[dim]Context is now ~{result.estimated_tokens_after:,} tokens.[/dim]")
+    console_print(f"[dim]Context is now ~{result.estimated_tokens_after:,} tokens.[/dim]")
     return False
 
 
@@ -913,7 +938,7 @@ def _cmd_compact(rt: _CLIRuntime, arg: str) -> bool | None:
 )
 def _cmd_prompt(rt: _CLIRuntime, arg: str) -> bool | None:
     del arg
-    console.print(Panel(Text(rt.system_prompt), title="System Prompt", border_style="dim"))
+    console_print(Panel(Text(rt.system_prompt), title="System Prompt", border_style="dim"))
     return False
 
 
@@ -932,12 +957,7 @@ def _cmd_reset(rt: _CLIRuntime, arg: str) -> bool | None:
     rt.wait_snapshot()
     rt.kernel.restart()
     rt.active_session = Session.create(rt.cwd)
-    from agent.ui import get_active_tui
-
-    tui = get_active_tui()
-    if tui is not None:
-        tui.clear_log()
-    console.print("[yellow]Conversation cleared, kernel restarted.[/yellow]")
+    _active_printer().block(Text("Conversation cleared, kernel restarted.", style="yellow"))
     return False
 
 
@@ -947,7 +967,7 @@ def _cmd_reset(rt: _CLIRuntime, arg: str) -> bool | None:
 )
 def _cmd_help(rt: _CLIRuntime, arg: str) -> bool | None:
     del rt, arg
-    console.print(Text(COMMAND_REGISTRY.format_help()))
+    _active_printer().block(Text(COMMAND_REGISTRY.format_help()))
     return False
 
 

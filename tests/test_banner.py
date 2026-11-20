@@ -67,6 +67,18 @@ def test_effort_absent_omits_parentheses():
         assert "()" not in lines[0]
 
 
+def test_effort_not_duplicated_when_model_name_ends_with_effort():
+    state = _make_state(model="gemini-3.8-flash-high", effort="high")
+    lines = format_banner_plain(state, width=140)
+    assert len(lines) == 1
+    assert "gemini-3.8-flash-high ·" in lines[0]
+    assert "(high)" not in lines[0]
+
+    state_diff = _make_state(model="gemini-3.8-flash-high", effort="medium")
+    lines_diff = format_banner_plain(state_diff, width=140)
+    assert "gemini-3.8-flash-high (medium)" in lines_diff[0]
+
+
 def test_bg_count_shown_when_positive_on_both_layouts():
     state = _make_state(bg_count=3)
 

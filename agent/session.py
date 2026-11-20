@@ -53,6 +53,9 @@ class Session:
         self._persisted_refs: list[dict[str, Any]] = []
         self._pending_meta: dict[str, Any] | None = None
         self.last_usage: dict[str, int] | None = None
+        self.cell_meta: dict[str, dict[str, Any]] = {}
+        self.steering_indices: set[int] = set()
+        self._persisted_ui_meta: tuple[dict[str, dict[str, Any]], tuple[int, ...]] = ({}, ())
 
     @classmethod
     def create(cls, cwd: Path, sessions_dir: Path | None = None) -> Session:
@@ -183,13 +186,31 @@ class Session:
             rec_type = record.get("type")
             if rec_type == "message" and isinstance(record.get("message"), dict):
                 messages.append(record["message"])
+                ui_meta = record.get("ui_meta")
+                if isinstance(ui_meta, dict) and ui_meta.get("is_steering"):
+                    session.steering_indices.add(len(messages) - 1)
             elif rec_type == "compaction" and isinstance(record.get("messages"), list):
                 messages = list(record["messages"])
+                ui_meta = record.get("ui_meta")
+                if isinstance(ui_meta, dict):
+                    if isinstance(ui_meta.get("cell_meta"), dict):
+                        session.cell_meta.update(ui_meta["cell_meta"])
+                    if isinstance(ui_meta.get("steering_indices"), list):
+                        session.steering_indices = {int(i) for i in ui_meta["steering_indices"]}
+            elif rec_type == "ui_meta":
+                if isinstance(record.get("cell_meta"), dict):
+                    session.cell_meta.update(record["cell_meta"])
+                if isinstance(record.get("steering_indices"), list):
+                    session.steering_indices.update(int(i) for i in record["steering_indices"])
             elif rec_type == "usage" and isinstance(record.get("usage"), dict):
                 session.last_usage = {k: int(v) for k, v in record["usage"].items()}
 
         session._persisted_count = len(messages)
         session._persisted_refs = [copy.deepcopy(m) for m in messages]
+        session._persisted_ui_meta = (
+            copy.deepcopy(session.cell_meta),
+            tuple(sorted(session.steering_indices)),
+        )
         return session, messages
 
     @classmethod
@@ -200,7 +221,19 @@ class Session:
         forked = cls.create(cwd, sessions_dir=src.sessions_dir)
         if messages:
             forked._ensure_meta_written()
-            forked._append_record({"type": "compaction", "messages": messages})
+            rec: dict[str, Any] = {"type": "compaction", "messages": messages}
+            if src.cell_meta or src.steering_indices:
+                forked.cell_meta = copy.deepcopy(src.cell_meta)
+                forked.steering_indices = set(src.steering_indices)
+                rec["ui_meta"] = {
+                    "cell_meta": forked.cell_meta,
+                    "steering_indices": sorted(forked.steering_indices),
+                }
+                forked._persisted_ui_meta = (
+                    copy.deepcopy(forked.cell_meta),
+                    tuple(sorted(forked.steering_indices)),
+                )
+            forked._append_record(rec)
             forked._persisted_count = len(messages)
             forked._persisted_refs = [copy.deepcopy(m) for m in messages]
         if src.last_usage:
@@ -227,21 +260,55 @@ class Session:
             for i in range(self._persisted_count)
         )
         if compacted or prefix_changed:
-            self._append_record({"type": "compaction", "messages": messages})
+            rec: dict[str, Any] = {"type": "compaction", "messages": messages}
+            if self.cell_meta or self.steering_indices:
+                rec["ui_meta"] = {
+                    "cell_meta": self.cell_meta,
+                    "steering_indices": sorted(self.steering_indices),
+                }
+                self._persisted_ui_meta = (
+                    copy.deepcopy(self.cell_meta),
+                    tuple(sorted(self.steering_indices)),
+                )
+            self._append_record(rec)
             self._persisted_count = len(messages)
             self._persisted_refs = [copy.deepcopy(m) for m in messages]
             return
 
         new_msgs = messages[self._persisted_count :]
         if new_msgs:
-            lines = "".join(
-                json.dumps({"type": "message", "message": msg}, ensure_ascii=False) + "\n"
-                for msg in new_msgs
-            )
+            lines_list: list[str] = []
+            for offset, msg in enumerate(new_msgs):
+                rec = {"type": "message", "message": msg}
+                if (self._persisted_count + offset) in self.steering_indices:
+                    rec["ui_meta"] = {"is_steering": True}
+                lines_list.append(json.dumps(rec, ensure_ascii=False) + "\n")
             with self.jsonl_path.open("a", encoding="utf-8") as f:
-                f.write(lines)
+                f.write("".join(lines_list))
         self._persisted_count = len(messages)
         self._persisted_refs = [copy.deepcopy(m) for m in messages]
+
+    def record_cell_meta(self, tool_call_id: str, *, ok: bool, duration_s: float) -> None:
+        if tool_call_id:
+            self.cell_meta[tool_call_id] = {"ok": bool(ok), "duration_s": float(duration_s)}
+
+    def record_steering(self, message_index: int) -> None:
+        if message_index >= 0:
+            self.steering_indices.add(message_index)
+
+    def save_ui_meta(self) -> None:
+        snap = (copy.deepcopy(self.cell_meta), tuple(sorted(self.steering_indices)))
+        if snap == self._persisted_ui_meta:
+            return
+        self._ensure_meta_written()
+        self._append_record(
+            {
+                "type": "ui_meta",
+                "cell_meta": self.cell_meta,
+                "steering_indices": sorted(self.steering_indices),
+            }
+        )
+        self._persisted_ui_meta = snap
 
     def save_usage(self, usage: dict[str, int]) -> None:
         self._ensure_meta_written()

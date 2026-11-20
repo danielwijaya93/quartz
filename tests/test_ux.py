@@ -732,99 +732,6 @@ def test_turn_progress_tracker_interactive_steering() -> None:
     tracker.close()
 
 
-def test_mid_turn_input_watcher_processing() -> None:
-    import queue
-    import threading
-    from agent.ui import _MidTurnInputWatcher
-
-    abort_ev = threading.Event()
-    steer_q: queue.Queue[str] = queue.Queue()
-    steering_calls: list[str] = []
-    change_calls: list[str] = []
-
-    watcher = _MidTurnInputWatcher(
-        abort_ev,
-        steer_q,
-        on_steering=steering_calls.append,
-        on_change=change_calls.append,
-    )
-
-    buf: list[str] = []
-    # Test normal typing
-    assert watcher._process_text("hello", buf) is True
-    assert "".join(buf) == "hello"
-    assert change_calls[-1] == "hello"
-
-    # Test backspace
-    assert watcher._process_text("\x7f", buf) is True
-    assert "".join(buf) == "hell"
-    assert change_calls[-1] == "hell"
-
-    # Test Ctrl+U (line clear)
-    assert watcher._process_text("\x15", buf) is True
-    assert "".join(buf) == ""
-    assert change_calls[-1] == ""
-
-    # Test Enter
-    assert watcher._process_text("steer me\n", buf) is True
-    assert "".join(buf) == ""
-    assert steer_q.get_nowait() == "steer me"
-    assert steering_calls == ["steer me"]
-
-    # Test arrow keys (escape sequence ignored, does not abort)
-    assert watcher._process_text("\x1b[A", buf) is True
-    assert not abort_ev.is_set()
-
-    # Test Ctrl+C abort
-    assert watcher._process_text("\x03", buf) is False
-    assert abort_ev.is_set()
-
-
-def test_inline_screen_differential_rendering() -> None:
-    from agent.ui import InlineScreen
-
-    buf = io.StringIO()
-    test_console = Console(file=buf, force_terminal=True, width=80)
-    screen = InlineScreen(test_console, enabled=True)
-
-    assert not screen.is_active()
-
-    # 1. Initial render of 2 lines
-    screen.render(["Line 1", "Line 2"])
-    assert screen.is_active()
-    out1 = buf.getvalue()
-    assert "\x1b[?2026hLine 1\r\nLine 2\x1b[?2026l" in out1
-
-    # 2. Update with 3 lines (should move up 1 line, clear and rewrite)
-    buf.seek(0)
-    buf.truncate(0)
-    screen.render(["Line 1 updated", "Line 2 updated", "Line 3 added"])
-    out2 = buf.getvalue()
-    assert "\x1b[?2026h" in out2
-    assert "\x1b[1A\r" in out2  # moved up 1 line from bottom of 2-line block
-    assert "\x1b[2KLine 1 updated" in out2
-    assert "\x1b[2KLine 2 updated" in out2
-    assert "\x1b[2KLine 3 added" in out2
-
-    # 3. Shrink back to 1 line
-    buf.seek(0)
-    buf.truncate(0)
-    screen.render(["Only Line 1"])
-    out3 = buf.getvalue()
-    assert "\x1b[2A\r" in out3  # moved up 2 lines from bottom of 3-line block
-    assert "\x1b[2KOnly Line 1" in out3
-
-    # 4. Clear completely
-    buf.seek(0)
-    buf.truncate(0)
-    screen.clear()
-    assert not screen.is_active()
-    out4 = buf.getvalue()
-    assert "\x1b[?2026h" in out4
-    assert "\x1b[2K" in out4
-    assert "\x1b[?2026l" in out4
-
-
 def test_block_printer_lifecycle_hooks() -> None:
     from rich.text import Text
 
@@ -843,136 +750,90 @@ def test_block_printer_lifecycle_hooks() -> None:
     assert events == ["before", "after", "before", "after"]
 
 
-def test_mid_turn_input_watcher_internal_buffer() -> None:
-    import queue
-    import threading
-    from agent.ui import _MidTurnInputWatcher
-
-    abort_ev = threading.Event()
-    steer_q: queue.Queue[str] = queue.Queue()
-
-    watcher = _MidTurnInputWatcher(abort_ev, steer_q)
-    assert watcher.current_buffer() == ""
-
-    # Simulate typing without external buffer
-    watcher._process_text("partial text")
-    assert watcher.current_buffer() == "partial text"
-
-    # Backspace
-    watcher._process_text("\x7f")
-    assert watcher.current_buffer() == "partial tex"
-
-    # Enter submits and clears internal buffer
-    watcher._process_text("\n")
-    assert watcher.current_buffer() == ""
-    assert steer_q.get_nowait() == "partial tex"
-
-
-def test_execute_interactive_turn_unsubmitted_input_handoff(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from types import SimpleNamespace
-    from agent.loop import TurnUsage
-    import agent.cli as cli
+def test_wrap_safe_gutter_and_user_prompt_at_width_52(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent.ui import _render_gutter_block, render_user_prompt
 
     buf = io.StringIO()
-    test_console = Console(file=buf, force_terminal=False, width=80)
+    test_console = Console(file=buf, force_terminal=False, width=52, color_system=None)
     test_printer = BlockPrinter(test_console)
-    class _FakeWatcher:
-        def __init__(self, *args, **kwargs):
-            pass
-        def __enter__(self):
-            return self
-        def __exit__(self, *args):
-            pass
-        def current_buffer(self):
-            return "unsubmitted thought"
+    monkeypatch.setattr(cli, "printer", test_printer)
 
-    sym_map = {
-        "console": test_console,
-        "printer": test_printer,
-        "TurnProgressTracker": cli.TurnProgressTracker,
-        "_MidTurnInputWatcher": _FakeWatcher,
-    }
-    monkeypatch.setattr(cli, "_sym", lambda name: sym_map.get(name, getattr(cli, name, None)))
+    long_prompt = "Please inspect the repository structure and explain how the kernel worker communicates over IPC."
+    rendered_prompt = render_user_prompt(long_prompt, width=52)
+    prompt_lines = rendered_prompt.plain.splitlines()
+    assert len(prompt_lines) >= 2
+    for ln in prompt_lines:
+        assert ln.startswith("▌ ")
+        assert len(ln) <= 52
 
-    def _fake_run_turn(rt, **kwargs):
-        tracker = kwargs.get("tracker")
-        if tracker:
-            tracker.set_input_buffer("unsubmitted thought")
-        return "Answer", [], TurnUsage(prompt_tokens=10, completion_tokens=5, cached_tokens=0)
+    long_notice = "Background task finished with a very long diagnostic message that must wrap cleanly inside the gutter."
+    _render_gutter_block("notice", long_notice, width=52)
+    gutter_lines = buf.getvalue().rstrip("\n").splitlines()
+    assert len(gutter_lines) >= 2
+    for ln in gutter_lines:
+        assert ln.startswith("│ ")
+        assert len(ln) <= 52
 
-    monkeypatch.setattr(cli, "_run_turn", _fake_run_turn)
-    monkeypatch.setattr(cli, "_MidTurnInputWatcher", _FakeWatcher)
 
-    rt = cli._CLIRuntime(
-        cwd=tmp_path,
-        kernel=SimpleNamespace(interrupt=lambda: None),  # type: ignore[arg-type]
-        client=object(),
-        provider_name="openai",
-        model="gpt-5",
-        effort="",
-        system_prompt="",
-        active_session=SimpleNamespace(save_messages=lambda *a, **k: None),  # type: ignore[arg-type]
-        messages=[],
-        usage_stats=TurnUsage(),
-        max_context_tokens=100_000,
-        compact_reserve_tokens=8_000,
-        keep_recent_tokens=2_000,
+def test_faithful_session_replay_and_ui_meta_persistence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent.session import Session
+    from agent.ui import _replay_session
+
+    sess = Session.create(tmp_path, sessions_dir=tmp_path)
+    msgs = [
+        {"role": "user", "content": "Run a failing cell"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "tc_1", "type": "function", "function": {"name": "ipython", "arguments": '{"code": "1 / 0"}'}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tc_1", "content": "ZeroDivisionError"},
+        {"role": "user", "content": "Try something else instead"},
+        {"role": "assistant", "content": "Done!"},
+    ]
+    sess.record_cell_meta("tc_1", ok=False, duration_s=1.25)
+    sess.record_steering(3)
+    sess.save_messages(msgs)
+    sess.save_ui_meta()
+
+    # Ensure messages themselves were not polluted with ui_meta
+    assert all("ui_meta" not in m for m in msgs)
+
+    loaded, loaded_msgs = Session.load(sess.id, sessions_dir=tmp_path)
+    assert loaded.cell_meta == {"tc_1": {"ok": False, "duration_s": 1.25}}
+    assert loaded.steering_indices == {3}
+
+    buf = io.StringIO()
+    test_console = Console(file=buf, force_terminal=False, width=100, color_system=None)
+    monkeypatch.setattr(cli, "printer", BlockPrinter(test_console))
+
+    cell_history: list[Any] = []
+    _replay_session(
+        loaded_msgs,
+        cell_history,
         verbose=False,
-        plain_output=False,
-        headless=False,
+        cell_meta=loaded.cell_meta,
+        steering_indices=loaded.steering_indices,
     )
-    monkeypatch.setattr(rt, "persist", lambda *a, **k: None)
+    out = buf.getvalue()
+    assert "▌ Run a failing cell" in out
+    assert "> Run a failing cell" not in out
+    assert "× #1 · Run Python" in out
+    assert "1.25s" in out
+    assert "[steering] Try something else instead" in out
+    assert "Done!" in out
 
-    leftover = cli._execute_interactive_turn(rt)
-    assert leftover == "unsubmitted thought"
 
+def test_help_includes_keybindings() -> None:
+    from agent.commands import COMMAND_REGISTRY
 
-def test_run_interactive_pending_events_preserves_leftover_input(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from types import SimpleNamespace
+    help_text = COMMAND_REGISTRY.format_help()
+    assert "Keybindings:" in help_text
+    assert "Ctrl+J" in help_text
+    assert "Esc" in help_text
 
-    pending_sequence = iter([False, True, False])
-    prompt_defaults: list[str] = []
-    prompt_calls = [0]
-
-    def _fake_prompt(*args: Any, **kwargs: Any) -> str:
-        prompt_calls[0] += 1
-        prompt_defaults.append(kwargs.get("default", ""))
-        if prompt_calls[0] == 1:
-            return "hello"
-        raise EOFError()
-
-    monkeypatch.setattr("prompt_toolkit.PromptSession.prompt", _fake_prompt)
-    monkeypatch.setattr(cli, "_execute_interactive_turn", lambda rt: "unsent draft")
-
-    rt = cli._CLIRuntime(
-        cwd=tmp_path,
-        kernel=SimpleNamespace(
-            interrupt=lambda: None,
-            running_bash_count=lambda: 0,
-            has_pending_events=lambda: next(pending_sequence, False),
-            wait_until_event=lambda stop, timeout=0.25: False,
-            drain_events=lambda: [],
-        ),  # type: ignore[arg-type]
-        client=object(),
-        provider_name="openai",
-        model="gpt-5",
-        effort="",
-        system_prompt="",
-        active_session=SimpleNamespace(save_messages=lambda *a, **k: None),  # type: ignore[arg-type]
-        messages=[],
-        usage_stats=TurnUsage(),
-        max_context_tokens=100_000,
-        compact_reserve_tokens=8_000,
-        keep_recent_tokens=2_000,
-        verbose=False,
-        plain_output=True,
-        headless=False,
-    )
-
-    cli._run_interactive(rt, resumed=False)
-    assert prompt_defaults == ["", "unsent draft"]
 
 
 

@@ -26,7 +26,6 @@ if TYPE_CHECKING:
         CellGroupBuffer,
         MarkdownBlockStreamer,
         TurnProgressTracker,
-        _MidTurnInputWatcher,
         _fmt_duration,
         _fmt_k,
         _fmt_stopwatch,
@@ -49,14 +48,11 @@ if TYPE_CHECKING:
         render_markdown_block,
     )
 
-_WAKEUP_SENTINEL = "__MINIMAL_AGENT_WAKEUP__"
-
 _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "BlockPrinter": ("agent.ui", "BlockPrinter"),
     "CellGroupBuffer": ("agent.ui", "CellGroupBuffer"),
     "MarkdownBlockStreamer": ("agent.ui", "MarkdownBlockStreamer"),
     "_CLIRuntime": ("agent.commands", "_CLIRuntime"),
-    "_MidTurnInputWatcher": ("agent.ui", "_MidTurnInputWatcher"),
     "_build_client": ("agent.commands", "_build_client"),
     "_fmt_duration": ("agent.ui", "_fmt_duration"),
     "_fmt_k": ("agent.ui", "_fmt_k"),
@@ -113,7 +109,6 @@ __all__ = [
     "MarkdownBlockStreamer",
     "TurnProgressTracker",
     "_CLIRuntime",
-    "_MidTurnInputWatcher",
     "_build_client",
     "_fmt_duration",
     "_fmt_k",
@@ -227,7 +222,9 @@ def _run_turn(
             tracker.add_tool_result(len(rt.cell_history), code, res, duration)
 
     streamed_any[0] = False
-    active_printer.reset()
+    if own_tracker:
+        active_printer.reset()
+    cell_start_idx = len(rt.cell_history)
     try:
         answer, updated_msgs, tokens = _sym("agent_loop")(
             rt.client,
@@ -263,6 +260,20 @@ def _run_turn(
                 sys.stdout.flush()
         else:
             md_streamer.flush()
+    if hasattr(rt.active_session, "record_cell_meta"):
+        new_cells = rt.cell_history[cell_start_idx:]
+        if new_cells:
+            unrecorded_ids: list[str] = []
+            existing_meta = getattr(rt.active_session, "cell_meta", {})
+            for m in updated_msgs:
+                if m.get("role") == "assistant":
+                    for tc in m.get("tool_calls") or []:
+                        if tc.get("function", {}).get("name") == "ipython":
+                            tc_id = str(tc.get("id", ""))
+                            if tc_id and tc_id not in existing_meta:
+                                unrecorded_ids.append(tc_id)
+            for tc_id, (_, res, dur) in zip(unrecorded_ids[-len(new_cells):], new_cells):
+                rt.active_session.record_cell_meta(tc_id, ok=res.ok, duration_s=dur)
     if not streamed_any[0] and answer:
         if rt.plain_output:
             sys.stdout.write(answer.rstrip() + "\n")
@@ -317,98 +328,22 @@ def _run_headless(
         rt.persist()
 
 
-def _execute_interactive_turn(rt: _CLIRuntime) -> str:
-    from rich.text import Text
-
-    from agent.ui import (
-        TurnProgressTracker,
-        _MidTurnInputWatcher,
-        _format_turn_footer,
-        _format_turn_timing,
-    )
-
-    active_printer = _sym("printer")
-    active_console = _sym("console")
-    abort_event = threading.Event()
-    steering_queue: queue.Queue[str] = queue.Queue()
-
-    tracker: TurnProgressTracker = _sym("TurnProgressTracker")(
-        active_console,
-        active_printer,
-        verbose=rt.verbose,
-        plain_output=rt.plain_output,
-    )
-
-    def _on_change(text: str) -> None:
-        tracker.set_input_buffer(text)
-
-    def _on_steering_submitted(text: str) -> None:
-        tracker.add_steering_message(text)
-        if rt.plain_output or rt.verbose:
-            preview = text[:60] + ("..." if len(text) > 60 else "")
-            active_printer.block(Text(f"[steering] {preview}", style="cyan"))
-
-    def _on_steering(text: str) -> None:
-        tracker.flush()
-        tracker.clear_steering_messages()
-        if not (rt.plain_output or rt.verbose):
-            preview = text[:60] + ("..." if len(text) > 60 else "")
-            active_printer.block(Text(f"[steering] {preview}", style="cyan"))
-
-    t0 = time.monotonic()
-    leftover_buffer = ""
-    watcher_cls = _sym("_MidTurnInputWatcher")
-    try:
-        with watcher_cls(
-            abort_event,
-            steering_queue,
-            on_abort=rt.kernel.interrupt,
-            on_steering=_on_steering_submitted,
-            on_change=_on_change,
-        ) as watcher:
-            _, rt.messages, tokens = _run_turn(
-                rt,
-                tracker=tracker,
-                abort_event=abort_event,
-                steering_queue=steering_queue,
-                on_steering=_on_steering,
-            )
-            leftover_buffer = watcher.current_buffer()
-    finally:
-        tracker.close()
-
-    turn_elapsed = time.monotonic() - t0
-    rt.total_elapsed_s += turn_elapsed
-    rt.turn_count += 1
-    rt.persist()
-    timing = _format_turn_timing(turn_elapsed, rt.total_elapsed_s, rt.turn_count)
-    if tokens:
-        footer = f"{timing} · {_format_turn_footer(rt.usage_stats, rt.max_context_tokens)}"
-    else:
-        footer = timing
-    active_printer.block(Text(footer, style="dim"))
-    return leftover_buffer
-
-
 def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
     if not rt.plain_output and sys.stdin.isatty() and sys.stdout.isatty():
-        from agent.tui import QuartzTUI
+        from agent.interactive import InteractiveDock
 
-        QuartzTUI(rt, resumed=resumed).run()
+        InteractiveDock(rt, resumed=resumed).run()
         return
 
-    from prompt_toolkit import PromptSession
-    from prompt_toolkit.history import FileHistory
-    from prompt_toolkit.key_binding import KeyBindings
     from rich.markup import escape
     from rich.text import Text
 
     from agent.commands import _handle_slash_command
-    from agent.completer import AgentCompleter
     from agent.images import build_user_content, extract_inline_image_mentions
     from agent.loop import TurnAborted, format_bash_done_events
     from agent.ui import (
         _format_turn_footer,
+        _format_turn_timing,
         _render_bash_notice,
         _replay_session,
     )
@@ -418,97 +353,20 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
     active_console.print(Text.assemble(("quartz", "bold"), (" v0.1.0 · Run /help for commands", "dim")))
 
     if resumed:
-        _replay_session(rt.messages, rt.cell_history, verbose=rt.verbose)
+        _replay_session(
+            rt.messages,
+            rt.cell_history,
+            verbose=rt.verbose,
+            cell_meta=getattr(rt.active_session, "cell_meta", None),
+            steering_indices=getattr(rt.active_session, "steering_indices", None),
+        )
         if rt.usage_stats.prompt_tokens > 0:
             active_printer.block(Text(_format_turn_footer(rt.usage_stats, rt.max_context_tokens), style="dim"))
 
-    kb = KeyBindings()
-
-    @kb.add("c-j")
-    def _(event: Any) -> None:
-        event.current_buffer.insert_text("\n")
-
-    @kb.add("enter")
-    def _(event: Any) -> None:
-        buf = event.current_buffer
-        if buf.text.endswith("\\"):
-            buf.delete_before_cursor(1)
-            buf.insert_text("\n")
-        else:
-            buf.validate_and_handle()
-
-    history_path = Path.home() / ".quartz" / "history"
-    history_path.parent.mkdir(parents=True, exist_ok=True)
-    prompt_session: PromptSession[str] = PromptSession(
-        history=FileHistory(str(history_path)),
-        completer=AgentCompleter(rt.cwd),
-        complete_while_typing=True,
-        key_bindings=kb,
-        prompt_continuation="▌ ",
-    )
-
-    leftover_input = ""
-    while True:
-        bg_count = rt.kernel.running_bash_count()
-        from_prompt_wakeup = False
-        prompt_default = ""
-        if rt.kernel.has_pending_events():
-            user_input = _WAKEUP_SENTINEL
-        else:
-            stop_watcher = threading.Event()
-            watcher_thread: threading.Thread | None = None
-            if bg_count > 0:
-                def _watch_wakeup() -> None:
-                    if rt.kernel.wait_until_event(stop_watcher, timeout=0.25):
-                        app = prompt_session.app
-                        if app.is_running:
-                            app.exit(result=_WAKEUP_SENTINEL)
-
-                watcher_thread = threading.Thread(target=_watch_wakeup, daemon=True)
-                watcher_thread.start()
-
-            prompt_default = leftover_input
-            leftover_input = ""
-            try:
-                user_input = prompt_session.prompt(
-                    "\n▌ ",
-                    default=prompt_default,
-                ).strip()
-                from_prompt_wakeup = user_input == _WAKEUP_SENTINEL
-            except (EOFError, KeyboardInterrupt):
-                active_console.print("\n[dim]Exiting.[/dim]")
-                break
-            finally:
-                stop_watcher.set()
-                if watcher_thread is not None:
-                    watcher_thread.join(timeout=0.5)
-
-        if user_input == _WAKEUP_SENTINEL:
-            if from_prompt_wakeup:
-                leftover_input = prompt_default
-            events = rt.kernel.drain_events()
-            notice = format_bash_done_events(events)
-            if not notice:
-                continue
-            _render_bash_notice(notice)
-            rt.messages.append({"role": "user", "content": notice})
-        else:
-            if not user_input:
-                continue
-            cmd_res = _handle_slash_command(rt, user_input)
-            if cmd_res is True:
-                break
-            if cmd_res is False:
-                continue
-            inline_images = extract_inline_image_mentions(user_input, rt.cwd)
-            attached_images = [*rt.pending_images, *inline_images]
-            rt.pending_images.clear()
-            rt.messages.append({"role": "user", "content": build_user_content(user_input, attached_images)})
-            if not rt.plain_output:
-                active_console.print()
-
+    def _run_one_turn() -> None:
+        t0 = time.monotonic()
         try:
-            leftover_input = _execute_interactive_turn(rt)
+            _, rt.messages, tokens = _run_turn(rt)
         except TurnAborted:
             rt.kernel.interrupt()
             rt.persist()
@@ -518,6 +376,42 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
             active_console.print("\n[yellow]Interrupted.[/yellow]")
         except Exception as exc:
             active_console.print(f"[red]Error: {escape(str(exc))}[/red]")
+        else:
+            turn_elapsed = time.monotonic() - t0
+            rt.total_elapsed_s += turn_elapsed
+            rt.turn_count += 1
+            rt.persist()
+            timing = _format_turn_timing(turn_elapsed, rt.total_elapsed_s, rt.turn_count)
+            footer = f"{timing} · {_format_turn_footer(rt.usage_stats, rt.max_context_tokens)}" if tokens else timing
+            active_printer.block(Text(footer, style="dim"))
+
+    while True:
+        while rt.kernel.has_pending_events():
+            events = rt.kernel.drain_events()
+            notice = format_bash_done_events(events)
+            if notice:
+                _render_bash_notice(notice)
+                rt.messages.append({"role": "user", "content": notice})
+                _run_one_turn()
+
+        raw_line = sys.stdin.readline()
+        if not raw_line:
+            break
+        user_input = raw_line.strip()
+        if not user_input:
+            continue
+
+        cmd_res = _handle_slash_command(rt, user_input)
+        if cmd_res is True:
+            break
+        if cmd_res is False:
+            continue
+
+        inline_images = extract_inline_image_mentions(user_input, rt.cwd)
+        attached_images = [*rt.pending_images, *inline_images]
+        rt.pending_images.clear()
+        rt.messages.append({"role": "user", "content": build_user_content(user_input, attached_images)})
+        _run_one_turn()
 
 
 def _build_runtime(args: argparse.Namespace) -> tuple[_CLIRuntime, bool]:
