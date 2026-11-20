@@ -114,6 +114,13 @@ def estimate_context_tokens(messages: list[dict[str, Any]]) -> int:
     return sum(message_tokens(message) for message in messages)
 
 
+def strip_reasoning(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return copies without ``reasoning`` (display-only field; never sent to models)."""
+    if not any("reasoning" in m for m in messages):
+        return messages
+    return [{k: v for k, v in m.items() if k != "reasoning"} for m in messages]
+
+
 def _keep_boundary(messages: list[dict[str, Any]], keep_recent_tokens: int) -> int:
     """Index of the first message kept verbatim, counted backwards by token budget."""
     if not messages:
@@ -291,6 +298,7 @@ def compact_messages(
     Clearing old tool results runs first; a model-written summary runs only when
     that alone does not bring the estimate under `budget_tokens` (when given).
     """
+    messages = strip_reasoning(messages)
     tokens_before = estimate_context_tokens(messages)
     cleared_messages, cleared = clear_old_tool_results(
         messages, keep_recent_tokens=keep_recent_tokens

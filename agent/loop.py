@@ -182,6 +182,7 @@ def _call_model(
     effort: str | None = None,
     on_status: Callable[[str | None], None] | None,
     on_text_delta: Callable[[str], None] | None,
+    on_thinking_delta: Callable[[str], None] | None = None,
     abort_event: threading.Event | None = None,
     steering_queue: queue.Queue[str] | None = None,
 ) -> tuple[dict[str, Any], Usage | None]:
@@ -242,6 +243,7 @@ def _call_model(
             threading.Thread(target=_watch_preempt, daemon=True).start()
 
         content_parts: list[str] = []
+        thinking_parts: list[str] = []
         tool_calls_acc: dict[int, dict[str, Any]] = {}
         usage: Usage | None = None
         status_cleared = False
@@ -262,7 +264,10 @@ def _call_model(
                 if isinstance(event, UsageEvent):
                     usage = event.usage
                 elif isinstance(event, ThinkingDelta):
-                    continue
+                    if event.text:
+                        thinking_parts.append(event.text)
+                        if on_thinking_delta:
+                            on_thinking_delta(event.text)
                 elif isinstance(event, TextDelta):
                     if event.text:
                         if not status_cleared:
@@ -298,11 +303,15 @@ def _call_model(
     if preempted.is_set():
         tool_calls_acc.clear()
         content_parts.clear()
+        thinking_parts.clear()
 
     assistant_dict: dict[str, Any] = {
         "role": "assistant",
         "content": "".join(content_parts) if content_parts else None,
     }
+    reasoning_text = "".join(thinking_parts)
+    if reasoning_text:
+        assistant_dict["reasoning"] = reasoning_text
     if tool_calls_acc:
         tc_list: list[dict[str, Any]] = []
         for _, entry in sorted(tool_calls_acc.items()):
@@ -358,6 +367,7 @@ def agent_loop(
     on_bash_notice: Callable[[str], None] | None = None,
     on_status: Callable[[str | None], None] | None = None,
     on_text_delta: Callable[[str], None] | None = None,
+    on_thinking_delta: Callable[[str], None] | None = None,
     usage_stats: TurnUsage | None = None,
     initial_prompt_tokens: int = 0,
     effort: str | None = None,
@@ -419,6 +429,7 @@ def agent_loop(
                 effort=effort,
                 on_status=on_status,
                 on_text_delta=on_text_delta,
+                on_thinking_delta=on_thinking_delta,
                 abort_event=abort_event,
                 steering_queue=steering_queue,
             )
