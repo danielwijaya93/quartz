@@ -6,7 +6,7 @@ import json
 import sys
 from pathlib import Path
 
-from agent.cli import _handle_mcp_cli
+from agent.subcommands import _handle_mcp_cli
 from agent.kernel_client import KernelClient
 from agent.mcp_client import add_mcp_server, load_mcp_servers, remove_mcp_server
 from agent.prompt import build_system_prompt

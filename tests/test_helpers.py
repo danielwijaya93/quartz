@@ -5,7 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent.commands import _CLIRuntime, _handle_slash_command
+from agent.commands import _handle_slash_command
+from agent.runtime import AgentRuntime as _CLIRuntime
 from agent.helpers import (
     PROTECTED_NAMES,
     format_helpers_for_prompt,

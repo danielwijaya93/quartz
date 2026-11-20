@@ -7,7 +7,6 @@ import json
 import sys
 import threading
 import uuid
-from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
@@ -234,7 +233,7 @@ class ACPServer:
             state.messages.append({"role": "user", "content": prompt_content})
 
             client, model, effort = self._ensure_client()
-            active_tc_ids: deque[str] = deque()
+            tc_map: dict[str, str] = {}
 
             def _on_text_delta(chunk: str) -> None:
                 self._send_update(
@@ -245,14 +244,14 @@ class ACPServer:
                     },
                 )
 
-            def _on_tool_call(code: str) -> None:
-                tc_id = f"tc_{uuid.uuid4().hex[:8]}"
-                active_tc_ids.append(tc_id)
+            def _on_tool_call(tc_id: str, code: str) -> None:
+                acp_tc_id = tc_id or f"tc_{uuid.uuid4().hex[:8]}"
+                tc_map[tc_id] = acp_tc_id
                 self._send_update(
                     session_id,
                     {
                         "sessionUpdate": "tool_call",
-                        "toolCallId": tc_id,
+                        "toolCallId": acp_tc_id,
                         "title": "ipython",
                         "kind": "execute",
                         "status": "in_progress",
@@ -260,13 +259,13 @@ class ACPServer:
                     },
                 )
 
-            def _on_tool_result(res: CellResult) -> None:
-                tc_id = active_tc_ids.popleft() if active_tc_ids else f"tc_{uuid.uuid4().hex[:8]}"
+            def _on_tool_result(tc_id: str, res: CellResult) -> None:
+                acp_tc_id = tc_map.pop(tc_id, tc_id or f"tc_{uuid.uuid4().hex[:8]}")
                 self._send_update(
                     session_id,
                     {
                         "sessionUpdate": "tool_call_update",
-                        "toolCallId": tc_id,
+                        "toolCallId": acp_tc_id,
                         "status": "completed" if res.ok else "failed",
                         "rawOutput": res.format_for_model(),
                     },

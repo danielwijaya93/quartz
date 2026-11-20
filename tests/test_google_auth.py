@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from agent.cli import _build_client
+from agent.subcommands import build_provider as _build_client
 from agent.errors import ProviderError
 from agent.google_auth import (
     GoogleCredentials,
