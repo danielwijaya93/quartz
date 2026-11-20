@@ -8,7 +8,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from agent.commands import _CLIRuntime, _build_client, _handle_slash_command
-from agent.google_auth import GoogleCredentials, save_google_credentials
+from agent.google_auth import (
+    GoogleCredentials,
+    delete_google_credentials,
+    save_google_credentials,
+)
 from agent.loop import TurnUsage
 from agent.models import (
     delete_provider_auth,
@@ -177,3 +181,33 @@ def test_slash_login_logout_and_model_openrouter(tmp_path: Path, monkeypatch) ->
     # /logout openrouter removes stored credentials
     assert _handle_slash_command(rt, "/logout openrouter") is False
     assert load_provider_auth("openrouter") is None
+
+
+def test_resolve_provider_credentials_ignores_openai_base_url_for_other_providers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "missing_auth.json"))
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://custom-openai.example/v1")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-key")
+
+    or_key, or_url, or_src = resolve_provider_credentials("openrouter")
+    assert (or_key, or_url, or_src) == ("or-key", "https://openrouter.ai/api/v1", "env")
+
+    ds_key, ds_url, ds_src = resolve_provider_credentials("deepseek")
+    assert (ds_key, ds_url, ds_src) == ("ds-key", "https://api.deepseek.com", "env")
+
+
+def test_delete_google_credentials_preserves_0600_mode(tmp_path: Path, monkeypatch) -> None:
+    auth_path = tmp_path / "auth.json"
+    monkeypatch.setenv("QUARTZ_AUTH_FILE", str(auth_path))
+
+    save_google_credentials(
+        GoogleCredentials("acc", "ref", int(time.time() * 1000) + 600_000, "proj-1")
+    )
+    save_provider_auth("openrouter", "sk-or-v1-secret", "https://openrouter.ai/api/v1")
+
+    assert delete_google_credentials() is True
+    mode = stat.S_IMODE(auth_path.stat().st_mode)
+    assert mode == 0o600
+    assert load_provider_auth("openrouter") is not None

@@ -11,7 +11,12 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from agent.openai_client import OpenAICompatClient
 
-from agent.google_auth import auth_file_path, load_google_credentials
+from agent.google_auth import (
+    auth_file_path,
+    load_google_credentials,
+    read_auth_json,
+    write_auth_json,
+)
 
 PROVIDERS: dict[str, dict[str, Any]] = {
     "openrouter": {
@@ -108,31 +113,9 @@ class ApiKeyCredentials:
         return cls(api_key=api_key.strip(), base_url=cleaned_url)
 
 
-def _read_auth_json(path: Path | None = None) -> dict[str, Any]:
-    cfg = path or auth_file_path()
-    if not cfg.is_file():
-        return {}
-    try:
-        data = json.loads(cfg.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _write_auth_json(data: dict[str, Any], path: Path | None = None) -> Path:
-    cfg = path or auth_file_path()
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    cfg.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    try:
-        os.chmod(cfg, 0o600)
-    except OSError:
-        pass
-    return cfg
-
-
 def load_provider_auth(provider: str, path: Path | None = None) -> ApiKeyCredentials | None:
     """Load stored API-key credentials for a provider from auth.json."""
-    data = _read_auth_json(path)
+    data = read_auth_json(path)
     entry = data.get(provider)
     if not isinstance(entry, dict):
         return None
@@ -146,11 +129,11 @@ def save_provider_auth(
     path: Path | None = None,
 ) -> Path:
     """Save API-key credentials for a provider in auth.json with 0o600 permissions."""
-    data = _read_auth_json(path)
+    data = read_auth_json(path)
     cleaned_url = base_url.strip() if isinstance(base_url, str) and base_url.strip() else None
     creds = ApiKeyCredentials(api_key=api_key.strip(), base_url=cleaned_url)
     data[provider] = creds.to_dict()
-    return _write_auth_json(data, path)
+    return write_auth_json(data, path)
 
 
 def delete_provider_auth(provider: str, path: Path | None = None) -> bool:
@@ -158,11 +141,11 @@ def delete_provider_auth(provider: str, path: Path | None = None) -> bool:
     cfg = path or auth_file_path()
     if not cfg.is_file():
         return False
-    data = _read_auth_json(cfg)
+    data = read_auth_json(cfg)
     if provider not in data:
         return False
     del data[provider]
-    _write_auth_json(data, cfg)
+    write_auth_json(data, cfg)
     return True
 
 
@@ -171,7 +154,7 @@ def list_logged_in_providers(path: Path | None = None) -> dict[str, str]:
     result: dict[str, str] = {}
     if load_google_credentials(path) is not None:
         result["google"] = "oauth"
-    data = _read_auth_json(path)
+    data = read_auth_json(path)
     for name, entry in data.items():
         if name == "google" or not isinstance(entry, dict):
             continue
@@ -197,7 +180,10 @@ def resolve_provider_credentials(
     if isinstance(env_key_name, str) and env_key_name:
         env_val = os.getenv(env_key_name)
         if env_val and env_val.strip():
-            base_url = os.getenv("OPENAI_BASE_URL") or spec.get("base_url") or None
+            if env_key_name == "OPENAI_API_KEY":
+                base_url = os.getenv("OPENAI_BASE_URL") or spec.get("base_url") or None
+            else:
+                base_url = spec.get("base_url") or os.getenv("OPENAI_BASE_URL") or None
             return env_val.strip(), base_url, "env"
 
     if provider in ("deepseek", "openai", "custom"):
