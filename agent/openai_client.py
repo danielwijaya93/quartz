@@ -86,6 +86,19 @@ class _OpenAIStreamHandle:
                 if isinstance(reasoning, str) and reasoning:
                     yield ThinkingDelta(text=reasoning)
 
+                # OpenRouter may stream summaries only via reasoning_details
+                # (e.g. muse-ember with tools); surface them as thinking too.
+                details = raw_delta.get("reasoning_details")
+                if isinstance(details, list):
+                    for detail in details:
+                        if not isinstance(detail, dict):
+                            continue
+                        if detail.get("type") != "reasoning.summary":
+                            continue
+                        summary = detail.get("summary")
+                        if isinstance(summary, str) and summary:
+                            yield ThinkingDelta(text=summary)
+
                 text = raw_delta.get("content")
                 if isinstance(text, str) and text:
                     yield TextDelta(text=text)
@@ -157,7 +170,7 @@ class OpenAIProvider:
         if "stream_options" in lowered and "stream_options" in body:
             self.capabilities = dataclasses.replace(self.capabilities, stream_options=False)
             changed = True
-        if "reasoning_effort" in lowered and "reasoning_effort" in body:
+        if ("reasoning_effort" in lowered and "reasoning_effort" in body) or ("reasoning" in lowered and "reasoning" in body):
             self.capabilities = dataclasses.replace(self.capabilities, reasoning_effort=False)
             changed = True
         return changed

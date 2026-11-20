@@ -329,6 +329,55 @@ def test_contract_cross_thread_close_preempts_stream(
     assert [e.text for e in events if isinstance(e, TextDelta)] == ["one"]
 
 
+def test_openai_build_body_keeps_reasoning_effort_for_openrouter() -> None:
+    """Live-wire probe: ``reasoning: {effort}`` does NOT surface summaries for
+    muse-ember tool turns; the conventional ``reasoning_effort`` does, so
+    Quartz keeps sending it (OpenRouter accepts and streams with it)."""
+    client = OpenAIProvider(api_key="sk-test", base_url="https://openrouter.ai/api/v1")
+    body = client._build_body(model="m", messages=[], tools=None, stream=True, effort="high")
+    assert body["reasoning_effort"] == "high"
+    assert "reasoning" not in body
+
+
+def test_openai_stream_parses_reasoning_details_summaries() -> None:
+    from agent.provider import ThinkingDelta
+
+    # Simulate SSE payloads via the stream handle by monkeypatching iter_sse_events.
+    import agent.openai_client as oc
+
+    payloads = [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "reasoning": "short plan",
+                        "reasoning_details": [
+                            {"type": "reasoning.summary", "summary": "summary text"},
+                            {"type": "reasoning.encrypted", "data": "opaque"},
+                        ],
+                    }
+                }
+            ]
+        },
+        {"choices": [{"delta": {"content": "hi"}}]},
+    ]
+    client = OpenAIProvider(api_key="sk-test", base_url="https://openrouter.ai/api/v1")
+
+    class _FakeCtx:
+        def __exit__(self, *a: Any) -> None:
+            pass
+
+    handle = oc._OpenAIStreamHandle(_FakeCtx(), _FakeStreamResp(200), "test")  # type: ignore[arg-type]
+    orig = oc.iter_sse_events
+    oc.iter_sse_events = lambda resp, provider, is_closed: iter(payloads)  # type: ignore[assignment]
+    try:
+        events = list(handle)
+    finally:
+        oc.iter_sse_events = orig  # type: ignore[assignment]
+    thinking = [e.text for e in events if isinstance(e, ThinkingDelta)]
+    assert thinking == ["short plan", "summary text"]
+
+
 def test_openai_non_streaming_preserves_thought_signature_and_capability_fallback(
     monkeypatch: Any,
 ) -> None:
