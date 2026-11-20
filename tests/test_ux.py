@@ -13,12 +13,12 @@ import pytest
 from rich.console import Console
 
 import quartz.cli.app as cli
-import quartz.ui as ui
-from quartz.completer import AgentCompleter
+import quartz.tui.render as ui
+from quartz.tui.completer import AgentCompleter
 from quartz.kernel.client import CellResult, KernelClient
 from quartz.core.loop import TurnUsage, agent_loop
 from quartz.core.runtime import AgentRuntime
-from quartz.ui import BlockPrinter, MarkdownBlockStreamer, format_compact_cell_summary
+from quartz.tui.render import BlockPrinter, MarkdownBlockStreamer, format_compact_cell_summary
 
 
 def test_slash_command_autocomplete(tmp_path: Path) -> None:
@@ -957,7 +957,7 @@ def test_block_printer_lifecycle_hooks() -> None:
 
 
 def test_wrap_safe_gutter_and_user_prompt_at_width_52(monkeypatch: pytest.MonkeyPatch) -> None:
-    from quartz.ui import _render_gutter_block, render_user_prompt
+    from quartz.tui.render import _render_gutter_block, render_user_prompt
 
     buf = io.StringIO()
     test_console = Console(file=buf, force_terminal=False, width=52, color_system=None)
@@ -983,7 +983,7 @@ def test_wrap_safe_gutter_and_user_prompt_at_width_52(monkeypatch: pytest.Monkey
 
 def test_faithful_session_replay_and_ui_meta_persistence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from quartz.core.session import Session
-    from quartz.ui import _replay_session
+    from quartz.tui.replay import _replay_session
 
     sess = Session.create(tmp_path, sessions_dir=tmp_path)
     msgs = [
@@ -1033,7 +1033,7 @@ def test_faithful_session_replay_and_ui_meta_persistence(tmp_path: Path, monkeyp
 
 
 def test_help_includes_keybindings() -> None:
-    from quartz.commands import COMMAND_REGISTRY
+    from quartz.tui.commands import COMMAND_REGISTRY
 
     help_text = COMMAND_REGISTRY.format_help()
     assert "Keybindings:" in help_text

@@ -194,7 +194,7 @@ def test_model_command_picker_uses_discovered_levels(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
     """The /model picker offers discovered levels and preselects the model default."""
-    import quartz.commands as commands
+    import quartz.tui.commands as commands
     from quartz.core.runtime import AgentRuntime
     from quartz.core.loop import TurnUsage
 

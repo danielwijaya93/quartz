@@ -38,21 +38,20 @@ from quartz.cli.subcommands import (
     _provider_status_label,
     build_provider,
 )
-from quartz.ui import (
+from quartz.tui.modals import _pick_option, _pick_searchable_option
+from quartz.tui.render import (
     _active_printer,
     _format_turn_footer,
     _parse_expand_range,
-    _pick_option,
-    _pick_searchable_option,
     _render_compaction,
     _render_tool_call,
     _render_tool_result,
-    _replay_session,
     _short_path,
     console,
     console_print,
     dock_status,
 )
+from quartz.tui.replay import _replay_session
 
 
 @dataclasses.dataclass
@@ -662,7 +661,7 @@ def _cmd_jobs(rt: AgentRuntime, arg: str) -> bool | None:
         _active_printer().block(Text("No background jobs running.", style="dim"))
         return False
     from quartz.kernel.actions import describe_job_label
-    from quartz.ui import _fmt_stopwatch
+    from quartz.tui.render import _fmt_stopwatch
 
     for job in jobs:
         pid = job.get("pid", "?")

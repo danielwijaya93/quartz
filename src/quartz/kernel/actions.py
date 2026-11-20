@@ -219,7 +219,7 @@ _SH_FALLBACK_RE = re.compile(r"\b(?:sh|bash)\s*\(\s*([\"'])(.*?)\1", re.DOTALL)
 def _shorten_path(path: str) -> str:
     """Collapse the home directory to ``~``; defensive, never raises."""
     try:
-        from quartz.banner import _short_path  # local import: no cycle
+        from quartz.tui.banner import _short_path  # local import: no cycle
     except Exception:
         try:
             import os

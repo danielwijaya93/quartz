@@ -27,21 +27,19 @@ from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
 
-from quartz.banner import BannerState, format_banner_lines
-from quartz.completer import AgentCompleter
-from quartz.ui import (
+from quartz.tui.banner import BannerState, format_banner_lines
+from quartz.tui.completer import AgentCompleter
+from quartz.tui.modals import InlineModalState, build_modal_container, build_modal_key_bindings
+from quartz.tui.render import (
     DOCK_STYLE,
-    InlineModalState,
     _active_printer,
     _format_turn_footer,
     _format_turn_timing,
     _render_bash_notice,
-    _replay_session,
-    build_modal_container,
-    build_modal_key_bindings,
     render_user_prompt,
     set_active_dock,
 )
+from quartz.tui.replay import _replay_session
 
 if TYPE_CHECKING:
     from quartz.core.runtime import AgentRuntime
@@ -412,7 +410,7 @@ class InteractiveDock:
             return self._render_ansi_fragments(status)
         if jobs:
             from quartz.kernel.actions import describe_job_label
-            from quartz.ui import _fmt_stopwatch, _spinner_frame
+            from quartz.tui.render import _fmt_stopwatch, _spinner_frame
 
             lines: list[str] = []
             for job in jobs[:3]:
@@ -688,7 +686,7 @@ class InteractiveDock:
         t.start()
 
     def _handle_submitted_idle(self, text: str) -> None:
-        from quartz.commands import _handle_slash_command
+        from quartz.tui.commands import _handle_slash_command
         from quartz.core.images import build_user_content, extract_inline_image_mentions
 
         cmd_res = _handle_slash_command(self.rt, text)
@@ -712,7 +710,7 @@ class InteractiveDock:
     def _execute_dock_turn(self) -> None:
         from quartz.cli.app import _run_turn
         from quartz.core.loop import TurnAborted
-        from quartz.ui import TurnProgressTracker, console
+        from quartz.tui.render import TurnProgressTracker, console
 
         active_printer = _active_printer()
         active_console = console
@@ -868,7 +866,7 @@ class InteractiveDock:
                 self._refresh_thread.join(timeout=0.5)
 
         if self.rt.messages:
-            from quartz.ui import console
+            from quartz.tui.render import console
 
             console.print(
                 f"[dim]Session {escape(self.rt.active_session.id)} saved · "

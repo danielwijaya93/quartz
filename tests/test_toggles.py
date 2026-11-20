@@ -7,9 +7,9 @@ import io
 from rich.console import Console
 
 import quartz.cli.app as cli
-import quartz.ui as ui
+import quartz.tui.render as ui
 from quartz.kernel.client import CellResult
-from quartz.ui import BlockPrinter
+from quartz.tui.render import BlockPrinter
 
 
 def _tracker(buf: io.StringIO, **kwargs) -> ui.TurnProgressTracker:
@@ -112,7 +112,9 @@ def test_replay_renders_reasoning_and_details(monkeypatch) -> None:
         {"role": "tool", "tool_call_id": "tc1", "content": "1"},
     ]
     history = []
-    ui._replay_session(messages, history, show_thinking=True, show_details=False)
+    from quartz.tui.replay import _replay_session
+
+    _replay_session(messages, history, show_thinking=True, show_details=False)
     off_out = buf.getvalue()
     assert "debug reasoning" in off_out
     assert "hello" in off_out
@@ -120,13 +122,13 @@ def test_replay_renders_reasoning_and_details(monkeypatch) -> None:
     buf.truncate(0)
     test_printer.reset()
     history2 = []
-    ui._replay_session(messages, history2, show_thinking=False, show_details=False)
+    _replay_session(messages, history2, show_thinking=False, show_details=False)
     assert "debug reasoning" not in buf.getvalue()
 
 
 def test_dock_toggle_propagates_to_active_tracker() -> None:
-    from quartz.interactive import InteractiveDock
-    from quartz.ui import TurnProgressTracker
+    from quartz.tui.dock import InteractiveDock
+    from quartz.tui.render import TurnProgressTracker
 
     dock = InteractiveDock.__new__(InteractiveDock)
     import threading
@@ -156,7 +158,7 @@ def test_dock_toggle_propagates_to_active_tracker() -> None:
 
 
 def test_dock_toggle_methods_flip_state() -> None:
-    from quartz.interactive import InteractiveDock
+    from quartz.tui.dock import InteractiveDock
 
     dock = InteractiveDock.__new__(InteractiveDock)
     import threading

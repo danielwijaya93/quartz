@@ -37,9 +37,8 @@ from quartz.providers.registry import (
     save_provider_auth,
 )
 from quartz.providers.base import LLMProvider
-from quartz.ui import (
-    _pick_option,
-    _prompt_input,
+from quartz.tui.modals import _pick_option, _prompt_input
+from quartz.tui.render import (
     console,
     console_print,
     dock_status,

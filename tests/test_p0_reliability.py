@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from quartz.commands import _cmd_compact
+from quartz.tui.commands import _cmd_compact
 from quartz.core.runtime import AgentRuntime as _CLIRuntime
 from quartz.core.compact import _serialize_for_summary, clear_old_tool_results
 from quartz.errors import ProviderError

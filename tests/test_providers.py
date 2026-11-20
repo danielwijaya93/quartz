@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from quartz.commands import _handle_slash_command
+from quartz.tui.commands import _handle_slash_command
 from quartz.core.runtime import AgentRuntime as _CLIRuntime
 from quartz.cli.subcommands import build_provider as _build_client
 from quartz.auth.google import (
@@ -156,7 +156,7 @@ def test_slash_login_logout_and_model_openrouter(tmp_path: Path, monkeypatch) ->
         lambda prov, **kw: (["anthropic/claude-sonnet-4", "qwen/qwen3-coder"], None),
     )
     monkeypatch.setattr(
-        "quartz.commands.discover_models",
+        "quartz.tui.commands.discover_models",
         lambda prov, **kw: (["anthropic/claude-sonnet-4", "qwen/qwen3-coder"], None),
     )
 
@@ -167,11 +167,11 @@ def test_slash_login_logout_and_model_openrouter(tmp_path: Path, monkeypatch) ->
 
     # /model picks openrouter, picks discovered model, and saves config
     monkeypatch.setattr(
-        "quartz.commands._pick_option",
+        "quartz.tui.commands._pick_option",
         lambda title, opts, current=None: "openrouter" if title == "Provider" else "high",
     )
     monkeypatch.setattr(
-        "quartz.commands._pick_searchable_option",
+        "quartz.tui.commands._pick_searchable_option",
         lambda title, opts, current=None, allow_custom=True: "qwen/qwen3-coder",
     )
 

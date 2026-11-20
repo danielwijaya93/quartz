@@ -9,8 +9,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import quartz.commands as commands
-from quartz.commands import _handle_slash_command
+import quartz.tui.commands as commands
+from quartz.tui.commands import _handle_slash_command
 from quartz.core.loop import TurnUsage
 from quartz.core.runtime import AgentRuntime
 from quartz.core.session import Session

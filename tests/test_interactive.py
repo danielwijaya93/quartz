@@ -20,15 +20,13 @@ from rich.text import Text
 
 import quartz.cli.app as cli
 from quartz.core.runtime import AgentRuntime as _CLIRuntime
-from quartz.interactive import InteractiveDock
+from quartz.tui.dock import InteractiveDock
 from quartz.core.loop import TurnUsage
-from quartz.ui import (
+from quartz.tui.modals import _pick_option, _pick_searchable_option, _prompt_input
+from quartz.tui.render import (
     DOCK_STYLE,
     BlockPrinter,
     TurnProgressTracker,
-    _pick_option,
-    _pick_searchable_option,
-    _prompt_input,
     console,
     console_print,
     dock_status,
@@ -288,7 +286,7 @@ def test_non_tty_bypasses_dock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         def __init__(self, *a: Any, **k: Any) -> None:
             dock_called[0] = True
 
-    monkeypatch.setattr("quartz.interactive.InteractiveDock", _FailDock)
+    monkeypatch.setattr("quartz.tui.dock.InteractiveDock", _FailDock)
     monkeypatch.setattr(cli.sys, "stdin", io.StringIO(""))
     cli._run_interactive(rt, resumed=False)
     assert dock_called[0] is False
@@ -305,7 +303,7 @@ def test_completions_and_modal_render_compact_nonempty_screen(tmp_path: Path) ->
     from prompt_toolkit.layout.mouse_handlers import MouseHandlers
     from prompt_toolkit.layout.screen import Screen
 
-    from quartz.ui import InlineModalState
+    from quartz.tui.modals import InlineModalState
 
     async def _check() -> None:
         with _make_dock(tmp_path) as (dock, _):

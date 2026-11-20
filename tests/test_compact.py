@@ -328,7 +328,7 @@ def test_render_compaction_distinguishes_summary_from_clearing(monkeypatch: Any)
 
     import quartz.cli.app as cli
     from quartz.core.compact import CompactionReason, CompactionResult
-    from quartz.ui import BlockPrinter, _render_compaction
+    from quartz.tui.render import BlockPrinter, _render_compaction
 
     buf = io.StringIO()
     test_console = Console(file=buf, force_terminal=False, width=200, color_system=None)

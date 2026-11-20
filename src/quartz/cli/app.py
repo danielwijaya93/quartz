@@ -16,7 +16,7 @@ from typing import Any
 from rich.markup import escape
 from rich.text import Text
 
-from quartz.commands import _handle_slash_command
+from quartz.tui.commands import _handle_slash_command
 from quartz.errors import CredentialError, EndpointConfigError
 from quartz.settings import load_settings
 from quartz.core.images import (
@@ -25,7 +25,7 @@ from quartz.core.images import (
     extract_inline_image_mentions,
     load_image_file,
 )
-from quartz.interactive import InteractiveDock
+from quartz.tui.dock import InteractiveDock
 from quartz.kernel.client import CellResult, KernelClient
 from quartz.core.loop import (
     TurnAborted,
@@ -39,7 +39,7 @@ from quartz.core.prompt import build_system_prompt
 from quartz.core.runtime import AgentRuntime
 from quartz.core.session import Session
 from quartz.cli.subcommands import _handle_auth_cli, _handle_mcp_cli, build_provider
-from quartz.ui import (
+from quartz.tui.render import (
     MarkdownBlockStreamer,
     TurnProgressTracker,
     _format_turn_footer,
@@ -48,11 +48,11 @@ from quartz.ui import (
     _render_compaction,
     _render_tool_call,
     _render_tool_result,
-    _replay_session,
     _short_path,
     console,
     printer,
 )
+from quartz.tui.replay import _replay_session
 
 
 def _run_turn(

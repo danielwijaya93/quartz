@@ -11,14 +11,14 @@ import pytest
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from quartz.commands import (
+from quartz.tui.commands import (
     COMMAND_REGISTRY,
     CommandRegistry,
     SlashCommand,
     _handle_slash_command,
 )
 from quartz.core.compact import CompactionReason, CompactionResult
-from quartz.completer import AgentCompleter
+from quartz.tui.completer import AgentCompleter
 from quartz.errors import CredentialError
 from quartz.kernel.client import CellResult
 from quartz.core.loop import TurnUsage
@@ -230,21 +230,21 @@ def test_real_runtime_cmd_model_handles_credential_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rt = _make_real_runtime(tmp_path, monkeypatch)
-    monkeypatch.setattr("quartz.commands._provider_ready", lambda p: True)
-    monkeypatch.setattr("quartz.commands.discover_models", lambda p: (["deepseek-chat"], None))
+    monkeypatch.setattr("quartz.tui.commands._provider_ready", lambda p: True)
+    monkeypatch.setattr("quartz.tui.commands.discover_models", lambda p: (["deepseek-chat"], None))
     monkeypatch.setattr(
-        "quartz.commands._pick_option",
+        "quartz.tui.commands._pick_option",
         lambda title, opts, current=None: "deepseek" if title == "Provider" else "high",
     )
     monkeypatch.setattr(
-        "quartz.commands._pick_searchable_option",
+        "quartz.tui.commands._pick_searchable_option",
         lambda title, opts, current=None, allow_custom=True: "deepseek-chat",
     )
 
     def _raise_cred(*args, **kwargs):
         raise CredentialError("Missing key")
 
-    monkeypatch.setattr("quartz.commands.build_provider", _raise_cred)
+    monkeypatch.setattr("quartz.tui.commands.build_provider", _raise_cred)
 
     # Should catch CredentialError cleanly and return False without crashing
     assert _handle_slash_command(rt, "/model") is False
@@ -258,14 +258,14 @@ def test_real_runtime_cmd_model_switch_updates_max_context_tokens(
     rt = _make_real_runtime(tmp_path, monkeypatch)
     rt.max_context_tokens = 64_000  # stale DeepSeek window at startup
     monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "config.json"))
-    monkeypatch.setattr("quartz.commands._provider_ready", lambda p: True)
-    monkeypatch.setattr("quartz.commands.discover_models", lambda p: (["meta/muse-ember"], None))
+    monkeypatch.setattr("quartz.tui.commands._provider_ready", lambda p: True)
+    monkeypatch.setattr("quartz.tui.commands.discover_models", lambda p: (["meta/muse-ember"], None))
     monkeypatch.setattr(
-        "quartz.commands._pick_option",
+        "quartz.tui.commands._pick_option",
         lambda title, opts, current=None: "openrouter" if title == "Provider" else "high",
     )
     monkeypatch.setattr(
-        "quartz.commands._pick_searchable_option",
+        "quartz.tui.commands._pick_searchable_option",
         lambda title, opts, current=None, allow_custom=True: "meta/muse-ember",
     )
     monkeypatch.setattr("quartz.providers.registry.policy_efforts", lambda p, m: ["high"])
@@ -277,7 +277,7 @@ def test_real_runtime_cmd_model_switch_updates_max_context_tokens(
         assert model_override == "meta/muse-ember"
         return new_client, "openrouter", "meta/muse-ember", "high"
 
-    monkeypatch.setattr("quartz.commands.build_provider", _build)
+    monkeypatch.setattr("quartz.tui.commands.build_provider", _build)
 
     assert _handle_slash_command(rt, "/model") is False
     assert rt.provider_name == "openrouter"

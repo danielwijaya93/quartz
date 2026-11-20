@@ -7,13 +7,13 @@ from pathlib import Path
 import pytest
 
 from quartz.kernel.actions import describe_job_label
-from quartz.banner import BannerState, format_banner_plain
-from quartz.commands import _handle_slash_command
+from quartz.tui.banner import BannerState, format_banner_plain
+from quartz.tui.commands import _handle_slash_command
 from quartz.kernel.client import KernelClient
 from quartz.core.loop import TurnUsage
 from quartz.core.runtime import AgentRuntime
-import quartz.ui as ui
-from quartz.ui import BlockPrinter
+import quartz.tui.render as ui
+from quartz.tui.render import BlockPrinter
 from rich.console import Console
 import io
 
@@ -275,7 +275,7 @@ def test_jobs_slash_command_lists_and_empty(tmp_path: Path, monkeypatch: pytest.
 
 
 def test_dock_progress_shows_bg_jobs_when_idle() -> None:
-    from quartz.interactive import InteractiveDock
+    from quartz.tui.dock import InteractiveDock
 
     dock = InteractiveDock.__new__(InteractiveDock)
     dock._lock = __import__("threading").RLock()
@@ -293,7 +293,7 @@ def test_dock_progress_shows_bg_jobs_when_idle() -> None:
 
 def test_slash_command_not_steered_while_turn_running(tmp_path: Path) -> None:
     """submit_input must route /... to slash handling even mid-turn."""
-    from quartz.interactive import InteractiveDock
+    from quartz.tui.dock import InteractiveDock
 
     dock = InteractiveDock.__new__(InteractiveDock)
     import threading

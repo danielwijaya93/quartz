@@ -190,12 +190,13 @@ def test_replay_ignores_reasoning_without_crashing() -> None:
     from rich.console import Console
 
     import quartz.cli.app as cli
-    from quartz.ui import BlockPrinter, _replay_session
+    from quartz.tui.render import BlockPrinter
+    from quartz.tui.replay import _replay_session
 
     buf = io.StringIO()
     test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
     test_printer = BlockPrinter(test_console)
-    import quartz.ui as ui
+    import quartz.tui.render as ui
 
     # _active_printer resolves via agent.cli.printer; patch it.
     old = cli.printer

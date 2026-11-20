@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quartz.commands import _handle_slash_command
+from quartz.tui.commands import _handle_slash_command
 from quartz.core.runtime import AgentRuntime as _CLIRuntime
 from quartz.kernel.helpers import (
     PROTECTED_NAMES,
