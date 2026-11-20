@@ -6,7 +6,6 @@ import io
 
 from rich.console import Console
 
-import quartz.cli.app as cli
 import quartz.tui.render as ui
 from quartz.kernel.client import CellResult
 from quartz.tui.render import BlockPrinter
@@ -16,7 +15,7 @@ def _tracker(buf: io.StringIO, **kwargs) -> ui.TurnProgressTracker:
     test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
     test_printer = BlockPrinter(test_console)
     test_printer.reset()
-    return cli.TurnProgressTracker(test_console, test_printer, **kwargs)
+    return ui.TurnProgressTracker(test_console, test_printer, **kwargs)
 
 
 def test_defaults_off_preserve_current_goldens() -> None:
@@ -95,9 +94,8 @@ def test_replay_renders_reasoning_and_details(monkeypatch) -> None:
     buf = io.StringIO()
     test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
     test_printer = BlockPrinter(test_console)
-    import quartz.cli.app as cli_mod
 
-    monkeypatch.setattr(cli_mod, "printer", test_printer)
+    monkeypatch.setattr(ui, "printer", test_printer)
     test_printer.reset()
     messages = [
         {"role": "user", "content": "hi"},

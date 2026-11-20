@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 from quartz.tui.commands import _handle_slash_command
 from quartz.core.runtime import AgentRuntime as _CLIRuntime
-from quartz.cli.subcommands import build_provider as _build_client
+from quartz.providers.selection import build_provider as _build_client
 from quartz.auth.google import (
     GoogleCredentials,
     delete_google_credentials,
@@ -150,9 +150,9 @@ def test_slash_login_logout_and_model_openrouter(tmp_path: Path, monkeypatch) ->
     rt = _make_runtime(tmp_path)
 
     # /login openrouter prompts for API key and discovers models
-    monkeypatch.setattr("quartz.cli.subcommands._prompt_input", lambda *a, **kw: "sk-or-live-123")
+    monkeypatch.setattr("quartz.tui.provider_setup._prompt_input", lambda *a, **kw: "sk-or-live-123")
     monkeypatch.setattr(
-        "quartz.cli.subcommands.discover_models",
+        "quartz.tui.provider_setup.discover_models",
         lambda prov, **kw: (["anthropic/claude-sonnet-4", "qwen/qwen3-coder"], None),
     )
     monkeypatch.setattr(
@@ -205,7 +205,7 @@ def test_resolve_provider_credentials_ignores_all_env_keys(
 
 
 def test_provider_ready_and_status_label_ignore_env(tmp_path: Path, monkeypatch) -> None:
-    from quartz.cli.subcommands import _provider_ready, _provider_status_label
+    from quartz.providers.selection import _provider_ready, _provider_status_label
 
     monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "missing_auth.json"))
     monkeypatch.setenv("OPENAI_API_KEY", "env-only-key")
@@ -244,7 +244,7 @@ def test_build_provider_raises_typed_errors_never_system_exit(
 ) -> None:
     import pytest
     from quartz.errors import CredentialError, EndpointConfigError
-    from quartz.cli.subcommands import build_provider
+    from quartz.providers.selection import build_provider
 
     monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "missing_auth.json"))
     monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "missing_cfg.json"))

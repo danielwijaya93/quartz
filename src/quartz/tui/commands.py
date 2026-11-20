@@ -20,6 +20,11 @@ from quartz.providers.registry import (
     resolve_context_tokens,
     save_model_config,
 )
+from quartz.providers.selection import (
+    _provider_ready,
+    _provider_status_label,
+    build_provider,
+)
 from quartz.settings import (
     DEFAULT_COMPACT_RESERVE_TOKENS,
     DEFAULT_KEEP_RECENT_TOKENS,
@@ -31,14 +36,8 @@ from quartz.settings import (
 )
 from quartz.core.runtime import AgentRuntime
 from quartz.core.session import Session
-from quartz.cli.subcommands import (
-    _login_provider,
-    _logout_provider,
-    _provider_ready,
-    _provider_status_label,
-    build_provider,
-)
 from quartz.tui.modals import _pick_option, _pick_searchable_option
+from quartz.tui.provider_setup import _login_provider, _logout_provider
 from quartz.tui.render import (
     _active_printer,
     _format_turn_footer,

@@ -229,9 +229,9 @@ def test_jobs_slash_command_lists_and_empty(tmp_path: Path, monkeypatch: pytest.
     buf = io.StringIO()
     test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
     test_printer = BlockPrinter(test_console)
-    import quartz.cli.app as cli
+    import quartz.tui.render as ui
 
-    monkeypatch.setattr(cli, "printer", test_printer)
+    monkeypatch.setattr(ui, "printer", test_printer)
     rt = AgentRuntime(
         cwd=tmp_path,
         kernel=KernelClient(cwd=tmp_path),

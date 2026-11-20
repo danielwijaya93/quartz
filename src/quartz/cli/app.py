@@ -4,12 +4,9 @@ from __future__ import annotations
 
 import argparse
 import os
-import queue
 import signal
 import sys
 import threading
-import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -19,8 +16,6 @@ from rich.text import Text
 from quartz.tui.commands import _handle_slash_command
 from quartz.errors import CredentialError, EndpointConfigError
 from quartz.settings import load_settings
-from quartz.core.compact import CompactionResult
-from quartz.core.events import TurnObserver
 from quartz.core.images import (
     ImageAttachment,
     build_user_content,
@@ -28,214 +23,30 @@ from quartz.core.images import (
     load_image_file,
 )
 from quartz.tui.dock import InteractiveDock
-from quartz.kernel.client import CellResult, KernelClient
-from quartz.core.loop import (
-    TurnAborted,
-    TurnUsage,
-    agent_loop,
-    drain_bash_events,
-    format_bash_done_events,
-)
+from quartz.kernel.client import KernelClient
+from quartz.core.loop import TurnUsage, drain_bash_events, format_bash_done_events
 from quartz.providers.registry import PROVIDERS, resolve_context_tokens
 from quartz.core.prompt import build_system_prompt
 from quartz.core.runtime import AgentRuntime
 from quartz.core.session import Session
-from quartz.cli.subcommands import _handle_auth_cli, _handle_mcp_cli, build_provider
+from quartz.core.turn import TurnStatus, run_interactive_turn, run_turn
+from quartz.providers.selection import build_provider
+from quartz.cli.subcommands import _handle_auth_cli, _handle_mcp_cli
 from quartz.tui.render import (
-    MarkdownBlockStreamer,
-    TurnProgressTracker,
+    _active_printer,
     _format_turn_footer,
     _format_turn_timing,
     _render_bash_notice,
-    _render_compaction,
-    _render_tool_call,
-    _render_tool_result,
     _short_path,
     console,
-    printer,
 )
 from quartz.tui.replay import _replay_session
+from quartz.tui.turn_view import make_turn_view
 
 
-class _TuiObserver(TurnObserver):
-    """Renders agent-loop turn events into the TUI, or into plain stdout when piped.
-
-    One instance per turn: it owns that turn's render state (whether text has
-    streamed, which tool cells are announced but unfinished, collected reasoning).
-    """
-
-    def __init__(
-        self,
-        rt: AgentRuntime,
-        tracker: TurnProgressTracker,
-        md_streamer: MarkdownBlockStreamer,
-        *,
-        on_thinking_delta: Callable[[str], None] | None = None,
-        on_steering: Callable[[str], None] | None = None,
-    ) -> None:
-        self._rt = rt
-        self._tracker = tracker
-        self._md_streamer = md_streamer
-        self._thinking_sink = on_thinking_delta
-        self._steering_sink = on_steering
-        self.streamed_any = [False]
-        self.pending_cells: dict[str, tuple[str, float]] = {}
-        # Collector: reasoning text is persisted in assistant_dict (see
-        # agent_loop); forwarding to the tracker drives the Ctrl+T trace.
-        self.turn_reasoning: list[str] = []
-
-    def on_status(self, label: str | None) -> None:
-        if self._rt.plain_output:
-            return
-        if label == "Thinking...":
-            self._tracker.start_thinking()
-        elif label is None:
-            self._tracker.stop_thinking()
-
-    def on_thinking_delta(self, text: str) -> None:
-        self.turn_reasoning.append(text)
-        self._tracker.add_thinking_delta(text)
-        if self._thinking_sink is not None:
-            self._thinking_sink(text)
-
-    def on_text_delta(self, text: str) -> None:
-        self._tracker.flush()
-        self.streamed_any[0] = True
-        if self._rt.plain_output:
-            sys.stdout.write(text)
-            sys.stdout.flush()
-        else:
-            self._md_streamer.feed(text)
-
-    def on_tool_call(self, tool_call_id: str, code: str) -> None:
-        rt, tracker = self._rt, self._tracker
-        if self.streamed_any[0]:
-            if rt.plain_output:
-                sys.stdout.write("\n")
-                sys.stdout.flush()
-            else:
-                self._md_streamer.flush()
-            self.streamed_any[0] = False
-        self.pending_cells[tool_call_id] = (code, time.monotonic())
-        if rt.verbose or getattr(tracker, "show_details", False) or getattr(rt, "show_details", False):
-            tracker.flush()
-            _render_tool_call(code)
-        else:
-            tracker.start_tool(code)
-
-    def on_tool_result(self, tool_call_id: str, cell: CellResult) -> None:
-        rt, tracker = self._rt, self._tracker
-        code, started = self.pending_cells.pop(tool_call_id, ("", time.monotonic()))
-        duration = time.monotonic() - started
-        rt.cell_history.append((code, cell, duration))
-        if rt.verbose or getattr(tracker, "show_details", False) or getattr(rt, "show_details", False):
-            _render_tool_result(cell)
-        else:
-            tracker.add_tool_result(len(rt.cell_history), code, cell, duration)
-
-    def on_compaction(self, result: CompactionResult) -> None:
-        self._tracker.flush()
-        _render_compaction(result)
-
-    def on_bash_notice(self, notice: str) -> None:
-        self._tracker.flush()
-        _render_bash_notice(notice)
-
-    def on_steering(self, text: str) -> None:
-        if self._steering_sink is not None:
-            self._steering_sink(text)
-
-
-def _run_turn(
-    rt: AgentRuntime,
-    *,
-    tracker: TurnProgressTracker | None = None,
-    abort_event: threading.Event | None = None,
-    steering_queue: queue.Queue[str] | None = None,
-    on_steering: Callable[[str], None] | None = None,
-    on_thinking_delta: Callable[[str], None] | None = None,
-) -> tuple[str, list[dict[str, Any]], int]:
-    md_streamer = MarkdownBlockStreamer(printer.markdown)
-    own_tracker = tracker is None
-    if tracker is None:
-        tracker = TurnProgressTracker(
-            console,
-            printer,
-            verbose=rt.verbose,
-            plain_output=rt.plain_output,
-            show_thinking=getattr(rt, "show_thinking", False),
-            show_details=getattr(rt, "show_details", False),
-        )
-    turn_stop = threading.Event()
-
-    def _tick_tracker() -> None:
-        while not turn_stop.wait(0.1):
-            tracker.tick()
-
-    if not rt.plain_output and not rt.verbose and getattr(tracker, "_live_renderer", None) is None:
-        threading.Thread(target=_tick_tracker, daemon=True).start()
-
-    observer = _TuiObserver(
-        rt,
-        tracker,
-        md_streamer,
-        on_thinking_delta=on_thinking_delta,
-        on_steering=on_steering,
-    )
-
-    if own_tracker:
-        printer.reset()
-    cell_start_idx = len(rt.cell_history)
-    try:
-        answer, updated_msgs, tokens = agent_loop(
-            rt.client,
-            rt.model,
-            rt.system_prompt,
-            rt.messages,
-            rt.kernel,
-            max_context_tokens=rt.max_context_tokens,
-            compact_reserve_tokens=rt.compact_reserve_tokens,
-            keep_recent_tokens=rt.keep_recent_tokens,
-            observer=observer,
-            usage_stats=rt.usage_stats,
-            initial_prompt_tokens=rt.usage_stats.prompt_tokens,
-            effort=rt.effort,
-            abort_event=abort_event,
-            steering_queue=steering_queue,
-        )
-    finally:
-        turn_stop.set()
-        if own_tracker and tracker is not None:
-            tracker.close()
-        elif tracker is not None:
-            tracker.flush()
-        if rt.plain_output:
-            if observer.streamed_any[0]:
-                sys.stdout.write("\n")
-                sys.stdout.flush()
-        else:
-            md_streamer.flush()
-    if hasattr(rt.active_session, "record_cell_meta"):
-        new_cells = rt.cell_history[cell_start_idx:]
-        if new_cells:
-            unrecorded_ids: list[str] = []
-            existing_meta = getattr(rt.active_session, "cell_meta", {})
-            for m in updated_msgs:
-                if m.get("role") == "assistant":
-                    for tc in m.get("tool_calls") or []:
-                        if tc.get("function", {}).get("name") == "ipython":
-                            tc_id = str(tc.get("id", ""))
-                            if tc_id and tc_id not in existing_meta:
-                                unrecorded_ids.append(tc_id)
-            for tc_id, (_, res, dur) in zip(unrecorded_ids[-len(new_cells):], new_cells):
-                rt.active_session.record_cell_meta(tc_id, ok=res.ok, duration_s=dur)
-    if not observer.streamed_any[0] and answer:
-        if rt.plain_output:
-            sys.stdout.write(answer.rstrip() + "\n")
-            sys.stdout.flush()
-        else:
-            printer.markdown(answer)
-    return answer, updated_msgs, tokens
+def _run_turn(rt: AgentRuntime) -> tuple[str, list[dict[str, Any]], int]:
+    """Run one turn, rendered by the terminal view (`core.turn.run_turn` + `TuiTurnView`)."""
+    return run_turn(rt, make_turn_view(rt))
 
 
 def _emit_bash_notice(rt: AgentRuntime, notice: str) -> None:
@@ -299,29 +110,26 @@ def _run_interactive(rt: AgentRuntime, resumed: bool) -> None:
             show_details=getattr(rt, "show_details", False),
         )
         if rt.usage_stats.prompt_tokens > 0:
-            printer.block(Text(_format_turn_footer(rt.usage_stats, rt.max_context_tokens), style="dim"))
+            _active_printer().block(
+                Text(_format_turn_footer(rt.usage_stats, rt.max_context_tokens), style="dim")
+            )
 
     def _run_one_turn() -> None:
-        t0 = time.monotonic()
-        try:
-            _, rt.messages, tokens = _run_turn(rt)
-        except TurnAborted:
-            rt.kernel.interrupt()
-            rt.persist()
+        outcome = run_interactive_turn(rt, make_turn_view(rt))
+        if outcome.status is TurnStatus.ABORTED:
             console.print("\n[yellow]Aborted (Esc).[/yellow]")
-        except KeyboardInterrupt:
-            rt.kernel.interrupt()
+        elif outcome.status is TurnStatus.INTERRUPTED:
             console.print("\n[yellow]Interrupted.[/yellow]")
-        except Exception as exc:
-            console.print(f"[red]Error: {escape(str(exc))}[/red]")
+        elif outcome.status is TurnStatus.ERROR:
+            console.print(f"[red]Error: {escape(str(outcome.error))}[/red]")
         else:
-            turn_elapsed = time.monotonic() - t0
-            rt.total_elapsed_s += turn_elapsed
-            rt.turn_count += 1
-            rt.persist()
-            timing = _format_turn_timing(turn_elapsed, rt.total_elapsed_s, rt.turn_count)
-            footer = f"{timing} · {_format_turn_footer(rt.usage_stats, rt.max_context_tokens)}" if tokens else timing
-            printer.block(Text(footer, style="dim"))
+            timing = _format_turn_timing(outcome.elapsed_s, rt.total_elapsed_s, rt.turn_count)
+            footer = (
+                f"{timing} · {_format_turn_footer(rt.usage_stats, rt.max_context_tokens)}"
+                if outcome.tokens
+                else timing
+            )
+            _active_printer().block(Text(footer, style="dim"))
 
     while True:
         while rt.kernel.has_pending_events():
