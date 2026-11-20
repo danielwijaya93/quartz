@@ -22,10 +22,9 @@ from prompt_toolkit.layout.processors import BeforeInput, DynamicProcessor, Pass
 from prompt_toolkit.styles import Style
 from rich.console import Console, Group
 from rich.markdown import Markdown
-from rich.spinner import Spinner
 from rich.text import Text
 
-from agent.actions import describe_cell_actions, describe_group_actions
+from agent.actions import describe_cell_actions, describe_cell_intent
 from agent.banner import _fmt_k, _short_path
 from agent.compact import CompactionReason, CompactionResult
 from agent.images import content_to_text
@@ -33,6 +32,13 @@ from agent.kernel_client import CellResult
 from agent.loop import TurnUsage
 
 console = Console()
+
+_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+def _spinner_frame(elapsed: float, interval: float = 0.08) -> str:
+    idx = int(max(0.0, elapsed) / interval) % len(_SPINNER_FRAMES)
+    return _SPINNER_FRAMES[idx]
 
 _active_dock: Any | None = None
 _active_dock_lock = threading.RLock()
@@ -319,26 +325,20 @@ def format_compact_cell_summary(
     index: int, code: str, res: CellResult, duration: float
 ) -> str:
     """Format a 1-line collapsible summary chip for an executed ipython cell."""
-    code_lines = [ln.strip() for ln in code.strip().splitlines() if ln.strip()]
-    code_preview = (
-        (code_lines[0][:50] + "...")
-        if code_lines and len(code_lines[0]) > 50
-        else (code_lines[0] if code_lines else "")
-    )
     out_text = res.format_for_model().strip()
     out_lines = out_text.splitlines() if out_text and out_text != "(ok, no output)" else []
 
-    action = describe_cell_actions(code)
+    intent = describe_cell_intent(code)
     if res.ok:
         out_summary = (
             f"{len(out_lines)} lines out"
             if len(out_lines) > 1
             else (out_lines[0][:50] if out_lines else "no output")
         )
-        return f"· #{index} · {action} ({len(code_lines)}L: {code_preview}) · {out_summary} · {duration:.2f}s"
+        return f"· #{index} · {intent} · {out_summary} · {duration:.2f}s"
     err_lines = [ln.strip() for ln in (res.stderr or out_text).splitlines() if ln.strip()]
     err_preview = err_lines[-1][:70] if err_lines else "error"
-    return f"× #{index} · {action} ({len(code_lines)}L: {code_preview}) · {err_preview} · {duration:.2f}s"
+    return f"× #{index} · {intent} · {err_preview} · {duration:.2f}s"
 
 
 def _render_compaction(result: CompactionResult) -> None:
@@ -361,34 +361,54 @@ def _render_bash_notice(notice: str) -> None:
 
 def format_grouped_cell_summary(
     entries: list[tuple[int, str, CellResult, float]],
-) -> tuple[str, bool]:
-    """Format a 1-line summary for 1 or more consecutive ipython cells.
+) -> Group:
+    """Format a summary for 1 or more consecutive ipython cells.
 
-    Returns (summary_text, all_ok).
+    Single entry: one compact line. Multi entry: per-cell ✓/✗ lines
+    (only failed lines styled red) plus a dim count line.
     """
     if len(entries) == 1:
         idx, code, res, duration = entries[0]
-        return format_compact_cell_summary(idx, code, res, duration), res.ok
+        return Group(
+            Text(
+                format_compact_cell_summary(idx, code, res, duration),
+                style="dim" if res.ok else "red",
+            )
+        )
 
     start_idx = entries[0][0]
     end_idx = entries[-1][0]
     total_dur = sum(d for _, _, _, d in entries)
-    action = describe_group_actions([code for _, code, _, _ in entries])
     failed = [(idx, res) for idx, _, res, _ in entries if not res.ok]
+    lines: list[Text] = []
+    for idx, code, res, duration in entries:
+        action = describe_cell_actions(code)
+        if res.ok:
+            lines.append(Text(f"  ✓ #{idx} · {action} · {duration:.2f}s", style="dim"))
+        else:
+            out_text = res.format_for_model().strip()
+            err_lines = [ln.strip() for ln in (res.stderr or out_text).splitlines() if ln.strip()]
+            err_preview = err_lines[-1][:60] if err_lines else "error"
+            lines.append(
+                Text(f"  ✗ #{idx} · {action} · {duration:.2f}s · {err_preview}", style="red")
+            )
     if not failed:
-        return (
-            f"· #{start_idx}..#{end_idx} · {action} · {len(entries)} cells · {total_dur:.2f}s · /expand {start_idx}..{end_idx}",
-            True,
+        lines.append(
+            Text(
+                f"  {len(entries)} cells · {total_dur:.2f}s · /expand {start_idx}..{end_idx}",
+                style="dim",
+            )
         )
-    last_idx, last_res = failed[-1]
-    out_text = last_res.format_for_model().strip()
-    err_lines = [ln.strip() for ln in (last_res.stderr or out_text).splitlines() if ln.strip()]
-    err_preview = err_lines[-1][:60] if err_lines else "error"
-    return (
-        f"× #{start_idx}..#{end_idx} · {action} · "
-        f"{len(entries)} cells, {len(failed)} failed (last #{last_idx}: {err_preview}) · {total_dur:.2f}s · /expand {last_idx}",
-        False,
-    )
+    else:
+        first_failed_idx = failed[0][0]
+        ok_count = len(entries) - len(failed)
+        lines.append(
+            Text(
+                f"  {ok_count} ok · {len(failed)} failed · {total_dur:.2f}s · /expand {first_failed_idx}",
+                style="dim",
+            )
+        )
+    return Group(*lines)
 
 
 class CellGroupBuffer:
@@ -406,9 +426,9 @@ class CellGroupBuffer:
     def flush(self) -> None:
         if not self.entries:
             return
-        summary, all_ok = format_grouped_cell_summary(self.entries)
+        group = format_grouped_cell_summary(self.entries)
         self.entries.clear()
-        _active_printer().block(Text(summary, style="dim" if all_ok else "red"))
+        _active_printer().block(group)
 
 
 class TurnProgressTracker:
@@ -487,10 +507,11 @@ class TurnProgressTracker:
 
         if self.active_thinking_start is not None:
             elapsed = time.monotonic() - self.active_thinking_start
-            items.append(Spinner("dots", text=Text(f"Thinking... {_fmt_stopwatch(elapsed)}", style="dim")))
+            items.append(Text(f"{_spinner_frame(elapsed)} Thinking... {_fmt_stopwatch(elapsed)}", style="dim"))
         elif self.active_tool_code is not None:
-            action = describe_cell_actions(self.active_tool_code) if self.active_tool_code else "Run Python"
-            items.append(Spinner("dots", text=Text(f"{action}...", style="dim")))
+            elapsed_tool = time.monotonic() - self.active_tool_start if self.active_tool_start is not None else 0.0
+            action = describe_cell_intent(self.active_tool_code) if self.active_tool_code else "Run Python"
+            items.append(Text(f"{_spinner_frame(elapsed_tool)} {action}... {_fmt_stopwatch(elapsed_tool)}", style="dim"))
 
         for s_msg in self.steering_messages:
             preview = s_msg[:60] + ("..." if len(s_msg) > 60 else "")
@@ -625,17 +646,15 @@ class TurnProgressTracker:
         self._flushed = True
 
         if total_thought > 0 and entries:
-            summary, all_ok = format_grouped_cell_summary(entries)
             header = Group(
                 Text(f"Thought for {_fmt_thought_duration(total_thought)}", style="dim"),
-                Text(summary, style="dim" if all_ok else "red"),
+                format_grouped_cell_summary(entries),
             )
             self.printer.block(header)
         elif total_thought > 0:
             self.printer.block(Text(f"Thought for {_fmt_thought_duration(total_thought)}", style="dim"))
         elif entries:
-            summary, all_ok = format_grouped_cell_summary(entries)
-            self.printer.block(Text(summary, style="dim" if all_ok else "red"))
+            self.printer.block(format_grouped_cell_summary(entries))
 
         if (self.input_buffer or self.steering_messages) and not self.plain_output and not self.verbose:
             self._flushed = False
