@@ -19,18 +19,33 @@ from agent.errors import ProviderError
 from agent.kernel_client import KernelClient
 from agent.loop import TurnAborted, TurnUsage, agent_loop
 from agent.models import resolve_provider_credentials
+from agent.provider import CompletionResult, TextDelta, Usage, UsageEvent
 from agent.session import Session
 
 
-def _make_chunk(text: str | None = None, prompt_tokens: int = 100) -> Any:
-    return SimpleNamespace(
-        choices=[SimpleNamespace(delta=SimpleNamespace(content=text, tool_calls=None))],
-        usage=SimpleNamespace(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=10,
-            prompt_tokens_details=SimpleNamespace(cached_tokens=0),
-        ),
-    )
+class _FakeStream:
+    def __init__(self, events) -> None:
+        self._events = events
+
+    def __iter__(self):
+        return iter(self._events)
+
+    def close(self) -> None:
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args) -> None:
+        pass
+
+
+def _make_events(text: str | None = None, prompt_tokens: int = 100) -> _FakeStream:
+    events = []
+    if text is not None:
+        events.append(TextDelta(text=text))
+    events.append(UsageEvent(usage=Usage(input_tokens=prompt_tokens, output_tokens=10)))
+    return _FakeStream(events)
 
 
 def test_running_bash_count_push_does_not_kill_sync_cell(tmp_path: Path) -> None:
@@ -131,18 +146,25 @@ def test_agent_loop_raises_provider_error_with_nonempty_steering_queue(tmp_path:
     """A real ProviderError during stream iteration must not be swallowed when steering_queue is non-empty."""
 
     class _ErrorStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            self.close()
+
         def __iter__(self):
-            yield _make_chunk("partial ")
+            yield TextDelta(text="partial ")
             raise ProviderError("upstream failure", status_code=502)
 
         def close(self) -> None:
             pass
 
-    class _FakeCompletions:
-        def create(self, **kwargs):
+    class _FakeClient:
+        def stream(self, model, messages, tools=None, *, effort=None):
+            del model, messages, tools, effort
             return _ErrorStream()
 
-    client = SimpleNamespace(chat=SimpleNamespace(completions=_FakeCompletions()))
+    client = _FakeClient()
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
@@ -167,20 +189,27 @@ def test_agent_loop_abort_event_closes_stream_immediately(tmp_path: Path) -> Non
     started = threading.Event()
 
     class _SlowStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            self.close()
+
         def __iter__(self):
             started.set()
-            yield _make_chunk("hello ")
+            yield TextDelta(text="hello ")
             closed.wait(timeout=5.0)
             raise RuntimeError("stream closed")
 
         def close(self) -> None:
             closed.set()
 
-    class _FakeCompletions:
-        def create(self, **kwargs):
+    class _FakeClient:
+        def stream(self, model, messages, tools=None, *, effort=None):
+            del model, messages, tools, effort
             return _SlowStream()
 
-    client = SimpleNamespace(chat=SimpleNamespace(completions=_FakeCompletions()))
+    client = _FakeClient()
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
@@ -213,24 +242,31 @@ def test_agent_loop_steering_preemption_discards_partial_text(tmp_path: Path) ->
     calls = 0
 
     class _PreemptedStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            self.close()
+
         def __iter__(self):
             started.set()
-            yield _make_chunk("truncated half-")
+            yield TextDelta(text="truncated half-")
             closed.wait(timeout=5.0)
             raise RuntimeError("stream closed by preempt")
 
         def close(self) -> None:
             closed.set()
 
-    class _FakeCompletions:
-        def create(self, **kwargs):
+    class _FakeClient:
+        def stream(self, model, messages, tools=None, *, effort=None):
             nonlocal calls
+            del model, messages, tools, effort
             calls += 1
             if calls == 1:
                 return _PreemptedStream()
-            return iter([_make_chunk("Final steered answer.")])
+            return _make_events("Final steered answer.")
 
-    client = SimpleNamespace(chat=SimpleNamespace(completions=_FakeCompletions()))
+    client = _FakeClient()
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
@@ -259,15 +295,16 @@ def test_agent_loop_steering_preemption_discards_partial_text(tmp_path: Path) ->
 
 
 def test_cmd_compact_resets_prompt_tokens_preventing_double_compact(tmp_path: Path, monkeypatch) -> None:
-    class _FakeCompletions:
-        def create(self, **kwargs):
-            if not kwargs.get("stream"):
-                return SimpleNamespace(
-                    choices=[SimpleNamespace(message=SimpleNamespace(content="Compact summary."))]
-                )
-            return iter([_make_chunk("Done.", prompt_tokens=2_000)])
+    class _FakeClient:
+        def complete(self, model, messages, tools=None, *, effort=None):
+            del model, messages, tools, effort
+            return CompletionResult(text="Compact summary.", tool_calls=[], usage=Usage())
 
-    client = SimpleNamespace(chat=SimpleNamespace(completions=_FakeCompletions()))
+        def stream(self, model, messages, tools=None, *, effort=None):
+            del model, messages, tools, effort
+            return _make_events("Done.", prompt_tokens=2_000)
+
+    client = _FakeClient()
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:

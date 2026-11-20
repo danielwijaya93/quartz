@@ -219,31 +219,28 @@ def test_is_context_overflow_ignores_unrelated_errors(status: int, body: str) ->
 
 
 def _text_turn_response(text: str) -> Any:
-    class _Message:
-        content = text
-        tool_calls = None
+    from agent.provider import CompletionResult, Usage
 
-    class _Choice:
-        message = _Message()
-
-    class _Response:
-        choices = [_Choice()]
-        usage = None
-
-    return _Response()
+    return CompletionResult(text=text, tool_calls=[], usage=Usage())
 
 
 class _OverflowClient:
     """First model call overflows, then everything succeeds."""
 
     def __init__(self) -> None:
-        self.chat = self
-        self.completions = self
         self.model_calls = 0
         self.summary_calls = 0
 
-    def create(self, **kwargs: Any) -> Any:
-        if kwargs.get("tools") is None:  # summarizer request
+    def complete(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: Any = None,
+        *,
+        effort: str | None = None,
+    ) -> Any:
+        del model, messages, effort
+        if tools is None:  # summarizer request
             self.summary_calls += 1
             return _text_turn_response("SUMMARY")
         self.model_calls += 1
@@ -282,12 +279,16 @@ def test_loop_compacts_and_retries_once_on_context_overflow() -> None:
 
 
 class _AlwaysOverflowClient:
-    def __init__(self) -> None:
-        self.chat = self
-        self.completions = self
-
-    def create(self, **kwargs: Any) -> Any:
-        if kwargs.get("tools") is None:
+    def complete(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: Any = None,
+        *,
+        effort: str | None = None,
+    ) -> Any:
+        del model, messages, effort
+        if tools is None:
             return _text_turn_response("SUMMARY")
         raise ContextOverflowError("still too long", provider="test", status_code=400)
 

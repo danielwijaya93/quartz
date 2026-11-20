@@ -54,63 +54,47 @@ def test_compact_cell_summary() -> None:
 
 
 def test_streaming_agent_loop_with_tool_call(tmp_path: Path) -> None:
-    class _FnDelta:
-        def __init__(self, name: str | None = None, arguments: str | None = None) -> None:
-            self.name = name
-            self.arguments = arguments
+    from agent.provider import TextDelta, ToolCallDelta, Usage, UsageEvent
 
-    class _TcDelta:
-        def __init__(self, index: int, id: str | None = None, function: _FnDelta | None = None) -> None:
-            self.index = index
-            self.id = id
-            self.function = function
+    class _FakeStream:
+        def __init__(self, events) -> None:
+            self._events = events
 
-    class _Delta:
-        def __init__(self, content: str | None = None, tool_calls: list[_TcDelta] | None = None) -> None:
-            self.content = content
-            self.tool_calls = tool_calls
+        def __iter__(self):
+            return iter(self._events)
 
-    class _Choice:
-        def __init__(self, delta: _Delta) -> None:
-            self.delta = delta
+        def close(self) -> None:
+            pass
 
-    class _Usage:
-        prompt_tokens = 120
-        completion_tokens = 30
-        prompt_tokens_details = None
+        def __enter__(self):
+            return self
 
-    class _Chunk:
-        def __init__(self, choices: list[_Choice], usage: _Usage | None = None) -> None:
-            self.choices = choices
-            self.usage = usage
-
-    class _FakeCompletions:
-        def __init__(self) -> None:
-            self.call_idx = 0
-
-        def create(self, **kwargs):
-            self.call_idx += 1
-            if self.call_idx == 1:
-                return iter(
-                    [
-                        _Chunk([_Choice(_Delta(tool_calls=[_TcDelta(0, id="tc1", function=_FnDelta(name="ipython", arguments='{"co'))]))]),
-                        _Chunk([_Choice(_Delta(tool_calls=[_TcDelta(0, function=_FnDelta(arguments='de": "6 * 7"}'))]))], usage=_Usage()),
-                    ]
-                )
-            return iter(
-                [
-                    _Chunk([_Choice(_Delta(content="The answer "))]),
-                    _Chunk([_Choice(_Delta(content="is 42."))], usage=_Usage()),
-                ]
-            )
-
-    class _FakeChat:
-        def __init__(self) -> None:
-            self.completions = _FakeCompletions()
+        def __exit__(self, *args) -> None:
+            pass
 
     class _FakeClient:
         def __init__(self) -> None:
-            self.chat = _FakeChat()
+            self.call_idx = 0
+
+        def stream(self, model, messages, tools=None, *, effort=None):
+            del model, messages, tools, effort
+            self.call_idx += 1
+            usage = Usage(input_tokens=120, output_tokens=30)
+            if self.call_idx == 1:
+                return _FakeStream(
+                    [
+                        ToolCallDelta(index=0, id="tc1", name="ipython", arguments_delta='{"co'),
+                        ToolCallDelta(index=0, arguments_delta='de": "6 * 7"}'),
+                        UsageEvent(usage=usage),
+                    ]
+                )
+            return _FakeStream(
+                [
+                    TextDelta(text="The answer "),
+                    TextDelta(text="is 42."),
+                    UsageEvent(usage=usage),
+                ]
+            )
 
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
@@ -142,47 +126,37 @@ def test_streaming_agent_loop_with_tool_call(tmp_path: Path) -> None:
 
 def test_keyboard_interrupt_preserves_valid_tool_history(tmp_path: Path) -> None:
     import pytest
+    from agent.provider import ToolCallDelta
 
-    class _FnDelta:
-        def __init__(self, name: str | None = None, arguments: str | None = None) -> None:
-            self.name = name
-            self.arguments = arguments
+    class _FakeStream:
+        def __init__(self, events) -> None:
+            self._events = events
 
-    class _TcDelta:
-        def __init__(self, index: int, id: str | None = None, function: _FnDelta | None = None) -> None:
-            self.index = index
-            self.id = id
-            self.function = function
+        def __iter__(self):
+            return iter(self._events)
 
-    class _Delta:
-        def __init__(self, content: str | None = None, tool_calls: list[_TcDelta] | None = None) -> None:
-            self.content = content
-            self.tool_calls = tool_calls
+        def close(self) -> None:
+            pass
 
-    class _Choice:
-        def __init__(self, delta: _Delta) -> None:
-            self.delta = delta
+        def __enter__(self):
+            return self
 
-    class _Chunk:
-        def __init__(self, choices: list[_Choice]) -> None:
-            self.choices = choices
-            self.usage = None
-
-    class _FakeCompletions:
-        def create(self, **kwargs):
-            return iter(
-                [
-                    _Chunk([_Choice(_Delta(tool_calls=[_TcDelta(0, id="tc_int", function=_FnDelta(name="ipython", arguments='{"code": "while True: pass"}'))]))]),
-                ]
-            )
-
-    class _FakeChat:
-        def __init__(self) -> None:
-            self.completions = _FakeCompletions()
+        def __exit__(self, *args) -> None:
+            pass
 
     class _FakeClient:
-        def __init__(self) -> None:
-            self.chat = _FakeChat()
+        def stream(self, model, messages, tools=None, *, effort=None):
+            del model, messages, tools, effort
+            return _FakeStream(
+                [
+                    ToolCallDelta(
+                        index=0,
+                        id="tc_int",
+                        name="ipython",
+                        arguments_delta='{"code": "while True: pass"}',
+                    )
+                ]
+            )
 
     class _InterruptingKernel:
         def drain_events(self):
@@ -229,29 +203,28 @@ def test_markdown_block_streamer_respects_fences() -> None:
 
 
 def test_agent_loop_forwards_reasoning_effort(tmp_path: Path) -> None:
+    from agent.provider import TextDelta
+
     captured_kwargs: dict = {}
 
-    class _Delta:
-        content = "ok"
-        tool_calls = None
+    class _FakeStream:
+        def __iter__(self):
+            return iter([TextDelta(text="ok")])
 
-    class _Choice:
-        delta = _Delta()
+        def close(self) -> None:
+            pass
 
-    class _Chunk:
-        choices = [_Choice()]
-        usage = None
+        def __enter__(self):
+            return self
 
-    class _FakeCompletions:
-        def create(self, **kwargs):
-            captured_kwargs.update(kwargs)
-            return iter([_Chunk()])
-
-    class _FakeChat:
-        completions = _FakeCompletions()
+        def __exit__(self, *args) -> None:
+            pass
 
     class _FakeClient:
-        chat = _FakeChat()
+        def stream(self, model, messages, tools=None, *, effort=None):
+            del model, messages, tools
+            captured_kwargs["effort"] = effort
+            return _FakeStream()
 
     class _DummyKernel:
         def drain_events(self):
@@ -267,7 +240,7 @@ def test_agent_loop_forwards_reasoning_effort(tmp_path: Path) -> None:
         effort="max",
     )
     assert ans == "ok"
-    assert captured_kwargs["reasoning_effort"] == "max"
+    assert captured_kwargs["effort"] == "max"
 
 
 def _recording_console(width: int = 80) -> tuple[Console, io.StringIO]:

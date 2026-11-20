@@ -9,26 +9,25 @@ import sys
 import threading
 from pathlib import Path
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 
-if TYPE_CHECKING:
-    from agent.openai_client import OpenAICompatClient
-
 from agent.compact import compact_messages, estimate_context_tokens, estimate_text_tokens
 from agent.google_auth import (
+    CALLBACK_PORT,
     auth_file_path,
     delete_google_credentials,
     load_google_credentials,
     login_google_interactive,
 )
-from agent.google_provider import GoogleAntigravityClient
+from agent.google_provider import GoogleAntigravityProvider
 from agent.images import ImageAttachment, load_clipboard_image, load_image_file
 from agent.kernel_client import CellResult, KernelClient
 from agent.loop import TurnUsage
+from agent.provider import LLMProvider
 from agent.mcp_client import (
     add_mcp_server,
     default_mcp_config_path,
@@ -60,6 +59,7 @@ from agent.ui import (
     _replay_session,
     _short_path,
     console,
+    get_active_tui,
 )
 
 
@@ -69,7 +69,7 @@ class _CLIRuntime:
 
     cwd: Path
     kernel: KernelClient
-    client: Any
+    client: LLMProvider
     provider_name: str
     model: str
     effort: str
@@ -112,7 +112,7 @@ def _provider_ready(provider: str) -> bool:
     pspec = PROVIDERS.get(provider)
     if not pspec:
         return False
-    if pspec.get("auth_type") == "oauth":
+    if pspec.auth_type == "oauth":
         return load_google_credentials() is not None
     api_key, _, _ = resolve_provider_credentials(provider)
     return bool(api_key)
@@ -120,7 +120,7 @@ def _provider_ready(provider: str) -> bool:
 
 def _provider_status_label(provider: str) -> str:
     pspec = PROVIDERS[provider]
-    if pspec.get("auth_type") == "oauth":
+    if pspec.auth_type == "oauth":
         return "logged in • oauth" if load_google_credentials() is not None else "not logged in • oauth"
     _, _, source = resolve_provider_credentials(provider)
     if source == "auth.json":
@@ -134,7 +134,7 @@ def _build_client(
     provider: str = "auto",
     model_override: str | None = None,
     effort_override: str | None = None,
-) -> tuple[Any, str, str, str]:
+) -> tuple[LLMProvider, str, str, str]:
     api_key_env = os.getenv("OPENAI_API_KEY")
     has_google = load_google_credentials() is not None
     logged_in = list_logged_in_providers()
@@ -170,23 +170,23 @@ def _build_client(
         model = model_override
     elif provider == "auto" and saved.get("provider") == chosen_provider and saved.get("model"):
         model = saved["model"]
-    elif env_model and (spec["backend"] == "openai" or env_model in spec["models"]):
+    elif env_model and (spec.backend == "openai" or env_model in spec.models):
         model = env_model
     else:
-        model = spec["default_model"]
+        model = spec.default_model
 
     if effort_override:
         effort = effort_override
     elif provider == "auto" and saved.get("provider") == chosen_provider and saved.get("effort"):
         effort = saved["effort"]
     else:
-        effort = os.getenv("EFFORT") or spec["default_effort"]
+        effort = os.getenv("EFFORT") or spec.default_effort
 
-    if spec["backend"] == "google":
+    if spec.backend == "google":
         if not has_google:
             console.print("[red]Error: Not logged in to Google. Run `/login google` or `quartz auth login google` first.[/red]")
             sys.exit(1)
-        return GoogleAntigravityClient(), chosen_provider, model, effort
+        return GoogleAntigravityProvider(), chosen_provider, model, effort
 
     api_key, base_url, _ = resolve_provider_credentials(chosen_provider)
     if not api_key:
@@ -195,16 +195,16 @@ def _build_client(
             f"Run `/login {escape(chosen_provider)}` or `quartz auth login {escape(chosen_provider)}`.[/red]"
         )
         sys.exit(1)
-    from agent.openai_client import OpenAICompatClient
+    from agent.openai_client import OpenAIProvider
 
-    client = OpenAICompatClient(api_key=api_key, base_url=base_url)
+    client = OpenAIProvider(api_key=api_key, base_url=base_url)
     return client, chosen_provider, model, effort
 
 
 def _login_provider(target_provider: str | None = None) -> str | None:
     """Interactive login flow differentiating OAuth vs API-key providers."""
     if target_provider is None:
-        opts = [(pname, f"{pspec['label']} ({_provider_status_label(pname)})") for pname, pspec in PROVIDERS.items()]
+        opts = [(pname, f"{pspec.label} ({_provider_status_label(pname)})") for pname, pspec in PROVIDERS.items()]
         target_provider = _pick_option("Log in to Provider", opts)
         if not target_provider:
             console.print("[dim]Cancelled.[/dim]")
@@ -218,9 +218,23 @@ def _login_provider(target_provider: str | None = None) -> str | None:
         return None
 
     spec = PROVIDERS[target_provider]
-    if spec.get("auth_type") == "oauth":
+    if spec.auth_type == "oauth":
+        in_tui = get_active_tui() is not None
+
+        def _on_url(auth_url: str) -> None:
+            console.print(Text("Open this URL in your browser to sign in with Google:\n"))
+            console.print(Text(f"  {auth_url}\n"))
+            console.print(Text(f"Waiting for browser callback on http://localhost:{CALLBACK_PORT} ..."))
+            if not in_tui:
+                console.print(
+                    Text("(If on a remote machine, paste the final redirect URL here and press Enter)")
+                )
+
         try:
-            creds = login_google_interactive()
+            creds = login_google_interactive(
+                on_url=_on_url,
+                interactive_paste=not in_tui,
+            )
         except Exception as exc:
             console.print(f"[red]Login failed: {escape(str(exc))}[/red]")
             return None
@@ -235,7 +249,7 @@ def _login_provider(target_provider: str | None = None) -> str | None:
         console.print("[dim]Cancelled.[/dim]")
         return None
 
-    base_url: str | None = spec.get("base_url") or None
+    base_url: str | None = spec.base_url or None
     if target_provider == "custom":
         entered_url = _prompt_input("Base URL (e.g. https://api.example.com/v1): ")
         if not entered_url:
@@ -267,7 +281,7 @@ def _logout_provider(target_provider: str | None = None) -> bool:
             console.print(f"[dim]No stored provider logins found in {auth_file_path()}.[/dim]")
             return False
         opts = [
-            (pname, f"{PROVIDERS[pname]['label'] if pname in PROVIDERS else pname} ({atype})")
+            (pname, f"{PROVIDERS[pname].label if pname in PROVIDERS else pname} ({atype})")
             for pname, atype in logged_in.items()
         ]
         target_provider = _pick_option("Log out from Provider", opts)
@@ -320,7 +334,7 @@ def _handle_auth_cli(argv: list[str]) -> None:
                 f"[green]google (oauth): logged in[/green] | project: [bold]{creds.project_id}[/bold] | token: {status}"
             )
         for pname, pspec in PROVIDERS.items():
-            if pspec.get("auth_type") == "oauth":
+            if pspec.auth_type == "oauth":
                 continue
             console.print(f"  [cyan]{pname}[/cyan]: {_provider_status_label(pname)}")
         return
@@ -561,7 +575,7 @@ def _cmd_logout(rt: _CLIRuntime, arg: str) -> bool | None:
 def _cmd_model(rt: _CLIRuntime, arg: str) -> bool | None:
     del arg
     provider_opts: list[tuple[str, str]] = [
-        (pname, f"{pspec['label']} ({_provider_status_label(pname)})")
+        (pname, f"{pspec.label} ({_provider_status_label(pname)})")
         for pname, pspec in PROVIDERS.items()
     ]
 
@@ -578,7 +592,7 @@ def _cmd_model(rt: _CLIRuntime, arg: str) -> bool | None:
         return False
 
     pspec = PROVIDERS[picked_provider]
-    if pspec["backend"] == "openai":
+    if pspec.backend == "openai":
         with console.status(f"[dim]Discovering models from {picked_provider}...[/dim]"):
             models, err = discover_models(picked_provider)
         if err:
@@ -588,13 +602,13 @@ def _cmd_model(rt: _CLIRuntime, arg: str) -> bool | None:
     else:
         models, _ = discover_models(picked_provider)
 
-    if pspec["backend"] == "openai" or len(models) > 10:
+    if pspec.backend == "openai" or len(models) > 10:
         model_opts = [(m, m) for m in models]
         picked_model = _pick_searchable_option(
             "Model",
             model_opts,
             current=rt.model if picked_provider == rt.provider_name else None,
-            allow_custom=(pspec["backend"] == "openai"),
+            allow_custom=(pspec.backend == "openai"),
         )
         if not picked_model:
             console.print("[dim]Cancelled.[/dim]")
@@ -608,11 +622,11 @@ def _cmd_model(rt: _CLIRuntime, arg: str) -> bool | None:
     else:
         picked_model = models[0]
 
-    effort_opts = [(e, e) for e in pspec["efforts"]]
+    effort_opts = [(e, e) for e in pspec.efforts]
     picked_effort = _pick_option(
         f"Reasoning Effort ({picked_model})",
         effort_opts,
-        current=rt.effort if picked_provider == rt.provider_name else pspec["default_effort"],
+        current=rt.effort if picked_provider == rt.provider_name else pspec.default_effort,
     )
     if not picked_effort:
         console.print("[dim]Cancelled.[/dim]")

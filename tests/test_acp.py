@@ -12,61 +12,50 @@ from agent.acp import ACPServer
 
 
 def _make_fake_client():
-    class _FnDelta:
-        def __init__(self, name: str | None = None, arguments: str | None = None) -> None:
-            self.name = name
-            self.arguments = arguments
+    from agent.provider import TextDelta, ToolCallDelta, Usage, UsageEvent
 
-    class _TcDelta:
-        def __init__(self, index: int, id: str | None = None, function: _FnDelta | None = None) -> None:
-            self.index = index
-            self.id = id
-            self.function = function
+    class _FakeStream:
+        def __init__(self, events):
+            self._events = events
 
-    class _Delta:
-        def __init__(self, content: str | None = None, tool_calls: list[_TcDelta] | None = None) -> None:
-            self.content = content
-            self.tool_calls = tool_calls
+        def __iter__(self):
+            return iter(self._events)
 
-    class _Choice:
-        def __init__(self, delta: _Delta) -> None:
-            self.delta = delta
+        def close(self) -> None:
+            pass
 
-    class _Usage:
-        prompt_tokens = 100
-        completion_tokens = 20
-        prompt_tokens_details = None
+        def __enter__(self):
+            return self
 
-    class _Chunk:
-        def __init__(self, choices: list[_Choice], usage: _Usage | None = None) -> None:
-            self.choices = choices
-            self.usage = usage
-
-    class _FakeCompletions:
-        def __init__(self) -> None:
-            self.n = 0
-
-        def create(self, **kwargs):
-            self.n += 1
-            if self.n == 1:
-                return iter(
-                    [
-                        _Chunk([_Choice(_Delta(tool_calls=[_TcDelta(0, id="tc1", function=_FnDelta(name="ipython", arguments='{"code": "x = 21 * 2\\nx"}'))]))], usage=_Usage()),
-                    ]
-                )
-            return iter(
-                [
-                    _Chunk([_Choice(_Delta(content="Result is 42."))], usage=_Usage()),
-                ]
-            )
-
-    class _FakeChat:
-        def __init__(self) -> None:
-            self.completions = _FakeCompletions()
+        def __exit__(self, *args) -> None:
+            pass
 
     class _FakeClient:
         def __init__(self) -> None:
-            self.chat = _FakeChat()
+            self.n = 0
+
+        def stream(self, model, messages, tools=None, *, effort=None):
+            del model, messages, tools, effort
+            self.n += 1
+            usage = Usage(input_tokens=100, output_tokens=20)
+            if self.n == 1:
+                return _FakeStream(
+                    [
+                        ToolCallDelta(
+                            index=0,
+                            id="tc1",
+                            name="ipython",
+                            arguments_delta='{"code": "x = 21 * 2\\nx"}',
+                        ),
+                        UsageEvent(usage=usage),
+                    ]
+                )
+            return _FakeStream(
+                [
+                    TextDelta(text="Result is 42."),
+                    UsageEvent(usage=usage),
+                ]
+            )
 
     return _FakeClient(), "deepseek", "deepseek-flash", "high"
 
@@ -205,61 +194,43 @@ def test_acp_subprocess_initialize_and_new(tmp_path: Path) -> None:
 def test_acp_parallel_tool_call_ids_and_cancel(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
 
-    class _FnDelta:
-        def __init__(self, name: str | None = None, arguments: str | None = None) -> None:
-            self.name = name
-            self.arguments = arguments
+    from agent.provider import TextDelta, ToolCallDelta
 
-    class _TcDelta:
-        def __init__(self, index: int, id: str | None = None, function: _FnDelta | None = None) -> None:
-            self.index = index
-            self.id = id
-            self.function = function
+    class _FakeStream:
+        def __init__(self, events) -> None:
+            self._events = events
 
-    class _Delta:
-        def __init__(self, content: str | None = None, tool_calls: list[_TcDelta] | None = None) -> None:
-            self.content = content
-            self.tool_calls = tool_calls
+        def __iter__(self):
+            return iter(self._events)
 
-    class _Choice:
-        def __init__(self, delta: _Delta) -> None:
-            self.delta = delta
+        def close(self) -> None:
+            pass
 
-    class _Chunk:
-        def __init__(self, choices: list[_Choice]) -> None:
-            self.choices = choices
-            self.usage = None
+        def __enter__(self):
+            return self
 
-    class _ParallelCompletions:
+        def __exit__(self, *args) -> None:
+            pass
+
+    class _ParallelClient:
         def __init__(self) -> None:
             self.n = 0
 
-        def create(self, **kwargs):
+        def stream(self, model, messages, tools=None, *, effort=None):
+            del model, messages, tools, effort
             self.n += 1
             if self.n == 1:
-                return iter(
+                return _FakeStream(
                     [
-                        _Chunk(
-                            [
-                                _Choice(
-                                    _Delta(
-                                        tool_calls=[
-                                            _TcDelta(0, id="tc_a", function=_FnDelta(name="ipython", arguments='{"code": "1 + 1"}')),
-                                            _TcDelta(1, id="tc_b", function=_FnDelta(name="ipython", arguments='{"code": "2 + 2"}')),
-                                        ]
-                                    )
-                                )
-                            ]
-                        )
+                        ToolCallDelta(index=0, id="tc_a", name="ipython", arguments_delta='{"code": "1 + 1"}'),
+                        ToolCallDelta(index=1, id="tc_b", name="ipython", arguments_delta='{"code": "2 + 2"}'),
                     ]
                 )
-            return iter([_Chunk([_Choice(_Delta(content="Done"))])])
-
-    from types import SimpleNamespace
+            return _FakeStream([TextDelta(text="Done")])
 
     def _factory():
         return (
-            SimpleNamespace(chat=SimpleNamespace(completions=_ParallelCompletions())),
+            _ParallelClient(),
             "deepseek",
             "deepseek-flash",
             "high",
@@ -305,19 +276,40 @@ def test_acp_session_cancel_stops_active_turn(tmp_path: Path, monkeypatch) -> No
     started = threading.Event()
     release = threading.Event()
 
-    class _SlowCompletions:
-        def create(self, **kwargs):
-            del kwargs
+    from agent.provider import CompletionResult, TextDelta, Usage
+
+    class _FakeStream:
+        def __init__(self, events) -> None:
+            self._events = events
+
+        def __iter__(self):
+            return iter(self._events)
+
+        def close(self) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            pass
+
+    class _SlowClient:
+        def stream(self, model, messages, tools=None, *, effort=None):
+            del model, messages, tools, effort
             started.set()
             release.wait(timeout=3.0)
-            return SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content="late", tool_calls=None))],
-                usage=None,
-            )
+            return _FakeStream([TextDelta(text="late")])
+
+        def complete(self, model, messages, tools=None, *, effort=None):
+            del model, messages, tools, effort
+            started.set()
+            release.wait(timeout=3.0)
+            return CompletionResult(text="late", tool_calls=[], usage=Usage())
 
     def _factory():
         return (
-            SimpleNamespace(chat=SimpleNamespace(completions=_SlowCompletions())),
+            _SlowClient(),
             "deepseek",
             "deepseek-flash",
             "high",

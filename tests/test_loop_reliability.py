@@ -12,17 +12,33 @@ import pytest
 from agent.errors import ContextOverflowError
 from agent.kernel_client import KernelClient
 from agent.loop import TurnAborted, agent_loop
+from agent.provider import CompletionResult, TextDelta, Usage, UsageEvent
 
 
-def _make_chunk(content: str | None = None, prompt_tokens: int = 0):
-    delta = SimpleNamespace(content=content, tool_calls=None)
-    choice = SimpleNamespace(delta=delta)
-    usage = (
-        SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=10, prompt_tokens_details=None)
-        if prompt_tokens
-        else None
-    )
-    return SimpleNamespace(choices=[choice], usage=usage)
+class _FakeStream:
+    def __init__(self, events) -> None:
+        self._events = events
+
+    def __iter__(self):
+        return iter(self._events)
+
+    def close(self) -> None:
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args) -> None:
+        pass
+
+
+def _make_events(content: str | None = None, prompt_tokens: int = 0):
+    events = []
+    if content is not None:
+        events.append(TextDelta(text=content))
+    if prompt_tokens:
+        events.append(UsageEvent(usage=Usage(input_tokens=prompt_tokens, output_tokens=10)))
+    return _FakeStream(events)
 
 
 def test_steering_preemption_swallows_close_error_and_omits_empty_assistant(tmp_path: Path) -> None:
@@ -34,6 +50,12 @@ def test_steering_preemption_swallows_close_error_and_omits_empty_assistant(tmp_
     class _BlockingStream:
         def __init__(self) -> None:
             self._done = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            self.close()
 
         def __iter__(self):
             return self
@@ -49,15 +71,16 @@ def test_steering_preemption_swallows_close_error_and_omits_empty_assistant(tmp_
         def close(self) -> None:
             stream_closed.set()
 
-    class _FakeCompletions:
-        def create(self, **kwargs):
+    class _FakeClient:
+        def stream(self, model, messages, tools=None, *, effort=None):
             nonlocal calls
+            del model, messages, tools, effort
             calls += 1
             if calls == 1:
                 return _BlockingStream()
-            return iter([_make_chunk("Done B", prompt_tokens=50)])
+            return _make_events("Done B", prompt_tokens=50)
 
-    client = SimpleNamespace(chat=SimpleNamespace(completions=_FakeCompletions()))
+    client = _FakeClient()
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
@@ -92,11 +115,12 @@ def test_steering_preemption_swallows_close_error_and_omits_empty_assistant(tmp_
 def test_initial_prompt_tokens_does_not_trigger_premature_compaction(tmp_path: Path) -> None:
     compactions = []
 
-    class _FakeCompletions:
-        def create(self, **kwargs):
-            return iter([_make_chunk("ok", prompt_tokens=60_100)])
+    class _FakeClient:
+        def stream(self, model, messages, tools=None, *, effort=None):
+            del model, messages, tools, effort
+            return _make_events("ok", prompt_tokens=60_100)
 
-    client = SimpleNamespace(chat=SimpleNamespace(completions=_FakeCompletions()))
+    client = _FakeClient()
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
@@ -127,19 +151,20 @@ def test_overflow_compaction_does_not_double_compact(tmp_path: Path) -> None:
     compactions = []
     calls = 0
 
-    class _FakeCompletions:
-        def create(self, **kwargs):
+    class _FakeClient:
+        def complete(self, model, messages, tools=None, *, effort=None):
+            del model, messages, tools, effort
+            return CompletionResult(text="Short summary.", tool_calls=[], usage=Usage())
+
+        def stream(self, model, messages, tools=None, *, effort=None):
             nonlocal calls
+            del model, messages, tools, effort
             calls += 1
             if calls == 1:
                 raise ContextOverflowError("prompt too long")
-            if not kwargs.get("stream"):
-                return SimpleNamespace(
-                    choices=[SimpleNamespace(message=SimpleNamespace(content="Short summary."))]
-                )
-            return iter([_make_chunk("Recovered.", prompt_tokens=5_000)])
+            return _make_events("Recovered.", prompt_tokens=5_000)
 
-    client = SimpleNamespace(chat=SimpleNamespace(completions=_FakeCompletions()))
+    client = _FakeClient()
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
@@ -172,16 +197,17 @@ def test_compaction_mutates_messages_in_place_before_turn_aborted(tmp_path: Path
     abort_event = threading.Event()
     compactions = []
 
-    class _FakeCompletions:
-        def create(self, **kwargs):
-            if not kwargs.get("stream"):
-                return SimpleNamespace(
-                    choices=[SimpleNamespace(message=SimpleNamespace(content="Compacted summary."))]
-                )
-            abort_event.set()
-            return iter([_make_chunk("partial")])
+    class _FakeClient:
+        def complete(self, model, messages, tools=None, *, effort=None):
+            del model, messages, tools, effort
+            return CompletionResult(text="Compacted summary.", tool_calls=[], usage=Usage())
 
-    client = SimpleNamespace(chat=SimpleNamespace(completions=_FakeCompletions()))
+        def stream(self, model, messages, tools=None, *, effort=None):
+            del model, messages, tools, effort
+            abort_event.set()
+            return _make_events("partial")
+
+    client = _FakeClient()
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:

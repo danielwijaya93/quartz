@@ -6,6 +6,9 @@ Callers (agent loop, CLI, ACP) branch on the type, never on message text.
 
 from __future__ import annotations
 
+from email.utils import parsedate_to_datetime
+from typing import Any
+
 
 class AgentError(Exception):
     """Base class for all errors Quartz raises deliberately."""
@@ -45,6 +48,31 @@ class ContextOverflowError(ProviderError):
     """The prompt exceeded the model's context window and must be compacted."""
 
 
+class AuthenticationError(ProviderError):
+    """The provider rejected authentication (HTTP 401/403)."""
+
+
+class RateLimitError(ProviderError):
+    """The provider rate-limited the request (HTTP 429)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider: str | None = None,
+        status_code: int | None = None,
+        detail: str = "",
+        retry_after: float | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            provider=provider,
+            status_code=status_code,
+            detail=detail,
+        )
+        self.retry_after = retry_after
+
+
 class CredentialError(AgentError):
     """Required credentials are missing or unusable; retrying cannot help."""
 
@@ -71,9 +99,42 @@ _OVERFLOW_MARKERS: tuple[str, ...] = (
     "prompt is too long",
     "too many tokens",
     "context window",
+    "too many input tokens",
+    "prompt is too large",
+    "request too large",
+    "maximum prompt length",
 )
 
 _OVERFLOW_STATUSES = frozenset({400, 413})
+_AUTH_STATUSES = frozenset({401, 403})
+
+
+def parse_retry_after(headers: Any) -> float | None:
+    """Parse an HTTP Retry-After header (seconds or HTTP-date) into seconds."""
+    if headers is None:
+        return None
+    raw: Any = None
+    if hasattr(headers, "get"):
+        raw = headers.get("retry-after")
+        if raw is None:
+            raw = headers.get("Retry-After")
+    if raw is None:
+        return None
+    val = str(raw).strip()
+    if not val:
+        return None
+    try:
+        seconds = float(val)
+        return max(0.0, seconds)
+    except ValueError:
+        pass
+    try:
+        dt = parsedate_to_datetime(val)
+        import time
+
+        return max(0.0, dt.timestamp() - time.time())
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def is_context_overflow(status_code: int | None, body: str) -> bool:
@@ -90,11 +151,24 @@ def provider_error(
     body: str,
     *,
     context: str | None = None,
+    retry_after: float | None = None,
 ) -> ProviderError:
     """Build the most specific ProviderError for a non-success HTTP response."""
     summary = context or f"{provider} request failed"
     if is_context_overflow(status_code, body):
         return ContextOverflowError(
             summary, provider=provider, status_code=status_code, detail=body
+        )
+    if status_code in _AUTH_STATUSES:
+        return AuthenticationError(
+            summary, provider=provider, status_code=status_code, detail=body
+        )
+    if status_code == 429:
+        return RateLimitError(
+            summary,
+            provider=provider,
+            status_code=status_code,
+            detail=body,
+            retry_after=retry_after,
         )
     return ProviderError(summary, provider=provider, status_code=status_code, detail=body)
