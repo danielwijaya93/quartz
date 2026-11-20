@@ -155,6 +155,9 @@ class ACPServer:
             "agentInfo": {"name": "quartz", "version": "0.1.0"},
             "agentCapabilities": {
                 "loadSession": True,
+                "sessionCapabilities": {
+                    "list": {},
+                },
                 "promptCapabilities": {"image": True},
                 "_meta": {
                     "quartz": {
@@ -260,6 +263,17 @@ class ACPServer:
 
         return {"sessionId": session.id}
 
+    def _handle_session_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        raw_cwd = params.get("cwd")
+        cwd = Path(raw_cwd).expanduser().resolve() if raw_cwd else None
+        cursor = params.get("cursor")
+        cursor = cursor if isinstance(cursor, str) and cursor else None
+        sessions, next_cursor = Session.list_all(cwd, cursor=cursor)
+        result: dict[str, Any] = {"sessions": sessions}
+        if next_cursor is not None:
+            result["nextCursor"] = next_cursor
+        return result
+
     def _handle_session_prompt(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = str(params.get("sessionId", "")).strip()
         with self._sessions_lock:
@@ -359,6 +373,8 @@ class ACPServer:
                 res = self._handle_session_new(params)
             elif method == "session/load":
                 res = self._handle_session_load(params)
+            elif method == "session/list":
+                res = self._handle_session_list(params)
             elif method == "session/prompt":
                 res = self._handle_session_prompt(params)
             elif method == "session/cancel":

@@ -166,6 +166,83 @@ class Session:
         return results
 
     @classmethod
+    def list_all(
+        cls,
+        cwd: Path | None = None,
+        *,
+        cursor: str | None = None,
+        limit: int = 50,
+        sessions_dir: Path | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """List non-empty sessions, newest-first, as ACP ``SessionInfo`` dicts.
+
+        ``cwd`` filters to a single working directory (absolute path); when
+        ``None`` all sessions are returned. ``cursor`` is the opaque token
+        returned by a previous call (the ``sessionId`` of the last entry of the
+        previous page); the next page resumes strictly after it. Returns
+        ``(sessions, next_cursor)`` where ``next_cursor`` is ``None`` when no
+        further page exists.
+        """
+        root = (sessions_dir or default_sessions_dir()).resolve()
+        if not root.is_dir():
+            return [], None
+        target_cwd = str(cwd.resolve()) if cwd is not None else None
+        files = sorted(root.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+        results: list[dict[str, Any]] = []
+        seen_cursor = cursor is None
+        next_cursor: str | None = None
+        for f in files:
+            if not seen_cursor:
+                if f.stem == cursor:
+                    seen_cursor = True
+                continue
+            has_msgs, session_cwd = cls._inspect_session(f)
+            if not has_msgs or session_cwd is None:
+                continue
+            if target_cwd is not None and session_cwd != target_cwd:
+                continue
+            preview = cls._session_preview(f)
+            mtime = f.stat().st_mtime
+            entry: dict[str, Any] = {
+                "sessionId": f.stem,
+                "cwd": session_cwd,
+                "updatedAt": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+            }
+            if preview:
+                entry["title"] = preview
+            if len(results) < limit:
+                results.append(entry)
+            else:
+                next_cursor = results[-1]["sessionId"] if results else None
+                break
+        return results, next_cursor
+
+    @classmethod
+    def _session_preview(cls, jsonl_path: Path) -> str:
+        """Best-effort one-line preview from the first non-empty user message."""
+        try:
+            with jsonl_path.open("r", encoding="utf-8") as fh:
+                for raw_line in fh:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        return ""
+                    if rec.get("type") != "message":
+                        continue
+                    msg = rec.get("message")
+                    if not isinstance(msg, dict) or msg.get("role") != "user":
+                        continue
+                    text = content_to_text(msg.get("content", "")).strip().replace("\n", " ")
+                    if text and not text.startswith("["):
+                        return (text[:70] + "...") if len(text) > 70 else text
+        except OSError:
+            return ""
+        return ""
+
+    @classmethod
     def load(cls, session_id: str, sessions_dir: Path | None = None) -> tuple[Session, list[dict[str, Any]]]:
         session = cls(session_id, sessions_dir=sessions_dir)
         if not session.jsonl_path.is_file():

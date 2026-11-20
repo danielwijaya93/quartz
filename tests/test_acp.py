@@ -632,3 +632,88 @@ def test_acp_initialize_advertises_quartz_meta_namespace(tmp_path: Path) -> None
     responses = [json.loads(line) for line in out_buf.getvalue().splitlines() if line.strip()]
     caps = responses[0]["result"]["agentCapabilities"]
     assert caps["_meta"] == {"quartz": {"systemPrompt": {"append": True}}}
+
+
+def test_acp_initialize_advertises_session_list_capability(tmp_path: Path) -> None:
+    reqs = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": 1}},
+    ]
+    out_buf = io.StringIO()
+    server = ACPServer(
+        _make_fake_client,
+        in_stream=io.StringIO("\n".join(json.dumps(r) for r in reqs) + "\n"),
+        out_stream=out_buf,
+    )
+    server.serve()
+    responses = [json.loads(line) for line in out_buf.getvalue().splitlines() if line.strip()]
+    caps = responses[0]["result"]["agentCapabilities"]
+    assert caps["sessionCapabilities"] == {"list": {}}
+
+
+def test_acp_session_list_returns_session_info(tmp_path: Path, monkeypatch) -> None:
+    from agent.session import Session
+
+    monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
+    cwd = tmp_path / "ws"
+    cwd.mkdir()
+    # One session with a user message, one empty (meta-only, must be excluded).
+    s = Session.create(cwd)
+    s._ensure_meta_written()
+    s.save_messages([{"role": "user", "content": "Hello world"}])
+    empty = Session.create(cwd)
+    empty._ensure_meta_written()
+
+    reqs = [
+        {"jsonrpc": "2.0", "id": 1, "method": "session/list", "params": {"cwd": str(cwd)}},
+        {"jsonrpc": "2.0", "id": 2, "method": "session/list", "params": {}},
+    ]
+    out_buf = io.StringIO()
+    server = ACPServer(
+        _make_fake_client,
+        in_stream=io.StringIO("\n".join(json.dumps(r) for r in reqs) + "\n"),
+        out_stream=out_buf,
+    )
+    server.serve()
+    responses = [json.loads(line) for line in out_buf.getvalue().splitlines() if line.strip()]
+    by_id = {m["id"]: m for m in responses}
+    filtered = by_id[1]["result"]["sessions"]
+    assert len(filtered) == 1
+    info = filtered[0]
+    assert info["sessionId"] == s.id
+    assert info["cwd"] == str(cwd.resolve())
+    assert info["title"] == "Hello world"
+    assert info["updatedAt"].endswith("+00:00")
+    assert "nextCursor" not in by_id[1]["result"]
+    # Unfiltered listing also returns the session (empty one excluded).
+    assert [x["sessionId"] for x in by_id[2]["result"]["sessions"]] == [s.id]
+
+
+def test_acp_session_list_cursor_pagination(tmp_path: Path, monkeypatch) -> None:
+    from agent.session import Session
+
+    monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
+    cwd = tmp_path / "ws"
+    cwd.mkdir()
+    ids = []
+    for i in range(3):
+        s = Session.create(cwd)
+        s._ensure_meta_written()
+        s.save_messages([{"role": "user", "content": f"msg {i}"}])
+        ids.append(s.id)
+        # Session ids are timestamp-prefixed, so same-second creations share a
+        # prefix; stagger mtimes so newest-first ordering is deterministic.
+        import os as _os
+
+        _os.utime(s.jsonl_path, (1_000_000_000 + i * 100, 1_000_000_000 + i * 100))
+    page1, cursor = Session.list_all(cwd, limit=2)
+    assert len(page1) == 2
+    assert cursor == page1[-1]["sessionId"]
+    page2, cursor2 = Session.list_all(cwd, cursor=cursor, limit=2)
+    assert len(page2) == 1
+    assert cursor2 is None
+    # Pagination walks newest-first without overlap or gaps.
+    assert [x["sessionId"] for x in page1 + page2] == list(reversed(ids))
+    assert len({x["sessionId"] for x in page1 + page2}) == 3
+    # Unknown cursor degrades to an empty page, not an error.
+    page3, _ = Session.list_all(cwd, cursor="no-such-session")
+    assert page3 == []
