@@ -536,3 +536,37 @@ def describe_cell_intent(code: str) -> str:
     if len(result) > _MAX_INTENT_LEN:
         result = result[: _MAX_INTENT_LEN - 1].rstrip() + "…"
     return result or "Run Python"
+
+
+def describe_job_label(command: str) -> str:
+    """Return a short label for a background shell command (pure, never raises).
+
+    Used for banner/progress visibility of `bash()` jobs. Falls back to the
+    first program token so identity is always visible, e.g. "Run pytest",
+    "git log", 'Search "foo" in agent/', "Run uv".
+    """
+    try:
+        label = _describe_shell_command(command or "")
+    except Exception:
+        label = None
+    if label:
+        return label
+    try:
+        text = (command or "").strip()
+        if not text:
+            return "Background job"
+        segment = re.split(r"\s*(?:&&|\|\||;|\||\n)\s*", text, maxsplit=1)[0].strip()
+        try:
+            tokens = shlex.split(segment)
+        except ValueError:
+            tokens = segment.split()
+        tokens = _strip_env_prefix(tokens)
+        if not tokens:
+            return "Background job"
+        prog = tokens[0].rsplit("/", 1)[-1]
+    except Exception:
+        prog = "Background job"
+    result = f"Run {prog}" if prog else "Background job"
+    if len(result) > _MAX_INTENT_LEN:
+        result = result[: _MAX_INTENT_LEN - 1].rstrip() + "…"
+    return result or "Background job"

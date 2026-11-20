@@ -56,6 +56,7 @@ class KernelClient:
         self._stderr_thread: threading.Thread | None = None
         self._stderr_tail: deque[str] = deque(maxlen=200)
         self._running_bash_count: int = 0
+        self._running_bash_jobs: list[dict[str, Any]] = []
         self._atexit_registered = False
         self.dirty = False
         self._restart_notice: str | None = None
@@ -67,6 +68,7 @@ class KernelClient:
         self._ready_event.clear()
         self._worker_exited = False
         self._running_bash_count = 0
+        self._running_bash_jobs.clear()
         self._stderr_tail.clear()
         env = os.environ.copy()
         # Ensure the package root is importable even if cwd differs
@@ -127,6 +129,9 @@ class KernelClient:
                 self._ready_event.set()
             elif msg_type == "bg_count":
                 self._running_bash_count = int(msg.get("count", 0))
+            elif msg_type == "bg_jobs":
+                jobs = msg.get("jobs")
+                self._running_bash_jobs = [dict(j) for j in jobs if isinstance(j, dict)] if isinstance(jobs, list) else []
             elif msg_type == "event":
                 with self._events_cond:
                     self._events.append(msg)
@@ -142,6 +147,7 @@ class KernelClient:
         # Unblock any waiters if the worker exited unexpectedly
         self._worker_exited = True
         self._running_bash_count = 0
+        self._running_bash_jobs.clear()
         self._ready_event.set()
         with self._events_cond:
             self._events_cond.notify_all()
@@ -250,6 +256,12 @@ class KernelClient:
             return 0
         return self._running_bash_count
 
+    def running_bash_jobs(self) -> list[dict[str, Any]]:
+        """Return snapshots of currently running bash() jobs (pid, command, elapsed_s)."""
+        if self._proc is None or self._proc.poll() is not None:
+            return []
+        return [dict(j) for j in self._running_bash_jobs]
+
     def has_pending_events(self) -> bool:
         with self._events_cond:
             return bool(self._events)
@@ -302,6 +314,7 @@ class KernelClient:
         proc = self._proc
         self._proc = None
         self._running_bash_count = 0
+        self._running_bash_jobs.clear()
         self.dirty = False
         if proc is None:
             return

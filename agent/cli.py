@@ -457,6 +457,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.fork and not args.resume and not args.cont:
+        parser.error("--fork requires -r <session-id> (or -c)")
+
     if args.acp:
         from agent.acp import ACPServer
 

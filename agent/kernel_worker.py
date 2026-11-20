@@ -353,6 +353,7 @@ class KernelWorker:
             "time": time,
             "shutil": shutil,
             "bash": lambda command, timeout=600: self._start_bash(command, timeout),
+            "launch_worker": self._launch_worker,
             "BashHandle": BashHandle,
             "BashResult": BashResult,
             "mcp": self.mcp,
@@ -383,13 +384,36 @@ class KernelWorker:
         self._send_bg_count()
         return handle
 
+    def _launch_worker(self, prompt_file: str, cwd: str, session_id: str, timeout: float | None = 600) -> BashHandle:
+        """Launch a forked Quartz worker via bash() so [bash-done] wake-up is guaranteed.
+
+        Never use subprocess.Popen directly for a forked session: the process
+        would sit outside BashHandle tracking and the harness would never
+        emit [bash-done] on completion.
+        """
+        import shlex as _shlex
+
+        if not session_id:
+            raise ValueError("launch_worker requires a session_id (pass Session.latest_id())")
+        prompt_path = _shlex.quote(str(prompt_file))
+        cwd_path = _shlex.quote(str(cwd))
+        sid = _shlex.quote(str(session_id))
+        command = f"uv run quartz -p \"$(cat {prompt_path})\" -r {sid} --fork --cwd {cwd_path}"
+        return self._start_bash(command, timeout)
+
     def _send(self, payload: dict[str, Any]) -> None:
         line = json.dumps(payload, ensure_ascii=False)
         self._proto_out.write(line + "\n")
         self._proto_out.flush()
 
     def _send_bg_count(self) -> None:
-        self._send({"type": "bg_count", "count": sum(1 for h in self._handles if h.running)})
+        jobs = [
+            {"pid": h.pid, "command": h.command, "elapsed_s": max(0.0, time.monotonic() - h._start_time)}
+            for h in self._handles
+            if h.running
+        ]
+        self._send({"type": "bg_count", "count": len(jobs)})
+        self._send({"type": "bg_jobs", "jobs": jobs})
 
     def _on_bash_done(self, handle: BashHandle) -> None:
         with contextlib.suppress(ValueError):

@@ -256,6 +256,7 @@ def view_image(path: str) -> str:
 
 PROTECTED_NAMES: frozenset[str] = frozenset({
     "bash",
+    "launch_worker",
     "BashHandle",
     "BashResult",
     "mcp",
@@ -426,7 +427,10 @@ def format_helpers_for_prompt(loaded: LoadedHelpers) -> str:
         "## REPL Functions",
         "- `bash(command, timeout=600) -> BashHandle`: runs a shell command in the background; "
         "`await handle -> BashResult(.exit_code, .output, .duration)`. Also `.pid`, `.running`, "
-        "`.tail(n=50)`, `.output()`, `.poll()`, `.kill()`. Commands outliving a cell emit `[bash-done]`.",
+        "`.tail(n=50)`, `.output()`, `.poll()`, `.kill()`. Commands outliving a cell emit `[bash-done]`. "
+        "MUST use `bash()` (never `subprocess.Popen`/`sh()`) to launch forked `quartz -p` workers, "
+        "or the harness will never wake you on completion — prefer `launch_worker(prompt_file, cwd, session_id)` "
+        "which wraps `bash()` with correct quoting and guarantees `[bash-done]` delivery.",
         "- `ls(path='.')`, `find(pattern='*', path='.', limit=200)`, `rg(pattern, path='.', glob=None, max_hits=100, fixed=False)` "
         "(use raw strings r'...' for regex patterns with backslashes to avoid Python SyntaxWarning, or fixed=True for literal string search)",
 
