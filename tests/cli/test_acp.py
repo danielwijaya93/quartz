@@ -274,12 +274,11 @@ def test_acp_out_of_order_tool_call_id_callbacks(tmp_path: Path, monkeypatch) ->
     from quartz.kernel.client import CellResult
 
     def _fake_agent_loop(*args, **kwargs):
-        on_tool_call = kwargs["on_tool_call"]
-        on_tool_result = kwargs["on_tool_result"]
-        on_tool_call("tc_1", "a = 1")
-        on_tool_call("tc_2", "b = 2")
-        on_tool_result("tc_2", CellResult(ok=True, stdout="", stderr="", result="2"))
-        on_tool_result("tc_1", CellResult(ok=True, stdout="", stderr="", result="1"))
+        observer = kwargs["observer"]
+        observer.on_tool_call("tc_1", "a = 1")
+        observer.on_tool_call("tc_2", "b = 2")
+        observer.on_tool_result("tc_2", CellResult(ok=True, stdout="", stderr="", result="2"))
+        observer.on_tool_result("tc_1", CellResult(ok=True, stdout="", stderr="", result="1"))
         return "done", kwargs["messages"] if "messages" in kwargs else args[3], 10
 
     monkeypatch.setattr("quartz.cli.acp.agent_loop", _fake_agent_loop)
@@ -511,9 +510,9 @@ def test_acp_tool_result_forwards_images(tmp_path: Path, monkeypatch) -> None:
     server = ACPServer(_make_fake_client, in_stream=io.StringIO(""), out_stream=out)
     sid = server._handle_session_new({"cwd": str(tmp_path)})["sessionId"]
 
-    def fake_loop(*_a, on_tool_call=None, on_tool_result=None, **_k):
-        on_tool_call("t1", "view_image('x.png')")
-        on_tool_result(
+    def fake_loop(*_a, observer=None, **_k):
+        observer.on_tool_call("t1", "view_image('x.png')")
+        observer.on_tool_result(
             "t1",
             CellResult(ok=True, stdout="", stderr="", result=None, images=[{"mime_type": "image/png", "data": "QUJD"}]),
         )

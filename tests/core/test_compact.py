@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from conftest import RecordingObserver
 
 from quartz.core.compact import (
     CLEARED_TOOL_PLACEHOLDER,
@@ -257,7 +258,7 @@ class _OverflowClient:
 def test_loop_compacts_and_retries_once_on_context_overflow() -> None:
     client = _OverflowClient()
     messages = _tool_loop_turn(steps=10)
-    seen: list[Any] = []
+    observer = RecordingObserver()
 
     answer, updated, _ = agent_loop(
         client,  # type: ignore[arg-type]
@@ -267,14 +268,14 @@ def test_loop_compacts_and_retries_once_on_context_overflow() -> None:
         _StubKernel(),  # type: ignore[arg-type]
         stream=False,
         keep_recent_tokens=4_000,
-        on_compaction=seen.append,
+        observer=observer,
     )
 
     assert answer == "recovered"
     assert client.model_calls == 2
     assert client.summary_calls == 1
-    assert len(seen) == 1
-    assert seen[0].reason is CompactionReason.SUMMARIZED
+    assert len(observer.compactions) == 1
+    assert observer.compactions[0].reason is CompactionReason.SUMMARIZED
     assert updated[0]["content"].startswith("[compaction-summary]")
 
 

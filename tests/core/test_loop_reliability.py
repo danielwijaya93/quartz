@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from conftest import RecordingObserver
 
 from quartz.errors import ContextOverflowError
 from quartz.kernel.client import KernelClient
@@ -113,7 +114,7 @@ def test_steering_preemption_swallows_close_error_and_omits_empty_assistant(tmp_
 
 
 def test_initial_prompt_tokens_does_not_trigger_premature_compaction(tmp_path: Path) -> None:
-    compactions = []
+    observer = RecordingObserver()
 
     class _FakeClient:
         def stream(self, model, messages, tools=None, *, effort=None):
@@ -139,16 +140,16 @@ def test_initial_prompt_tokens_does_not_trigger_premature_compaction(tmp_path: P
             max_context_tokens=128_000,
             compact_reserve_tokens=16_384,
             initial_prompt_tokens=60_000,
-            on_compaction=compactions.append,
+            observer=observer,
         )
         assert text == "ok"
-        assert compactions == []
+        assert observer.compactions == []
     finally:
         kernel.close()
 
 
 def test_overflow_compaction_does_not_double_compact(tmp_path: Path) -> None:
-    compactions = []
+    observer = RecordingObserver()
     calls = 0
 
     class _FakeClient:
@@ -185,17 +186,17 @@ def test_overflow_compaction_does_not_double_compact(tmp_path: Path) -> None:
             max_context_tokens=20_000,
             compact_reserve_tokens=4_000,
             keep_recent_tokens=8_000,
-            on_compaction=compactions.append,
+            observer=observer,
         )
         assert text == "Recovered."
-        assert len(compactions) == 1
+        assert len(observer.compactions) == 1
     finally:
         kernel.close()
 
 
 def test_compaction_mutates_messages_in_place_before_turn_aborted(tmp_path: Path) -> None:
     abort_event = threading.Event()
-    compactions = []
+    observer = RecordingObserver()
 
     class _FakeClient:
         def complete(self, model, messages, tools=None, *, effort=None):
@@ -227,11 +228,11 @@ def test_compaction_mutates_messages_in_place_before_turn_aborted(tmp_path: Path
                 max_context_tokens=16_000,
                 compact_reserve_tokens=4_000,
                 keep_recent_tokens=4_000,
-                on_compaction=compactions.append,
+                observer=observer,
                 abort_event=abort_event,
             )
 
-        assert len(compactions) == 1
+        assert len(observer.compactions) == 1
         assert len(messages) < original_len
     finally:
         kernel.close()

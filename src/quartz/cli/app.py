@@ -19,6 +19,8 @@ from rich.text import Text
 from quartz.tui.commands import _handle_slash_command
 from quartz.errors import CredentialError, EndpointConfigError
 from quartz.settings import load_settings
+from quartz.core.compact import CompactionResult
+from quartz.core.events import TurnObserver
 from quartz.core.images import (
     ImageAttachment,
     build_user_content,
@@ -55,6 +57,95 @@ from quartz.tui.render import (
 from quartz.tui.replay import _replay_session
 
 
+class _TuiObserver(TurnObserver):
+    """Renders agent-loop turn events into the TUI, or into plain stdout when piped.
+
+    One instance per turn: it owns that turn's render state (whether text has
+    streamed, which tool cells are announced but unfinished, collected reasoning).
+    """
+
+    def __init__(
+        self,
+        rt: AgentRuntime,
+        tracker: TurnProgressTracker,
+        md_streamer: MarkdownBlockStreamer,
+        *,
+        on_thinking_delta: Callable[[str], None] | None = None,
+        on_steering: Callable[[str], None] | None = None,
+    ) -> None:
+        self._rt = rt
+        self._tracker = tracker
+        self._md_streamer = md_streamer
+        self._thinking_sink = on_thinking_delta
+        self._steering_sink = on_steering
+        self.streamed_any = [False]
+        self.pending_cells: dict[str, tuple[str, float]] = {}
+        # Collector: reasoning text is persisted in assistant_dict (see
+        # agent_loop); forwarding to the tracker drives the Ctrl+T trace.
+        self.turn_reasoning: list[str] = []
+
+    def on_status(self, label: str | None) -> None:
+        if self._rt.plain_output:
+            return
+        if label == "Thinking...":
+            self._tracker.start_thinking()
+        elif label is None:
+            self._tracker.stop_thinking()
+
+    def on_thinking_delta(self, text: str) -> None:
+        self.turn_reasoning.append(text)
+        self._tracker.add_thinking_delta(text)
+        if self._thinking_sink is not None:
+            self._thinking_sink(text)
+
+    def on_text_delta(self, text: str) -> None:
+        self._tracker.flush()
+        self.streamed_any[0] = True
+        if self._rt.plain_output:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+        else:
+            self._md_streamer.feed(text)
+
+    def on_tool_call(self, tool_call_id: str, code: str) -> None:
+        rt, tracker = self._rt, self._tracker
+        if self.streamed_any[0]:
+            if rt.plain_output:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+            else:
+                self._md_streamer.flush()
+            self.streamed_any[0] = False
+        self.pending_cells[tool_call_id] = (code, time.monotonic())
+        if rt.verbose or getattr(tracker, "show_details", False) or getattr(rt, "show_details", False):
+            tracker.flush()
+            _render_tool_call(code)
+        else:
+            tracker.start_tool(code)
+
+    def on_tool_result(self, tool_call_id: str, cell: CellResult) -> None:
+        rt, tracker = self._rt, self._tracker
+        code, started = self.pending_cells.pop(tool_call_id, ("", time.monotonic()))
+        duration = time.monotonic() - started
+        rt.cell_history.append((code, cell, duration))
+        if rt.verbose or getattr(tracker, "show_details", False) or getattr(rt, "show_details", False):
+            _render_tool_result(cell)
+        else:
+            tracker.add_tool_result(len(rt.cell_history), code, cell, duration)
+
+    def on_compaction(self, result: CompactionResult) -> None:
+        self._tracker.flush()
+        _render_compaction(result)
+
+    def on_bash_notice(self, notice: str) -> None:
+        self._tracker.flush()
+        _render_bash_notice(notice)
+
+    def on_steering(self, text: str) -> None:
+        if self._steering_sink is not None:
+            self._steering_sink(text)
+
+
 def _run_turn(
     rt: AgentRuntime,
     *,
@@ -64,8 +155,6 @@ def _run_turn(
     on_steering: Callable[[str], None] | None = None,
     on_thinking_delta: Callable[[str], None] | None = None,
 ) -> tuple[str, list[dict[str, Any]], int]:
-    pending_cells: dict[str, tuple[str, float]] = {}
-    streamed_any = [False]
     md_streamer = MarkdownBlockStreamer(printer.markdown)
     own_tracker = tracker is None
     if tracker is None:
@@ -86,58 +175,14 @@ def _run_turn(
     if not rt.plain_output and not rt.verbose and getattr(tracker, "_live_renderer", None) is None:
         threading.Thread(target=_tick_tracker, daemon=True).start()
 
-    def _on_status(label: str | None) -> None:
-        if rt.plain_output:
-            return
-        if label == "Thinking...":
-            tracker.start_thinking()
-        elif label is None:
-            tracker.stop_thinking()
+    observer = _TuiObserver(
+        rt,
+        tracker,
+        md_streamer,
+        on_thinking_delta=on_thinking_delta,
+        on_steering=on_steering,
+    )
 
-    # Collector: reasoning text is persisted in assistant_dict (see
-    # agent_loop); forwarding to the tracker drives the Ctrl+T trace.
-    turn_reasoning: list[str] = []
-
-    def _on_thinking_delta(chunk: str) -> None:
-        turn_reasoning.append(chunk)
-        tracker.add_thinking_delta(chunk)
-        if on_thinking_delta is not None:
-            on_thinking_delta(chunk)
-
-    def _on_text_delta(chunk: str) -> None:
-        tracker.flush()
-        streamed_any[0] = True
-        if rt.plain_output:
-            sys.stdout.write(chunk)
-            sys.stdout.flush()
-        else:
-            md_streamer.feed(chunk)
-
-    def _on_tool_call(tc_id: str, code: str) -> None:
-        if streamed_any[0]:
-            if rt.plain_output:
-                sys.stdout.write("\n")
-                sys.stdout.flush()
-            else:
-                md_streamer.flush()
-            streamed_any[0] = False
-        pending_cells[tc_id] = (code, time.monotonic())
-        if rt.verbose or getattr(tracker, "show_details", False) or getattr(rt, "show_details", False):
-            tracker.flush()
-            _render_tool_call(code)
-        else:
-            tracker.start_tool(code)
-
-    def _on_tool_result(tc_id: str, res: CellResult) -> None:
-        code, started = pending_cells.pop(tc_id, ("", time.monotonic()))
-        duration = time.monotonic() - started
-        rt.cell_history.append((code, res, duration))
-        if rt.verbose or getattr(tracker, "show_details", False) or getattr(rt, "show_details", False):
-            _render_tool_result(res)
-        else:
-            tracker.add_tool_result(len(rt.cell_history), code, res, duration)
-
-    streamed_any[0] = False
     if own_tracker:
         printer.reset()
     cell_start_idx = len(rt.cell_history)
@@ -151,19 +196,12 @@ def _run_turn(
             max_context_tokens=rt.max_context_tokens,
             compact_reserve_tokens=rt.compact_reserve_tokens,
             keep_recent_tokens=rt.keep_recent_tokens,
-            on_tool_call=_on_tool_call,
-            on_tool_result=_on_tool_result,
-            on_compaction=lambda result: (tracker.flush(), _render_compaction(result)),
-            on_bash_notice=lambda n: (tracker.flush(), _render_bash_notice(n)),
-            on_status=_on_status,
-            on_text_delta=_on_text_delta,
-            on_thinking_delta=_on_thinking_delta,
+            observer=observer,
             usage_stats=rt.usage_stats,
             initial_prompt_tokens=rt.usage_stats.prompt_tokens,
             effort=rt.effort,
             abort_event=abort_event,
             steering_queue=steering_queue,
-            on_steering=on_steering,
         )
     finally:
         turn_stop.set()
@@ -172,7 +210,7 @@ def _run_turn(
         elif tracker is not None:
             tracker.flush()
         if rt.plain_output:
-            if streamed_any[0]:
+            if observer.streamed_any[0]:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
         else:
@@ -191,7 +229,7 @@ def _run_turn(
                                 unrecorded_ids.append(tc_id)
             for tc_id, (_, res, dur) in zip(unrecorded_ids[-len(new_cells):], new_cells):
                 rt.active_session.record_cell_meta(tc_id, ok=res.ok, duration_s=dur)
-    if not streamed_any[0] and answer:
+    if not observer.streamed_any[0] and answer:
         if rt.plain_output:
             sys.stdout.write(answer.rstrip() + "\n")
             sys.stdout.flush()

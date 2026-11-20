@@ -10,6 +10,7 @@ from prompt_toolkit.document import Document
 import io
 
 import pytest
+from conftest import RecordingObserver
 from rich.console import Console
 
 import quartz.cli.app as cli
@@ -100,8 +101,7 @@ def test_streaming_agent_loop_with_tool_call(tmp_path: Path) -> None:
 
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
-    deltas: list[str] = []
-    statuses: list[str | None] = []
+    observer = RecordingObserver()
     usage = TurnUsage()
     try:
         answer, msgs, pt = agent_loop(
@@ -111,14 +111,13 @@ def test_streaming_agent_loop_with_tool_call(tmp_path: Path) -> None:
             [{"role": "user", "content": "calc 6*7"}],
             kernel,
             stream=True,
-            on_text_delta=deltas.append,
-            on_status=statuses.append,
+            observer=observer,
             usage_stats=usage,
         )
         assert answer == "The answer is 42."
-        assert deltas == ["The answer ", "is 42."]
-        assert "Thinking..." in statuses
-        assert "Running ipython..." in statuses
+        assert observer.text_deltas == ["The answer ", "is 42."]
+        assert "Thinking..." in observer.statuses
+        assert "Running ipython..." in observer.statuses
         assert pt == 120
         assert usage.total_prompt_tokens == 240
         assert any(m.get("role") == "tool" and m.get("content") == "42" for m in msgs)
@@ -657,28 +656,25 @@ def test_run_turn_thought_line_separate_from_grouped_cells(
     monkeypatch.setattr(cli, "printer", test_printer)
 
     def _fake_agent_loop(*args, **kwargs):
-        on_status = kwargs["on_status"]
-        on_tool_call = kwargs["on_tool_call"]
-        on_tool_result = kwargs["on_tool_result"]
-        on_text_delta = kwargs["on_text_delta"]
+        observer = kwargs["observer"]
 
-        on_status("Thinking...")
-        on_status(None)
-        on_tool_call("tc_1", "x = 1")
-        on_status("Running ipython...")
-        on_tool_result("tc_1", CellResult(ok=True, stdout="", stderr="", result=None))
-        on_status(None)
+        observer.on_status("Thinking...")
+        observer.on_status(None)
+        observer.on_tool_call("tc_1", "x = 1")
+        observer.on_status("Running ipython...")
+        observer.on_tool_result("tc_1", CellResult(ok=True, stdout="", stderr="", result=None))
+        observer.on_status(None)
 
-        on_status("Thinking...")
-        on_status(None)
-        on_tool_call("tc_2", "y = 2")
-        on_status("Running ipython...")
-        on_tool_result("tc_2", CellResult(ok=True, stdout="", stderr="", result=None))
-        on_status(None)
+        observer.on_status("Thinking...")
+        observer.on_status(None)
+        observer.on_tool_call("tc_2", "y = 2")
+        observer.on_status("Running ipython...")
+        observer.on_tool_result("tc_2", CellResult(ok=True, stdout="", stderr="", result=None))
+        observer.on_status(None)
 
-        on_status("Thinking...")
-        on_status(None)
-        on_text_delta("All done.")
+        observer.on_status("Thinking...")
+        observer.on_status(None)
+        observer.on_text_delta("All done.")
         return "All done.", [], 10
 
     monkeypatch.setattr(cli, "agent_loop", _fake_agent_loop)
@@ -720,13 +716,12 @@ def test_run_turn_matches_out_of_order_tool_call_ids(
     monkeypatch.setattr(cli, "printer", test_printer)
 
     def _fake_agent_loop(*args, **kwargs):
-        on_tool_call = kwargs["on_tool_call"]
-        on_tool_result = kwargs["on_tool_result"]
-        on_tool_call("tc_first", "first_code = 1")
-        on_tool_call("tc_second", "second_code = 2")
+        observer = kwargs["observer"]
+        observer.on_tool_call("tc_first", "first_code = 1")
+        observer.on_tool_call("tc_second", "second_code = 2")
         # Return results in reverse order
-        on_tool_result("tc_second", CellResult(ok=True, stdout="two\n", stderr="", result=None))
-        on_tool_result("tc_first", CellResult(ok=True, stdout="one\n", stderr="", result=None))
+        observer.on_tool_result("tc_second", CellResult(ok=True, stdout="two\n", stderr="", result=None))
+        observer.on_tool_result("tc_first", CellResult(ok=True, stdout="one\n", stderr="", result=None))
         return "Done.", [], 10
 
     monkeypatch.setattr(cli, "agent_loop", _fake_agent_loop)

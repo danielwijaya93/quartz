@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from conftest import RecordingObserver
 
 from quartz.core.compact import compact_messages, strip_reasoning
 from quartz.kernel.client import KernelClient
@@ -48,7 +49,7 @@ def test_streaming_thinking_captured_and_callback_fired(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        deltas: list[str] = []
+        observer = RecordingObserver()
         client = _FakeClient(
             [
                 ThinkingDelta(text="plan..."),
@@ -64,12 +65,12 @@ def test_streaming_thinking_captured_and_callback_fired(tmp_path: Path) -> None:
             [{"role": "user", "content": "calc"}],
             kernel,
             stream=True,
-            on_thinking_delta=deltas.append,
+            observer=observer,
             usage_stats=usage,
         )
         assistant = [m for m in msgs if m.get("role") == "assistant"][0]
         assert assistant["reasoning"] == "plan... step 2"
-        assert deltas == ["plan...", " step 2"]
+        assert observer.thinking_deltas == ["plan...", " step 2"]
         # Tool result still delivered alongside reasoning
         assert any(m.get("role") == "tool" for m in msgs)
     finally:
@@ -102,7 +103,7 @@ def test_empty_thinking_deltas_ignored(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        deltas: list[str] = []
+        observer = RecordingObserver()
         client = _FakeClient(
             [
                 ThinkingDelta(text=""),
@@ -116,10 +117,10 @@ def test_empty_thinking_deltas_ignored(tmp_path: Path) -> None:
             [{"role": "user", "content": "hi"}],
             kernel,
             stream=True,
-            on_thinking_delta=deltas.append,
+            observer=observer,
             usage_stats=TurnUsage(),
         )
-        assert deltas == []
+        assert observer.thinking_deltas == []
         assistant = [m for m in msgs if m.get("role") == "assistant"][0]
         assert "reasoning" not in assistant
         assert assistant["content"] == "hello"
