@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import builtins
 import contextlib
 import contextvars
 import dataclasses
 import difflib
 import fnmatch
+import importlib
+import importlib.util
 import inspect
 import io
 import json
@@ -44,6 +47,101 @@ MAX_OUTPUT_CHARS = 128_000
 MAX_REPR_CHARS = 128_000
 MAX_VAR_BYTES = 16 * 1024 * 1024
 MAX_TOTAL_SNAPSHOT_BYTES = 256 * 1024 * 1024
+
+_AUTO_IMPORT_BLOCKLIST: frozenset[str] = frozenset(
+    {
+        "antigravity",
+        "this",
+        "test",
+        "__hello__",
+        "__phello__",
+        "idlelib",
+        "tkinter",
+        "turtle",
+        "turtledemo",
+    }
+)
+
+_LAZY_STDLIB_SYMBOLS: dict[str, tuple[str, str]] = {
+    "Counter": ("collections", "Counter"),
+    "defaultdict": ("collections", "defaultdict"),
+    "deque": ("collections", "deque"),
+    "OrderedDict": ("collections", "OrderedDict"),
+    "namedtuple": ("collections", "namedtuple"),
+    "dataclass": ("dataclasses", "dataclass"),
+    "timedelta": ("datetime", "timedelta"),
+    "timezone": ("datetime", "timezone"),
+    "StringIO": ("io", "StringIO"),
+    "BytesIO": ("io", "BytesIO"),
+    "SimpleNamespace": ("types", "SimpleNamespace"),
+    "ThreadPoolExecutor": ("concurrent.futures", "ThreadPoolExecutor"),
+    "ProcessPoolExecutor": ("concurrent.futures", "ProcessPoolExecutor"),
+    "partial": ("functools", "partial"),
+    "lru_cache": ("functools", "lru_cache"),
+    "Any": ("typing", "Any"),
+}
+
+
+def _collect_bound_names(tree: ast.AST) -> set[str]:
+    """Collect all names bound anywhere in an AST."""
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            bound.add(node.id)
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name:
+                bound.add(node.name)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            bound.add(node.name)
+            for arg in (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+            ):
+                bound.add(arg.arg)
+            if node.args.vararg:
+                bound.add(node.args.vararg.arg)
+            if node.args.kwarg:
+                bound.add(node.args.kwarg.arg)
+            for tp in getattr(node, "type_params", ()):
+                if hasattr(tp, "name"):
+                    bound.add(tp.name)
+        elif isinstance(node, ast.ClassDef):
+            bound.add(node.name)
+            for tp in getattr(node, "type_params", ()):
+                if hasattr(tp, "name"):
+                    bound.add(tp.name)
+        elif isinstance(node, ast.Lambda):
+            for arg in (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+            ):
+                bound.add(arg.arg)
+            if node.args.vararg:
+                bound.add(node.args.vararg.arg)
+            if node.args.kwarg:
+                bound.add(node.args.kwarg.arg)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name != "*":
+                    bound.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.MatchAs):
+            if node.name:
+                bound.add(node.name)
+        elif isinstance(node, ast.MatchStar):
+            if node.name:
+                bound.add(node.name)
+        elif isinstance(node, ast.MatchMapping):
+            if node.rest:
+                bound.add(node.rest)
+        elif hasattr(ast, "TypeAlias") and isinstance(node, ast.TypeAlias):
+            if isinstance(node.name, ast.Name):
+                bound.add(node.name.id)
+            for tp in getattr(node, "type_params", ()):
+                if hasattr(tp, "name"):
+                    bound.add(tp.name)
+    return bound
 
 _STDOUT_VAR: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar("quartz_stdout", default=None)
 _STDERR_VAR: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar("quartz_stderr", default=None)
@@ -268,6 +366,7 @@ class KernelWorker:
             "__builtins__": __builtins__,
             **self._default_bindings,
         }
+        self._auto_imported: dict[str, Any] = {}
         self._reserved_names = set(self._namespace.keys()) | {"_"}
         for h in self._loaded_helpers.infos.values():
             if h.source in ("global", "project") and hasattr(h.func, "__globals__"):
@@ -313,6 +412,45 @@ class KernelWorker:
             }
         )
 
+    def _auto_import_for_ast(self, tree: ast.AST) -> None:
+        """Lazily import unambiguous stdlib modules and symbols referenced in `tree`."""
+        bound_names = _collect_bound_names(tree) | set(self._namespace.keys()) | set(dir(builtins))
+
+        attr_accesses: list[tuple[str, str]] = []
+        bare_loads: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and isinstance(node.value.ctx, ast.Load):
+                attr_accesses.append((node.value.id, node.attr))
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                bare_loads.add(node.id)
+
+        for mod_name, attr_name in attr_accesses:
+            if mod_name in bound_names or mod_name in _AUTO_IMPORT_BLOCKLIST or mod_name not in sys.stdlib_module_names:
+                continue
+            try:
+                mod = importlib.import_module(mod_name)
+                if not hasattr(mod, attr_name):
+                    if importlib.util.find_spec(f"{mod_name}.{attr_name}") is not None:
+                        importlib.import_module(f"{mod_name}.{attr_name}")
+                if hasattr(mod, attr_name):
+                    self._namespace[mod_name] = mod
+                    self._auto_imported[mod_name] = mod
+                    bound_names.add(mod_name)
+            except Exception:
+                continue
+
+        for sym_name in bare_loads:
+            if sym_name in bound_names or sym_name not in _LAZY_STDLIB_SYMBOLS:
+                continue
+            mod_path, attr_name = _LAZY_STDLIB_SYMBOLS[sym_name]
+            try:
+                val = getattr(importlib.import_module(mod_path), attr_name)
+                self._namespace[sym_name] = val
+                self._auto_imported[sym_name] = val
+                bound_names.add(sym_name)
+            except Exception:
+                continue
+
     async def _exec_cell(self, cell_id: str, code: str) -> dict[str, Any]:
         self._active_cell_ids.add(cell_id)
         stdout_buf = io.StringIO()
@@ -327,6 +465,7 @@ class KernelWorker:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=SyntaxWarning)
                 tree = ast.parse(code, "<ipython>", "exec")
+                self._auto_import_for_ast(tree)
                 has_trailing_expr = bool(tree.body and isinstance(tree.body[-1], ast.Expr))
                 if has_trailing_expr:
                     last_expr = tree.body[-1]
@@ -406,7 +545,11 @@ class KernelWorker:
     def list_vars(self) -> dict[str, str]:
         vars_info: dict[str, str] = {}
         for name, val in self._namespace.items():
-            if (name in self._reserved_names and val is self._default_bindings.get(name)) or name.startswith("__"):
+            if (
+                (name in self._reserved_names and val is self._default_bindings.get(name))
+                or (name in self._auto_imported and val is self._auto_imported.get(name))
+                or name.startswith("__")
+            ):
                 continue
             vars_info[name] = type(val).__name__
         return vars_info
@@ -435,7 +578,11 @@ class KernelWorker:
 
         try:
             for name, val in list(self._namespace.items()):
-                if (name in self._reserved_names and val is self._default_bindings.get(name)) or name.startswith("__"):
+                if (
+                    (name in self._reserved_names and val is self._default_bindings.get(name))
+                    or (name in self._auto_imported and val is self._auto_imported.get(name))
+                    or name.startswith("__")
+                ):
                     continue
                 if isinstance(val, BashHandle):
                     skipped.append(f"{name} (running/process handle)")
