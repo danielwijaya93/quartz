@@ -14,7 +14,7 @@ type FormattedLine = list[StyleFragment]
 _SEP = " · "
 
 _STYLE_BRAND = "class:banner.brand bold"
-_STYLE_DIM = "class:banner.dim ansibrightblack"
+_STYLE_DIM = "class:banner.dim dim"
 _STYLE_MODEL = "class:banner.model bold ansicyan"
 _STYLE_CWD = "class:banner.cwd"
 _STYLE_METRIC = "class:banner.metric"
@@ -114,7 +114,8 @@ def _build_identity_groups(state: BannerState, cwd_text: str) -> list[FormattedL
         (_STYLE_BRAND, "quartz"),
         (_STYLE_DIM, f" v{state.version}"),
     ]
-    model_label = f"{state.model} ({state.effort})" if state.effort else state.model
+    show_effort = bool(state.effort) and not state.model.lower().endswith(f"-{state.effort.lower()}")
+    model_label = f"{state.model} ({state.effort})" if show_effort else state.model
     model_group: FormattedLine = [(_STYLE_MODEL, model_label)]
     cwd_group: FormattedLine = [(_STYLE_CWD, cwd_text)]
     return [brand_group, model_group, cwd_group]
