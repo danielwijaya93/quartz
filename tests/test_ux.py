@@ -984,30 +984,12 @@ def test_turn_progress_tracker_toolbar_provider() -> None:
     )
     tracker.start_thinking()
     grp = tracker._render_group()
-    assert len(grp.renderables) == 2
-    assert getattr(grp.renderables[-1], "plain", "") == toolbar_value
+    assert len(grp.renderables) == 1
+    assert not any(getattr(r, "plain", "") == toolbar_value for r in grp.renderables)
 
-    # When toolbar_provider returns None or empty string, no extra item is added
-    tracker_none = cli.TurnProgressTracker(
-        test_console,
-        test_printer,
-        toolbar_provider=lambda: None,
-    )
-    tracker_none.start_thinking()
-    grp_none = tracker_none._render_group()
-    assert len(grp_none.renderables) == 1
-
-    tracker_empty = cli.TurnProgressTracker(
-        test_console,
-        test_printer,
-        toolbar_provider=lambda: "",
-    )
-    tracker_empty.start_thinking()
-    grp_empty = tracker_empty._render_group()
-    assert len(grp_empty.renderables) == 1
-    # Verify toolbar is at the very bottom even with tools and input buffer
+    # Bottom toolbar is never appended even with tools and input buffer
     tracker.start_tool("read('file.py')")
     tracker.set_input_buffer("typing...")
     grp_multi = tracker._render_group()
-    assert getattr(grp_multi.renderables[-1], "plain", "") == toolbar_value
+    assert not any(getattr(r, "plain", "") == toolbar_value for r in grp_multi.renderables)
 

@@ -157,7 +157,6 @@ def _run_turn(
     from agent.ui import (
         MarkdownBlockStreamer,
         TurnProgressTracker,
-        _format_toolbar,
         _render_bash_notice,
         _render_compaction,
         _render_tool_call,
@@ -177,14 +176,6 @@ def _run_turn(
             active_printer,
             verbose=rt.verbose,
             plain_output=rt.plain_output,
-            toolbar_provider=lambda: _format_toolbar(
-                rt.model,
-                rt.effort,
-                rt.cwd,
-                rt.usage_stats,
-                rt.max_context_tokens,
-                getattr(rt.kernel, "running_bash_count", lambda: 0)(),
-            ),
         )
     turn_stop = threading.Event()
 
@@ -335,7 +326,6 @@ def _execute_interactive_turn(rt: _CLIRuntime) -> str:
     from agent.ui import (
         TurnProgressTracker,
         _MidTurnInputWatcher,
-        _format_toolbar,
         _format_turn_footer,
         _format_turn_timing,
     )
@@ -350,14 +340,6 @@ def _execute_interactive_turn(rt: _CLIRuntime) -> str:
         active_printer,
         verbose=rt.verbose,
         plain_output=rt.plain_output,
-        toolbar_provider=lambda: _format_toolbar(
-            rt.model,
-            rt.effort,
-            rt.cwd,
-            rt.usage_stats,
-            rt.max_context_tokens,
-            getattr(rt.kernel, "running_bash_count", lambda: 0)(),
-        ),
     )
 
     def _on_change(text: str) -> None:
@@ -411,10 +393,15 @@ def _execute_interactive_turn(rt: _CLIRuntime) -> str:
 
 
 def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
+    if not rt.plain_output and sys.stdin.isatty() and sys.stdout.isatty():
+        from agent.tui import QuartzTUI
+
+        QuartzTUI(rt, resumed=resumed).run()
+        return
+
     from prompt_toolkit import PromptSession
     from prompt_toolkit.history import FileHistory
     from prompt_toolkit.key_binding import KeyBindings
-    from prompt_toolkit.styles import Style
     from rich.markup import escape
     from rich.text import Text
 
@@ -423,7 +410,6 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
     from agent.images import build_user_content, extract_inline_image_mentions
     from agent.loop import TurnAborted, format_bash_done_events
     from agent.ui import (
-        _format_toolbar,
         _format_turn_footer,
         _render_bash_notice,
         _replay_session,
@@ -455,14 +441,12 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
 
     history_path = Path.home() / ".quartz" / "history"
     history_path.parent.mkdir(parents=True, exist_ok=True)
-    prompt_style = Style.from_dict({"bottom-toolbar": "noreverse ansibrightblack"})
     prompt_session: PromptSession[str] = PromptSession(
         history=FileHistory(str(history_path)),
         completer=AgentCompleter(rt.cwd),
         complete_while_typing=True,
         key_bindings=kb,
         prompt_continuation="▌ ",
-        style=prompt_style,
     )
 
     leftover_input = ""
@@ -486,12 +470,8 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
             prompt_default = leftover_input
             leftover_input = ""
             try:
-                toolbar = _format_toolbar(
-                    rt.model, rt.effort, rt.cwd, rt.usage_stats, rt.max_context_tokens, bg_count
-                )
                 user_input = prompt_session.prompt(
                     "\n▌ ",
-                    bottom_toolbar=toolbar,
                     default=prompt_default,
                 ).strip()
             except (EOFError, KeyboardInterrupt):

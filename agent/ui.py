@@ -13,6 +13,7 @@ import threading
 import time
 import tty
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +33,91 @@ from agent.compact import CompactionReason, CompactionResult
 from agent.kernel_client import CellResult
 from agent.loop import TurnUsage
 
-console = Console()
+_active_tui: Any | None = None
+_active_tui_lock = threading.RLock()
+
+
+def set_active_tui(tui: Any | None) -> None:
+    """Register or clear the active full-screen QuartzTUI instance."""
+    global _active_tui
+    with _active_tui_lock:
+        _active_tui = tui
+
+
+def get_active_tui() -> Any | None:
+    """Return the active QuartzTUI instance, if any."""
+    with _active_tui_lock:
+        return _active_tui
+
+
+class _TUIStatus:
+    """Context manager routing `console.status(...)` to the active QuartzTUI."""
+
+    def __init__(self, tui: Any, status: Any) -> None:
+        self._tui = tui
+        self._status = status
+
+    def __enter__(self) -> _TUIStatus:
+        self._tui.set_transient_status(self._status)
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self._tui.set_transient_status(None)
+
+    def update(self, status: Any = None, **_: Any) -> None:
+        if status is not None:
+            self._status = status
+            self._tui.set_transient_status(status)
+
+
+class _TUIAwareConsole(Console):
+    """Rich Console that routes output to the active QuartzTUI when running."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._capture_state = threading.local()
+
+    def _is_capturing(self) -> bool:
+        return getattr(self._capture_state, "depth", 0) > 0
+
+    @contextmanager
+    def capture(self) -> Any:
+        depth = getattr(self._capture_state, "depth", 0)
+        self._capture_state.depth = depth + 1
+        try:
+            with super().capture() as cap:
+                yield cap
+        finally:
+            self._capture_state.depth = depth
+
+    @property
+    def width(self) -> int:
+        if not self._is_capturing():
+            tui = get_active_tui()
+            if tui is not None:
+                return max(20, int(tui.content_width))
+        return super().width
+
+    @width.setter
+    def width(self, value: int) -> None:
+        Console.width.fset(self, value)  # type: ignore[misc]
+
+    def print(self, *objects: Any, **kwargs: Any) -> None:
+        if not self._is_capturing():
+            tui = get_active_tui()
+            if tui is not None:
+                tui.append_console_print(*objects, **kwargs)
+                return
+        super().print(*objects, **kwargs)
+
+    def status(self, status: Any, **kwargs: Any) -> Any:
+        tui = get_active_tui()
+        if tui is not None:
+            return _TUIStatus(tui, status)
+        return super().status(status, **kwargs)
+
+
+console = _TUIAwareConsole()
 
 
 class MarkdownBlockStreamer:
@@ -522,6 +607,7 @@ class TurnProgressTracker:
         verbose: bool = False,
         plain_output: bool = False,
         toolbar_provider: Callable[[], str | None] | None = None,
+        live_renderer: Callable[[Group | None], None] | None = None,
     ) -> None:
         self.console = console
         self.printer = printer
@@ -531,7 +617,12 @@ class TurnProgressTracker:
         self.toolbar_provider = toolbar_provider
         self.lock = threading.RLock()
 
-        self.screen = InlineScreen(console)
+        if live_renderer is None:
+            tui = get_active_tui()
+            if tui is not None:
+                live_renderer = tui.set_live_renderable
+        self._live_renderer = live_renderer
+        self.screen = InlineScreen(console, enabled=False if self._live_renderer is not None else None)
         self.step_history: list[tuple[str, Any]] = []
         self.thinking_intervals: list[float] = []
         self.active_thinking_start: float | None = None
@@ -548,7 +639,12 @@ class TurnProgressTracker:
 
     def _before_print(self) -> None:
         with self.lock:
-            if not self.plain_output and not self.verbose and self.screen.is_active():
+            if (
+                not self.plain_output
+                and not self.verbose
+                and self._live_renderer is None
+                and self.screen.is_active()
+            ):
                 self.screen.clear()
 
     def _after_print(self) -> None:
@@ -573,7 +669,11 @@ class TurnProgressTracker:
     def _render_current(self) -> None:
         if self.plain_output or self.verbose:
             return
-        lines = _render_renderable_to_lines(self.console, self._render_group())
+        group = self._render_group()
+        if self._live_renderer is not None:
+            self._live_renderer(group if group.renderables else None)
+            return
+        lines = _render_renderable_to_lines(self.console, group)
         self.screen.render(lines)
 
     def _render_group(self) -> Group:
@@ -607,11 +707,6 @@ class TurnProgressTracker:
                 else "..." + self.input_buffer[-(max_buf_len - 3) :]
             )
             items.append(Text(f"▌ {displayed}█", style="cyan"))
-
-        if self.toolbar_provider is not None:
-            bar = self.toolbar_provider()
-            if bar:
-                items.append(Text(bar, style="dim"))
 
         return Group(*items)
 
@@ -660,7 +755,10 @@ class TurnProgressTracker:
         with self.lock:
             self.input_buffer = ""
             self.steering_messages.clear()
-            self.screen.clear()
+            if self._live_renderer is not None:
+                self._live_renderer(None)
+            else:
+                self.screen.clear()
             if self.printer.before_print == self._before_print:
                 self.printer.before_print = None
             if self.printer.after_print == self._after_print:
@@ -724,7 +822,10 @@ class TurnProgressTracker:
                 self._render_current()
 
     def _flush_chunk(self) -> None:
-        self.screen.clear()
+        if self._live_renderer is not None:
+            self._live_renderer(None)
+        else:
+            self.screen.clear()
 
         total_thought = sum(self.thinking_intervals)
         entries = list(self.tool_entries)
@@ -786,6 +887,9 @@ def _pick_option(
     title: str, options: list[tuple[str, str]], current: str | None = None
 ) -> str | None:
     """Generic inline arrow-key picker (Up/Down, Enter, Esc) returning the chosen value."""
+    tui = get_active_tui()
+    if tui is not None:
+        return tui.pick_option(title, options, current=current)
     selected_idx = [0]
     if current:
         for i, (val, _) in enumerate(options):
@@ -842,6 +946,15 @@ def _pick_searchable_option(
     max_visible: int = 15,
 ) -> str | None:
     """Filterable inline picker for large option lists (type to filter, ↑/↓, Enter, Esc)."""
+    tui = get_active_tui()
+    if tui is not None:
+        return tui.pick_searchable_option(
+            title,
+            options,
+            current=current,
+            allow_custom=allow_custom,
+            max_visible=max_visible,
+        )
     query = [""]
     selected_idx = [0]
 
@@ -946,6 +1059,9 @@ def _pick_searchable_option(
 
 def _prompt_input(label: str, *, secret: bool = False, default: str = "") -> str | None:
     """Prompt for a single line of text (optionally masked); returns None on cancel."""
+    tui = get_active_tui()
+    if tui is not None:
+        return tui.prompt_input(label, secret=secret, default=default)
     try:
         val = pt_prompt(label, is_password=secret, default=default)
     except (KeyboardInterrupt, EOFError):
