@@ -12,8 +12,6 @@ from prompt_toolkit.document import Document
 
 from agent.commands import COMMAND_REGISTRY
 
-SLASH_COMMANDS: dict[str, str] = COMMAND_REGISTRY.to_completion_dict()
-
 _IGNORE_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", ".mypy_cache"}
 
 

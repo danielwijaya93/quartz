@@ -31,7 +31,6 @@ if TYPE_CHECKING:
         _fmt_k,
         _fmt_stopwatch,
         _fmt_thought_duration,
-        _format_toolbar,
         _format_turn_footer,
         _format_turn_timing,
         _parse_expand_range,
@@ -63,7 +62,6 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "_fmt_k": ("agent.ui", "_fmt_k"),
     "_fmt_stopwatch": ("agent.ui", "_fmt_stopwatch"),
     "_fmt_thought_duration": ("agent.ui", "_fmt_thought_duration"),
-    "_format_toolbar": ("agent.ui", "_format_toolbar"),
     "_format_turn_footer": ("agent.ui", "_format_turn_footer"),
     "_format_turn_timing": ("agent.ui", "_format_turn_timing"),
     "_handle_auth_cli": ("agent.commands", "_handle_auth_cli"),
@@ -121,7 +119,6 @@ __all__ = [
     "_fmt_k",
     "_fmt_stopwatch",
     "_fmt_thought_duration",
-    "_format_toolbar",
     "_format_turn_footer",
     "_format_turn_timing",
     "_handle_auth_cli",
@@ -183,7 +180,7 @@ def _run_turn(
         while not turn_stop.wait(0.1):
             tracker.tick()
 
-    if not rt.plain_output and not rt.verbose:
+    if not rt.plain_output and not rt.verbose and getattr(tracker, "_live_renderer", None) is None:
         threading.Thread(target=_tick_tracker, daemon=True).start()
 
     def _on_status(label: str | None) -> None:
@@ -452,6 +449,8 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
     leftover_input = ""
     while True:
         bg_count = rt.kernel.running_bash_count()
+        from_prompt_wakeup = False
+        prompt_default = ""
         if rt.kernel.has_pending_events():
             user_input = _WAKEUP_SENTINEL
         else:
@@ -474,6 +473,7 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
                     "\n▌ ",
                     default=prompt_default,
                 ).strip()
+                from_prompt_wakeup = user_input == _WAKEUP_SENTINEL
             except (EOFError, KeyboardInterrupt):
                 active_console.print("\n[dim]Exiting.[/dim]")
                 break
@@ -483,7 +483,8 @@ def _run_interactive(rt: _CLIRuntime, resumed: bool) -> None:
                     watcher_thread.join(timeout=0.5)
 
         if user_input == _WAKEUP_SENTINEL:
-            leftover_input = prompt_default
+            if from_prompt_wakeup:
+                leftover_input = prompt_default
             events = rt.kernel.drain_events()
             notice = format_bash_done_events(events)
             if not notice:
