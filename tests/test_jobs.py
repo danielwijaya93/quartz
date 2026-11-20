@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from quartz.actions import describe_job_label
+from quartz.kernel.actions import describe_job_label
 from quartz.banner import BannerState, format_banner_plain
 from quartz.commands import _handle_slash_command
-from quartz.kernel_client import KernelClient
-from quartz.loop import TurnUsage
-from quartz.runtime import AgentRuntime
+from quartz.kernel.client import KernelClient
+from quartz.core.loop import TurnUsage
+from quartz.core.runtime import AgentRuntime
 import quartz.ui as ui
 from quartz.ui import BlockPrinter
 from rich.console import Console
@@ -229,7 +229,7 @@ def test_jobs_slash_command_lists_and_empty(tmp_path: Path, monkeypatch: pytest.
     buf = io.StringIO()
     test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
     test_printer = BlockPrinter(test_console)
-    import quartz.cli as cli
+    import quartz.cli.app as cli
 
     monkeypatch.setattr(cli, "printer", test_printer)
     rt = AgentRuntime(

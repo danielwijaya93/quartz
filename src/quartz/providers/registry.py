@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from quartz.provider import LLMProvider
+    from quartz.providers.base import LLMProvider
 
-from quartz.auth_store import (
+from quartz.auth.store import (
     ApiKeyCredentials,
     delete_provider_auth,
     list_logged_in_providers,
@@ -288,7 +288,7 @@ def discover_models(
         api_key, base_url, _ = resolve_provider_credentials(provider)
         if not api_key:
             return fallback, "No API key configured"
-        from quartz.openai_client import OpenAIProvider
+        from quartz.providers.openai import OpenAIProvider
 
         owned_client = OpenAIProvider(api_key=api_key, base_url=base_url, timeout=timeout_s)
         client = owned_client
@@ -369,7 +369,7 @@ def discover_model_efforts(
     if spec is not None and spec.backend == "openai":
         api_key, base_url, _ = resolve_provider_credentials(provider)
         if api_key:
-            from quartz.openai_client import OpenAIProvider
+            from quartz.providers.openai import OpenAIProvider
 
             client: Any = None
             try:

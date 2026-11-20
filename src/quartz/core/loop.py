@@ -10,7 +10,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from quartz.compact import (
+from quartz.core.compact import (
     DEFAULT_KEEP_RECENT_TOKENS,
     CompactionReason,
     CompactionResult,
@@ -18,8 +18,8 @@ from quartz.compact import (
     estimate_context_tokens,
 )
 from quartz.errors import ContextOverflowError
-from quartz.kernel_client import CellResult, KernelClient
-from quartz.provider import (
+from quartz.kernel.client import CellResult, KernelClient
+from quartz.providers.base import (
     CompletionResult,
     LLMProvider,
     TextDelta,

@@ -6,9 +6,9 @@ import io
 
 from rich.console import Console
 
-import quartz.cli as cli
+import quartz.cli.app as cli
 import quartz.ui as ui
-from quartz.kernel_client import CellResult
+from quartz.kernel.client import CellResult
 from quartz.ui import BlockPrinter
 
 
@@ -95,7 +95,7 @@ def test_replay_renders_reasoning_and_details(monkeypatch) -> None:
     buf = io.StringIO()
     test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
     test_printer = BlockPrinter(test_console)
-    import quartz.cli as cli_mod
+    import quartz.cli.app as cli_mod
 
     monkeypatch.setattr(cli_mod, "printer", test_printer)
     test_printer.reset()

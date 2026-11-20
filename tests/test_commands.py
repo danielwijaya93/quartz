@@ -17,13 +17,13 @@ from quartz.commands import (
     SlashCommand,
     _handle_slash_command,
 )
-from quartz.compact import CompactionReason, CompactionResult
+from quartz.core.compact import CompactionReason, CompactionResult
 from quartz.completer import AgentCompleter
 from quartz.errors import CredentialError
-from quartz.kernel_client import CellResult
-from quartz.loop import TurnUsage
-from quartz.runtime import AgentRuntime
-from quartz.session import Session
+from quartz.kernel.client import CellResult
+from quartz.core.loop import TurnUsage
+from quartz.core.runtime import AgentRuntime
+from quartz.core.session import Session
 
 
 def test_command_registry_registration_and_dispatch() -> None:
@@ -185,7 +185,7 @@ def test_real_runtime_cmd_compact(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
             estimated_tokens_after=40,
         )
 
-    monkeypatch.setattr("quartz.runtime.compact_messages", _fake_compact_messages)
+    monkeypatch.setattr("quartz.core.runtime.compact_messages", _fake_compact_messages)
 
     assert _handle_slash_command(rt, "/compact keep key facts") is False
     assert rt.messages == compacted_msgs
@@ -268,7 +268,7 @@ def test_real_runtime_cmd_model_switch_updates_max_context_tokens(
         "quartz.commands._pick_searchable_option",
         lambda title, opts, current=None, allow_custom=True: "meta/muse-ember",
     )
-    monkeypatch.setattr("quartz.models.policy_efforts", lambda p, m: ["high"])
+    monkeypatch.setattr("quartz.providers.registry.policy_efforts", lambda p, m: ["high"])
 
     new_client = SimpleNamespace()
 

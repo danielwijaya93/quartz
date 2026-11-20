@@ -11,12 +11,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
 
-from quartz.compact import DEFAULT_KEEP_RECENT_TOKENS
-from quartz.images import content_to_text
-from quartz.kernel_client import CellResult, KernelClient
-from quartz.loop import TurnAborted, TurnUsage, agent_loop
-from quartz.prompt import build_system_prompt
-from quartz.session import Session
+from quartz.core.compact import DEFAULT_KEEP_RECENT_TOKENS
+from quartz.core.images import content_to_text
+from quartz.kernel.client import CellResult, KernelClient
+from quartz.core.loop import TurnAborted, TurnUsage, agent_loop
+from quartz.core.prompt import build_system_prompt
+from quartz.core.session import Session
 
 PROTOCOL_VERSION = 1
 

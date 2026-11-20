@@ -73,7 +73,7 @@ def _has_star_import(tree: ast.AST) -> bool:
 
 def _allowed_names(path: Path) -> frozenset[str]:
     if path.name == "helpers.py" and path.parent.name == ".quartz":
-        from quartz.helpers import BUILTIN_HELPERS, PROTECTED_NAMES
+        from quartz.kernel.helpers import BUILTIN_HELPERS, PROTECTED_NAMES
 
         return BUILTIN_NAMES | frozenset(BUILTIN_HELPERS) | PROTECTED_NAMES
     return BUILTIN_NAMES

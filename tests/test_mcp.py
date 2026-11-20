@@ -6,10 +6,10 @@ import json
 import sys
 from pathlib import Path
 
-from quartz.subcommands import _handle_mcp_cli
-from quartz.kernel_client import KernelClient
-from quartz.mcp_client import add_mcp_server, load_mcp_servers, remove_mcp_server
-from quartz.prompt import build_system_prompt
+from quartz.cli.subcommands import _handle_mcp_cli
+from quartz.kernel.client import KernelClient
+from quartz.mcp.client import add_mcp_server, load_mcp_servers, remove_mcp_server
+from quartz.core.prompt import build_system_prompt
 
 DEMO_MCP_SERVER = '''
 from mcp.server.mcpserver import MCPServer
@@ -119,7 +119,7 @@ def test_mcp_http_auth_uses_read_timeout_300(tmp_path: Path, monkeypatch) -> Non
     import httpx2
     import mcp
     import mcp.client.streamable_http as streamable_http
-    from quartz.mcp_client import MCPManager
+    from quartz.mcp.client import MCPManager
 
     captured: dict[str, object] = {}
 
@@ -196,7 +196,7 @@ def test_project_mcp_config_overrides_global(tmp_path: Path, monkeypatch) -> Non
 def test_save_mcp_tool_cache_is_atomic_and_private(tmp_path: Path) -> None:
     import stat
 
-    from quartz.mcp_client import load_mcp_tool_cache, save_mcp_tool_cache
+    from quartz.mcp.client import load_mcp_tool_cache, save_mcp_tool_cache
 
     cache = tmp_path / "sub" / "cache.json"
     save_mcp_tool_cache({"s": [{"name": "t", "args": []}]}, cache)
@@ -221,7 +221,7 @@ class _FakeSession:
 
 
 def _manager_with(session: _FakeSession, tmp_path: Path, timeout: float | None = None):
-    from quartz.mcp_client import MCPManager
+    from quartz.mcp.client import MCPManager
 
     mgr = MCPManager(cwd=tmp_path)
     spec: dict = {"command": "x"}

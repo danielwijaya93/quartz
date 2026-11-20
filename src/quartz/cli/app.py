@@ -19,26 +19,26 @@ from rich.text import Text
 from quartz.commands import _handle_slash_command
 from quartz.errors import CredentialError, EndpointConfigError
 from quartz.settings import load_settings
-from quartz.images import (
+from quartz.core.images import (
     ImageAttachment,
     build_user_content,
     extract_inline_image_mentions,
     load_image_file,
 )
 from quartz.interactive import InteractiveDock
-from quartz.kernel_client import CellResult, KernelClient
-from quartz.loop import (
+from quartz.kernel.client import CellResult, KernelClient
+from quartz.core.loop import (
     TurnAborted,
     TurnUsage,
     agent_loop,
     drain_bash_events,
     format_bash_done_events,
 )
-from quartz.models import PROVIDERS, resolve_context_tokens
-from quartz.prompt import build_system_prompt
-from quartz.runtime import AgentRuntime
-from quartz.session import Session
-from quartz.subcommands import _handle_auth_cli, _handle_mcp_cli, build_provider
+from quartz.providers.registry import PROVIDERS, resolve_context_tokens
+from quartz.core.prompt import build_system_prompt
+from quartz.core.runtime import AgentRuntime
+from quartz.core.session import Session
+from quartz.cli.subcommands import _handle_auth_cli, _handle_mcp_cli, build_provider
 from quartz.ui import (
     MarkdownBlockStreamer,
     TurnProgressTracker,
@@ -493,7 +493,7 @@ def main() -> None:
         parser.error("--fork requires -r <session-id> (or -c)")
 
     if args.acp:
-        from quartz.acp import ACPServer
+        from quartz.cli.acp import ACPServer
 
         _settings = load_settings()
         compact_reserve_tokens = _settings.compact_reserve_tokens

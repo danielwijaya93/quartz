@@ -47,7 +47,7 @@ class Settings:
 def _config_path(path: Path | None = None) -> Path:
     if path is not None:
         return path
-    from quartz.models import config_file_path
+    from quartz.providers.registry import config_file_path
 
     return config_file_path()
 

@@ -8,17 +8,17 @@ import warnings
 from pathlib import Path
 from typing import Any
 
-from quartz.compact import (
+from quartz.core.compact import (
     CompactionResult,
     compact_messages,
     estimate_context_tokens,
     estimate_text_tokens,
 )
-from quartz.images import ImageAttachment
-from quartz.kernel_client import CellResult, KernelClient
-from quartz.loop import TurnUsage
-from quartz.provider import LLMProvider
-from quartz.session import Session
+from quartz.core.images import ImageAttachment
+from quartz.kernel.client import CellResult, KernelClient
+from quartz.core.loop import TurnUsage
+from quartz.providers.base import LLMProvider
+from quartz.core.session import Session
 
 
 @dataclasses.dataclass

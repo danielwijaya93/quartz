@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from quartz.compact import compact_messages, strip_reasoning
-from quartz.kernel_client import KernelClient
-from quartz.loop import TurnUsage, agent_loop
-from quartz.provider import TextDelta, ThinkingDelta, ToolCallDelta, Usage, UsageEvent
-from quartz.session import Session
+from quartz.core.compact import compact_messages, strip_reasoning
+from quartz.kernel.client import KernelClient
+from quartz.core.loop import TurnUsage, agent_loop
+from quartz.providers.base import TextDelta, ThinkingDelta, ToolCallDelta, Usage, UsageEvent
+from quartz.core.session import Session
 
 
 class _FakeStream:
@@ -149,7 +149,7 @@ def test_compact_messages_strips_reasoning() -> None:
             assert all(
                 "reasoning" not in m for m in messages
             ), "reasoning must not be sent to summarizer"
-            from quartz.provider import CompletionResult
+            from quartz.providers.base import CompletionResult
 
             return CompletionResult(text="summary")
 
@@ -189,7 +189,7 @@ def test_replay_ignores_reasoning_without_crashing() -> None:
 
     from rich.console import Console
 
-    import quartz.cli as cli
+    import quartz.cli.app as cli
     from quartz.ui import BlockPrinter, _replay_session
 
     buf = io.StringIO()

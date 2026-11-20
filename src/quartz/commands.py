@@ -11,9 +11,9 @@ from rich.panel import Panel
 from rich.text import Text
 
 from quartz.errors import CredentialError, EndpointConfigError
-from quartz.images import load_clipboard_image, load_image_file
-from quartz.loop import TurnUsage
-from quartz.models import (
+from quartz.core.images import load_clipboard_image, load_image_file
+from quartz.core.loop import TurnUsage
+from quartz.providers.registry import (
     PROVIDERS,
     config_file_path,
     discover_models,
@@ -29,9 +29,9 @@ from quartz.settings import (
     settings_as_dict,
     validate_tokens,
 )
-from quartz.runtime import AgentRuntime
-from quartz.session import Session
-from quartz.subcommands import (
+from quartz.core.runtime import AgentRuntime
+from quartz.core.session import Session
+from quartz.cli.subcommands import (
     _login_provider,
     _logout_provider,
     _provider_ready,
@@ -223,7 +223,7 @@ def _cmd_model(rt: AgentRuntime, arg: str) -> bool | None:
     else:
         picked_model = models[0]
 
-    from quartz.models import policy_efforts, resolve_effort
+    from quartz.providers.registry import policy_efforts, resolve_effort
 
     effort_choices = policy_efforts(picked_provider, picked_model) or list(pspec.efforts)
     effort_opts = [(e, e) for e in effort_choices]
@@ -407,7 +407,7 @@ def _cmd_vars(rt: AgentRuntime, arg: str) -> bool | None:
 )
 def _cmd_helpers(rt: AgentRuntime, arg: str) -> bool | None:
     del arg
-    from quartz.helpers import load_helpers
+    from quartz.kernel.helpers import load_helpers
     from rich.table import Table
 
     if rt.kernel is not None:
@@ -661,7 +661,7 @@ def _cmd_jobs(rt: AgentRuntime, arg: str) -> bool | None:
     if not jobs:
         _active_printer().block(Text("No background jobs running.", style="dim"))
         return False
-    from quartz.actions import describe_job_label
+    from quartz.kernel.actions import describe_job_label
     from quartz.ui import _fmt_stopwatch
 
     for job in jobs:

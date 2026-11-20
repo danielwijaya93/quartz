@@ -8,8 +8,8 @@ import re
 import sys
 from pathlib import Path
 
-from quartz.helpers import format_helpers_for_prompt, load_helpers
-from quartz.mcp_client import load_mcp_servers, load_mcp_tool_cache
+from quartz.kernel.helpers import format_helpers_for_prompt, load_helpers
+from quartz.mcp.client import load_mcp_servers, load_mcp_tool_cache
 
 PROMPT_HEADER = """# Quartz
 

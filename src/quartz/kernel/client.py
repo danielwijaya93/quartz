@@ -72,13 +72,13 @@ class KernelClient:
         self._running_bash_jobs.clear()
         self._stderr_tail.clear()
         env = os.environ.copy()
-        # Ensure the package root is importable even if cwd differs
-        repo_root = str(Path(__file__).resolve().parent.parent)
+        # Ensure the package root (`src/`) is importable even if cwd differs
+        pkg_root = str(Path(__file__).resolve().parent.parent.parent)
         existing_pp = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = f"{repo_root}{os.pathsep}{existing_pp}" if existing_pp else repo_root
+        env["PYTHONPATH"] = f"{pkg_root}{os.pathsep}{existing_pp}" if existing_pp else pkg_root
 
         self._proc = subprocess.Popen(
-            [sys.executable, "-u", "-m", "quartz.kernel_worker"],
+            [sys.executable, "-u", "-m", "quartz.kernel.worker"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

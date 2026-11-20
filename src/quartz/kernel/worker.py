@@ -34,14 +34,14 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from quartz.helpers import (
+from quartz.kernel.helpers import (
     _IMAGES_VAR,
     _record_cell_image,
     _truncate,
     load_helpers,
 )
-from quartz.mcp_client import MCPManager
-from quartz.pycheck import unresolved_global_names
+from quartz.mcp.client import MCPManager
+from quartz.kernel.pycheck import unresolved_global_names
 
 MAX_OUTPUT_CHARS = 128_000
 MAX_REPR_CHARS = 128_000

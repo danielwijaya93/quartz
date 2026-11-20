@@ -10,9 +10,9 @@ from types import SimpleNamespace
 import pytest
 
 from quartz.errors import ContextOverflowError
-from quartz.kernel_client import KernelClient
-from quartz.loop import TurnAborted, agent_loop
-from quartz.provider import CompletionResult, TextDelta, Usage, UsageEvent
+from quartz.kernel.client import KernelClient
+from quartz.core.loop import TurnAborted, agent_loop
+from quartz.providers.base import CompletionResult, TextDelta, Usage, UsageEvent
 
 
 class _FakeStream:

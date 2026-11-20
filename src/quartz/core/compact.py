@@ -16,10 +16,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from quartz.provider import LLMProvider
+    from quartz.providers.base import LLMProvider
 
-from quartz.images import content_to_text
-from quartz.kernel_client import KernelClient
+from quartz.core.images import content_to_text
+from quartz.kernel.client import KernelClient
 
 COMPACT_SYSTEM_PROMPT = (
     "You are summarizing an earlier portion of a coding agent's conversation. "

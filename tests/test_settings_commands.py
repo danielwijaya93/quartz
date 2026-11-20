@@ -11,9 +11,9 @@ import pytest
 
 import quartz.commands as commands
 from quartz.commands import _handle_slash_command
-from quartz.loop import TurnUsage
-from quartz.runtime import AgentRuntime
-from quartz.session import Session
+from quartz.core.loop import TurnUsage
+from quartz.core.runtime import AgentRuntime
+from quartz.core.session import Session
 
 
 def _make_rt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AgentRuntime:

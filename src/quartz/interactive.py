@@ -44,7 +44,7 @@ from quartz.ui import (
 )
 
 if TYPE_CHECKING:
-    from quartz.runtime import AgentRuntime
+    from quartz.core.runtime import AgentRuntime
 
 
 class _CompletionsControl(UIControl):
@@ -411,7 +411,7 @@ class InteractiveDock:
         if status is not None:
             return self._render_ansi_fragments(status)
         if jobs:
-            from quartz.actions import describe_job_label
+            from quartz.kernel.actions import describe_job_label
             from quartz.ui import _fmt_stopwatch, _spinner_frame
 
             lines: list[str] = []
@@ -689,7 +689,7 @@ class InteractiveDock:
 
     def _handle_submitted_idle(self, text: str) -> None:
         from quartz.commands import _handle_slash_command
-        from quartz.images import build_user_content, extract_inline_image_mentions
+        from quartz.core.images import build_user_content, extract_inline_image_mentions
 
         cmd_res = _handle_slash_command(self.rt, text)
         if cmd_res is True:
@@ -710,8 +710,8 @@ class InteractiveDock:
         self._execute_dock_turn()
 
     def _execute_dock_turn(self) -> None:
-        from quartz.cli import _run_turn
-        from quartz.loop import TurnAborted
+        from quartz.cli.app import _run_turn
+        from quartz.core.loop import TurnAborted
         from quartz.ui import TurnProgressTracker, console
 
         active_printer = _active_printer()
@@ -804,7 +804,7 @@ class InteractiveDock:
             self._invalidate()
 
     def _bg_watcher_loop(self) -> None:
-        from quartz.loop import drain_bash_events
+        from quartz.core.loop import drain_bash_events
 
         while not self._stop_event.is_set():
             self._refresh_bg_count()

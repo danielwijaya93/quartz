@@ -12,8 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from quartz.images import content_to_text
-from quartz.kernel_client import KernelClient
+from quartz.core.images import content_to_text
+from quartz.kernel.client import KernelClient
 
 
 def default_sessions_dir() -> Path:

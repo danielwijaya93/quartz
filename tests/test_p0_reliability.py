@@ -14,14 +14,14 @@ from typing import Any
 import pytest
 
 from quartz.commands import _cmd_compact
-from quartz.runtime import AgentRuntime as _CLIRuntime
-from quartz.compact import _serialize_for_summary, clear_old_tool_results
+from quartz.core.runtime import AgentRuntime as _CLIRuntime
+from quartz.core.compact import _serialize_for_summary, clear_old_tool_results
 from quartz.errors import ProviderError
-from quartz.kernel_client import KernelClient
-from quartz.loop import TurnAborted, TurnUsage, agent_loop
-from quartz.models import resolve_provider_credentials
-from quartz.provider import CompletionResult, TextDelta, Usage, UsageEvent
-from quartz.session import Session
+from quartz.kernel.client import KernelClient
+from quartz.core.loop import TurnAborted, TurnUsage, agent_loop
+from quartz.providers.registry import resolve_provider_credentials
+from quartz.providers.base import CompletionResult, TextDelta, Usage, UsageEvent
+from quartz.core.session import Session
 
 
 class _FakeStream:

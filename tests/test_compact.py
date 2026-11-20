@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from quartz.compact import (
+from quartz.core.compact import (
     CLEARED_TOOL_PLACEHOLDER,
     CompactionReason,
     _find_safe_split_index,
@@ -17,7 +17,7 @@ from quartz.compact import (
     message_tokens,
 )
 from quartz.errors import ContextOverflowError, ProviderError, is_context_overflow
-from quartz.loop import TurnAborted, agent_loop
+from quartz.core.loop import TurnAborted, agent_loop
 
 
 # --------------------------------------------------------------------------- #
@@ -219,7 +219,7 @@ def test_is_context_overflow_ignores_unrelated_errors(status: int, body: str) ->
 
 
 def _text_turn_response(text: str) -> Any:
-    from quartz.provider import CompletionResult, Usage
+    from quartz.providers.base import CompletionResult, Usage
 
     return CompletionResult(text=text, tool_calls=[], usage=Usage())
 
@@ -326,8 +326,8 @@ def test_render_compaction_distinguishes_summary_from_clearing(monkeypatch: Any)
 
     from rich.console import Console
 
-    import quartz.cli as cli
-    from quartz.compact import CompactionReason, CompactionResult
+    import quartz.cli.app as cli
+    from quartz.core.compact import CompactionReason, CompactionResult
     from quartz.ui import BlockPrinter, _render_compaction
 
     buf = io.StringIO()

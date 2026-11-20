@@ -6,13 +6,13 @@ from typing import Any
 
 import pytest
 
-import quartz.models as models
-from quartz.models import (
+import quartz.providers.registry as models
+from quartz.providers.registry import (
     DEFAULT_CONTEXT_TOKENS,
     PROVIDERS,
     resolve_context_tokens,
 )
-from quartz.openai_client import ModelDetails, parse_model_detail, parse_model_details
+from quartz.providers.openai import ModelDetails, parse_model_detail, parse_model_details
 
 
 class _DetailsClient:
@@ -200,8 +200,8 @@ def test_max_context_tokens_env_no_longer_affects_resolution(
     assert resolve_context_tokens("openai", "unknown-model") == 128_000
 
     # And the CLI budget helper no longer reads it either.
-    from quartz.cli import _context_budget_from_settings
-    from quartz.compact import DEFAULT_KEEP_RECENT_TOKENS
+    from quartz.cli.app import _context_budget_from_settings
+    from quartz.core.compact import DEFAULT_KEEP_RECENT_TOKENS
 
     monkeypatch.delenv("COMPACT_RESERVE_TOKENS", raising=False)
     monkeypatch.delenv("COMPACT_KEEP_RECENT_TOKENS", raising=False)
@@ -215,7 +215,7 @@ def test_max_context_tokens_env_no_longer_affects_resolution(
 
 def test_context_budget_ignores_compaction_env(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """COMPACT_* env vars are silently ignored; settings come from config.json."""
-    from quartz.cli import _context_budget_from_settings
+    from quartz.cli.app import _context_budget_from_settings
 
     monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "nope.json"))
     monkeypatch.setenv("COMPACT_RESERVE_TOKENS", "999")

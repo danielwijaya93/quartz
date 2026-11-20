@@ -92,7 +92,7 @@ def test_context_budget_from_settings_ignores_env(
     monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "config.json"))
     monkeypatch.setenv("COMPACT_RESERVE_TOKENS", "999")
     monkeypatch.setenv("COMPACT_KEEP_RECENT_TOKENS", "111")
-    from quartz.cli import _context_budget_from_settings
+    from quartz.cli.app import _context_budget_from_settings
 
     _, reserve, keep = _context_budget_from_settings()
     assert reserve == DEFAULT_COMPACT_RESERVE_TOKENS
@@ -107,7 +107,7 @@ def test_context_budget_from_settings_reads_config_json(
         encoding="utf-8",
     )
     monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "config.json"))
-    from quartz.cli import _context_budget_from_settings
+    from quartz.cli.app import _context_budget_from_settings
 
     _, reserve, keep = _context_budget_from_settings()
     assert (reserve, keep) == (12345, 23456)

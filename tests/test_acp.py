@@ -8,11 +8,11 @@ import os
 import subprocess
 from pathlib import Path
 
-from quartz.acp import ACPServer
+from quartz.cli.acp import ACPServer
 
 
 def _make_fake_client():
-    from quartz.provider import TextDelta, ToolCallDelta, Usage, UsageEvent
+    from quartz.providers.base import TextDelta, ToolCallDelta, Usage, UsageEvent
 
     class _FakeStream:
         def __init__(self, events):
@@ -194,7 +194,7 @@ def test_acp_subprocess_initialize_and_new(tmp_path: Path) -> None:
 def test_acp_parallel_tool_call_ids_and_cancel(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
 
-    from quartz.provider import TextDelta, ToolCallDelta
+    from quartz.providers.base import TextDelta, ToolCallDelta
 
     class _FakeStream:
         def __init__(self, events) -> None:
@@ -271,7 +271,7 @@ def test_acp_parallel_tool_call_ids_and_cancel(tmp_path: Path, monkeypatch) -> N
 def test_acp_out_of_order_tool_call_id_callbacks(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
 
-    from quartz.kernel_client import CellResult
+    from quartz.kernel.client import CellResult
 
     def _fake_agent_loop(*args, **kwargs):
         on_tool_call = kwargs["on_tool_call"]
@@ -282,7 +282,7 @@ def test_acp_out_of_order_tool_call_id_callbacks(tmp_path: Path, monkeypatch) ->
         on_tool_result("tc_1", CellResult(ok=True, stdout="", stderr="", result="1"))
         return "done", kwargs["messages"] if "messages" in kwargs else args[3], 10
 
-    monkeypatch.setattr("quartz.acp.agent_loop", _fake_agent_loop)
+    monkeypatch.setattr("quartz.cli.acp.agent_loop", _fake_agent_loop)
     out_buf = io.StringIO()
     server = ACPServer(
         lambda: (object(), "deepseek", "deepseek-flash", "high"),
@@ -323,7 +323,7 @@ def test_acp_session_cancel_stops_active_turn(tmp_path: Path, monkeypatch) -> No
     started = threading.Event()
     release = threading.Event()
 
-    from quartz.provider import CompletionResult, TextDelta, Usage
+    from quartz.providers.base import CompletionResult, TextDelta, Usage
 
     class _FakeStream:
         def __init__(self, events) -> None:
@@ -458,7 +458,7 @@ def test_acp_serve_prunes_finished_worker_threads(tmp_path: Path, monkeypatch) -
         created_threads.append(t)
         return t
 
-    monkeypatch.setattr("quartz.acp.threading.Thread", _spy_thread)
+    monkeypatch.setattr("quartz.cli.acp.threading.Thread", _spy_thread)
 
     lines = [
         json.dumps({"jsonrpc": "2.0", "id": i, "method": "session/prompt", "params": {"sessionId": sid, "prompt": [{"type": "text", "text": "hi"}]}})
@@ -491,7 +491,7 @@ def test_acp_invalid_params_map_to_32602(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_acp_image_content_blocks_helper() -> None:
-    from quartz.acp import _image_content_blocks
+    from quartz.cli.acp import _image_content_blocks
 
     blocks = _image_content_blocks(
         [{"mime_type": "image/png", "data": "QUJD"}, {"mime_type": "", "data": "x"}]
@@ -503,8 +503,8 @@ def test_acp_image_content_blocks_helper() -> None:
 
 
 def test_acp_tool_result_forwards_images(tmp_path: Path, monkeypatch) -> None:
-    from quartz import acp as acp_mod
-    from quartz.kernel_client import CellResult
+    from quartz.cli import acp as acp_mod
+    from quartz.kernel.client import CellResult
 
     monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
     out = io.StringIO()
@@ -562,7 +562,7 @@ def test_acp_retire_session_aborts_and_waits_before_closing(tmp_path: Path, monk
 def test_acp_serve_aborts_active_prompts_on_eof(tmp_path: Path, monkeypatch) -> None:
     import threading
 
-    from quartz import acp as acp_mod
+    from quartz.cli import acp as acp_mod
 
     monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
     started = threading.Event()
@@ -592,7 +592,7 @@ def test_acp_serve_aborts_active_prompts_on_eof(tmp_path: Path, monkeypatch) -> 
 
 
 def test_extract_system_prompt_append_namespaced_quartz() -> None:
-    from quartz.acp import _extract_system_prompt_append
+    from quartz.cli.acp import _extract_system_prompt_append
 
     # Happy path: Quartz's own vendor namespace.
     assert (
@@ -651,7 +651,7 @@ def test_acp_initialize_advertises_session_list_capability(tmp_path: Path) -> No
 
 
 def test_acp_session_list_returns_session_info(tmp_path: Path, monkeypatch) -> None:
-    from quartz.session import Session
+    from quartz.core.session import Session
 
     monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
     cwd = tmp_path / "ws"
@@ -689,7 +689,7 @@ def test_acp_session_list_returns_session_info(tmp_path: Path, monkeypatch) -> N
 
 
 def test_acp_session_list_cursor_pagination(tmp_path: Path, monkeypatch) -> None:
-    from quartz.session import Session
+    from quartz.core.session import Session
 
     monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
     cwd = tmp_path / "ws"

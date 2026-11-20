@@ -21,8 +21,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from quartz.images import load_image_file
-from quartz.pycheck import check_python_source
+from quartz.core.images import load_image_file
+from quartz.kernel.pycheck import check_python_source
 
 _IGNORE_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", ".mypy_cache"}
 

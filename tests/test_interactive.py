@@ -18,10 +18,10 @@ from prompt_toolkit.layout.containers import FloatContainer, HSplit
 from prompt_toolkit.output import DummyOutput
 from rich.text import Text
 
-import quartz.cli as cli
-from quartz.runtime import AgentRuntime as _CLIRuntime
+import quartz.cli.app as cli
+from quartz.core.runtime import AgentRuntime as _CLIRuntime
 from quartz.interactive import InteractiveDock
-from quartz.loop import TurnUsage
+from quartz.core.loop import TurnUsage
 from quartz.ui import (
     DOCK_STYLE,
     BlockPrinter,

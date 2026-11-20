@@ -10,10 +10,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from quartz.acp import ACPServer, _extract_prompt_content
-from quartz.compact import _serialize_for_summary
-from quartz.google_provider import build_cloudcode_request
-from quartz.images import (
+from quartz.cli.acp import ACPServer, _extract_prompt_content
+from quartz.core.compact import _serialize_for_summary
+from quartz.providers.google import build_cloudcode_request
+from quartz.core.images import (
     ImageAttachment,
     build_user_content,
     content_to_text,
@@ -69,14 +69,14 @@ def test_extract_inline_image_mentions(tmp_path: Path) -> None:
 
 
 def test_load_clipboard_image_wl_paste(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("quartz.images.shutil.which", lambda name: "/usr/bin/wl-paste" if name == "wl-paste" else None)
+    monkeypatch.setattr("quartz.core.images.shutil.which", lambda name: "/usr/bin/wl-paste" if name == "wl-paste" else None)
 
     def fake_run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
         if "--list-types" in cmd:
             return SimpleNamespace(returncode=0, stdout="text/plain\nimage/png\n")
         return SimpleNamespace(returncode=0, stdout=_TINY_PNG)
 
-    monkeypatch.setattr("quartz.images.subprocess.run", fake_run)
+    monkeypatch.setattr("quartz.core.images.subprocess.run", fake_run)
     att = load_clipboard_image()
     assert att.mime_type == "image/png"
     assert att.label == "clipboard.png"
@@ -84,7 +84,7 @@ def test_load_clipboard_image_wl_paste(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_load_clipboard_image_no_tool(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("quartz.images.shutil.which", lambda _name: None)
+    monkeypatch.setattr("quartz.core.images.shutil.which", lambda _name: None)
     with pytest.raises(RuntimeError, match="wl-paste"):
         load_clipboard_image()
 
@@ -141,7 +141,7 @@ def test_compact_serialize_strips_base64() -> None:
 
 
 def test_mcp_unwrap_tool_result_collects_images() -> None:
-    from quartz.mcp_client import _unwrap_tool_result
+    from quartz.mcp.client import _unwrap_tool_result
 
     b64 = base64.b64encode(_TINY_PNG).decode("ascii")
     mcp_res = SimpleNamespace(
@@ -159,8 +159,8 @@ def test_mcp_unwrap_tool_result_collects_images() -> None:
 
 
 def test_kernel_view_image_and_loop_forwards_mid_turn(tmp_path: Path) -> None:
-    from quartz.kernel_client import KernelClient
-    from quartz.loop import agent_loop
+    from quartz.kernel.client import KernelClient
+    from quartz.core.loop import agent_loop
 
     img_path = tmp_path / "shot.png"
     img_path.write_bytes(_TINY_PNG)
@@ -177,7 +177,7 @@ def test_kernel_view_image_and_loop_forwards_mid_turn(tmp_path: Path) -> None:
         calls = [0]
         seen_messages: list[list[dict[str, object]]] = []
 
-        from quartz.provider import CompletionResult, ToolCall, Usage
+        from quartz.providers.base import CompletionResult, ToolCall, Usage
 
         class _DummyClient:
             def complete(self, model: str, messages: list[dict[str, object]], tools: object = None, *, effort: str | None = None) -> CompletionResult:
@@ -244,7 +244,7 @@ def test_load_image_file_accepts_magic(tmp_path: Path, name: str, data: bytes) -
 
 
 def test_load_image_file_too_large(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("quartz.images.MAX_IMAGE_BYTES", 10)
+    monkeypatch.setattr("quartz.core.images.MAX_IMAGE_BYTES", 10)
     p = tmp_path / "big.png"
     p.write_bytes(_TINY_PNG)
     with pytest.raises(ValueError, match="too large"):
@@ -252,20 +252,20 @@ def test_load_image_file_too_large(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
 
 def test_clipboard_rejects_oversized_or_fake(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("quartz.images.shutil.which", lambda n: "/x/xclip" if n == "xclip" else None)
+    monkeypatch.setattr("quartz.core.images.shutil.which", lambda n: "/x/xclip" if n == "xclip" else None)
 
     def fake_run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
         if "TARGETS" in cmd:
             return SimpleNamespace(returncode=0, stdout="image/png\n")
         return SimpleNamespace(returncode=0, stdout=b"garbage")
 
-    monkeypatch.setattr("quartz.images.subprocess.run", fake_run)
+    monkeypatch.setattr("quartz.core.images.subprocess.run", fake_run)
     with pytest.raises(ValueError, match="not a valid"):
         load_clipboard_image()
 
 
 def test_clipboard_xclip_and_no_image(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("quartz.images.shutil.which", lambda n: "/x/xclip" if n == "xclip" else None)
+    monkeypatch.setattr("quartz.core.images.shutil.which", lambda n: "/x/xclip" if n == "xclip" else None)
     state = {"targets": "image/png\n"}
 
     def fake_run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
@@ -273,7 +273,7 @@ def test_clipboard_xclip_and_no_image(monkeypatch: pytest.MonkeyPatch) -> None:
             return SimpleNamespace(returncode=0, stdout=state["targets"])
         return SimpleNamespace(returncode=0, stdout=_TINY_PNG)
 
-    monkeypatch.setattr("quartz.images.subprocess.run", fake_run)
+    monkeypatch.setattr("quartz.core.images.subprocess.run", fake_run)
     assert load_clipboard_image().label == "clipboard.png"
     state["targets"] = "text/plain\n"
     with pytest.raises(RuntimeError, match="X11 clipboard"):
