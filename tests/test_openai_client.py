@@ -277,3 +277,40 @@ def test_models_list(monkeypatch: Any) -> None:
 
     models = client.list_models()
     assert models == ["gpt-4.1", "o4-mini"]
+
+
+def test_parse_usage_deepseek_prompt_cache_hit_tokens() -> None:
+    from agent.openai_client import _parse_usage
+
+    # Direct DeepSeek shape: prompt_cache_hit_tokens, no prompt_tokens_details.
+    usage = _parse_usage(
+        {
+            "prompt_tokens": 64230,
+            "completion_tokens": 1188,
+            "prompt_cache_hit_tokens": 64000,
+            "prompt_cache_miss_tokens": 230,
+        }
+    )
+    assert usage is not None
+    assert usage.input_tokens == 64230
+    assert usage.cached_tokens == 64000
+    assert usage.output_tokens == 1188
+
+
+def test_parse_usage_openai_shape_still_preferred() -> None:
+    from agent.openai_client import _parse_usage
+
+    usage = _parse_usage(
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 25,
+            "prompt_tokens_details": {"cached_tokens": 40},
+        }
+    )
+    assert usage is not None
+    assert usage.cached_tokens == 40
+
+    # No cache fields at all -> 0, and non-dict usage -> None.
+    assert _parse_usage({"prompt_tokens": 10}).cached_tokens == 0  # type: ignore[union-attr]
+    assert _parse_usage(None) is None
+    assert _parse_usage("nope") is None

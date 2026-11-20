@@ -46,17 +46,26 @@ class TurnUsage:
     total_cached_tokens: int = 0
 
     def update(self, usage: Usage | None) -> None:
+        """Fold one ``Usage`` event into last-turn and session-total counters.
+
+        Last-turn ``prompt_tokens``/``cached_tokens`` are only overwritten
+        together and only when the event actually carries an input count
+        (``pt > 0``): a zero/partial usage event then does not corrupt the
+        CH ratio by pairing a fresh cached count with a stale prompt count
+        (or vice versa). Session totals always accumulate what the event
+        reports, even when ``pt == 0``.
+        """
         if usage is None:
             return
         pt = int(usage.input_tokens or 0)
         ct = int(usage.output_tokens or 0)
         cached = int(usage.cached_tokens or 0)
 
-        if pt:
+        if pt > 0:
             self.prompt_tokens = pt
+            self.cached_tokens = cached
         if ct:
             self.completion_tokens = ct
-        self.cached_tokens = cached
 
         self.total_prompt_tokens += pt
         self.total_completion_tokens += ct
@@ -64,10 +73,27 @@ class TurnUsage:
 
     @property
     def cache_hit_rate(self) -> float:
-        return (self.cached_tokens / self.prompt_tokens) if self.prompt_tokens > 0 else 0.0
+        """Cached fraction of the last prompt, clamped to ``[0.0, 1.0]``.
+
+        Providers may report ``cached > prompt`` due to field-semantics
+        differences (e.g. a cache-hit counter that excludes uncached
+        reprompt tokens), so clamp rather than display >100%.
+        """
+        if self.prompt_tokens <= 0:
+            return 0.0
+        return min(1.0, max(0.0, self.cached_tokens / self.prompt_tokens))
 
     def context_pct(self, max_context_tokens: int) -> float:
         return (self.prompt_tokens / max_context_tokens * 100.0) if max_context_tokens > 0 else 0.0
+
+    def is_overflowing(self, max_context_tokens: int) -> bool:
+        """True when the last prompt exceeds the given context window.
+
+        Kept unclamped (``context_pct`` stays raw) so a stale denominator
+        after model/session switches is visible as an overflow warning
+        instead of being silently capped at 100%.
+        """
+        return max_context_tokens > 0 and self.context_pct(max_context_tokens) > 100.0
 
     def to_dict(self) -> dict[str, int]:
         return {

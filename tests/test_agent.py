@@ -192,11 +192,42 @@ def test_turn_usage_telemetry() -> None:
     assert stats.cache_hit_rate == 0.75
     assert round(stats.context_pct(10_000), 1) == 10.0
 
-    # Provider without cached_tokens
+    # Provider without cached_tokens: pt>0 carries a new last-turn pair,
+    # so the cached count resets to 0 (0/500 = 0.0) while totals accumulate.
     stats.update(Usage(input_tokens=500, output_tokens=50))
     assert stats.total_prompt_tokens == 1500
     assert stats.total_cached_tokens == 750
     assert stats.cache_hit_rate == 0.0
+
+
+def test_turn_usage_empty_update_preserves_last_turn_pair() -> None:
+    from agent.provider import Usage
+
+    stats = TurnUsage()
+    stats.update(Usage(input_tokens=1000, output_tokens=200, cached_tokens=750))
+    # An empty / partial event must not clobber the last-turn CH pair.
+    stats.update(Usage())
+    assert stats.prompt_tokens == 1000
+    assert stats.cached_tokens == 750
+    assert stats.cache_hit_rate == 0.75
+    # Totals are unchanged by an empty event.
+    assert stats.total_prompt_tokens == 1000
+    assert stats.total_cached_tokens == 750
+
+    stats.update(None)
+    assert stats.cache_hit_rate == 0.75
+
+
+def test_turn_usage_cache_hit_rate_clamped() -> None:
+    from agent.provider import Usage
+
+    # Providers may report cached > prompt (field-semantics differences).
+    stats = TurnUsage()
+    stats.update(Usage(input_tokens=100, output_tokens=10, cached_tokens=150))
+    assert stats.cache_hit_rate == 1.0
+    assert not stats.is_overflowing(1000)
+    assert stats.is_overflowing(50)
+    assert stats.context_pct(50) == 200.0  # raw, unclamped
 
 
 def test_agent_loop_abort_event(tmp_path: Path) -> None:

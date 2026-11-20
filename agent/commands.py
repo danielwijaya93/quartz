@@ -13,7 +13,13 @@ from rich.text import Text
 from agent.errors import CredentialError, EndpointConfigError
 from agent.images import load_clipboard_image, load_image_file
 from agent.loop import TurnUsage
-from agent.models import PROVIDERS, config_file_path, discover_models, save_model_config
+from agent.models import (
+    PROVIDERS,
+    config_file_path,
+    discover_models,
+    resolve_context_tokens,
+    save_model_config,
+)
 from agent.settings import (
     DEFAULT_COMPACT_RESERVE_TOKENS,
     DEFAULT_KEEP_RECENT_TOKENS,
@@ -245,6 +251,10 @@ def _cmd_model(rt: AgentRuntime, arg: str) -> bool | None:
         console_print(f"[red]Error: {escape(str(exc))}[/red]")
         return False
     save_model_config(rt.provider_name, rt.model, rt.effort)
+    # The ctx denominator is per-model: re-resolve after a switch or the
+    # banner/footer would keep showing the previous model's window
+    # (e.g. stale 64k DeepSeek after switching to a 1M model).
+    rt.max_context_tokens = resolve_context_tokens(rt.provider_name, rt.model, rt.client)
     console_print(
         f"[green]Switched to [bold]{rt.provider_name}[/bold] / [bold]{rt.model}[/bold] "
         f"(effort: [bold]{rt.effort}[/bold])[/green]"
@@ -299,6 +309,11 @@ def _cmd_continue(rt: AgentRuntime, arg: str) -> bool | None:
     restored_notice = rt.active_session.restore_kernel(rt.kernel)
     if restored_notice:
         rt.messages.append({"role": "user", "content": restored_notice})
+    # Restored last-turn usage is a provider count from the old session; it
+    # is compared against the *current* model's window (rt.max_context_tokens).
+    # If it exceeds that window the overflow flag in the banner/footer shows —
+    # deliberately not reset here. The next turn overwrites it with a fresh
+    # count for the current model.
     rt.usage_stats = TurnUsage.from_dict(rt.active_session.last_usage)
     console_print(f"\n[bold cyan]Switched to session {rt.active_session.id}[/bold cyan]")
     _replay_session(
@@ -461,12 +476,19 @@ def _cmd_usage(rt: AgentRuntime, arg: str) -> bool | None:
         if rt.usage_stats.total_prompt_tokens > 0
         else 0.0
     )
+    overflow_note = ""
+    if rt.usage_stats.is_overflowing(rt.max_context_tokens):
+        overflow_note = (
+            " ⚠ OVERFLOW: last prompt exceeds this model's context window"
+            " (stale denominator or window too small — /compact or /model)"
+        )
     console_print(
         f"Last context:  {rt.usage_stats.prompt_tokens:,} / {rt.max_context_tokens:,} ({pct:.1f}%)\n"
         f"Last cache (CH):    {rt.usage_stats.cached_tokens:,} cached ({cache_pct:.1f}%)\n"
         f"Session total: {rt.usage_stats.total_prompt_tokens:,} in / "
         f"{rt.usage_stats.total_completion_tokens:,} out / "
         f"{rt.usage_stats.total_cached_tokens:,} cached ({total_cache:.1f}%)"
+        + overflow_note
     )
     return False
 

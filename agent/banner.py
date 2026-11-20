@@ -130,11 +130,26 @@ def _build_identity_groups(state: BannerState, cwd_text: str) -> list[FormattedL
     return [brand_group, model_group, cwd_group]
 
 
+def format_usage_metrics(usage: TurnUsage, max_context_tokens: int) -> tuple[str, str]:
+    """Return ``(ctx_value, cache_value)`` strings for banner and turn footer.
+
+    Shared by ``_build_metrics_groups`` and ``_format_turn_footer`` so the
+    compact banner and footer can never drift: ``ctx`` is the raw window
+    percentage plus a visible ``⚠ overflow`` suffix when the last prompt
+    exceeds the window; ``CH`` is one decimal so e.g. 64000/64230 (99.6%)
+    is not rounded to a misleading "100%".
+    """
+    pct = usage.context_pct(max_context_tokens) if max_context_tokens > 0 else 0.0
+    cache_pct = usage.cache_hit_rate * 100.0
+    ctx_value = f"{_fmt_k(max_context_tokens)} ({pct:.1f}%)"
+    if usage.is_overflowing(max_context_tokens):
+        ctx_value += " ⚠ overflow"
+    cache_value = f"{cache_pct:.1f}%"
+    return ctx_value, cache_value
+
+
 def _build_metrics_groups(state: BannerState) -> list[FormattedLine]:
-    pct = state.usage.context_pct(state.max_context_tokens) if state.max_context_tokens > 0 else 0.0
-    cache_pct = state.usage.cache_hit_rate * 100.0
-    ctx_value = f"{_fmt_k(state.max_context_tokens)} ({pct:.1f}%)"
-    cache_value = f"{cache_pct:.0f}%"
+    ctx_value, cache_value = format_usage_metrics(state.usage, state.max_context_tokens)
 
     groups: list[FormattedLine] = [
         [(_STYLE_DIM, "ctx "), (_STYLE_METRIC, ctx_value)],

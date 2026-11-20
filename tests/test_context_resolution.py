@@ -99,6 +99,10 @@ def test_resolve_static_table_entries() -> None:
     assert resolve_context_tokens("deepseek", "deepseek-chat") == 64_000
     assert resolve_context_tokens("deepseek", "deepseek-reasoner") == 64_000
     assert resolve_context_tokens("deepseek", "deepseek-flash") == 64_000
+    # Namespaced OpenRouter ids (bare ids above are the direct DeepSeek API).
+    assert resolve_context_tokens("openrouter", "deepseek/deepseek-chat") == 163_840
+    assert resolve_context_tokens("openrouter", "deepseek/deepseek-flash") == 163_840
+    assert resolve_context_tokens("openrouter", "meta/muse-ember") == 1_048_576
 
 
 def test_resolve_provider_default_for_unknown_model() -> None:
