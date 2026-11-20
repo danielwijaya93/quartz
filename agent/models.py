@@ -34,7 +34,8 @@ class ProviderSpec:
     default_model: str = ""
     default_effort: str = "medium"
     base_url: str = ""
-    env_key: str = ""
+    # Credentials are login-only (auth.json); there is deliberately no
+    # env_key field. See resolve_provider_credentials().
     default_context_tokens: int = 128_000
 
 
@@ -44,7 +45,6 @@ PROVIDERS: dict[str, ProviderSpec] = {
         backend="openai",
         auth_type="api_key",
         base_url="https://openrouter.ai/api/v1",
-        env_key="OPENROUTER_API_KEY",
         models=(
             "anthropic/claude-sonnet-4",
             "openai/gpt-4.1",
@@ -59,18 +59,16 @@ PROVIDERS: dict[str, ProviderSpec] = {
         backend="openai",
         auth_type="api_key",
         base_url="https://api.openai.com/v1",
-        env_key="OPENAI_API_KEY",
         models=("gpt-4.1", "gpt-4.1-mini", "o4-mini", "o3"),
         efforts=("low", "medium", "high"),
         default_model="gpt-4.1",
         default_effort="medium",
     ),
     "deepseek": ProviderSpec(
-        label="DeepSeek (API Key / .env)",
+        label="DeepSeek (API Key)",
         backend="openai",
         auth_type="api_key",
         base_url="https://api.deepseek.com",
-        env_key="DEEPSEEK_API_KEY",
         models=("deepseek-chat", "deepseek-reasoner", "deepseek-flash"),
         efforts=("low", "high", "max"),
         default_model="deepseek-flash",
@@ -97,7 +95,6 @@ PROVIDERS: dict[str, ProviderSpec] = {
         backend="openai",
         auth_type="api_key",
         base_url="",
-        env_key="OPENAI_API_KEY",
         models=(),
         efforts=("low", "medium", "high"),
         default_model="gpt-4.1",
@@ -237,31 +234,20 @@ def resolve_provider_credentials(
 ) -> tuple[str | None, str | None, str]:
     """Resolve (api_key, base_url, source) for an API-key provider.
 
-    source is one of: 'auth.json', 'env', or 'none'.
+    Credentials are login-only: they live in ``~/.quartz/auth.json``,
+    written by ``/login`` / ``quartz auth login``. Environment variables
+    such as ``OPENAI_API_KEY``, ``OPENAI_BASE_URL``,
+    ``DEEPSEEK_API_KEY`` and ``OPENROUTER_API_KEY`` are NOT consulted
+    (they may appear in a legacy ``.env``; they are silently ignored).
+
+    source is one of: 'auth.json' or 'none'.
     """
     spec = PROVIDERS.get(provider)
     spec_base_url = spec.base_url if spec else ""
     stored = load_provider_auth(provider, path)
     if stored is not None:
-        base_url = stored.base_url or spec_base_url or os.getenv("OPENAI_BASE_URL") or None
+        base_url = stored.base_url or spec_base_url or None
         return stored.api_key, base_url, "auth.json"
-
-    env_key_name = spec.env_key if spec else ""
-    if env_key_name:
-        env_val = os.getenv(env_key_name)
-        if env_val and env_val.strip():
-            if env_key_name == "OPENAI_API_KEY":
-                base_url = os.getenv("OPENAI_BASE_URL") or spec_base_url or None
-            else:
-                base_url = spec_base_url or os.getenv("OPENAI_BASE_URL") or None
-            return env_val.strip(), base_url, "env"
-
-    if provider in ("openai", "custom"):
-        openai_key = os.getenv("OPENAI_API_KEY")
-        if openai_key and openai_key.strip():
-            base_url = os.getenv("OPENAI_BASE_URL") or spec_base_url or None
-            return openai_key.strip(), base_url, "env"
-
     return None, None, "none"
 
 

@@ -55,17 +55,19 @@ def test_provider_auth_crud_and_auth_types(tmp_path: Path, monkeypatch) -> None:
     assert delete_provider_auth("openrouter") is False
 
 
-def test_resolve_provider_credentials_priority(tmp_path: Path, monkeypatch) -> None:
+def test_resolve_provider_credentials_login_only(tmp_path: Path, monkeypatch) -> None:
+    """Credentials come only from auth.json; env keys are silently ignored."""
     auth_path = tmp_path / "auth.json"
     monkeypatch.setenv("QUARTZ_AUTH_FILE", str(auth_path))
     monkeypatch.setenv("OPENROUTER_API_KEY", "env-or-key")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "env-openai-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://custom-openai.example/v1")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "env-ds-key")
 
-    key, url, src = resolve_provider_credentials("openrouter")
-    assert key == "env-or-key"
-    assert url == "https://openrouter.ai/api/v1"
-    assert src == "env"
+    # Env keys alone resolve to none (login-only).
+    assert resolve_provider_credentials("openrouter") == (None, None, "none")
+    assert resolve_provider_credentials("openai") == (None, None, "none")
+    assert resolve_provider_credentials("deepseek") == (None, None, "none")
 
     save_provider_auth("openrouter", "stored-or-key", "https://openrouter.ai/api/v1")
     key, url, src = resolve_provider_credentials("openrouter")
@@ -188,19 +190,38 @@ def test_slash_login_logout_and_model_openrouter(tmp_path: Path, monkeypatch) ->
     assert load_provider_auth("openrouter") is None
 
 
-def test_resolve_provider_credentials_ignores_openai_base_url_for_other_providers(
+def test_resolve_provider_credentials_ignores_all_env_keys(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "missing_auth.json"))
     monkeypatch.setenv("OPENAI_BASE_URL", "https://custom-openai.example/v1")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
 
-    or_key, or_url, or_src = resolve_provider_credentials("openrouter")
-    assert (or_key, or_url, or_src) == ("or-key", "https://openrouter.ai/api/v1", "env")
+    assert resolve_provider_credentials("openrouter") == (None, None, "none")
+    assert resolve_provider_credentials("deepseek") == (None, None, "none")
+    assert resolve_provider_credentials("openai") == (None, None, "none")
 
-    ds_key, ds_url, ds_src = resolve_provider_credentials("deepseek")
-    assert (ds_key, ds_url, ds_src) == ("ds-key", "https://api.deepseek.com", "env")
+
+def test_provider_ready_and_status_label_ignore_env(tmp_path: Path, monkeypatch) -> None:
+    from agent.subcommands import _provider_ready, _provider_status_label
+
+    monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "missing_auth.json"))
+    monkeypatch.setenv("OPENAI_API_KEY", "env-only-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "env-or-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "env-ds-key")
+
+    assert _provider_ready("openai") is False
+    assert _provider_ready("openrouter") is False
+    assert _provider_ready("deepseek") is False
+    assert "env" not in _provider_status_label("openai")
+    assert "not configured" in _provider_status_label("openai")
+
+    save_provider_auth("openai", "stored-key", "https://api.openai.com/v1")
+    assert _provider_ready("openai") is True
+    assert "logged in" in _provider_status_label("openai")
 
 
 def test_delete_google_credentials_preserves_0600_mode(tmp_path: Path, monkeypatch) -> None:

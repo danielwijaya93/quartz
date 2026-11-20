@@ -281,29 +281,38 @@ def test_google_provider_does_not_fall_back_to_another_host(
 
 def test_build_client_honors_openai_env_model(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "missing_config.json"))
-    monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "missing_auth.json"))
+    monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "auth.json"))
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    # Legacy env keys are ignored; the openai credential must come from
+    # auth.json (/login). MODEL env is non-secret config and still honored.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-ignored")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://evil.example/v1")
     monkeypatch.setenv("MODEL", "gpt-4.1")
+    monkeypatch.setenv("QUARTZ_EFFORT_DISCOVERY", "0")
+    from agent.models import save_provider_auth
+
+    save_provider_auth("openai", "sk-stored", "https://api.openai.com/v1")
 
     _, provider, model, _ = _build_client(provider="auto")
     assert provider == "openai"
     assert model == "gpt-4.1"
 
 
-def test_build_client_deepseek_api_key_selects_deepseek(tmp_path: Path, monkeypatch) -> None:
+def test_build_client_env_api_keys_no_longer_select_provider(tmp_path: Path, monkeypatch) -> None:
+    """Legacy *_API_KEY env vars must not auto-select a provider (login-only)."""
     monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "missing_config.json"))
     monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "missing_auth.json"))
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("MODEL", raising=False)
+    monkeypatch.setenv("QUARTZ_EFFORT_DISCOVERY", "0")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-test-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
 
-    _, provider, model, _ = _build_client(provider="auto")
-    assert provider == "deepseek"
-    assert model == "deepseek-flash"
+    from agent.errors import CredentialError
+
+    with pytest.raises(CredentialError, match="/login deepseek"):
+        _build_client(provider="auto")
 
 
 def test_authorization_url_carries_the_bundled_client_id(monkeypatch: Any) -> None:

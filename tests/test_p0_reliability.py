@@ -138,9 +138,10 @@ def test_resolve_provider_credentials_no_openai_fallback_for_deepseek(tmp_path: 
     assert ds_key is None
     assert ds_src == "none"
 
+    # OPENAI_API_KEY alone no longer authenticates openai: login-only.
     oai_key, _, oai_src = resolve_provider_credentials("openai")
-    assert oai_key == "sk-openai-only"
-    assert oai_src == "env"
+    assert oai_key is None
+    assert oai_src == "none"
 
 
 def test_agent_loop_raises_provider_error_with_nonempty_steering_queue(tmp_path: Path) -> None:
