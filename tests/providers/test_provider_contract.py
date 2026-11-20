@@ -29,6 +29,7 @@ from quartz.auth.google import _token_request
 from quartz.providers.google import GoogleAntigravityProvider
 from quartz.providers.openai import OpenAIProvider
 from quartz.providers.base import (
+    SSEStreamHandle,
     TextDelta,
     ThinkingDelta,
     ToolCallDelta,
@@ -339,7 +340,7 @@ def test_openai_build_body_keeps_reasoning_effort_for_openrouter() -> None:
     assert "reasoning" not in body
 
 
-def test_openai_stream_parses_reasoning_details_summaries() -> None:
+def test_openai_stream_parses_reasoning_details_summaries(monkeypatch: Any) -> None:
     from quartz.providers.base import ThinkingDelta
 
     # Simulate SSE payloads via the stream handle by monkeypatching iter_sse_events.
@@ -367,13 +368,17 @@ def test_openai_stream_parses_reasoning_details_summaries() -> None:
         def __exit__(self, *a: Any) -> None:
             pass
 
-    handle = oc._OpenAIStreamHandle(_FakeCtx(), _FakeStreamResp(200), "test")  # type: ignore[arg-type]
-    orig = oc.iter_sse_events
-    oc.iter_sse_events = lambda resp, provider, is_closed: iter(payloads)  # type: ignore[assignment]
-    try:
-        events = list(handle)
-    finally:
-        oc.iter_sse_events = orig  # type: ignore[assignment]
+    handle = SSEStreamHandle(
+        _FakeCtx(),
+        _FakeStreamResp(200),
+        provider="test",
+        parse=oc._openai_events,
+    )
+    monkeypatch.setattr(
+        "quartz.providers.base.iter_sse_events",
+        lambda resp, provider, is_closed: iter(payloads),
+    )
+    events = list(handle)
     thinking = [e.text for e in events if isinstance(e, ThinkingDelta)]
     assert thinking == ["short plan", "summary text"]
 
