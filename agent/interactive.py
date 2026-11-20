@@ -133,6 +133,8 @@ class InteractiveDock:
         history_path: Path | None = None,
         input_device: Any = None,
         output_device: Any = None,
+        show_thinking: bool = False,
+        show_details: bool = False,
     ) -> None:
         self.rt = rt
         self.resumed = resumed
@@ -148,6 +150,8 @@ class InteractiveDock:
         self._abort_event = threading.Event()
         self._steering_queue: queue.Queue[str] = queue.Queue()
 
+        self._show_thinking = show_thinking
+        self._show_details = show_details
         self._turn_running = False
         self._aborting = False
         self._bg_count = 0
@@ -252,6 +256,30 @@ class InteractiveDock:
     def is_turn_running(self) -> bool:
         with self._lock:
             return self._turn_running
+
+    @property
+    def show_thinking(self) -> bool:
+        with self._lock:
+            return self._show_thinking
+
+    @property
+    def show_details(self) -> bool:
+        with self._lock:
+            return self._show_details
+
+    def toggle_thinking(self) -> bool:
+        with self._lock:
+            self._show_thinking = not self._show_thinking
+            on = self._show_thinking
+        self._invalidate()
+        return on
+
+    def toggle_details(self) -> bool:
+        with self._lock:
+            self._show_details = not self._show_details
+            on = self._show_details
+        self._invalidate()
+        return on
 
     def _has_modal(self) -> bool:
         with self._lock:
@@ -393,12 +421,20 @@ class InteractiveDock:
         with self._lock:
             running = self._turn_running
             aborting = self._aborting
+            show_thinking = self._show_thinking
+            show_details = self._show_details
+        toggles: list[str] = []
+        if show_thinking:
+            toggles.append("thinking")
+        if show_details:
+            toggles.append("details")
+        toggle_hint = f" · {'+'.join(toggles)} on" if toggles else ""
         if aborting:
-            hint = " Aborting..."
+            hint = f" Aborting...{toggle_hint}"
         elif running:
-            hint = " Esc to abort · Enter to steer"
+            hint = f" Esc to abort · Enter to steer{toggle_hint}"
         else:
-            hint = " /help for commands"
+            hint = f" /help for commands{toggle_hint}"
 
         if len(hint) >= w:
             return [("class:hint", hint[:w])]
@@ -568,6 +604,14 @@ class InteractiveDock:
             if not self.input_buffer.text and not self.is_turn_running:
                 self.exit()
 
+        @kb.add("c-t", filter=not_modal)
+        def _(event: Any) -> None:
+            self.toggle_thinking()
+
+        @kb.add("c-o", filter=not_modal)
+        def _(event: Any) -> None:
+            self.toggle_details()
+
         return kb
 
     def abort_turn(self) -> None:
@@ -676,6 +720,8 @@ class InteractiveDock:
             verbose=self.rt.verbose,
             plain_output=self.rt.plain_output,
             live_renderer=self.set_live_renderable,
+            show_thinking=self._show_thinking,
+            show_details=self._show_details,
         )
 
         with self._lock:
@@ -828,6 +874,8 @@ class InteractiveDock:
                 verbose=self.rt.verbose,
                 cell_meta=getattr(self.rt.active_session, "cell_meta", None),
                 steering_indices=getattr(self.rt.active_session, "steering_indices", None),
+                show_thinking=self._show_thinking,
+                show_details=self._show_details,
             )
             if self.rt.usage_stats.prompt_tokens > 0:
                 _active_printer().block(

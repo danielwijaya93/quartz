@@ -74,6 +74,8 @@ def _run_turn(
             printer,
             verbose=rt.verbose,
             plain_output=rt.plain_output,
+            show_thinking=getattr(rt, "show_thinking", False),
+            show_details=getattr(rt, "show_details", False),
         )
     turn_stop = threading.Event()
 
@@ -92,13 +94,13 @@ def _run_turn(
         elif label is None:
             tracker.stop_thinking()
 
-    # Display-free collector: reasoning text is persisted in assistant_dict
-    # (see agent_loop); this sink keeps the live channel available for the
-    # upcoming Ctrl+T toggle without changing current rendering.
+    # Collector: reasoning text is persisted in assistant_dict (see
+    # agent_loop); forwarding to the tracker drives the Ctrl+T trace.
     turn_reasoning: list[str] = []
 
     def _on_thinking_delta(chunk: str) -> None:
         turn_reasoning.append(chunk)
+        tracker.add_thinking_delta(chunk)
         if on_thinking_delta is not None:
             on_thinking_delta(chunk)
 
@@ -120,7 +122,7 @@ def _run_turn(
                 md_streamer.flush()
             streamed_any[0] = False
         pending_cells[tc_id] = (code, time.monotonic())
-        if rt.verbose:
+        if rt.verbose or getattr(tracker, "show_details", False) or getattr(rt, "show_details", False):
             tracker.flush()
             _render_tool_call(code)
         else:
@@ -130,7 +132,7 @@ def _run_turn(
         code, started = pending_cells.pop(tc_id, ("", time.monotonic()))
         duration = time.monotonic() - started
         rt.cell_history.append((code, res, duration))
-        if rt.verbose:
+        if rt.verbose or getattr(tracker, "show_details", False) or getattr(rt, "show_details", False):
             _render_tool_result(res)
         else:
             tracker.add_tool_result(len(rt.cell_history), code, res, duration)
@@ -238,7 +240,12 @@ def _run_headless(
 
 def _run_interactive(rt: AgentRuntime, resumed: bool) -> None:
     if not rt.plain_output and sys.stdin.isatty() and sys.stdout.isatty():
-        InteractiveDock(rt, resumed=resumed).run()
+        InteractiveDock(
+            rt,
+            resumed=resumed,
+            show_thinking=getattr(rt, "show_thinking", False),
+            show_details=getattr(rt, "show_details", False),
+        ).run()
         return
 
     console.print(Text.assemble(("quartz", "bold"), (" v0.1.0 · Run /help for commands", "dim")))
@@ -250,6 +257,8 @@ def _run_interactive(rt: AgentRuntime, resumed: bool) -> None:
             verbose=rt.verbose,
             cell_meta=getattr(rt.active_session, "cell_meta", None),
             steering_indices=getattr(rt.active_session, "steering_indices", None),
+            show_thinking=getattr(rt, "show_thinking", False),
+            show_details=getattr(rt, "show_details", False),
         )
         if rt.usage_stats.prompt_tokens > 0:
             printer.block(Text(_format_turn_footer(rt.usage_stats, rt.max_context_tokens), style="dim"))
@@ -374,6 +383,8 @@ def _build_runtime(args: argparse.Namespace) -> tuple[AgentRuntime, bool]:
         verbose=args.verbose,
         plain_output=bool(args.prompt) or not sys.stdout.isatty(),
         headless=bool(args.prompt),
+        show_thinking=args.show_thinking,
+        show_details=args.show_details,
     )
     return rt, resumed
 
@@ -466,6 +477,16 @@ def main() -> None:
         "--verbose",
         action="store_true",
         help="Always show full ipython code and output panels instead of compact summaries.",
+    )
+    parser.add_argument(
+        "--show-thinking",
+        action="store_true",
+        help="Show reasoning trace (Ctrl+T).",
+    )
+    parser.add_argument(
+        "--show-details",
+        action="store_true",
+        help="Show full tool call details (Ctrl+O).",
     )
     args = parser.parse_args()
 
