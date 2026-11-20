@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -257,10 +258,24 @@ class KernelClient:
         return self._running_bash_count
 
     def running_bash_jobs(self) -> list[dict[str, Any]]:
-        """Return snapshots of currently running bash() jobs (pid, command, elapsed_s)."""
+        """Return snapshots of currently running bash() jobs (pid, command, elapsed_s).
+
+        Elapsed is recomputed at call time from the worker-stamped
+        ``started_at`` wall-clock so the value ticks live; the pushed
+        ``elapsed_s`` is frozen at start/done and is only a fallback.
+        Floored at 0 to absorb wall-clock jumps (NTP, manual changes).
+        """
         if self._proc is None or self._proc.poll() is not None:
             return []
-        return [dict(j) for j in self._running_bash_jobs]
+        now = time.time()
+        out: list[dict[str, Any]] = []
+        for job in self._running_bash_jobs:
+            fresh = dict(job)
+            started_at = job.get("started_at")
+            if isinstance(started_at, (int, float)) and not isinstance(started_at, bool):
+                fresh["elapsed_s"] = max(0.0, now - float(started_at))
+            out.append(fresh)
+        return out
 
     def has_pending_events(self) -> bool:
         with self._events_cond:
