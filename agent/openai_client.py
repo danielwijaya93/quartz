@@ -91,6 +91,10 @@ def parse_model_detail(raw: Any) -> ModelDetails | None:
     ctx_raw = raw.get("context_length")
     if ctx_raw is None:
         ctx_raw = raw.get("max_context_tokens")
+    if ctx_raw is None:
+        # DeepSeek's direct API spells it ``context_window`` (verified
+        # 2026-11-20: deepseek-flash = 1048576) instead of ``context_length``.
+        ctx_raw = raw.get("context_window")
     if isinstance(ctx_raw, bool):
         ctx_raw = None
     elif isinstance(ctx_raw, int) and ctx_raw > 0:
