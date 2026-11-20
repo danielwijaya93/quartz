@@ -27,6 +27,50 @@ This document tracks architectural ideas, future enhancements, and reference imp
   - Explicit opt-in backends later: OCI container (Docker/Podman rootless) for reproducible toolchains, microVM (Gondolin/Firecracker-style) for kernel-level separation.
   - Developer-friendliness is the point: pi's three-pattern setup (Gondolin extension, Dockerfile, OpenShell gateway) costs a step-function in setup effort; a flag + config keeps the sandbox at "install `bwrap`, set one option".
 
+### Tier breakdown — what each tier actually protects
+
+Three tiers exist; coverage differs decisively. Quartz ships full-permission today (no approval prompts, no deny lists), so the sandbox is the *only* protection layer, and the tier choice determines what stops.
+
+| | Tier 1: sandboxed Bash only | Tier 2: sandbox runtime (whole process) ✅ | Tier 3: container / VM |
+|---|---|---|---|
+| What it isolates | `bash()` shell commands + children | **Entire Quartz**: CLI, `kernel_worker`, `bash()`, MCP servers | Whole process *and* its dependencies, in a new kernel |
+| Quartz damage via `open()` / `os.remove` / `shutil.rmtree` in the REPL | ❌ Not blocked — the kernel itself runs unsandboxed | ✅ Blocked — same boundary as `rm` | ✅ Blocked |
+| Damage via MCP servers / hooks | ❌ Not blocked | ✅ Blocked | ✅ Blocked |
+| Filesystem | shell commands limited; Read/Edit are outside | Workspace-only; `~/.ssh`, `~/.aws`, browser profiles, `/proc/*/environ` unreachable | Same as Tier 2; additionally protects against kernel exploits |
+| Network / secret exfiltration | ✅ (for shell commands) | ✅ with `--unshare-net`; with credential mediation (§3) secrets never enter | ✅ |
+| Process damage (`kill`, fork bomb, disk fill) | ✅ (for shell commands) | ✅ PID namespace + `prlimit` rlimits | ✅ + hard resource cgroups |
+| Inside-workspace damage (deleted tree, weakened tests, backdoors) | ❌ | ❌ | ❌ — needs review layers above the sandbox |
+
+**Target: Tier 2.** Tier 1 is insufficient for Quartz because Quartz's damage runs through the persistent Python REPL (`open`, `subprocess`, `rmtree` in `kernel_worker`), not only through `bash()`. Tier 3 remains an opt-in backend for kernel-level separation.
+
+### Sensible defaults (`QUARTZ_SANDBOX` / `--sandbox`)
+
+Defaults must work for a non-expert with **zero** config. The goal: a user enables the sandbox and Quartz works; tightening/loosening is optional, never required.
+
+```json
+// ~/.quartz/config.json — sensible defaults, overridable per-project
+{
+  "sandbox": {
+    "enabled": true,
+    "backend": "auto",
+    "allowWrite": ["$CWD", "$TMPDIR"],
+    "denyWrite": [".git/hooks", ".git/config", ".mcp.json", ".claude/commands", ".claude/agents"],
+    "network": "allowlist",
+    "allowHosts": ["api.openai.com", "api.anthropic.com", "generativelanguage.googleapis.com", "api.deepseek.com", "openrouter.ai", "pypi.org", "files.pythonhosted.org"],
+    "rlimits": { "cpuSeconds": 0, "nproc": 512, "addressSpaceMB": 0, "fileSizeMB": 1024 },
+    "mask": ["~/.ssh", "~/.aws", "~/.config/gcloud", "~/.kube", "~/.pki", "~/.config/gh/hosts.yml"]
+  }
+}
+```
+
+- **`"backend": "auto"`** — probe `bwrap` on Linux / Seatbelt on macOS; no backend found → warn once and run unsandboxed. No config edits ever needed for a *safe-enough* start.
+- **`allowWrite: [$CWD, $TMPDIR]`** — workspace + temp only. Everything the agent needs to work, nothing it needs to break.
+- **`denyWrite`** always wins over `allowWrite` (`denyWrite` takes precedence), matching Claude Code's runtime: `.git/hooks` and `.git/config` are denied even inside the workspace, so the agent can't persist via git hooks or rewrite remotes.
+- **`network: "allowlist"`** — default-allow LLM provider endpoints + PyPI (for `pip install`), default-deny everything else. The user never configures this to start; they add hosts only if a task needs them. Falls back to `"none"` if no mediating egress hook is configured.
+- **Credentials (`QUARTZ_SECRET_*`)** documented as: set the placeholder, Quartz substitutes at egress for allowlisted hosts only, and raw values never enter the boundary.
+- **Mask list** — built-in, unconditional: host home, SSH keys, cloud credentials, browser profiles, and `/proc` are masked/restricted. Not configurable away without an explicit `--sandbox-off` escape (which logs a warning).
+- **Overrides are additive/narrowing only**: a project's `.quartz/config.json` may *tighten* (fewer hosts, more masks) but never widen beyond the user's `~/.quartz/config.json`. This prevents a malicious repo from silently granting itself broader access via repo-level config.
+
 ---
 
 ## 3. Credential mediation inside the sandbox
