@@ -467,7 +467,7 @@ def test_write_and_edit_py_check_valid_and_edge_cases(tmp_path: Path) -> None:
     assert "[python check]" not in out_star
 
     # Real agent/*.py files must produce zero false positives
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = Path(__file__).resolve().parent.parent.parent
     for py_path in sorted((repo_root / "src" / "quartz").rglob("*.py")):
         warnings = _check_python_source(py_path, py_path.read_text(encoding="utf-8"))
         assert warnings == [], f"Unexpected warnings for {py_path}: {warnings}"
