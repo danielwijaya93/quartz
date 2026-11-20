@@ -64,10 +64,18 @@ def _extract_prompt_content(prompt: Any) -> str | list[dict[str, Any]]:
 
 
 def _extract_system_prompt_append(params: dict[str, Any]) -> str:
+    """Return the client-supplied system-prompt append from ``params["_meta"]``.
+
+    Quartz's vendor extension follows the ACP ``_meta`` namespacing convention:
+    ``{"_meta": {"quartz": {"systemPrompt": {"append": "..."}}}}``.
+    """
     meta = params.get("_meta")
     if not isinstance(meta, dict):
         return ""
-    sp = meta.get("systemPrompt")
+    quartz = meta.get("quartz")
+    if not isinstance(quartz, dict):
+        return ""
+    sp = quartz.get("systemPrompt")
     if not isinstance(sp, dict):
         return ""
     append = sp.get("append")
@@ -148,6 +156,11 @@ class ACPServer:
             "agentCapabilities": {
                 "loadSession": True,
                 "promptCapabilities": {"image": True},
+                "_meta": {
+                    "quartz": {
+                        "systemPrompt": {"append": True},
+                    },
+                },
             },
         }
 

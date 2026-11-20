@@ -589,3 +589,46 @@ def test_acp_serve_aborts_active_prompts_on_eof(tmp_path: Path, monkeypatch) -> 
     server._in = _Stream()  # type: ignore[assignment]
     server.serve()
     assert saw_abort.is_set()
+
+
+def test_extract_system_prompt_append_namespaced_quartz() -> None:
+    from agent.acp import _extract_system_prompt_append
+
+    # Happy path: Quartz's own vendor namespace.
+    assert (
+        _extract_system_prompt_append(
+            {"_meta": {"quartz": {"systemPrompt": {"append": "  padded  "}}}}
+        )
+        == "padded"
+    )
+    # Flat (unnamespaced) shape is not a Quartz extension and must be ignored.
+    assert _extract_system_prompt_append({"_meta": {"systemPrompt": {"append": "x"}}}) == ""
+    # Foreign vendor namespaces are ignored, never interpreted.
+    assert (
+        _extract_system_prompt_append(
+            {"_meta": {"other": {"systemPrompt": {"append": "x"}}}}
+        )
+        == ""
+    )
+    # Missing / malformed inputs degrade to "" rather than raising.
+    assert _extract_system_prompt_append({}) == ""
+    assert _extract_system_prompt_append({"_meta": None}) == ""
+    assert _extract_system_prompt_append({"_meta": {"quartz": None}}) == ""
+    assert _extract_system_prompt_append({"_meta": {"quartz": {"systemPrompt": None}}}) == ""
+    assert _extract_system_prompt_append({"_meta": {"quartz": {"systemPrompt": {"append": 1}}}}) == ""
+
+
+def test_acp_initialize_advertises_quartz_meta_namespace(tmp_path: Path) -> None:
+    reqs = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": 1}},
+    ]
+    out_buf = io.StringIO()
+    server = ACPServer(
+        _make_fake_client,
+        in_stream=io.StringIO("\n".join(json.dumps(r) for r in reqs) + "\n"),
+        out_stream=out_buf,
+    )
+    server.serve()
+    responses = [json.loads(line) for line in out_buf.getvalue().splitlines() if line.strip()]
+    caps = responses[0]["result"]["agentCapabilities"]
+    assert caps["_meta"] == {"quartz": {"systemPrompt": {"append": True}}}
