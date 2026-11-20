@@ -32,6 +32,7 @@ from agent.models import (
     discover_models,
     list_logged_in_providers,
     load_model_config,
+    resolve_effort,
     resolve_provider_credentials,
     save_provider_auth,
 )
@@ -117,12 +118,25 @@ def build_provider(
     else:
         model = spec.default_model
 
+    # Effort: explicit override / saved / env wins when the (discovered) model
+    # supports it; otherwise fall back to the model's own default. Levels differ
+    # per model (e.g. OpenRouter exposes max/xhigh/minimal on some models only).
+    requested_effort: str | None
+    effort_source: str
     if effort_override:
-        effort = effort_override
+        requested_effort, effort_source = effort_override, "--effort"
     elif provider == "auto" and saved.get("provider") == chosen_provider and saved.get("effort"):
-        effort = saved["effort"]
+        requested_effort, effort_source = saved["effort"], "saved config"
+    elif os.getenv("EFFORT"):
+        requested_effort, effort_source = os.getenv("EFFORT"), "EFFORT env"
     else:
-        effort = os.getenv("EFFORT") or spec.default_effort
+        requested_effort, effort_source = None, "default"
+    effort = resolve_effort(
+        chosen_provider,
+        model,
+        override=requested_effort,
+        override_source=effort_source,
+    )
 
     if spec.backend == "google":
         if not has_google:
