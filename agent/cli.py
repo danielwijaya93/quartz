@@ -62,6 +62,7 @@ def _run_turn(
     abort_event: threading.Event | None = None,
     steering_queue: queue.Queue[str] | None = None,
     on_steering: Callable[[str], None] | None = None,
+    on_thinking_delta: Callable[[str], None] | None = None,
 ) -> tuple[str, list[dict[str, Any]], int]:
     pending_cells: dict[str, tuple[str, float]] = {}
     streamed_any = [False]
@@ -90,6 +91,16 @@ def _run_turn(
             tracker.start_thinking()
         elif label is None:
             tracker.stop_thinking()
+
+    # Display-free collector: reasoning text is persisted in assistant_dict
+    # (see agent_loop); this sink keeps the live channel available for the
+    # upcoming Ctrl+T toggle without changing current rendering.
+    turn_reasoning: list[str] = []
+
+    def _on_thinking_delta(chunk: str) -> None:
+        turn_reasoning.append(chunk)
+        if on_thinking_delta is not None:
+            on_thinking_delta(chunk)
 
     def _on_text_delta(chunk: str) -> None:
         tracker.flush()
@@ -144,6 +155,7 @@ def _run_turn(
             on_bash_notice=lambda n: (tracker.flush(), _render_bash_notice(n)),
             on_status=_on_status,
             on_text_delta=_on_text_delta,
+            on_thinking_delta=_on_thinking_delta,
             usage_stats=rt.usage_stats,
             initial_prompt_tokens=rt.usage_stats.prompt_tokens,
             effort=rt.effort,
