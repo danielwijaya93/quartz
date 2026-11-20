@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import tempfile
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -66,6 +67,33 @@ def load_raw_mcp_config(config_path: Path | None = None) -> dict[str, dict[str, 
     return {str(k): v for k, v in mcp_servers.items() if isinstance(v, dict)}
 
 
+def _write_mcp_json(path: Path, data: dict[str, Any]) -> None:
+    """Atomically write MCP config JSON with 0o600 permissions."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    )
+    tmp_path = Path(tmp.name)
+    try:
+        os.chmod(tmp_path, 0o600)
+        tmp.write(json.dumps(data, indent=2) + "\n")
+        tmp.flush()
+        os.fsync(tmp.fileno())
+        tmp.close()
+        os.replace(tmp_path, path)
+    except BaseException:
+        if not tmp.closed:
+            tmp.close()
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
+
+
 def add_mcp_server(
     name: str, spec: dict[str, Any], config_path: Path | None = None
 ) -> Path:
@@ -85,7 +113,7 @@ def add_mcp_server(
         mcp_servers = {}
         data["mcpServers"] = mcp_servers
     mcp_servers[name] = spec
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    _write_mcp_json(path, data)
     return path
 
 
@@ -102,7 +130,7 @@ def remove_mcp_server(name: str, config_path: Path | None = None) -> bool:
     if not isinstance(mcp_servers, dict) or name not in mcp_servers:
         return False
     del mcp_servers[name]
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    _write_mcp_json(path, data)
     return True
 
 
@@ -124,7 +152,7 @@ def set_mcp_server_enabled(
         mcp_servers[name].pop("enabled", None)
     else:
         mcp_servers[name]["enabled"] = False
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    _write_mcp_json(path, data)
     return True
 
 
@@ -295,7 +323,10 @@ class MCPManager:
                     import httpx2
 
                     http_client = await stack.enter_async_context(
-                        httpx2.AsyncClient(headers=headers)
+                        httpx2.AsyncClient(
+                            headers=headers,
+                            timeout=httpx2.Timeout(30.0, read=300.0),
+                        )
                     )
 
                 streams = await stack.enter_async_context(

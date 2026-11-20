@@ -363,3 +363,37 @@ def test_system_prompt_mentions_stdlib_auto_import_and_explicit_py_imports(tmp_p
     assert "explicit imports are still required" in prompt
 
 
+def test_edit_preserves_mode_and_write_respects_umask(tmp_path: Path) -> None:
+    import os
+    import stat
+    from agent.helpers import edit, write
+
+    script = tmp_path / "run.sh"
+    script.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    os.chmod(script, 0o755)
+
+    edit(str(script), "echo hi", "echo bye")
+    assert stat.S_IMODE(script.stat().st_mode) == 0o755
+
+    prev_umask = os.umask(0o022)
+    try:
+        new_file = tmp_path / "plain.txt"
+        write(str(new_file), "hello\n")
+        assert stat.S_IMODE(new_file.stat().st_mode) == 0o644
+    finally:
+        os.umask(prev_umask)
+
+
+def test_rg_leading_dash_patterns(tmp_path: Path) -> None:
+    from agent.helpers import rg
+
+    target = tmp_path / "flags.txt"
+    target.write_text("--verbose flag\n-n line\n", encoding="utf-8")
+
+    out_fixed = rg("--verbose", str(tmp_path), fixed=True)
+    assert "--verbose flag" in out_fixed
+
+    out_regex = rg("-n", str(tmp_path), fixed=False)
+    assert "-n line" in out_regex
+
+

@@ -13,8 +13,10 @@ import inspect
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,7 @@ from typing import Any
 from agent.images import load_image_file
 
 _IGNORE_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", ".mypy_cache"}
+_UMASK_LOCK = threading.Lock()
 
 _IMAGES_VAR: contextvars.ContextVar[list[dict[str, str]] | None] = contextvars.ContextVar(
     "quartz_images", default=None
@@ -78,7 +81,7 @@ def rg(pattern: str, path: str = ".", glob: str | None = None, max_hits: int = 1
             cmd.append("-F")
         if glob:
             cmd.extend(["-g", glob])
-        cmd.extend([pattern, path])
+        cmd.extend(["--", pattern, path])
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         out = proc.stdout.strip()
         if proc.returncode == 0:
@@ -131,6 +134,13 @@ def read(path: str, start: int = 1, end: int = 200) -> str:
 def _atomic_write(path: Path, content: str, newline: str | None = None) -> None:
     """Atomically write content to path using a temp file in the same directory."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        mode = stat.S_IMODE(path.stat().st_mode)
+    else:
+        with _UMASK_LOCK:
+            cur_umask = os.umask(0o077)
+            os.umask(cur_umask)
+        mode = 0o666 & ~cur_umask
     tmp = tempfile.NamedTemporaryFile(
         mode="w",
         encoding="utf-8",
@@ -144,6 +154,7 @@ def _atomic_write(path: Path, content: str, newline: str | None = None) -> None:
         tmp.flush()
         os.fsync(tmp.fileno())
         tmp.close()
+        os.chmod(tmp_path, mode)
         os.replace(tmp_path, path)
     except BaseException:
         if tmp_path.exists():
