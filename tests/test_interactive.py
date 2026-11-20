@@ -19,7 +19,7 @@ from prompt_toolkit.output import DummyOutput
 from rich.text import Text
 
 import agent.cli as cli
-from agent.commands import _CLIRuntime
+from agent.runtime import AgentRuntime as _CLIRuntime
 from agent.interactive import InteractiveDock
 from agent.loop import TurnUsage
 from agent.ui import (

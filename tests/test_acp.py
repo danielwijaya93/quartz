@@ -268,6 +268,53 @@ def test_acp_parallel_tool_call_ids_and_cancel(tmp_path: Path, monkeypatch) -> N
     assert ends[1]["rawOutput"] == "4"
 
 
+def test_acp_out_of_order_tool_call_id_callbacks(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
+
+    from agent.kernel_client import CellResult
+
+    def _fake_agent_loop(*args, **kwargs):
+        on_tool_call = kwargs["on_tool_call"]
+        on_tool_result = kwargs["on_tool_result"]
+        on_tool_call("tc_1", "a = 1")
+        on_tool_call("tc_2", "b = 2")
+        on_tool_result("tc_2", CellResult(ok=True, stdout="", stderr="", result="2"))
+        on_tool_result("tc_1", CellResult(ok=True, stdout="", stderr="", result="1"))
+        return "done", kwargs["messages"] if "messages" in kwargs else args[3], 10
+
+    monkeypatch.setattr("agent.acp.agent_loop", _fake_agent_loop)
+    out_buf = io.StringIO()
+    server = ACPServer(
+        lambda: (object(), "deepseek", "deepseek-flash", "high"),
+        in_stream=io.StringIO(""),
+        out_stream=out_buf,
+    )
+    server._dispatch_request({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {"cwd": str(tmp_path)}})
+    sid = json.loads(out_buf.getvalue().splitlines()[0])["result"]["sessionId"]
+    out_buf.seek(0)
+    out_buf.truncate(0)
+
+    server._dispatch_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "session/prompt",
+            "params": {"sessionId": sid, "prompt": [{"type": "text", "text": "hi"}]},
+        }
+    )
+    for st in server._sessions.values():
+        st.kernel.close()
+
+    msgs = [json.loads(line) for line in out_buf.getvalue().splitlines() if line.strip()]
+    updates = [m["params"]["update"] for m in msgs if m.get("method") == "session/update"]
+    starts = {u["toolCallId"]: u for u in updates if u["sessionUpdate"] == "tool_call"}
+    ends = {u["toolCallId"]: u for u in updates if u["sessionUpdate"] == "tool_call_update"}
+    assert set(starts.keys()) == {"tc_1", "tc_2"}
+    assert set(ends.keys()) == {"tc_1", "tc_2"}
+    assert ends["tc_1"]["rawOutput"] == "1"
+    assert ends["tc_2"]["rawOutput"] == "2"
+
+
 def test_acp_session_cancel_stops_active_turn(tmp_path: Path, monkeypatch) -> None:
     import threading
     from types import SimpleNamespace

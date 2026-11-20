@@ -13,10 +13,12 @@ import pytest
 from rich.console import Console
 
 import agent.cli as cli
-from agent.cli import BlockPrinter, MarkdownBlockStreamer, format_compact_cell_summary
+import agent.ui as ui
 from agent.completer import AgentCompleter
 from agent.kernel_client import CellResult, KernelClient
 from agent.loop import TurnUsage, agent_loop
+from agent.runtime import AgentRuntime
+from agent.ui import BlockPrinter, MarkdownBlockStreamer, format_compact_cell_summary
 
 
 def test_slash_command_autocomplete(tmp_path: Path) -> None:
@@ -332,7 +334,7 @@ def test_cell_summary_chip_keeps_cell_index(monkeypatch: pytest.MonkeyPatch) -> 
 
     cli.printer.reset()
     cli.printer.markdown("Running a cell now.")
-    cell_group = cli.CellGroupBuffer()
+    cell_group = ui.CellGroupBuffer()
     cell_group.add(1, "print('hello')", CellResult(True, "hello\n", "", None), 0.01)
     cell_group.flush()
 
@@ -359,13 +361,13 @@ def test_tool_result_panel_keeps_literal_brackets(monkeypatch: pytest.MonkeyPatc
 
 
 def test_grouped_cell_summary_single_and_multi() -> None:
-    single, ok1 = cli.format_grouped_cell_summary(
+    single, ok1 = ui.format_grouped_cell_summary(
         [(1, "x = 1", CellResult(True, "", "", None), 0.02)]
     )
     assert ok1 is True
     assert single == "· #1 · Run Python (1L: x = 1) · no output · 0.02s"
 
-    multi, ok_multi = cli.format_grouped_cell_summary(
+    multi, ok_multi = ui.format_grouped_cell_summary(
         [
             (1, "a = 1", CellResult(True, "", "", None), 0.10),
             (2, "b = 2", CellResult(True, "2\n", "", None), 0.25),
@@ -377,7 +379,7 @@ def test_grouped_cell_summary_single_and_multi() -> None:
 
 
 def test_grouped_cell_summary_with_failure() -> None:
-    summary, ok = cli.format_grouped_cell_summary(
+    summary, ok = ui.format_grouped_cell_summary(
         [
             (1, "a = 1", CellResult(True, "", "", None), 0.10),
             (2, "1 / 0", CellResult(False, "", "ZeroDivisionError: division by zero", None), 0.05),
@@ -394,7 +396,7 @@ def test_cell_group_buffer_flushes_once_per_run(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(cli, "printer", BlockPrinter(console))
 
     cli.printer.reset()
-    group = cli.CellGroupBuffer()
+    group = ui.CellGroupBuffer()
     for i in range(1, 6):
         group.add(i, f"x = {i}", CellResult(True, "", "", None), 0.1)
     group.flush()
@@ -412,7 +414,7 @@ def test_cell_group_buffer_chunking_every_five(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(cli, "printer", BlockPrinter(console))
 
     cli.printer.reset()
-    group = cli.CellGroupBuffer(max_group_size=5)
+    group = ui.CellGroupBuffer(max_group_size=5)
     for i in range(1, 13):
         group.add(i, f"x = {i}", CellResult(True, "", "", None), 0.1)
     group.flush()
@@ -428,15 +430,15 @@ def test_cell_group_buffer_chunking_every_five(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_parse_expand_range() -> None:
-    assert cli._parse_expand_range("", 5) == (5, 5)
-    assert cli._parse_expand_range("3", 5) == (3, 3)
-    assert cli._parse_expand_range("2..4", 5) == (2, 4)
+    assert ui._parse_expand_range("", 5) == (5, 5)
+    assert ui._parse_expand_range("3", 5) == (3, 3)
+    assert ui._parse_expand_range("2..4", 5) == (2, 4)
     with pytest.raises(ValueError):
-        cli._parse_expand_range("4..2", 5)
+        ui._parse_expand_range("4..2", 5)
     with pytest.raises(ValueError):
-        cli._parse_expand_range("0..2", 5)
+        ui._parse_expand_range("0..2", 5)
     with pytest.raises(ValueError):
-        cli._parse_expand_range("6", 5)
+        ui._parse_expand_range("6", 5)
 
 
 def test_action_classifier_single_and_combined() -> None:
@@ -477,24 +479,24 @@ def test_short_path_collapses_home(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_format_turn_timing_and_duration() -> None:
-    assert cli._fmt_duration(0.42) == "0.4s"
-    assert cli._fmt_duration(7.1) == "7s"
-    assert cli._fmt_duration(72.0) == "1m 12s"
-    assert cli._format_turn_timing(7.0, 7.0, 1) == "7s · total 7s (1 turn)"
-    assert cli._format_turn_timing(12.2, 72.0, 3) == "12s · total 1m 12s (3 turns)"
+    assert ui._fmt_duration(0.42) == "0.4s"
+    assert ui._fmt_duration(7.1) == "7s"
+    assert ui._fmt_duration(72.0) == "1m 12s"
+    assert ui._format_turn_timing(7.0, 7.0, 1) == "7s · total 7s (1 turn)"
+    assert ui._format_turn_timing(12.2, 72.0, 3) == "12s · total 1m 12s (3 turns)"
 
 
 def test_format_thought_duration_and_stopwatch() -> None:
-    assert cli._fmt_thought_duration(0.2) == "<1 second"
-    assert cli._fmt_thought_duration(1.0) == "1 second"
-    assert cli._fmt_thought_duration(2.4) == "2 seconds"
-    assert cli._fmt_thought_duration(60.0) == "1 minute"
-    assert cli._fmt_thought_duration(90.0) == "1 minute 30 seconds"
-    assert cli._fmt_thought_duration(121.0) == "2 minutes 1 second"
+    assert ui._fmt_thought_duration(0.2) == "<1 second"
+    assert ui._fmt_thought_duration(1.0) == "1 second"
+    assert ui._fmt_thought_duration(2.4) == "2 seconds"
+    assert ui._fmt_thought_duration(60.0) == "1 minute"
+    assert ui._fmt_thought_duration(90.0) == "1 minute 30 seconds"
+    assert ui._fmt_thought_duration(121.0) == "2 minutes 1 second"
 
-    assert cli._fmt_stopwatch(0.4) == "0s"
-    assert cli._fmt_stopwatch(5.9) == "5s"
-    assert cli._fmt_stopwatch(90.2) == "1m 30s"
+    assert ui._fmt_stopwatch(0.4) == "0s"
+    assert ui._fmt_stopwatch(5.9) == "5s"
+    assert ui._fmt_stopwatch(90.2) == "1m 30s"
 
 
 def test_run_turn_thought_line_separate_from_grouped_cells(
@@ -514,16 +516,16 @@ def test_run_turn_thought_line_separate_from_grouped_cells(
 
         on_status("Thinking...")
         on_status(None)
-        on_tool_call("x = 1")
+        on_tool_call("tc_1", "x = 1")
         on_status("Running ipython...")
-        on_tool_result(CellResult(ok=True, stdout="", stderr="", result=None))
+        on_tool_result("tc_1", CellResult(ok=True, stdout="", stderr="", result=None))
         on_status(None)
 
         on_status("Thinking...")
         on_status(None)
-        on_tool_call("y = 2")
+        on_tool_call("tc_2", "y = 2")
         on_status("Running ipython...")
-        on_tool_result(CellResult(ok=True, stdout="", stderr="", result=None))
+        on_tool_result("tc_2", CellResult(ok=True, stdout="", stderr="", result=None))
         on_status(None)
 
         on_status("Thinking...")
@@ -533,7 +535,7 @@ def test_run_turn_thought_line_separate_from_grouped_cells(
 
     monkeypatch.setattr(cli, "agent_loop", _fake_agent_loop)
 
-    rt = cli._CLIRuntime(
+    rt = AgentRuntime(
         cwd=tmp_path,
         kernel=object(),  # type: ignore[arg-type]
         client=object(),
@@ -558,6 +560,51 @@ def test_run_turn_thought_line_separate_from_grouped_cells(
     assert lines[0].startswith("Thought for ")
     assert lines[1].startswith("· #1..#2 · ")
     assert lines[2] == "All done."
+
+
+def test_run_turn_matches_out_of_order_tool_call_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    test_console, _ = _recording_console()
+    test_printer = BlockPrinter(test_console)
+    monkeypatch.setattr(cli, "console", test_console)
+    monkeypatch.setattr(cli, "printer", test_printer)
+
+    def _fake_agent_loop(*args, **kwargs):
+        on_tool_call = kwargs["on_tool_call"]
+        on_tool_result = kwargs["on_tool_result"]
+        on_tool_call("tc_first", "first_code = 1")
+        on_tool_call("tc_second", "second_code = 2")
+        # Return results in reverse order
+        on_tool_result("tc_second", CellResult(ok=True, stdout="two\n", stderr="", result=None))
+        on_tool_result("tc_first", CellResult(ok=True, stdout="one\n", stderr="", result=None))
+        return "Done.", [], 10
+
+    monkeypatch.setattr(cli, "agent_loop", _fake_agent_loop)
+    rt = AgentRuntime(
+        cwd=tmp_path,
+        kernel=object(),  # type: ignore[arg-type]
+        client=object(),  # type: ignore[arg-type]
+        provider_name="openai",
+        model="gpt-5",
+        effort="",
+        system_prompt="",
+        active_session=object(),  # type: ignore[arg-type]
+        messages=[],
+        usage_stats=TurnUsage(),
+        max_context_tokens=100_000,
+        compact_reserve_tokens=8_000,
+        keep_recent_tokens=2_000,
+        verbose=False,
+        plain_output=False,
+        headless=True,
+    )
+    cli._run_turn(rt)
+    assert len(rt.cell_history) == 2
+    assert rt.cell_history[0][0] == "second_code = 2"
+    assert rt.cell_history[0][1].stdout == "two\n"
+    assert rt.cell_history[1][0] == "first_code = 1"
+    assert rt.cell_history[1][1].stdout == "one\n"
 
 def test_turn_progress_tracker_in_progress_and_collapsing() -> None:
     buf = io.StringIO()

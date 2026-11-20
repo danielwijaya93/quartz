@@ -44,7 +44,7 @@ from agent.ui import (
 )
 
 if TYPE_CHECKING:
-    from agent.commands import _CLIRuntime
+    from agent.runtime import AgentRuntime
 
 
 class _CompletionsControl(UIControl):
@@ -127,7 +127,7 @@ class InteractiveDock:
 
     def __init__(
         self,
-        rt: _CLIRuntime,
+        rt: AgentRuntime,
         *,
         resumed: bool = False,
         history_path: Path | None = None,
@@ -626,11 +626,12 @@ class InteractiveDock:
         self._execute_dock_turn()
 
     def _execute_dock_turn(self) -> None:
-        from agent.cli import _run_turn, _sym
+        from agent.cli import _run_turn
         from agent.loop import TurnAborted
+        from agent.ui import TurnProgressTracker, console
 
         active_printer = _active_printer()
-        active_console = _sym("console")
+        active_console = console
         self._abort_event.clear()
         while not self._steering_queue.empty():
             try:
@@ -638,7 +639,7 @@ class InteractiveDock:
             except queue.Empty:
                 break
 
-        tracker = _sym("TurnProgressTracker")(
+        tracker = TurnProgressTracker(
             active_console,
             active_printer,
             verbose=self.rt.verbose,
@@ -711,7 +712,7 @@ class InteractiveDock:
             self._invalidate()
 
     def _bg_watcher_loop(self) -> None:
-        from agent.loop import format_bash_done_events
+        from agent.loop import drain_bash_events
 
         while not self._stop_event.is_set():
             self._refresh_bg_count()
@@ -731,11 +732,9 @@ class InteractiveDock:
                 if has_events and not self._stop_event.is_set():
                     if self._worker_lock.acquire(blocking=False):
                         try:
-                            events = self.rt.kernel.drain_events()
-                            notice = format_bash_done_events(events)
+                            notice = drain_bash_events(self.rt.kernel, self.rt.messages)
                             if notice:
                                 _render_bash_notice(notice)
-                                self.rt.messages.append({"role": "user", "content": notice})
                                 self._execute_dock_turn()
                         finally:
                             self._worker_lock.release()

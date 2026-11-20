@@ -13,7 +13,8 @@ from typing import Any
 
 import pytest
 
-from agent.commands import _CLIRuntime, _cmd_compact
+from agent.commands import _cmd_compact
+from agent.runtime import AgentRuntime as _CLIRuntime
 from agent.compact import _serialize_for_summary, clear_old_tool_results
 from agent.errors import ProviderError
 from agent.kernel_client import KernelClient

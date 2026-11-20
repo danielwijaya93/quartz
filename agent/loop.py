@@ -352,8 +352,8 @@ def agent_loop(
     compact_reserve_tokens: int = 16_384,
     keep_recent_tokens: int = DEFAULT_KEEP_RECENT_TOKENS,
     stream: bool = True,
-    on_tool_call: Callable[[str], None] | None = None,
-    on_tool_result: Callable[[CellResult], None] | None = None,
+    on_tool_call: Callable[[str, str], None] | None = None,
+    on_tool_result: Callable[[str, CellResult], None] | None = None,
     on_compaction: Callable[[CompactionResult], None] | None = None,
     on_bash_notice: Callable[[str], None] | None = None,
     on_status: Callable[[str | None], None] | None = None,
@@ -477,7 +477,8 @@ def agent_loop(
         if ipython_indices:
             for i in ipython_indices:
                 if on_tool_call:
-                    on_tool_call(parsed_calls[i][2] or "")
+                    tc_id, _, code = parsed_calls[i]
+                    on_tool_call(tc_id, code or "")
             if on_status:
                 on_status("Running ipython...")
             try:
@@ -521,7 +522,7 @@ def agent_loop(
             if cell_res.images:
                 step_images.extend(cell_res.images)
             if on_tool_result:
-                on_tool_result(cell_res)
+                on_tool_result(tc_id, cell_res)
             messages.append(
                 {
                     "role": "tool",

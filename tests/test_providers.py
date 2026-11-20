@@ -7,7 +7,9 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent.commands import _CLIRuntime, _build_client, _handle_slash_command
+from agent.commands import _handle_slash_command
+from agent.runtime import AgentRuntime as _CLIRuntime
+from agent.subcommands import build_provider as _build_client
 from agent.google_auth import (
     GoogleCredentials,
     delete_google_credentials,
@@ -143,7 +145,11 @@ def test_slash_login_logout_and_model_openrouter(tmp_path: Path, monkeypatch) ->
     rt = _make_runtime(tmp_path)
 
     # /login openrouter prompts for API key and discovers models
-    monkeypatch.setattr("agent.commands._prompt_input", lambda *a, **kw: "sk-or-live-123")
+    monkeypatch.setattr("agent.subcommands._prompt_input", lambda *a, **kw: "sk-or-live-123")
+    monkeypatch.setattr(
+        "agent.subcommands.discover_models",
+        lambda prov, **kw: (["anthropic/claude-sonnet-4", "qwen/qwen3-coder"], None),
+    )
     monkeypatch.setattr(
         "agent.commands.discover_models",
         lambda prov, **kw: (["anthropic/claude-sonnet-4", "qwen/qwen3-coder"], None),
@@ -207,3 +213,26 @@ def test_delete_google_credentials_preserves_0600_mode(tmp_path: Path, monkeypat
     mode = stat.S_IMODE(auth_path.stat().st_mode)
     assert mode == 0o600
     assert load_provider_auth("openrouter") is not None
+
+
+def test_build_provider_raises_typed_errors_never_system_exit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import pytest
+    from agent.errors import CredentialError, EndpointConfigError
+    from agent.subcommands import build_provider
+
+    monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "missing_auth.json"))
+    monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "missing_cfg.json"))
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    with pytest.raises(EndpointConfigError, match="Unknown provider"):
+        build_provider(provider="nonexistent")
+
+    with pytest.raises(CredentialError, match="/login google"):
+        build_provider(provider="google")
+
+    with pytest.raises(CredentialError, match="/login deepseek"):
+        build_provider(provider="deepseek")
