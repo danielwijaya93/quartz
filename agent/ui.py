@@ -443,12 +443,17 @@ class TurnProgressTracker:
         verbose: bool = False,
         plain_output: bool = False,
         live_renderer: Callable[[Group | None], None] | None = None,
+        show_thinking: bool = False,
+        show_details: bool = False,
     ) -> None:
         self.console = target_console
         self.printer = target_printer
         self.chunk_size = chunk_size
         self.verbose = verbose
         self.plain_output = plain_output
+        self.show_thinking = show_thinking
+        self.show_details = show_details
+        self.thinking_text: str = ""
         self.lock = threading.RLock()
 
         if live_renderer is None:
@@ -501,9 +506,14 @@ class TurnProgressTracker:
                 dur: float = val
                 items.append(Text(f"Thought for {_fmt_thought_duration(dur)}", style="dim"))
             elif kind == "tool":
+                if self.show_details:
+                    continue
                 idx, code, res, dur = val
                 summary = format_compact_cell_summary(idx, code, res, dur)
                 items.append(Text(summary, style="dim" if res.ok else "red"))
+        if self.show_thinking and self.thinking_text:
+            tail = self.thinking_text[-500:]
+            items.append(Text(tail, style="dim"))
 
         if self.active_thinking_start is not None:
             elapsed = time.monotonic() - self.active_thinking_start
@@ -540,6 +550,16 @@ class TurnProgressTracker:
                 or self.steering_messages
             ):
                 self._render_current()
+
+    def add_thinking_delta(self, text: str) -> None:
+        if self.plain_output or self.verbose:
+            return
+        if not text:
+            return
+        with self.lock:
+            self.thinking_text += text
+            self._flushed = False
+            self._render_current()
 
     def set_input_buffer(self, text: str) -> None:
         if self.plain_output or self.verbose:
@@ -640,20 +660,30 @@ class TurnProgressTracker:
 
         total_thought = sum(self.thinking_intervals)
         entries = list(self.tool_entries)
+        thinking_text = self.thinking_text
         self.thinking_intervals.clear()
         self.step_history.clear()
         self.tool_entries.clear()
+        self.thinking_text = ""
         self._flushed = True
 
-        if total_thought > 0 and entries:
-            header = Group(
-                Text(f"Thought for {_fmt_thought_duration(total_thought)}", style="dim"),
-                format_grouped_cell_summary(entries),
-            )
+        thought_block: Group | Text | None = None
+        if total_thought > 0:
+            if self.show_thinking and thinking_text:
+                clamped = thinking_text[:2000]
+                suffix = "… (truncated)" if len(thinking_text) > 2000 else ""
+                thought_block = Group(
+                    Text(f"Thought for {_fmt_thought_duration(total_thought)}:", style="dim"),
+                    Text(clamped + suffix, style="dim"),
+                )
+            else:
+                thought_block = Text(f"Thought for {_fmt_thought_duration(total_thought)}", style="dim")
+        if thought_block is not None and entries and not self.show_details:
+            header = Group(thought_block, format_grouped_cell_summary(entries))
             self.printer.block(header)
-        elif total_thought > 0:
-            self.printer.block(Text(f"Thought for {_fmt_thought_duration(total_thought)}", style="dim"))
-        elif entries:
+        elif thought_block is not None:
+            self.printer.block(thought_block)
+        elif entries and not self.show_details:
             self.printer.block(format_grouped_cell_summary(entries))
 
         if (self.input_buffer or self.steering_messages) and not self.plain_output and not self.verbose:
@@ -1049,6 +1079,8 @@ def _replay_session(
     verbose: bool = False,
     cell_meta: dict[str, dict[str, Any]] | None = None,
     steering_indices: set[int] | None = None,
+    show_thinking: bool = False,
+    show_details: bool = False,
 ) -> None:
     """Replay a resumed session's full conversation and tool cells into the terminal."""
     p = _active_printer()
@@ -1081,6 +1113,17 @@ def _replay_session(
             else:
                 p.block(render_user_prompt(text))
         elif role == "assistant":
+            reasoning = msg.get("reasoning") or ""
+            if show_thinking and isinstance(reasoning, str) and reasoning.strip():
+                cell_group.flush()
+                clamped = reasoning[:2000]
+                suffix = "… (truncated)" if len(reasoning) > 2000 else ""
+                p.block(
+                    Group(
+                        Text("Thought:", style="dim"),
+                        Text(clamped + suffix, style="dim"),
+                    )
+                )
             if content:
                 cell_group.flush()
                 p.markdown(str(content))
@@ -1114,7 +1157,8 @@ def _replay_session(
                     result=None,
                 )
                 cell_history.append((code, cell_res, duration))
-                if verbose:
+                if verbose or show_details:
+                    cell_group.flush()
                     _render_tool_call(code)
                     _render_tool_result(cell_res)
                 else:

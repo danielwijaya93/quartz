@@ -41,6 +41,8 @@ class AgentRuntime:
     verbose: bool
     plain_output: bool
     headless: bool
+    show_thinking: bool = False
+    show_details: bool = False
     cell_history: list[tuple[str, CellResult, float]] = dataclasses.field(default_factory=list)
     pending_images: list[ImageAttachment] = dataclasses.field(default_factory=list)
     total_elapsed_s: float = 0.0

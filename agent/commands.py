@@ -106,6 +106,8 @@ class CommandRegistry:
                 "  Esc              Abort running turn or cancel modal/completion",
                 "  Ctrl+C           Clear draft / abort turn / exit",
                 "  Ctrl+D           Exit when input is empty",
+                "  Ctrl+T           Toggle thinking trace",
+                "  Ctrl+O           Toggle detail tool calls",
                 "  @path            Attach or mention a file",
             ]
         )
