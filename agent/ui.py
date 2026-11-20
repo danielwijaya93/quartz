@@ -25,7 +25,7 @@ from rich.markdown import Markdown
 from rich.text import Text
 
 from agent.actions import describe_cell_actions, describe_cell_intent
-from agent.banner import _fmt_k, _short_path
+from agent.banner import _fmt_k, _short_path, format_usage_metrics
 from agent.compact import CompactionReason, CompactionResult
 from agent.images import content_to_text
 from agent.kernel_client import CellResult
@@ -1207,6 +1207,5 @@ def _format_turn_timing(turn_seconds: float, total_seconds: float, turn_count: i
 
 
 def _format_turn_footer(usage: TurnUsage, max_context_tokens: int) -> str:
-    pct = usage.context_pct(max_context_tokens)
-    cache_pct = usage.cache_hit_rate * 100.0
-    return f"ctx {_fmt_k(max_context_tokens)} ({pct:.1f}%) · CH {cache_pct:.0f}%"
+    ctx_value, cache_value = format_usage_metrics(usage, max_context_tokens)
+    return f"ctx {ctx_value} · CH {cache_value}"

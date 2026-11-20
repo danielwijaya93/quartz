@@ -133,6 +133,12 @@ def _parse_usage(raw: Any) -> Usage | None:
         return None
     details = raw.get("prompt_tokens_details")
     cached = int(details.get("cached_tokens") or 0) if isinstance(details, dict) else 0
+    if not cached:
+        # Direct DeepSeek API reports prefix-cache hits as a top-level
+        # ``prompt_cache_hit_tokens`` (prompt_tokens = hit + miss). OpenRouter
+        # normalizes to ``prompt_tokens_details.cached_tokens``, so this is
+        # only a fallback for the direct-DeepSeek shape.
+        cached = int(raw.get("prompt_cache_hit_tokens") or 0)
     return Usage(
         input_tokens=int(raw.get("prompt_tokens") or 0),
         output_tokens=int(raw.get("completion_tokens") or 0),

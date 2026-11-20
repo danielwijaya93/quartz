@@ -123,6 +123,12 @@ MODEL_CONTEXT_TOKENS: dict[str, int] = {
     "deepseek-chat": 64_000,
     "deepseek-reasoner": 64_000,
     "deepseek-flash": 64_000,
+    # OpenRouter namespaced ids (bare ids above are the direct DeepSeek API,
+    # 64k input). OpenRouter /models (verified 2026-11-20): deepseek-chat
+    # context_length=163840; muse-ember context_length=1048576.
+    "deepseek/deepseek-chat": 163_840,
+    "deepseek/deepseek-flash": 163_840,
+    "meta/muse-ember": 1_048_576,
 }
 
 DEFAULT_CONTEXT_TOKENS = 128_000

@@ -43,7 +43,7 @@ def test_wide_one_line_layout():
     assert "gpt-5.4 (high)" in line
     assert "~/workspace/quartz" in line
     assert "ctx 128.0k (9.7%)" in line
-    assert "CH 50%" in line
+    assert "CH 50.0%" in line
     assert "bg " not in line
     assert len(line) <= 140
 
@@ -54,7 +54,7 @@ def test_narrow_two_line_wrap():
 
     assert len(lines) == 2
     assert lines[0] == "quartz v0.1.0 · gpt-5.4 (high) · ~/workspace/quartz"
-    assert lines[1] == "ctx 128.0k (9.7%) · CH 50%"
+    assert lines[1] == "ctx 128.0k (9.7%) · CH 50.0%"
     assert all(len(line) <= 70 for line in lines)
 
 
@@ -111,7 +111,7 @@ def test_zero_tokens_and_zero_max_context():
 
     assert len(lines) == 1
     assert "ctx 0 (0.0%)" in lines[0]
-    assert "CH 0%" in lines[0]
+    assert "CH 0.0%" in lines[0]
 
 
 def test_extreme_narrow_widths_truncate_gracefully():
@@ -195,7 +195,38 @@ def test_turn_footer_compact_format():
     from agent.ui import _format_turn_footer
 
     usage = TurnUsage(prompt_tokens=12_400, cached_tokens=6_200)
-    assert _format_turn_footer(usage, 128_000) == "ctx 128.0k (9.7%) · CH 50%"
-    assert _format_turn_footer(usage, 1_000_000) == "ctx 1.0M (1.2%) · CH 50%"
+    assert _format_turn_footer(usage, 128_000) == "ctx 128.0k (9.7%) · CH 50.0%"
+    assert _format_turn_footer(usage, 1_000_000) == "ctx 1.0M (1.2%) · CH 50.0%"
     zero = TurnUsage(prompt_tokens=0, cached_tokens=0)
-    assert _format_turn_footer(zero, 0) == "ctx 0 (0.0%) · CH 0%"
+    assert _format_turn_footer(zero, 0) == "ctx 0 (0.0%) · CH 0.0%"
+
+
+def test_banner_overflow_renders_warning():
+    from agent.ui import _format_turn_footer
+
+    # 71300 / 64000 = 111.4% — raw pct kept, warning appended.
+    usage = TurnUsage(prompt_tokens=71_300, cached_tokens=50_000)
+    assert "⚠ overflow" in _format_turn_footer(usage, 64_000)
+    state = _make_state(prompt_tokens=71_300, cached_tokens=50_000, max_context_tokens=64_000)
+    line = format_banner_plain(state, width=140)[0]
+    assert "⚠ overflow" in line
+    assert "(111.4%)" in line
+
+    # Exactly 100% is not an overflow.
+    assert "overflow" not in _format_turn_footer(
+        TurnUsage(prompt_tokens=64_000, cached_tokens=0), 64_000
+    )
+    # Zero window never overflows.
+    assert "overflow" not in _format_turn_footer(TurnUsage(prompt_tokens=999), 0)
+
+
+def test_banner_ch_one_decimal_shows_99_6_not_100():
+    """Real session case: 64000/64230 = 99.64% must read 99.6%, not 100%."""
+    from agent.ui import _format_turn_footer
+
+    usage = TurnUsage(prompt_tokens=64_230, cached_tokens=64_000)
+    footer = _format_turn_footer(usage, 128_000)
+    assert "CH 99.6%" in footer
+    assert "CH 100" not in footer
+    state = _make_state(prompt_tokens=64_230, cached_tokens=64_000, max_context_tokens=128_000)
+    assert "CH 99.6%" in format_banner_plain(state, width=140)[0]

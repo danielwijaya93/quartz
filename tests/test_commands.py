@@ -251,6 +251,40 @@ def test_real_runtime_cmd_model_handles_credential_error(
     assert rt.model == "deepseek-flash"
 
 
+def test_real_runtime_cmd_model_switch_updates_max_context_tokens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Switching models must re-resolve the ctx denominator (stale-64k bug)."""
+    rt = _make_real_runtime(tmp_path, monkeypatch)
+    rt.max_context_tokens = 64_000  # stale DeepSeek window at startup
+    monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "config.json"))
+    monkeypatch.setattr("agent.commands._provider_ready", lambda p: True)
+    monkeypatch.setattr("agent.commands.discover_models", lambda p: (["meta/muse-ember"], None))
+    monkeypatch.setattr(
+        "agent.commands._pick_option",
+        lambda title, opts, current=None: "openrouter" if title == "Provider" else "high",
+    )
+    monkeypatch.setattr(
+        "agent.commands._pick_searchable_option",
+        lambda title, opts, current=None, allow_custom=True: "meta/muse-ember",
+    )
+    monkeypatch.setattr("agent.models.policy_efforts", lambda p, m: ["high"])
+
+    new_client = SimpleNamespace()
+
+    def _build(provider, model_override=None, effort_override=None):
+        assert provider == "openrouter"
+        assert model_override == "meta/muse-ember"
+        return new_client, "openrouter", "meta/muse-ember", "high"
+
+    monkeypatch.setattr("agent.commands.build_provider", _build)
+
+    assert _handle_slash_command(rt, "/model") is False
+    assert rt.provider_name == "openrouter"
+    assert rt.model == "meta/muse-ember"
+    assert rt.max_context_tokens == 1_048_576
+
+
 def test_real_runtime_cmd_image_and_clear(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rt = _make_real_runtime(tmp_path, monkeypatch)
     img_path = tmp_path / "sample.png"
