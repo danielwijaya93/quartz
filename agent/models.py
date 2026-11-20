@@ -186,7 +186,7 @@ def resolve_provider_credentials(
                 base_url = spec.get("base_url") or os.getenv("OPENAI_BASE_URL") or None
             return env_val.strip(), base_url, "env"
 
-    if provider in ("deepseek", "openai", "custom"):
+    if provider in ("openai", "custom"):
         openai_key = os.getenv("OPENAI_API_KEY")
         if openai_key and openai_key.strip():
             base_url = os.getenv("OPENAI_BASE_URL") or spec.get("base_url") or None

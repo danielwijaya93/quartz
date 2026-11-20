@@ -368,6 +368,7 @@ class KernelWorker:
             on_done_callback=self._on_bash_done,
         )
         self._handles.append(handle)
+        self._send_bg_count()
         return handle
 
     def _send(self, payload: dict[str, Any]) -> None:
@@ -375,9 +376,13 @@ class KernelWorker:
         self._proto_out.write(line + "\n")
         self._proto_out.flush()
 
+    def _send_bg_count(self) -> None:
+        self._send({"type": "bg_count", "count": sum(1 for h in self._handles if h.running)})
+
     def _on_bash_done(self, handle: BashHandle) -> None:
         with contextlib.suppress(ValueError):
             self._handles.remove(handle)
+        self._send_bg_count()
         # Only emit a wake-up/notification if the command outlived its starting cell
         # and was not directly awaited inside a cell.
         if handle._awaited:

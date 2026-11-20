@@ -349,6 +349,7 @@ def _execute_interactive_turn(rt: _CLIRuntime) -> str:
             active_printer.block(Text(f"[steering] {preview}", style="cyan"))
 
     def _on_steering(text: str) -> None:
+        tracker.flush()
         tracker.clear_steering_messages()
         if not (rt.plain_output or rt.verbose):
             preview = text[:60] + ("..." if len(text) > 60 else "")

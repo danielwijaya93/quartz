@@ -148,7 +148,7 @@ def clear_old_tool_results(
 
     Returns (messages, cleared_count). Message objects are never mutated in place.
     """
-    boundary = _keep_boundary(messages, keep_recent_tokens)
+    boundary = _find_safe_split_index(messages, keep_recent_tokens)
     if boundary <= 0:
         return messages, 0
 
@@ -171,7 +171,10 @@ def clear_old_tool_results(
     return result, cleared
 
 
-def _serialize_for_summary(messages: list[dict[str, Any]]) -> str:
+def _serialize_for_summary(
+    messages: list[dict[str, Any]],
+    max_total_chars: int = 120_000,
+) -> str:
     lines: list[str] = []
     for msg in messages:
         role = msg.get("role", "unknown")
@@ -188,7 +191,47 @@ def _serialize_for_summary(messages: list[dict[str, Any]]) -> str:
             lines.append(f"[tool result]: {str(content)[:800]}")
         else:
             lines.append(f"[{role}]: {str(content)[:1500]}")
-    return "\n".join(lines)
+
+    joined = "\n".join(lines)
+    if len(joined) <= max_total_chars:
+        return joined
+
+    if max_total_chars <= 0:
+        return ""
+
+    head: list[str] = []
+    start_idx = 0
+    budget = max_total_chars
+    marker_reserve = 64
+    if lines and len(lines[0]) + marker_reserve <= max_total_chars // 3:
+        head.append(lines[0])
+        start_idx = 1
+        budget -= len(lines[0]) + 1
+
+    tail: list[str] = []
+    tail_chars = 0
+    end_idx = len(lines)
+    while end_idx > start_idx:
+        candidate = lines[end_idx - 1]
+        needed = len(candidate) + (1 if tail else 0)
+        if tail_chars + needed + marker_reserve > budget:
+            break
+        tail.append(candidate)
+        tail_chars += needed
+        end_idx -= 1
+    tail.reverse()
+
+    omitted = end_idx - start_idx
+    parts: list[str] = []
+    if head:
+        parts.extend(head)
+    if omitted > 0:
+        parts.append(f"[... {omitted} older messages omitted ...]")
+    parts.extend(tail)
+    result = "\n".join(parts)
+    if len(result) > max_total_chars:
+        return result[:max_total_chars]
+    return result
 
 
 def format_python_state_notice(

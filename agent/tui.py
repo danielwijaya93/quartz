@@ -908,6 +908,7 @@ class QuartzTUI:
         self._invalidate()
 
         def _on_steering(msg: str) -> None:
+            tracker.flush()
             tracker.clear_steering_messages()
             preview = msg[:60] + ("..." if len(msg) > 60 else "")
             active_printer.block(Text(f"[steering] {preview}", style="cyan"))
