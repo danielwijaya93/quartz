@@ -917,6 +917,11 @@ def _cmd_reset(rt: _CLIRuntime, arg: str) -> bool | None:
     rt.wait_snapshot()
     rt.kernel.restart()
     rt.active_session = Session.create(rt.cwd)
+    from agent.ui import get_active_tui
+
+    tui = get_active_tui()
+    if tui is not None:
+        tui.clear_log()
     console.print("[yellow]Conversation cleared, kernel restarted.[/yellow]")
     return False
 

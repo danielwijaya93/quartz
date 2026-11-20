@@ -503,22 +503,6 @@ def test_short_path_collapses_home(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cli._short_path("/opt/data") == "/opt/data"
 
 
-def test_toolbar_shows_workspace_and_not_session(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: Path("/home/tester")))
-    usage = TurnUsage(prompt_tokens=1000, cached_tokens=500)
-    toolbar = cli._format_toolbar("gpt-5", "high", "/home/tester/proj", usage, 200_000, 0)
-    assert "gpt-5 (high)" in toolbar
-    assert "~/proj" in toolbar
-    assert "/home/tester/proj" not in toolbar
-    assert "session" not in toolbar.lower()
-    assert "ctx:" in toolbar and "cache:" in toolbar
-    assert "bg:" not in toolbar
-
-    with_bg = cli._format_toolbar("gpt-5", None, "/home/tester/proj", usage, 200_000, 2)
-    assert "bg:2" in with_bg
-    assert "gpt-5 ·" in with_bg
-
-
 def test_format_turn_timing_and_duration() -> None:
     assert cli._fmt_duration(0.42) == "0.4s"
     assert cli._fmt_duration(7.1) == "7s"
@@ -970,26 +954,52 @@ def test_execute_interactive_turn_unsubmitted_input_handoff(monkeypatch: pytest.
     assert leftover == "unsubmitted thought"
 
 
-def test_turn_progress_tracker_toolbar_provider() -> None:
-    buf = io.StringIO()
-    test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
-    test_printer = BlockPrinter(test_console)
-    test_printer.reset()
+def test_run_interactive_pending_events_preserves_leftover_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
 
-    toolbar_value = "claude-3-7-sonnet · ~/repo · ctx:10.0k/200.0k (5.0%) · cache:80% · bg:1"
-    tracker = cli.TurnProgressTracker(
-        test_console,
-        test_printer,
-        toolbar_provider=lambda: toolbar_value,
+    pending_sequence = iter([False, True, False])
+    prompt_defaults: list[str] = []
+    prompt_calls = [0]
+
+    def _fake_prompt(*args: Any, **kwargs: Any) -> str:
+        prompt_calls[0] += 1
+        prompt_defaults.append(kwargs.get("default", ""))
+        if prompt_calls[0] == 1:
+            return "hello"
+        raise EOFError()
+
+    monkeypatch.setattr("prompt_toolkit.PromptSession.prompt", _fake_prompt)
+    monkeypatch.setattr(cli, "_execute_interactive_turn", lambda rt: "unsent draft")
+
+    rt = cli._CLIRuntime(
+        cwd=tmp_path,
+        kernel=SimpleNamespace(
+            interrupt=lambda: None,
+            running_bash_count=lambda: 0,
+            has_pending_events=lambda: next(pending_sequence, False),
+            wait_until_event=lambda stop, timeout=0.25: False,
+            drain_events=lambda: [],
+        ),  # type: ignore[arg-type]
+        client=object(),
+        provider_name="openai",
+        model="gpt-5",
+        effort="",
+        system_prompt="",
+        active_session=SimpleNamespace(save_messages=lambda *a, **k: None),  # type: ignore[arg-type]
+        messages=[],
+        usage_stats=TurnUsage(),
+        max_context_tokens=100_000,
+        compact_reserve_tokens=8_000,
+        keep_recent_tokens=2_000,
+        verbose=False,
+        plain_output=True,
+        headless=False,
     )
-    tracker.start_thinking()
-    grp = tracker._render_group()
-    assert len(grp.renderables) == 1
-    assert not any(getattr(r, "plain", "") == toolbar_value for r in grp.renderables)
 
-    # Bottom toolbar is never appended even with tools and input buffer
-    tracker.start_tool("read('file.py')")
-    tracker.set_input_buffer("typing...")
-    grp_multi = tracker._render_group()
-    assert not any(getattr(r, "plain", "") == toolbar_value for r in grp_multi.renderables)
+    cli._run_interactive(rt, resumed=False)
+    assert prompt_defaults == ["", "unsent draft"]
+
+
 

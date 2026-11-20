@@ -14,13 +14,14 @@ from typing import Any
 
 import pytest
 from prompt_toolkit.input.defaults import create_pipe_input
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput
 from rich.text import Text
 
 import agent.cli as cli
-from agent.commands import _CLIRuntime
+from agent.commands import _CLIRuntime, _cmd_reset
 from agent.loop import TurnUsage
-from agent.tui import QuartzTUI
+from agent.tui import QuartzTUI, _ModalState
 from agent.ui import (
     BlockPrinter,
     TurnProgressTracker,
@@ -332,3 +333,94 @@ def test_resumed_session_replays_into_tui(tmp_path: Path) -> None:
             assert "Hi there earlier" in vis
         finally:
             set_active_tui(None)
+
+
+def test_modal_bracketed_paste(tmp_path: Path) -> None:
+    with _make_tui(tmp_path) as tui:
+        paste_bindings = [
+            b for b in tui.app.key_bindings.bindings if b.keys == (Keys.BracketedPaste,) and b.filter()
+        ]
+        # While no modal is open, in_modal filter is False
+        assert paste_bindings == []
+
+        # 1. Input modal
+        tui._modal = _ModalState(kind="input", title="API Key", query="sk-")
+        paste_bindings = [
+            b for b in tui.app.key_bindings.bindings if b.keys == (Keys.BracketedPaste,) and b.filter()
+        ]
+        assert len(paste_bindings) == 1
+        paste_bindings[0].handler(SimpleNamespace(data="abc\r\ndef\n\x00"))
+        assert tui._modal.query == "sk-abcdef"
+
+        # 2. Searchable modal resets selected_idx
+        tui._modal = _ModalState(
+            kind="searchable",
+            title="Model",
+            options=[("a", "Alpha"), ("b", "Beta")],
+            selected_idx=1,
+            query="be",
+        )
+        paste_bindings[0].handler(SimpleNamespace(data="ta\n"))
+        assert tui._modal.query == "beta"
+        assert tui._modal.selected_idx == 0
+
+        # 3. Option modal ignores paste
+        tui._modal = _ModalState(
+            kind="option",
+            title="Pick",
+            options=[("a", "Alpha"), ("b", "Beta")],
+            selected_idx=1,
+            query="",
+        )
+        paste_bindings[0].handler(SimpleNamespace(data="ignored"))
+        assert tui._modal.query == ""
+        assert tui._modal.selected_idx == 1
+
+
+def test_reset_clears_tui_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with _make_tui(tmp_path) as tui:
+        set_active_tui(tui)
+        try:
+            tui.append_console_print("old conversation line")
+            vis_before = "\n".join(_plain_text(line) for line in tui._render_visible_lines(80, 20))
+            assert "old conversation line" in vis_before
+
+            tui.rt.wait_snapshot = lambda: None  # type: ignore[method-assign]
+            tui.rt.kernel.restart = lambda: None  # type: ignore[method-assign]
+            monkeypatch.setattr("agent.commands.Session.create", lambda cwd: tui.rt.active_session)
+
+            _cmd_reset(tui.rt, "")
+
+            vis_after = "\n".join(_plain_text(line) for line in tui._render_visible_lines(80, 20))
+            assert "old conversation line" not in vis_after
+            assert "Conversation cleared, kernel restarted." in vis_after
+            assert tui.scroll_offset == 0
+        finally:
+            set_active_tui(None)
+
+
+def test_render_visible_lines_many_entries_and_scroll_clamping(tmp_path: Path) -> None:
+    with _make_tui(tmp_path) as tui:
+        for i in range(100):
+            tui.append_console_print(f"entry-{i:03d}-a\nentry-{i:03d}-b")
+
+        # 100 entries * 2 lines = 200 lines total
+        vis_bottom = [_plain_text(line) for line in tui._render_visible_lines(80, 10)]
+        assert len(vis_bottom) == 10
+        assert vis_bottom[0] == "entry-095-a"
+        assert vis_bottom[-1] == "entry-099-b"
+        assert tui.scroll_offset == 0
+
+        tui._scroll_offset = 15
+        vis_mid = [_plain_text(line) for line in tui._render_visible_lines(80, 10)]
+        assert len(vis_mid) == 10
+        assert vis_mid[0] == "entry-087-b"
+        assert vis_mid[-1] == "entry-092-a"
+
+        # Overshooting clamps scroll_offset to max_scroll (200 - 10 = 190)
+        tui._scroll_offset = 10_000
+        vis_top = [_plain_text(line) for line in tui._render_visible_lines(80, 10)]
+        assert tui.scroll_offset == 190
+        assert vis_top[0] == "entry-000-a"
+        assert vis_top[-1] == "entry-004-b"
+

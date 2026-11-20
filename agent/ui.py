@@ -28,6 +28,7 @@ from rich.spinner import Spinner
 from rich.text import Text
 
 from agent.actions import describe_cell_actions, describe_group_actions
+from agent.banner import _fmt_k, _short_path
 from agent.images import content_to_text
 from agent.compact import CompactionReason, CompactionResult
 from agent.kernel_client import CellResult
@@ -194,12 +195,11 @@ class _MidTurnInputWatcher:
         on_abort: Callable[[], None] | None = None,
         on_steering: Callable[[str], None] | None = None,
         on_change: Callable[[str], None] | None = None,
-        on_queued: Callable[[str], None] | None = None,
     ) -> None:
         self._abort_event = abort_event
         self._steering_queue = steering_queue
         self._on_abort = on_abort
-        self._on_steering = on_steering or on_queued
+        self._on_steering = on_steering
         self._on_change = on_change
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -606,7 +606,6 @@ class TurnProgressTracker:
         chunk_size: int = 5,
         verbose: bool = False,
         plain_output: bool = False,
-        toolbar_provider: Callable[[], str | None] | None = None,
         live_renderer: Callable[[Group | None], None] | None = None,
     ) -> None:
         self.console = console
@@ -614,7 +613,6 @@ class TurnProgressTracker:
         self.chunk_size = chunk_size
         self.verbose = verbose
         self.plain_output = plain_output
-        self.toolbar_provider = toolbar_provider
         self.lock = threading.RLock()
 
         if live_renderer is None:
@@ -661,10 +659,6 @@ class TurnProgressTracker:
                 )
             ):
                 self._render_current()
-
-    @property
-    def queued_messages(self) -> list[str]:
-        return self.steering_messages
 
     def _render_current(self) -> None:
         if self.plain_output or self.verbose:
@@ -739,16 +733,12 @@ class TurnProgressTracker:
             self._flushed = False
             self._render_current()
 
-    add_queued_message = add_steering_message
-
     def clear_steering_messages(self) -> None:
         if self.plain_output or self.verbose:
             return
         with self.lock:
             self.steering_messages.clear()
             self._render_current()
-
-    clear_queued_messages = clear_steering_messages
 
     def close(self) -> None:
         self.flush()
@@ -1131,10 +1121,6 @@ def _replay_session(
     cell_group.flush()
 
 
-def _fmt_k(n: int) -> str:
-    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
-
-
 def _fmt_duration(seconds: float) -> str:
     if seconds < 1.0:
         return f"{max(0.0, seconds):.1f}s"
@@ -1179,38 +1165,3 @@ def _format_turn_footer(usage: TurnUsage, max_context_tokens: int) -> str:
     cache_pct = usage.cache_hit_rate * 100.0
     return f"ctx {_fmt_k(usage.prompt_tokens)}/{_fmt_k(max_context_tokens)} ({pct:.1f}%) · cache {cache_pct:.0f}%"
 
-
-def _short_path(path: str | Path) -> str:
-    """Render a path with the home directory collapsed to `~`."""
-    text = str(path)
-    try:
-        home = str(Path.home())
-    except (RuntimeError, OSError):
-        return text
-    if text == home:
-        return "~"
-    if text.startswith(home + os.sep):
-        return "~" + text[len(home) :]
-    return text
-
-
-def _format_toolbar(
-    model: str,
-    effort: str | None,
-    workspace: str | Path,
-    usage: TurnUsage,
-    max_context_tokens: int,
-    bg_count: int,
-) -> str:
-    pct = usage.context_pct(max_context_tokens)
-    cache_pct = usage.cache_hit_rate * 100.0
-    model_label = f"{model} ({effort})" if effort else model
-    parts = [
-        model_label,
-        _short_path(workspace),
-        f"ctx:{_fmt_k(usage.prompt_tokens)}/{_fmt_k(max_context_tokens)} ({pct:.1f}%)",
-        f"cache:{cache_pct:.0f}%",
-    ]
-    if bg_count > 0:
-        parts.append(f"bg:{bg_count}")
-    return " · ".join(parts)

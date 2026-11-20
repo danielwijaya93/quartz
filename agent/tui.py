@@ -18,6 +18,7 @@ from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples, to_formatted
 from prompt_toolkit.formatted_text.utils import split_lines
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import (
     ConditionalContainer,
     Float,
@@ -31,7 +32,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Frame
-from rich.console import Console, Group
+from rich.console import Console
 from rich.markup import escape
 from rich.spinner import Spinner
 from rich.text import Text
@@ -43,7 +44,6 @@ from agent.ui import (
     _format_turn_timing,
     _render_bash_notice,
     _replay_session,
-    _short_path,
     set_active_tui,
 )
 
@@ -317,7 +317,9 @@ class QuartzTUI:
             live = self._live_renderable
             status = self._transient_status
 
-        all_lines: list[StyleAndTextTuples] = []
+        entry_chunks: list[list[StyleAndTextTuples]] = []
+        total = 0
+        last_line_non_empty = False
         for entry in entries:
             key = (entry.entry_id, width)
             cached = self._line_cache.get(key)
@@ -326,19 +328,30 @@ class QuartzTUI:
                 if len(self._line_cache) > 4000:
                     self._line_cache.clear()
                 self._line_cache[key] = cached
-            all_lines.extend(cached)
+            if cached:
+                entry_chunks.append(cached)
+                total += len(cached)
+                last_line_non_empty = bool(cached[-1])
 
+        trailing_chunks: list[list[StyleAndTextTuples]] = []
         if live is not None:
-            if all_lines and all_lines[-1]:
-                all_lines.append([])
-            all_lines.extend(self._render_objects_to_lines((live,), {}, width))
+            if total > 0 and last_line_non_empty:
+                trailing_chunks.append([[]])
+                total += 1
+            live_lines = self._render_objects_to_lines((live,), {}, width)
+            if live_lines:
+                trailing_chunks.append(live_lines)
+                total += len(live_lines)
         elif status is not None:
-            if all_lines and all_lines[-1]:
-                all_lines.append([])
+            if total > 0 and last_line_non_empty:
+                trailing_chunks.append([[]])
+                total += 1
             spinner = Spinner("dots", text=status if not isinstance(status, str) else Text.from_markup(status))
-            all_lines.extend(self._render_objects_to_lines((spinner,), {}, width))
+            status_lines = self._render_objects_to_lines((spinner,), {}, width)
+            if status_lines:
+                trailing_chunks.append(status_lines)
+                total += len(status_lines)
 
-        total = len(all_lines)
         max_scroll = max(0, total - height)
         with self._lock:
             self._last_total_lines = total
@@ -348,7 +361,36 @@ class QuartzTUI:
 
         end = total - offset
         start = max(0, end - height)
-        return all_lines[start:end]
+        if start >= end:
+            return []
+
+        collected_rev: list[list[StyleAndTextTuples]] = []
+        cursor = total
+        for chunk in reversed(trailing_chunks):
+            chunk_start = cursor - len(chunk)
+            if cursor > start and chunk_start < end:
+                lo = max(0, start - chunk_start)
+                hi = min(len(chunk), end - chunk_start)
+                collected_rev.append(chunk[lo:hi])
+            cursor = chunk_start
+            if cursor <= start:
+                break
+
+        if cursor > start:
+            for chunk in reversed(entry_chunks):
+                chunk_start = cursor - len(chunk)
+                if cursor > start and chunk_start < end:
+                    lo = max(0, start - chunk_start)
+                    hi = min(len(chunk), end - chunk_start)
+                    collected_rev.append(chunk[lo:hi])
+                cursor = chunk_start
+                if cursor <= start:
+                    break
+
+        visible: list[StyleAndTextTuples] = []
+        for slice_chunk in reversed(collected_rev):
+            visible.extend(slice_chunk)
+        return visible
 
     def append_console_print(self, *objects: Any, **kwargs: Any) -> None:
         with self._lock:
@@ -655,6 +697,20 @@ class QuartzTUI:
         def _(event: Any) -> None:
             self._close_modal(None)
 
+        @kb.add(Keys.BracketedPaste, filter=in_modal)
+        def _(event: Any) -> None:
+            data = event.data or ""
+            cleaned = "".join(ch for ch in data.replace("\r", "").replace("\n", "") if ch.isprintable())
+            if not cleaned:
+                return
+            with self._lock:
+                modal = self._modal
+                if modal is None or modal.kind not in ("searchable", "input"):
+                    return
+                modal.query += cleaned
+                modal.selected_idx = 0
+            self._invalidate()
+
         @kb.add("<any>", filter=in_modal)
         def _(event: Any) -> None:
             data = event.data
@@ -941,8 +997,15 @@ class QuartzTUI:
     def _refresh_loop(self) -> None:
         while not self._stop_event.wait(0.1):
             with self._lock:
-                animate = self._turn_running or self._transient_status is not None
-            if animate:
+                turn_running = self._turn_running
+                tracker = self._active_tracker
+                has_status = self._transient_status is not None
+            if turn_running:
+                if tracker is not None:
+                    tracker.tick()
+                else:
+                    self._invalidate()
+            elif has_status:
                 self._invalidate()
 
     def run(self) -> None:
