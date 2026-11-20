@@ -29,7 +29,7 @@ cd quartz
 uv tool install --editable .
 ```
 
-This installs the `quartz` command globally (entry point `agent.cli:main`) while
+This installs the `quartz` command globally (entry point `quartz.cli.app:main`) while
 keeping the checkout editable. The `quartz-agent` distribution is not yet
 published to PyPI, so there is no `pip install quartz-agent` yet — `uv tool
 install --editable .` from a checkout is the supported path.
@@ -63,7 +63,7 @@ legacy `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `DEEPSEEK_API_KEY` /
 
 Quartz loads non-secret environment in this order, without overriding
 values already set in the real environment
-(see `agent/cli.py::_load_env_files`):
+(see `src/quartz/cli/app.py::_load_env_files`):
 
 1. `~/.quartz/.env`
 2. `./.env` (the project `.env`)
@@ -169,8 +169,9 @@ live in `~/.quartz/auth.json`.
 
 ## Providers and models
 
-Source of truth: `PROVIDERS` in `agent/models.py`. Run `/model` interactively
-to discover the models and reasoning-effort levels the provider exposes.
+Source of truth: `PROVIDERS` in `src/quartz/providers/registry.py`. Run
+`/model` interactively to discover the models and reasoning-effort levels the
+provider exposes.
 
 | Provider | Auth | Example models |
 | --- | --- | --- |
@@ -186,37 +187,52 @@ to discover the models and reasoning-effort levels the provider exposes.
 ## Project layout
 
 ```
-agent/
-  cli.py               CLI entrypoint: interactive REPL, headless mode, subcommands
-  interactive.py       Scrollback-native bottom dock (prompt_toolkit inline app)
-  loop.py              Core agent loop with a single `ipython` tool
-  kernel_client.py     Host-side client for the persistent Python REPL subprocess
-  kernel_worker.py     Subprocess CPython REPL worker (top-level await, bash())
-  commands.py          Slash-command registry and handlers
-  models.py            Provider, model, credential, and reasoning-effort registry
-  provider.py          Unified provider protocol, stream events, shared SSE framing
-  openai_client.py     OpenAI-compatible provider
-  google_provider.py   Google Antigravity (Cloud Code Assist) streaming provider
-  google_auth.py       Google OAuth PKCE and token management
-  session.py           JSONL session persistence and dill kernel snapshots
-  compact.py           Context compaction that preserves the Python kernel
-  runtime.py           Mutable runtime state, persistence, and compaction
-  mcp_client.py        In-kernel MCP client manager (stdio and streamable HTTP)
-  acp.py               ACP JSON-RPC 2.0 stdio server
-  helpers.py           Pluggable REPL helper functions
-  images.py            Image loading, clipboard capture, multimodal helpers
-  prompt.py            System-prompt assembly with AGENTS.md / SKILL.md discovery
-  completer.py         Slash-command and @file autocomplete
-  ui.py                Terminal rendering, Markdown streaming, session replay
-  banner.py            Top banner formatting for the interactive prompt
-  actions.py           Static action classifier for `ipython` tool calls
-  auth_store.py        Atomic auth.json credential store
-  errors.py            Typed provider errors shared across the codebase
-  pycheck.py           Static undefined-name checking (stdlib symtable)
-  provider_config.py   Endpoint and HTTP timeout policy for providers
-  subcommands.py       Provider setup and the `auth` / `mcp` CLI subcommands
-  oauth_client.py      OAuth client identity for Google Cloud Code Assist
+src/quartz/
+  cli/       app.py  subcommands.py  acp.py
+             Composition root: `app.py` is the `quartz` entry point (interactive REPL,
+             `-p` headless mode, flags), `subcommands.py` parses the `mcp` / `auth`
+             arguments and nothing else, `acp.py` is the ACP JSON-RPC 2.0 stdio server.
+  core/      loop.py  turn.py  events.py  runtime.py  session.py  compact.py
+             prompt.py  images.py
+             Front-end-free agent internals: the single-tool `ipython` loop (`loop.py`);
+             the turn lifecycle and the `TurnObserver` port it reports into (`turn.py`,
+             `events.py`); runtime state and JSONL sessions with dill kernel snapshots
+             (`runtime.py`, `session.py`); compaction that keeps the kernel alive
+             (`compact.py`); prompt assembly (`prompt.py`) and image helpers (`images.py`).
+  kernel/    worker.py  client.py  actions.py  helpers.py  pycheck.py
+             The execution side: the subprocess CPython REPL worker (top-level await,
+             async `bash()`) in `worker.py` and the host-side JSONL client that owns it
+             in `client.py`; the static cell classifier (`actions.py`), the pluggable REPL
+             helpers (`helpers.py`), `symtable` undefined-name checks (`pycheck.py`).
+  providers/ base.py  registry.py  selection.py  openai.py  google.py  config.py
+             Model access: the provider protocol, stream events and shared SSE framing
+             (`base.py`); the provider/model/credential/effort registry holding `PROVIDERS`
+             (`registry.py`); "auto"/explicit provider resolution and `build_provider`
+             (`selection.py`); the OpenAI-compatible and Google Antigravity backends
+             (`openai.py`, `google.py`); endpoint and HTTP-timeout policy (`config.py`).
+  tui/       dock.py  render.py  commands.py  turn_view.py  provider_setup.py
+             modals.py  banner.py  replay.py  completer.py
+             The interactive front end: the scrollback-native bottom dock (`dock.py`);
+             terminal rendering, Markdown streaming and cell summaries (`render.py`);
+             the `TurnView` that renders loop events (`turn_view.py`); the slash-command
+             registry (`commands.py`); the Rich `/login` flows (`provider_setup.py`);
+             shared inline modals (`modals.py`); the top banner (`banner.py`); resumed
+             session replay (`replay.py`); completion (`completer.py`).
+  mcp/       client.py
+             In-kernel MCP client manager for stdio and streamable-HTTP servers.
+  auth/      google.py  store.py  oauth.py
+             Google AI Pro/Ultra OAuth2 PKCE and Cloud Code Assist token management
+             (`google.py`), the atomic `~/.quartz/auth.json` store (`store.py`), and the
+             OAuth client identity (`oauth.py`).
+  settings.py  errors.py  __main__.py
+             Cross-cutting: user preferences in `~/.quartz/config.json`, typed provider
+             errors, and the `python -m quartz` entry point.
 ```
+
+`cli/` is the composition root and may import `tui/` and `core/`; `tui/` and
+`core/` must not import `cli/`. `core/` holds the agent loop, the turn lifecycle
+and session state, and imports nothing from the front ends.
+`tests/core/test_import_boundaries.py` enforces this.
 
 ## Development
 
