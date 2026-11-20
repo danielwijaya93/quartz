@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import builtins
+import codecs
 import contextlib
 import contextvars
 import dataclasses
@@ -22,11 +23,12 @@ import re
 import shutil
 import signal
 import subprocess
+import symtable
 import sys
 import tempfile
-import threading
 import time
 import traceback
+import types
 import warnings
 from collections import deque
 from pathlib import Path
@@ -39,6 +41,7 @@ from agent.helpers import (
     load_helpers,
 )
 from agent.mcp_client import MCPManager
+from agent.pycheck import unresolved_global_names
 
 MAX_OUTPUT_CHARS = 128_000
 MAX_REPR_CHARS = 128_000
@@ -79,66 +82,31 @@ _LAZY_STDLIB_SYMBOLS: dict[str, tuple[str, str]] = {
 }
 
 
-def _collect_bound_names(tree: ast.AST) -> set[str]:
-    """Collect all names bound anywhere in an AST."""
-    bound: set[str] = set()
+
+_CELL_MODULES: tuple[str | None, ...] = ("__main__", "<cell>", None)
+
+
+def _is_reimportable(mod: types.ModuleType) -> bool:
+    """True for named modules that can be re-imported by name after a restart."""
+    name = getattr(mod, "__name__", "")
+    return bool(name) and not name.startswith("_") and sys.modules.get(name) is mod
+
+
+def _dotted_chains(tree: ast.AST) -> list[list[str]]:
+    """Return `[root, attr1, attr2, ...]` for every Attribute chain rooted at a loaded Name."""
+    chains: list[list[str]] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            bound.add(node.id)
-        elif isinstance(node, ast.ExceptHandler):
-            if node.name:
-                bound.add(node.name)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            bound.add(node.name)
-            for arg in (
-                *node.args.posonlyargs,
-                *node.args.args,
-                *node.args.kwonlyargs,
-            ):
-                bound.add(arg.arg)
-            if node.args.vararg:
-                bound.add(node.args.vararg.arg)
-            if node.args.kwarg:
-                bound.add(node.args.kwarg.arg)
-            for tp in getattr(node, "type_params", ()):
-                if hasattr(tp, "name"):
-                    bound.add(tp.name)
-        elif isinstance(node, ast.ClassDef):
-            bound.add(node.name)
-            for tp in getattr(node, "type_params", ()):
-                if hasattr(tp, "name"):
-                    bound.add(tp.name)
-        elif isinstance(node, ast.Lambda):
-            for arg in (
-                *node.args.posonlyargs,
-                *node.args.args,
-                *node.args.kwonlyargs,
-            ):
-                bound.add(arg.arg)
-            if node.args.vararg:
-                bound.add(node.args.vararg.arg)
-            if node.args.kwarg:
-                bound.add(node.args.kwarg.arg)
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            for alias in node.names:
-                if alias.name != "*":
-                    bound.add(alias.asname or alias.name.split(".")[0])
-        elif isinstance(node, ast.MatchAs):
-            if node.name:
-                bound.add(node.name)
-        elif isinstance(node, ast.MatchStar):
-            if node.name:
-                bound.add(node.name)
-        elif isinstance(node, ast.MatchMapping):
-            if node.rest:
-                bound.add(node.rest)
-        elif hasattr(ast, "TypeAlias") and isinstance(node, ast.TypeAlias):
-            if isinstance(node.name, ast.Name):
-                bound.add(node.name.id)
-            for tp in getattr(node, "type_params", ()):
-                if hasattr(tp, "name"):
-                    bound.add(tp.name)
-    return bound
+        if not isinstance(node, ast.Attribute):
+            continue
+        parts: list[str] = []
+        cur: ast.AST = node
+        while isinstance(cur, ast.Attribute):
+            parts.append(cur.attr)
+            cur = cur.value
+        if isinstance(cur, ast.Name) and isinstance(cur.ctx, ast.Load):
+            chains.append([cur.id, *reversed(parts)])
+    return chains
+
 
 _STDOUT_VAR: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar("quartz_stdout", default=None)
 _STDERR_VAR: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar("quartz_stderr", default=None)
@@ -191,7 +159,14 @@ class BashResult:
 
 
 class BashHandle:
-    """Handle to a background shell command running in its own process group."""
+    """Handle to a background shell command running in its own process group.
+
+    The child is spawned synchronously (so `.pid` is available immediately) and its
+    output is drained by an asyncio task over a non-blocking pipe: zero OS threads.
+    """
+
+    MAX_LINES = 20_000
+    _READ_CHUNK = 65_536
 
     def __init__(
         self,
@@ -204,8 +179,9 @@ class BashHandle:
         self._timeout = timeout
         self._started_cell_id = started_cell_id
         self._on_done_callback = on_done_callback
-        self._lines: deque[str] = deque(maxlen=20_000)
-        self._lines_lock = threading.Lock()
+        self._lines: deque[str] = deque(maxlen=self.MAX_LINES)
+        self.dropped_lines = 0
+        self._partial = ""
         self._start_time = time.monotonic()
         self._result: BashResult | None = None
         self._awaited = False
@@ -231,16 +207,14 @@ class BashHandle:
     def output(self) -> str:
         if self._result is not None:
             return self._result.output
-        with self._lines_lock:
-            return "".join(self._lines)
+        return "".join(self._lines) + self._partial
 
     def tail(self, n: int = 50) -> str:
         if n <= 0:
             return ""
         if self._result is not None:
             return "".join(self._result.output.splitlines(keepends=True)[-n:])
-        with self._lines_lock:
-            return "".join(list(self._lines)[-n:])
+        return "".join(list(self._lines)[-n:])
 
     def poll(self) -> BashResult | None:
         return self._result
@@ -264,42 +238,79 @@ class BashHandle:
             except ProcessLookupError:
                 pass
 
-    def _read_blocking(self) -> int:
+    def _append_line(self, line: str) -> None:
+        if len(self._lines) == self._lines.maxlen:
+            self.dropped_lines += 1
+        self._lines.append(line)
+
+    def _feed(self, text: str) -> None:
+        """Split decoded text into complete lines, keeping any trailing partial line."""
+        pieces = (self._partial + text).splitlines(keepends=True)
+        self._partial = ""
+        for piece in pieces:
+            if piece.endswith(("\n", "\r")):
+                self._append_line(piece)
+            else:
+                self._partial = piece
+
+    def _flush_partial(self) -> None:
+        if self._partial:
+            self._append_line(self._partial)
+            self._partial = ""
+
+    async def _drain_output(self) -> int:
+        """Read the child's merged stdout/stderr until EOF, then reap it."""
         assert self._proc.stdout is not None
-        for raw_line in self._proc.stdout:
-            line = raw_line.decode("utf-8", errors="replace")
-            with self._lines_lock:
-                self._lines.append(line)
-        return self._proc.wait()
+        loop = asyncio.get_running_loop()
+        reader = asyncio.StreamReader(limit=self._READ_CHUNK * 2)
+        transport, _ = await loop.connect_read_pipe(
+            lambda: asyncio.StreamReaderProtocol(reader), self._proc.stdout
+        )
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        try:
+            while chunk := await reader.read(self._READ_CHUNK):
+                self._feed(decoder.decode(chunk))
+            self._feed(decoder.decode(b"", final=True))
+            self._flush_partial()
+        finally:
+            transport.close()
+        while (code := self._proc.poll()) is None:
+            await asyncio.sleep(0.01)
+        return code
 
     async def _monitor(self) -> BashResult:
-        waiter = asyncio.create_task(asyncio.to_thread(self._read_blocking))
+        exit_code = -1
+        waiter = asyncio.create_task(self._drain_output())
         try:
-            if self._timeout is not None:
-                exit_code = await asyncio.wait_for(asyncio.shield(waiter), timeout=self._timeout)
-            else:
+            try:
+                if self._timeout is not None:
+                    exit_code = await asyncio.wait_for(asyncio.shield(waiter), timeout=self._timeout)
+                else:
+                    exit_code = await waiter
+            except asyncio.TimeoutError:
+                self._timed_out = True
+                self.kill(signal.SIGTERM, grace=3.0)
                 exit_code = await waiter
-        except asyncio.TimeoutError:
-            self._timed_out = True
-            self.kill(signal.SIGTERM, grace=3.0)
-            exit_code = await waiter
-
-        duration = round(time.monotonic() - self._start_time, 3)
-        with self._lines_lock:
-            full_output = "".join(self._lines)
+        finally:
+            if not waiter.done():
+                waiter.cancel()
+            self._flush_partial()
+            self._result = BashResult(
+                exit_code=exit_code,
+                output="".join(self._lines),
+                duration=round(time.monotonic() - self._start_time, 3),
+                timed_out=self._timed_out,
+            )
             self._lines.clear()
-        self._result = BashResult(
-            exit_code=exit_code,
-            output=full_output,
-            duration=duration,
-            timed_out=self._timed_out,
-        )
-        self._on_done_callback(self)
+            try:
+                self._on_done_callback(self)
+            except Exception:
+                pass
         return self._result
 
     def __await__(self):
         self._awaited = True
-        return self._task.__await__()
+        return asyncio.shield(self._task).__await__()
 
     def __repr__(self) -> str:
         status = "running" if self.running else f"exit={self._result.exit_code}"
@@ -322,6 +333,7 @@ class KernelWorker:
                     os.close(devnull_fd)
 
         self._active_cell_ids: set[str] = set()
+        self._exec_lock = asyncio.Lock()
         self._handles: list[BashHandle] = []
         self.mcp = MCPManager(cwd=Path.cwd(), on_image=_record_cell_image)
 
@@ -403,46 +415,87 @@ class KernelWorker:
             }
         )
 
-    def _auto_import_for_ast(self, tree: ast.AST) -> None:
-        """Lazily import unambiguous stdlib modules and symbols referenced in `tree`."""
-        bound_names = _collect_bound_names(tree) | set(self._namespace.keys()) | set(dir(builtins))
+    def _unbound_names(self, tree: ast.AST, code: str) -> set[str]:
+        """Names read in `code` that resolve to neither the cell, the namespace, nor builtins."""
+        allowed = frozenset(self._namespace) | frozenset(dir(builtins))
+        try:
+            table = symtable.symtable(code, "<ipython>", "exec")
+        except SyntaxError:
+            return set()
+        return unresolved_global_names(table, allowed)
 
-        attr_accesses: list[tuple[str, str]] = []
-        bare_loads: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and isinstance(node.value.ctx, ast.Load):
-                attr_accesses.append((node.value.id, node.attr))
-            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                bare_loads.add(node.id)
-
-        for mod_name, attr_name in attr_accesses:
-            if mod_name in bound_names or mod_name in _AUTO_IMPORT_BLOCKLIST or mod_name not in sys.stdlib_module_names:
-                continue
+    def _import_dotted_stdlib(self, parts: list[str]) -> bool:
+        """Import the longest importable stdlib prefix of `parts`, binding the root module."""
+        root = parts[0]
+        if root in _AUTO_IMPORT_BLOCKLIST or root not in sys.stdlib_module_names:
+            return False
+        for end in range(len(parts), 0, -1):
+            dotted = ".".join(parts[:end])
             try:
-                mod = importlib.import_module(mod_name)
-                if not hasattr(mod, attr_name):
-                    if importlib.util.find_spec(f"{mod_name}.{attr_name}") is not None:
-                        importlib.import_module(f"{mod_name}.{attr_name}")
-                if hasattr(mod, attr_name):
-                    self._namespace[mod_name] = mod
-                    self._auto_imported[mod_name] = mod
-                    bound_names.add(mod_name)
+                imported = importlib.import_module(dotted)
             except Exception:
                 continue
+            if end < len(parts) and not hasattr(imported, parts[end]):
+                return False
+            mod = sys.modules.get(root)
+            if mod is None:
+                return False
+            self._namespace[root] = mod
+            self._auto_imported[root] = mod
+            return True
+        return False
 
-        for sym_name in bare_loads:
-            if sym_name in bound_names or sym_name not in _LAZY_STDLIB_SYMBOLS:
+    def _auto_import_for_ast(self, tree: ast.AST, code: str) -> None:
+        """Lazily import unambiguous stdlib modules and symbols referenced in `tree`."""
+        unbound = self._unbound_names(tree, code)
+        if not unbound:
+            return
+
+        for parts in _dotted_chains(tree):
+            if parts[0] in unbound and self._import_dotted_stdlib(parts):
+                unbound.discard(parts[0])
+
+        for sym_name in list(unbound):
+            if sym_name not in _LAZY_STDLIB_SYMBOLS:
                 continue
             mod_path, attr_name = _LAZY_STDLIB_SYMBOLS[sym_name]
             try:
                 val = getattr(importlib.import_module(mod_path), attr_name)
-                self._namespace[sym_name] = val
-                self._auto_imported[sym_name] = val
-                bound_names.add(sym_name)
             except Exception:
                 continue
+            self._namespace[sym_name] = val
+            self._auto_imported[sym_name] = val
 
     async def _exec_cell(self, cell_id: str, code: str) -> dict[str, Any]:
+        """Run a cell, serialized so concurrent requests never interleave namespace/stdio state."""
+        try:
+            async with self._exec_lock:
+                return await self._exec_cell_locked(cell_id, code)
+        except asyncio.CancelledError:
+            # Cancelled while queued behind another cell (interrupt): still answer the request.
+            return self._cell_result(cell_id, False, "", "KeyboardInterrupt: cell execution cancelled\n", None, [])
+
+    def _cell_result(
+        self,
+        cell_id: str,
+        ok: bool,
+        stdout: str,
+        stderr: str,
+        result_repr: str | None,
+        images: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        return {
+            "type": "exec_result",
+            "id": cell_id,
+            "ok": ok,
+            "stdout": _spill_or_truncate(stdout, MAX_OUTPUT_CHARS, "stdout", cell_id),
+            "stderr": _spill_or_truncate(stderr, MAX_OUTPUT_CHARS, "stderr", cell_id),
+            "result": result_repr,
+            "images": images,
+            "running_bash": sum(1 for h in self._handles if h.running),
+        }
+
+    async def _exec_cell_locked(self, cell_id: str, code: str) -> dict[str, Any]:
         self._active_cell_ids.add(cell_id)
         stdout_buf = io.StringIO()
         stderr_buf = io.StringIO()
@@ -456,7 +509,7 @@ class KernelWorker:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=SyntaxWarning)
                 tree = ast.parse(code, "<ipython>", "exec")
-                self._auto_import_for_ast(tree)
+                self._auto_import_for_ast(tree, code)
                 has_trailing_expr = bool(tree.body and isinstance(tree.body[-1], ast.Expr))
                 if has_trailing_expr:
                     last_expr = tree.body[-1]
@@ -506,16 +559,9 @@ class KernelWorker:
         finally:
             self._active_cell_ids.discard(cell_id)
 
-        return {
-            "type": "exec_result",
-            "id": cell_id,
-            "ok": ok,
-            "stdout": _spill_or_truncate(stdout_buf.getvalue(), MAX_OUTPUT_CHARS, "stdout", cell_id),
-            "stderr": _spill_or_truncate(stderr_buf.getvalue(), MAX_OUTPUT_CHARS, "stderr", cell_id),
-            "result": result_repr,
-            "images": cell_images,
-            "running_bash": sum(1 for h in self._handles if h.running),
-        }
+        return self._cell_result(
+            cell_id, ok, stdout_buf.getvalue(), stderr_buf.getvalue(), result_repr, cell_images
+        )
 
     def list_helpers(self) -> dict[str, Any]:
         """Return serialized info on loaded helpers and loading warnings."""
@@ -565,6 +611,7 @@ class KernelWorker:
 
         saved: list[str] = []
         skipped: list[str] = []
+        module_hints: dict[str, str] = {}
         total_bytes = 0
 
         try:
@@ -577,6 +624,10 @@ class KernelWorker:
                     continue
                 if isinstance(val, BashHandle):
                     skipped.append(f"{name} (running/process handle)")
+                    continue
+                if isinstance(val, types.ModuleType):
+                    if _is_reimportable(val):
+                        module_hints[name] = val.__name__
                     continue
                 try:
                     blob = pickle.dumps(val, protocol=pickle.HIGHEST_PROTOCOL)
@@ -598,7 +649,7 @@ class KernelWorker:
                 total_bytes += len(blob)
                 saved.append(name)
 
-            manifest = {"saved": saved, "skipped": skipped, "cwd": os.getcwd()}
+            manifest = {"saved": saved, "skipped": skipped, "modules": module_hints, "cwd": os.getcwd()}
             (tmp_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
             backup_dir: Path | None = None
             if target.exists():
@@ -620,6 +671,17 @@ class KernelWorker:
             raise
         return manifest
 
+    def _reimport_modules(self, hints: dict[str, str], restored: list[str], skipped: list[str]) -> None:
+        """Re-import `alias -> module_name` hints for modules that were not pickled."""
+        for alias, mod_name in hints.items():
+            if alias in self._namespace:
+                continue
+            try:
+                self._namespace[alias] = importlib.import_module(mod_name)
+                restored.append(alias)
+            except Exception:
+                skipped.append(f"{alias} (module {mod_name} not importable)")
+
     def restore_vars(self, snapshot_dir: str) -> dict[str, Any]:
         """Restore variables from `snapshot_dir` into the kernel namespace."""
         import pickle
@@ -639,6 +701,7 @@ class KernelWorker:
 
         restored: list[str] = []
         skipped: list[str] = list(manifest.get("skipped", []))
+        self._reimport_modules(manifest.get("modules", {}), restored, skipped)
 
         for name in manifest.get("saved", []):
             var_file = target / f"{name}.dill"
@@ -651,9 +714,7 @@ class KernelWorker:
                     loaded = pickle.loads(raw)
                 except Exception:
                     loaded = dill.loads(raw)
-                if inspect.isfunction(loaded):
-                    import types
-
+                if inspect.isfunction(loaded) and loaded.__module__ in _CELL_MODULES:
                     rebuilt = types.FunctionType(
                         loaded.__code__,
                         self._namespace,

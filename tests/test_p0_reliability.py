@@ -406,3 +406,33 @@ def test_serialize_for_summary_respects_max_total_chars_and_clear_old_tool_resul
     cleared_msgs, cleared_count = clear_old_tool_results(conv, keep_recent_tokens=300)
     assert cleared_count == 0
     assert cleared_msgs == conv
+
+
+def test_kernel_crash_restart_surfaces_notice(tmp_path: Path) -> None:
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        assert kernel.exec_cell("x = 1").ok
+        assert kernel._proc is not None
+        kernel._proc.kill()
+        kernel._proc.wait(timeout=2.0)
+        res = kernel.exec_cell("1 + 1")
+        assert res.ok
+        assert res.result == "2"
+        assert "kernel exited unexpectedly" in res.stderr
+        assert kernel.consume_restart_notice() is None
+        # A clean second call carries no notice
+        assert "unexpectedly" not in kernel.exec_cell("2").stderr
+    finally:
+        kernel.close()
+
+
+def test_kernel_close_is_idempotent_and_takes_write_lock(tmp_path: Path) -> None:
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    proc = kernel._proc
+    assert proc is not None
+    kernel.close()
+    assert proc.poll() is not None
+    kernel.close()
+    assert not kernel._write_lock.locked()

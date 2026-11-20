@@ -74,6 +74,18 @@ def _extract_system_prompt_append(params: dict[str, Any]) -> str:
     return append.strip() if isinstance(append, str) else ""
 
 
+def _image_content_blocks(images: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Convert kernel/MCP image dicts into ACP `tool_call_update` content blocks."""
+    return [
+        {
+            "type": "content",
+            "content": {"type": "image", "data": img["data"], "mimeType": img["mime_type"]},
+        }
+        for img in images or []
+        if img.get("data") and img.get("mime_type")
+    ]
+
+
 class ACPServer:
     """JSON-RPC 2.0 ACP server speaking newline-delimited JSON over stdio."""
 
@@ -139,6 +151,21 @@ class ACPServer:
             },
         }
 
+    @staticmethod
+    def _abort_session(state: _ActiveSession) -> None:
+        state.abort_event.set()
+        state.kernel.interrupt()
+
+    def _retire_session(self, state: _ActiveSession, wait: float = 5.0) -> None:
+        """Abort any in-flight prompt, wait for it to release the session, then close its kernel."""
+        self._abort_session(state)
+        acquired = state.prompt_lock.acquire(timeout=wait)
+        try:
+            state.kernel.close()
+        finally:
+            if acquired:
+                state.prompt_lock.release()
+
     def _handle_session_new(self, params: dict[str, Any]) -> dict[str, Any]:
         raw_cwd = params.get("cwd")
         cwd = Path(raw_cwd).expanduser().resolve() if raw_cwd else Path.cwd().resolve()
@@ -161,7 +188,7 @@ class ACPServer:
             old_state = self._sessions.pop(session.id, None)
             self._sessions[session.id] = state
         if old_state is not None:
-            old_state.kernel.close()
+            self._retire_session(old_state)
         return {"sessionId": session.id}
 
     def _handle_session_load(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -194,7 +221,7 @@ class ACPServer:
             old_state = self._sessions.pop(session.id, None)
             self._sessions[session.id] = state
         if old_state is not None:
-            old_state.kernel.close()
+            self._retire_session(old_state)
 
         for msg in messages:
             role = msg.get("role")
@@ -261,15 +288,16 @@ class ACPServer:
 
             def _on_tool_result(tc_id: str, res: CellResult) -> None:
                 acp_tc_id = tc_map.pop(tc_id, tc_id or f"tc_{uuid.uuid4().hex[:8]}")
-                self._send_update(
-                    session_id,
-                    {
-                        "sessionUpdate": "tool_call_update",
-                        "toolCallId": acp_tc_id,
-                        "status": "completed" if res.ok else "failed",
-                        "rawOutput": res.format_for_model(),
-                    },
-                )
+                update: dict[str, Any] = {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": acp_tc_id,
+                    "status": "completed" if res.ok else "failed",
+                    "rawOutput": res.format_for_model(),
+                }
+                image_blocks = _image_content_blocks(res.images)
+                if image_blocks:
+                    update["content"] = image_blocks
+                self._send_update(session_id, update)
 
             try:
                 _, updated_msgs, _ = agent_loop(
@@ -304,8 +332,7 @@ class ACPServer:
         with self._sessions_lock:
             state = self._sessions.get(session_id)
         if state is not None:
-            state.abort_event.set()
-            state.kernel.interrupt()
+            self._abort_session(state)
 
     def _dispatch_request(self, req: dict[str, Any]) -> None:
         req_id = req.get("id")
@@ -333,6 +360,10 @@ class ACPServer:
 
             if req_id is not None:
                 self._send_result(req_id, res)
+        except (KeyError, ValueError) as exc:
+            if req_id is not None:
+                message = str(exc.args[0]) if isinstance(exc, KeyError) and exc.args else str(exc)
+                self._send_error(req_id, -32602, message)
         except Exception as exc:
             if req_id is not None:
                 self._send_error(req_id, -32000, str(exc))
@@ -364,6 +395,10 @@ class ACPServer:
                 else:
                     self._dispatch_request(req)
         finally:
+            with self._sessions_lock:
+                active = list(self._sessions.values())
+            for state in active:
+                self._abort_session(state)
             for t in workers:
                 t.join(timeout=2.0)
             with self._sessions_lock:

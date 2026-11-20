@@ -58,6 +58,7 @@ class KernelClient:
         self._running_bash_count: int = 0
         self._atexit_registered = False
         self.dirty = False
+        self._restart_notice: str | None = None
 
     def start(self, timeout: float = 10.0) -> None:
         if self._proc is not None and self._proc.poll() is None:
@@ -148,8 +149,24 @@ class KernelClient:
             for q in self._pending.values():
                 q.put({"type": "error", "error": "Kernel process exited unexpectedly"})
 
+    def consume_restart_notice(self) -> str | None:
+        """Return (and clear) the notice describing an unexpected kernel exit + auto-restart."""
+        notice, self._restart_notice = self._restart_notice, None
+        return notice
+
+    def _note_unexpected_exit(self) -> None:
+        proc = self._proc
+        code = proc.poll() if proc is not None else None
+        tail = "".join(self._stderr_tail).strip()
+        notice = f"[kernel exited unexpectedly (code {code}); restarted with a fresh namespace]"
+        if tail:
+            notice += "\n" + "\n".join(tail.splitlines()[-20:])
+        self._restart_notice = notice
+
     def _request(self, payload: dict[str, Any], timeout: float | None) -> dict[str, Any]:
         if self._proc is None or self._proc.poll() is not None:
+            if self._proc is not None:
+                self._note_unexpected_exit()
             self.start()
         assert self._proc is not None and self._proc.stdin is not None
 
@@ -182,12 +199,16 @@ class KernelClient:
     def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
         self.dirty = True
         resp = self._request({"type": "exec", "code": code}, timeout=timeout)
+        notice = self.consume_restart_notice()
+        prefix = f"{notice}\n" if notice else ""
         if resp.get("type") == "error":
-            return CellResult(ok=False, stdout="", stderr=resp.get("error", "Unknown kernel error"), result=None)
+            return CellResult(
+                ok=False, stdout="", stderr=prefix + resp.get("error", "Unknown kernel error"), result=None
+            )
         return CellResult(
             ok=bool(resp.get("ok", False)),
             stdout=resp.get("stdout", ""),
-            stderr=resp.get("stderr", ""),
+            stderr=prefix + resp.get("stderr", ""),
             result=resp.get("result"),
             images=list(resp.get("images") or []),
         )
@@ -264,6 +285,19 @@ class KernelClient:
             except ProcessLookupError:
                 pass
 
+    def _send_shutdown(self, proc: subprocess.Popen[str]) -> None:
+        """Write the shutdown message under the write lock so it never interleaves with a request."""
+        if proc.stdin is None:
+            return
+        if not self._write_lock.acquire(timeout=2.0):
+            return
+        try:
+            proc.stdin.write(json.dumps({"type": "shutdown"}) + "\n")
+            proc.stdin.flush()
+            proc.stdin.close()
+        finally:
+            self._write_lock.release()
+
     def close(self) -> None:
         proc = self._proc
         self._proc = None
@@ -274,10 +308,7 @@ class KernelClient:
         pid = proc.pid
         if proc.poll() is None:
             try:
-                if proc.stdin:
-                    proc.stdin.write(json.dumps({"type": "shutdown"}) + "\n")
-                    proc.stdin.flush()
-                    proc.stdin.close()
+                self._send_shutdown(proc)
                 proc.wait(timeout=4.0)
             except Exception:
                 pass
