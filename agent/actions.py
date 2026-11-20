@@ -293,6 +293,52 @@ def _strip_env_prefix(tokens: list[str]) -> list[str]:
     return tokens[idx:]
 
 
+def _describe_quartz_command(args: list[str]) -> str:
+    """Label a ``quartz`` invocation (e.g. forked workers launched by bash()).
+
+    ``uv run quartz -p "<prompt>" -r <sid> --fork --cwd <worktree>`` ->
+    ``Quartz: <prompt snippet> · <worktree basename>``. Bare ``quartz``
+    invocations fall back to ``Run quartz``.
+    """
+    prompt: str | None = None
+    cwd: str | None = None
+    idx = 0
+    while idx < len(args):
+        tok = args[idx]
+        if tok in ("-p", "--prompt") and idx + 1 < len(args):
+            prompt = args[idx + 1]
+            idx += 2
+            continue
+        if tok.startswith("--prompt="):
+            prompt = tok.split("=", 1)[1]
+        elif tok.startswith("-p") and len(tok) > 2:
+            prompt = tok[2:]
+        elif tok == "--cwd" and idx + 1 < len(args):
+            cwd = args[idx + 1]
+            idx += 2
+            continue
+        elif tok.startswith("--cwd="):
+            cwd = tok.split("=", 1)[1]
+        idx += 1
+
+    parts: list[str] = []
+    if prompt and prompt.strip():
+        snippet = " ".join(prompt.split())
+        if len(snippet) > 30:
+            snippet = snippet[:29].rstrip() + "…"
+        parts.append(f"Quartz: {snippet}")
+    else:
+        parts.append("Run quartz")
+    if cwd and cwd.strip() and cwd.strip() != ".":
+        base = cwd.rstrip("/").rsplit("/", 1)[-1]
+        if base:
+            parts.append(base)
+    result = " · ".join(parts)
+    if len(result) > _MAX_INTENT_LEN:
+        result = result[: _MAX_INTENT_LEN - 1].rstrip() + "…"
+    return result
+
+
 def _describe_shell_command(cmd_str: str) -> str | None:
     """Map one shell command string to a short intent label (or None)."""
     if not cmd_str or not cmd_str.strip():
@@ -320,7 +366,11 @@ def _describe_shell_command(cmd_str: str) -> str | None:
         sub = rest[0].rsplit("/", 1)[-1]
         if sub == "pytest" or (sub == "python" and "-m" in rest and "pytest" in rest):
             return "Run pytest"
+        if sub == "quartz":
+            return _describe_quartz_command(rest[1:])
         return f"Run {sub}"
+    if prog == "quartz":
+        return _describe_quartz_command(args)
     if prog == "pytest":
         return "Run pytest"
     if prog == "python" and "-m" in args and "pytest" in args:

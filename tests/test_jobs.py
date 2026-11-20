@@ -27,6 +27,21 @@ def test_describe_job_label_known_shapes() -> None:
     assert describe_job_label("ls .worktrees/") == "List .worktrees/"
 
 
+def test_describe_job_label_quartz_worker() -> None:
+    assert (
+        describe_job_label(
+            'uv run quartz -p "fix the frozen spinner" -r abc --fork --cwd .worktrees/feat-spinner'
+        )
+        == "Quartz: fix the frozen spinner · feat-spinner"
+    )
+    # Bare quartz run and long prompt truncation
+    assert describe_job_label("quartz --help") == "Run quartz"
+    long = 'uv run quartz -p "' + ("x" * 80) + '" -r abc --fork'
+    out = describe_job_label(long)
+    assert out.startswith("Quartz: ")
+    assert len(out) <= 60
+
+
 def test_describe_job_label_fallback_never_raises() -> None:
     assert describe_job_label("") == "Background job"
     assert describe_job_label("   ") == "Background job"
@@ -201,6 +216,36 @@ def test_dock_progress_shows_bg_jobs_when_idle() -> None:
     assert "Run pytest... 12s" in text
     assert "pid 4242" in text
     assert dock._has_progress() is True
+
+
+def test_slash_command_not_steered_while_turn_running(tmp_path: Path) -> None:
+    """submit_input must route /... to slash handling even mid-turn."""
+    from agent.interactive import InteractiveDock
+
+    dock = InteractiveDock.__new__(InteractiveDock)
+    import threading
+
+    dock._turn_running = True
+    dock._show_thinking = False
+    dock._show_details = False
+    dock._bg_count = 0
+    dock._bg_jobs = []
+    dock._steering_queue = __import__("queue").Queue()
+    dock._active_tracker = None
+    dock._lock = threading.RLock()
+    dock.input_buffer = __import__("types").SimpleNamespace(
+        text="/jobs", append_to_history=lambda: None, reset=lambda: None
+    )
+    launched: list = []
+    dock._launch_worker = lambda fn: fn()  # type: ignore[assignment]
+    dock._handle_submitted_idle = lambda text: launched.append(text)  # type: ignore[assignment]
+    dock.submit_input()
+    assert dock._steering_queue.empty(), "slash input must not become a steering message"
+    assert launched == ["/jobs"]
+    # Non-slash input while running DOES steer.
+    dock.input_buffer.reset = lambda: None
+    dock.submit_input(override_text="keep going")
+    assert not dock._steering_queue.empty()
 
 
 def test_launch_worker_uses_bash_tracking(tmp_path: Path) -> None:

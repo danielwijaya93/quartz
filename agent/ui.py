@@ -548,6 +548,7 @@ class TurnProgressTracker:
                 or self.active_tool_code is not None
                 or self.input_buffer
                 or self.steering_messages
+                or (self.show_thinking and self.thinking_text)
             ):
                 self._render_current()
 
