@@ -22,7 +22,6 @@ from prompt_toolkit.layout.processors import BeforeInput, DynamicProcessor, Pass
 from prompt_toolkit.styles import Style
 from rich.console import Console, Group
 from rich.markdown import Markdown
-from rich.spinner import Spinner
 from rich.text import Text
 
 from agent.actions import describe_cell_actions, describe_group_actions
@@ -33,6 +32,13 @@ from agent.kernel_client import CellResult
 from agent.loop import TurnUsage
 
 console = Console()
+
+_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+def _spinner_frame(elapsed: float, interval: float = 0.08) -> str:
+    idx = int(max(0.0, elapsed) / interval) % len(_SPINNER_FRAMES)
+    return _SPINNER_FRAMES[idx]
 
 _active_dock: Any | None = None
 _active_dock_lock = threading.RLock()
@@ -487,10 +493,11 @@ class TurnProgressTracker:
 
         if self.active_thinking_start is not None:
             elapsed = time.monotonic() - self.active_thinking_start
-            items.append(Spinner("dots", text=Text(f"Thinking... {_fmt_stopwatch(elapsed)}", style="dim")))
+            items.append(Text(f"{_spinner_frame(elapsed)} Thinking... {_fmt_stopwatch(elapsed)}", style="dim"))
         elif self.active_tool_code is not None:
+            elapsed_tool = time.monotonic() - self.active_tool_start if self.active_tool_start is not None else 0.0
             action = describe_cell_actions(self.active_tool_code) if self.active_tool_code else "Run Python"
-            items.append(Spinner("dots", text=Text(f"{action}...", style="dim")))
+            items.append(Text(f"{_spinner_frame(elapsed_tool)} {action}... {_fmt_stopwatch(elapsed_tool)}", style="dim"))
 
         for s_msg in self.steering_messages:
             preview = s_msg[:60] + ("..." if len(s_msg) > 60 else "")

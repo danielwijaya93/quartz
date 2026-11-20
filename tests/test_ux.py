@@ -622,7 +622,8 @@ def test_turn_progress_tracker_in_progress_and_collapsing() -> None:
     grp2 = tracker._render_group()
     assert len(grp2.renderables) == 2
     assert "Thought for " in grp2.renderables[0].plain
-    assert grp2.renderables[1].text.plain == "Read files..."
+    assert "Read files..." in grp2.renderables[1].plain
+    assert grp2.renderables[1].plain[0] in ui._SPINNER_FRAMES
 
     tracker.add_tool_result(1, "read('agent/loop.py')", CellResult(ok=True, stdout="content\n", stderr="", result=None), 0.05)
     grp3 = tracker._render_group()
@@ -635,13 +636,15 @@ def test_turn_progress_tracker_in_progress_and_collapsing() -> None:
     assert len(grp4.renderables) == 3
     assert "Thought for " in grp4.renderables[0].plain
     assert "· #1 · Read files" in grp4.renderables[1].plain
-    assert grp4.renderables[2].text.plain.startswith("Thinking... ")
+    assert "Thinking... " in grp4.renderables[2].plain
+    assert grp4.renderables[2].plain[0] in ui._SPINNER_FRAMES
 
     tracker.start_tool("edit('agent/cli.py', 'a', 'b')")
     grp5 = tracker._render_group()
     assert len(grp5.renderables) == 4
     assert "Thought for " in grp5.renderables[2].plain
-    assert grp5.renderables[3].text.plain == "Edit files..."
+    assert "Edit files..." in grp5.renderables[3].plain
+    assert grp5.renderables[3].plain[0] in ui._SPINNER_FRAMES
 
     tracker.add_tool_result(2, "edit('agent/cli.py', 'a', 'b')", CellResult(ok=True, stdout="ok\n", stderr="", result=None), 0.04)
     grp6 = tracker._render_group()
@@ -884,3 +887,53 @@ def test_help_includes_keybindings() -> None:
 
 
 
+
+
+def test_spinner_frame_unit() -> None:
+    assert ui._spinner_frame(0.0) == ui._SPINNER_FRAMES[0]
+    assert ui._spinner_frame(0.09) == ui._SPINNER_FRAMES[1]
+    assert ui._spinner_frame(-3.5) == ui._SPINNER_FRAMES[0]
+    # wrap-around: 10 intervals of 0.08s -> back to frame 0
+    assert ui._spinner_frame(0.80) == ui._SPINNER_FRAMES[0]
+    assert ui._spinner_frame(0.80 + 0.09) == ui._SPINNER_FRAMES[1]
+    # custom interval
+    assert ui._spinner_frame(0.10, interval=0.05) == ui._SPINNER_FRAMES[2]
+
+
+def test_turn_progress_tracker_spinner_animates(monkeypatch: pytest.MonkeyPatch) -> None:
+    buf = io.StringIO()
+    test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
+    test_printer = BlockPrinter(test_console)
+    test_printer.reset()
+
+    tracker = cli.TurnProgressTracker(test_console, test_printer)
+    clock = [1000.0]
+    monkeypatch.setattr(ui.time, "monotonic", lambda: clock[0])
+
+    tracker.start_thinking()
+    grp_a = tracker._render_group()
+    assert len(grp_a.renderables) == 1
+    frame_a = grp_a.renderables[0].plain[0]
+    assert frame_a in ui._SPINNER_FRAMES
+    assert "Thinking... " in grp_a.renderables[0].plain
+
+    clock[0] += 0.09
+    grp_b = tracker._render_group()
+    frame_b = grp_b.renderables[0].plain[0]
+    assert frame_b in ui._SPINNER_FRAMES
+    assert frame_b != frame_a
+
+    # Tool spinner also animates and now shows elapsed
+    tracker.start_tool("read('agent/loop.py')")
+    clock[0] += 0.09
+    grp_c = tracker._render_group()
+    tool_line = grp_c.renderables[-1].plain
+    assert tool_line[0] in ui._SPINNER_FRAMES
+    assert "Read files..." in tool_line
+    frame_c = tool_line[0]
+    clock[0] += 0.09
+    grp_d = tracker._render_group()
+    assert grp_d.renderables[-1].plain[0] != frame_c
+    assert grp_d.renderables[-1].plain[0] in ui._SPINNER_FRAMES
+
+    tracker.close()
