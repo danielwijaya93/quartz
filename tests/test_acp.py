@@ -269,6 +269,7 @@ def test_acp_parallel_tool_call_ids_and_cancel(tmp_path: Path, monkeypatch) -> N
     server = ACPServer(_factory, in_stream=io.StringIO(""), out_stream=out_buf)
     server._dispatch_request({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {"cwd": str(tmp_path)}})
     sid = json.loads(out_buf.getvalue().splitlines()[0])["result"]["sessionId"]
+    server._sessions[sid].session.save_messages([{"role": "user", "content": "hi"}])
     out_buf.seek(0)
     out_buf.truncate(0)
 
@@ -326,6 +327,7 @@ def test_acp_session_cancel_stops_active_turn(tmp_path: Path, monkeypatch) -> No
     server = ACPServer(_factory, in_stream=io.StringIO(""), out_stream=out_buf)
     server._dispatch_request({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {"cwd": str(tmp_path)}})
     sid = json.loads(out_buf.getvalue().splitlines()[0])["result"]["sessionId"]
+    server._sessions[sid].session.save_messages([{"role": "user", "content": "hi"}])
     out_buf.seek(0)
     out_buf.truncate(0)
 
@@ -351,3 +353,86 @@ def test_acp_session_cancel_stops_active_turn(tmp_path: Path, monkeypatch) -> No
     msgs = [json.loads(line) for line in out_buf.getvalue().splitlines() if line.strip()]
     resp = next(m for m in msgs if m.get("id") == 2)
     assert resp["result"] == {"stopReason": "cancelled"}
+
+
+def test_acp_duplicate_session_load_closes_previous_kernel(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
+    out_buf = io.StringIO()
+    server = ACPServer(_make_fake_client, in_stream=io.StringIO(""), out_stream=out_buf)
+    server._dispatch_request({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {"cwd": str(tmp_path)}})
+    sid = json.loads(out_buf.getvalue().splitlines()[0])["result"]["sessionId"]
+    server._sessions[sid].session.save_messages([{"role": "user", "content": "hi"}])
+
+    first_kernel = server._sessions[sid].kernel
+    closed = []
+    orig_close = first_kernel.close
+
+    def _tracked_close() -> None:
+        closed.append(True)
+        orig_close()
+
+    first_kernel.close = _tracked_close  # type: ignore[method-assign]
+
+    server._dispatch_request({"jsonrpc": "2.0", "id": 2, "method": "session/load", "params": {"sessionId": sid, "cwd": str(tmp_path)}})
+    try:
+        assert closed == [True]
+    finally:
+        for st in server._sessions.values():
+            st.kernel.close()
+
+
+def test_acp_serve_non_object_json_frames_return_invalid_request(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
+    in_buf = io.StringIO('[]\nnull\n"str"\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n')
+    out_buf = io.StringIO()
+    server = ACPServer(_make_fake_client, in_stream=in_buf, out_stream=out_buf)
+    server.serve()
+
+    msgs = [json.loads(line) for line in out_buf.getvalue().splitlines() if line.strip()]
+    assert len(msgs) == 4
+    for i in range(3):
+        assert msgs[i]["error"]["code"] == -32600
+    assert msgs[3]["id"] == 1
+    assert msgs[3]["result"]["protocolVersion"] == 1
+
+
+def test_acp_serve_prunes_finished_worker_threads(tmp_path: Path, monkeypatch) -> None:
+    import time
+
+    monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
+    out_buf = io.StringIO()
+    server = ACPServer(_make_fake_client, in_stream=io.StringIO(""), out_stream=out_buf)
+    server._dispatch_request({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {"cwd": str(tmp_path)}})
+    sid = json.loads(out_buf.getvalue().splitlines()[0])["result"]["sessionId"]
+    server._sessions[sid].session.save_messages([{"role": "user", "content": "hi"}])
+    for st in server._sessions.values():
+        st.kernel.close()
+    server._sessions.clear()
+
+    # Feed multiple session/prompt requests (which will fail fast with unknown session, finishing threads)
+    # and spy on threading.Thread to ensure workers list is pruned.
+    created_threads = []
+    orig_thread = __import__("threading").Thread
+
+    def _spy_thread(*args, **kwargs):
+        t = orig_thread(*args, **kwargs)
+        created_threads.append(t)
+        return t
+
+    monkeypatch.setattr("agent.acp.threading.Thread", _spy_thread)
+
+    lines = [
+        json.dumps({"jsonrpc": "2.0", "id": i, "method": "session/prompt", "params": {"sessionId": sid, "prompt": [{"type": "text", "text": "hi"}]}})
+        for i in range(2, 6)
+    ]
+
+    class _SlowLineReader:
+        def __iter__(self):
+            for l in lines:
+                yield l + "\n"
+                time.sleep(0.05)
+
+    server2 = ACPServer(_make_fake_client, in_stream=_SlowLineReader(), out_stream=io.StringIO())
+    server2.serve()
+    assert len(created_threads) == 4
+    assert all(not t.is_alive() for t in created_threads)

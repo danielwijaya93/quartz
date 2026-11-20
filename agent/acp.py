@@ -159,7 +159,10 @@ class ACPServer:
             usage=TurnUsage(),
         )
         with self._sessions_lock:
+            old_state = self._sessions.pop(session.id, None)
             self._sessions[session.id] = state
+        if old_state is not None:
+            old_state.kernel.close()
         return {"sessionId": session.id}
 
     def _handle_session_load(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -189,7 +192,10 @@ class ACPServer:
             usage=TurnUsage.from_dict(session.last_usage),
         )
         with self._sessions_lock:
+            old_state = self._sessions.pop(session.id, None)
             self._sessions[session.id] = state
+        if old_state is not None:
+            old_state.kernel.close()
 
         for msg in messages:
             role = msg.get("role")
@@ -291,6 +297,7 @@ class ACPServer:
                 state.session.save_kernel(state.kernel)
                 return {"stopReason": "end_turn"}
             except (KeyboardInterrupt, TurnAborted):
+                state.session.save_messages(state.messages)
                 return {"stopReason": "cancelled"}
 
     def _handle_session_cancel(self, params: dict[str, Any]) -> None:
@@ -344,8 +351,12 @@ class ACPServer:
                 except json.JSONDecodeError as exc:
                     self._send_error(None, -32700, f"Parse error: {exc}")
                     continue
+                if not isinstance(req, dict):
+                    self._send_error(None, -32600, "Invalid Request")
+                    continue
 
                 if req.get("method") == "session/prompt":
+                    workers = [w for w in workers if w.is_alive()]
                     t = threading.Thread(
                         target=self._dispatch_request, args=(req,), daemon=True
                     )

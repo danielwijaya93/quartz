@@ -48,6 +48,7 @@ class Session:
         self.jsonl_path = self.sessions_dir / f"{self.id}.jsonl"
         self.snapshot_dir = self.sessions_dir / f"{self.id}.snapshot"
         self._persisted_count = 0
+        self._persisted_refs: list[dict[str, Any]] = []
         self._pending_meta: dict[str, Any] | None = None
         self.last_usage: dict[str, int] | None = None
 
@@ -180,6 +181,7 @@ class Session:
                 session.last_usage = {k: int(v) for k, v in record["usage"].items()}
 
         session._persisted_count = len(messages)
+        session._persisted_refs = [dict(m) for m in messages]
         return session, messages
 
     @classmethod
@@ -192,6 +194,7 @@ class Session:
             forked._ensure_meta_written()
             forked._append_record({"type": "compaction", "messages": messages})
             forked._persisted_count = len(messages)
+            forked._persisted_refs = [dict(m) for m in messages]
         if src.last_usage:
             forked.save_usage(src.last_usage)
         if src.snapshot_dir.is_dir():
@@ -211,9 +214,14 @@ class Session:
         if not messages and self._persisted_count == 0:
             return
         self._ensure_meta_written()
-        if compacted or len(messages) < self._persisted_count:
+        prefix_changed = len(messages) < self._persisted_count or any(
+            messages[i] != self._persisted_refs[i]
+            for i in range(self._persisted_count)
+        )
+        if compacted or prefix_changed:
             self._append_record({"type": "compaction", "messages": messages})
             self._persisted_count = len(messages)
+            self._persisted_refs = [dict(m) for m in messages]
             return
 
         new_msgs = messages[self._persisted_count :]
@@ -225,6 +233,7 @@ class Session:
             with self.jsonl_path.open("a", encoding="utf-8") as f:
                 f.write(lines)
         self._persisted_count = len(messages)
+        self._persisted_refs = [dict(m) for m in messages]
 
     def save_usage(self, usage: dict[str, int]) -> None:
         self._ensure_meta_written()

@@ -162,3 +162,39 @@ def test_session_list_for_cwd(tmp_path: Path) -> None:
     assert listed[0]["message_count"] == 1
     assert listed[1]["preview"] == "first in a"
     assert listed[1]["message_count"] == 2
+
+
+def test_session_save_messages_detects_in_place_and_grown_compaction(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    s = Session.create(tmp_path, sessions_dir=sessions_dir)
+
+    msgs = [
+        {"role": "user", "content": "run"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "tc1", "type": "function", "function": {"name": "ipython", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "tc1", "content": "huge output " * 50},
+        {"role": "assistant", "content": "done"},
+    ]
+    s.save_messages(msgs)
+
+    # 1) Same-length CLEARED_TOOL_RESULTS style replacement without compacted=True
+    cleared = [
+        msgs[0],
+        msgs[1],
+        {"role": "tool", "tool_call_id": "tc1", "content": "[cleared]"},
+        msgs[3],
+    ]
+    s.save_messages(cleared)
+    _, reloaded = Session.load(s.id, sessions_dir=sessions_dir)
+    assert reloaded == cleared
+
+    # 2) SUMMARIZED-then-grown list (longer than _persisted_count=4) without compacted=True
+    summarized_and_grown = [
+        {"role": "user", "content": "[compaction-summary]"},
+        {"role": "assistant", "content": "resumed"},
+        {"role": "user", "content": "follow up 1"},
+        {"role": "assistant", "content": "ok 1"},
+        {"role": "user", "content": "follow up 2"},
+    ]
+    s.save_messages(summarized_and_grown)
+    _, reloaded2 = Session.load(s.id, sessions_dir=sessions_dir)
+    assert reloaded2 == summarized_and_grown

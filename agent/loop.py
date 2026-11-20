@@ -6,7 +6,6 @@ import dataclasses
 import json
 import queue
 import threading
-import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
@@ -316,7 +315,8 @@ def _call_model(
     except Exception:
         if abort_event is not None and abort_event.is_set():
             raise TurnAborted()
-        raise
+        if steering_queue is None or steering_queue.empty():
+            raise
     finally:
         stream_done.set()
         if on_status:
@@ -397,7 +397,7 @@ def agent_loop(
     """
     last_prompt_tokens = initial_prompt_tokens
     # Number of leading messages already covered by `last_prompt_tokens`.
-    measured_message_count = 0
+    measured_message_count = max(0, len(messages) - 1) if initial_prompt_tokens > 0 else 0
     system_tokens = estimate_context_tokens([{"role": "system", "content": system_prompt}])
     compact_threshold = max(4096, max_context_tokens - compact_reserve_tokens)
     overflow_recoveries = 0
@@ -407,7 +407,7 @@ def agent_loop(
         return last_prompt_tokens + estimate_context_tokens(messages[measured_message_count:])
 
     def run_compaction(*, budget: int | None, keep_tokens: int) -> CompactionResult:
-        nonlocal messages, last_prompt_tokens, measured_message_count
+        nonlocal last_prompt_tokens, measured_message_count
         result = compact_messages(
             client,
             model,
@@ -416,10 +416,10 @@ def agent_loop(
             budget_tokens=budget,
             keep_recent_tokens=keep_tokens,
         )
-        messages = result.messages
+        messages[:] = result.messages
         if result.changed:
             last_prompt_tokens = system_tokens + result.estimated_tokens_after
-            measured_message_count = 0
+            measured_message_count = len(messages)
             if on_compaction:
                 on_compaction(result)
         return result
@@ -467,9 +467,16 @@ def agent_loop(
         if usage_stats is not None and usage is not None:
             usage_stats.update(usage)
 
+        tool_calls = assistant_dict.get("tool_calls") or []
+        if (
+            not tool_calls
+            and assistant_dict.get("content") is None
+            and _drain_steering(steering_queue, messages, on_steering=on_steering)
+        ):
+            continue
+
         messages.append(assistant_dict)
 
-        tool_calls = assistant_dict.get("tool_calls") or []
         if not tool_calls:
             if _drain_steering(steering_queue, messages, on_steering=on_steering):
                 continue
