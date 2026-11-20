@@ -169,3 +169,101 @@ def test_kernel_preimported_stdlib_preserved_across_snapshot(tmp_path: Path) -> 
     finally:
         kernel2.close()
 
+
+def test_kernel_lazy_stdlib_auto_import_modules_and_symbols(tmp_path: Path) -> None:
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        res = kernel.exec_cell(
+            "dt = datetime.datetime.now()\n"
+            "h = hashlib.sha256(b'x').hexdigest()\n"
+            "q = urllib.parse.quote('a b')\n"
+            "t = tomllib.loads('a = 1')\n"
+            "sp = subprocess.run(['python3', '-c', 'print(123)'], capture_output=True, text=True)\n"
+            "(dt.year >= 2020, len(h) == 64, q, t['a'], sp.stdout.strip())"
+        )
+        assert res.ok, res.stderr
+        assert "(True, True, 'a%20b', 1, '123')" in (res.result or "")
+
+        res_sym = kernel.exec_cell(
+            "c = Counter('aab')\n"
+            "dd = defaultdict(int)\n"
+            "dd['k'] += 1\n"
+            "@dataclass\n"
+            "class Point:\n"
+            "    x: int\n"
+            "td = timedelta(days=1)\n"
+            "(c['a'], dd['k'], Point(3).x, td.days)"
+        )
+        assert res_sym.ok, res_sym.stderr
+        assert "(2, 1, 3, 1)" in (res_sym.result or "")
+    finally:
+        kernel.close()
+
+
+def test_kernel_lazy_auto_import_guards_against_false_positives(tmp_path: Path) -> None:
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        r1 = kernel.exec_cell("code.strip()")
+        assert not r1.ok
+        assert "NameError" in r1.stderr
+        assert "AttributeError" not in r1.stderr
+
+        r2 = kernel.exec_cell("types.append(1)")
+        assert not r2.ok
+        assert "NameError" in r2.stderr
+        assert "AttributeError" not in r2.stderr
+    finally:
+        kernel.close()
+
+
+def test_kernel_lazy_auto_import_shadowing_list_vars_and_snapshot(tmp_path: Path) -> None:
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    snap_dir = tmp_path / "snap_lazy"
+    try:
+        res = kernel.exec_cell(
+            "math = 42\n"
+            "digest = hashlib.sha256(b'hi').hexdigest()\n"
+            "c = Counter('abb')\n"
+            "(math, len(digest), c['b'])"
+        )
+        assert res.ok, res.stderr
+        assert "(42, 64, 2)" in (res.result or "")
+
+        vars_info = kernel.list_vars()
+        assert vars_info.get("math") == "int"
+        assert "hashlib" not in vars_info
+        assert "Counter" not in vars_info
+
+        snap_res = kernel.snapshot(snap_dir)
+        assert "math" in snap_res.get("saved", [])
+        assert "hashlib" not in snap_res.get("saved", [])
+        assert "Counter" not in snap_res.get("saved", [])
+    finally:
+        kernel.close()
+
+
+def test_kernel_lazy_auto_import_inside_function_and_blocklist(tmp_path: Path) -> None:
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        res = kernel.exec_cell(
+            "def f():\n"
+            "    return hashlib.md5(b'a').hexdigest()\n"
+            "f()"
+        )
+        assert res.ok, res.stderr
+        assert len((res.result or "").strip("'\"")) == 32
+
+        r_anti = kernel.exec_cell("antigravity.fly()")
+        assert not r_anti.ok
+        assert "NameError" in r_anti.stderr
+
+        r_this = kernel.exec_cell("this.s")
+        assert not r_this.ok
+        assert "NameError" in r_this.stderr
+    finally:
+        kernel.close()
+

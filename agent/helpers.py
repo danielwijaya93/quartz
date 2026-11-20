@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import builtins
 import contextvars
 import dataclasses
 import difflib
@@ -189,15 +191,26 @@ def edit(path: str, old: str, new: str) -> str:
         )
     )
     if not diff_lines:
-        return f"Updated {path} (no changes)"
-    return f"Updated {path}\n{_truncate(chr(10).join(diff_lines), 8000)}"
+        msg = f"Updated {path} (no changes)"
+    else:
+        msg = f"Updated {path}\n{_truncate(chr(10).join(diff_lines), 8000)}"
+    if p.suffix == ".py":
+        warnings = _check_python_source(p, updated)
+        if warnings:
+            msg += "\n[python check]\n" + "\n".join(warnings)
+    return msg
 
 
 def write(path: str, content: str) -> str:
     """Write `content` to `path`, creating parent directories as needed."""
     p = Path(path).expanduser()
     _atomic_write(p, content)
-    return f"Wrote {len(content)} chars to {path}"
+    msg = f"Wrote {len(content)} chars to {path}"
+    if p.suffix == ".py":
+        warnings = _check_python_source(p, content)
+        if warnings:
+            msg += "\n[python check]\n" + "\n".join(warnings)
+    return msg
 
 
 def view_image(path: str) -> str:
@@ -237,6 +250,290 @@ BUILTIN_HELPERS: dict[str, Callable[..., Any]] = {
     "write": write,
     "view_image": view_image,
 }
+
+_STD_MODULE_DUNDERS: frozenset[str] = frozenset(
+    {
+        "__name__",
+        "__file__",
+        "__doc__",
+        "__package__",
+        "__spec__",
+        "__all__",
+        "__builtins__",
+        "__annotations__",
+        "__cached__",
+        "__loader__",
+    }
+)
+_BUILTIN_NAMES: frozenset[str] = frozenset(dir(builtins)) | _STD_MODULE_DUNDERS
+
+
+def _is_type_checking_if(node: ast.If) -> bool:
+    test = node.test
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+    )
+
+
+def _collect_walrus_targets(node: ast.AST, bound: set[str]) -> None:
+    """Collect NamedExpr (:=) targets inside comprehensions, stopping at def/class/lambda."""
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        if isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
+            bound.add(child.target.id)
+        _collect_walrus_targets(child, bound)
+
+
+def _collect_scope_bindings(nodes: list[ast.stmt] | ast.AST, *, is_comprehension: bool = False) -> set[str]:
+    """Collect names bound directly in the current scope without descending into child scopes."""
+    bound: set[str] = set()
+    stack: list[ast.AST] = list(nodes) if isinstance(nodes, list) else [nodes]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            bound.add(node.id)
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name:
+                bound.add(node.name)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+            continue
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name != "*":
+                    bound.add(alias.asname or alias.name.split(".")[0])
+            continue
+        elif isinstance(node, ast.MatchAs):
+            if node.name:
+                bound.add(node.name)
+        elif isinstance(node, ast.MatchStar):
+            if node.name:
+                bound.add(node.name)
+        elif isinstance(node, ast.MatchMapping):
+            if node.rest:
+                bound.add(node.rest)
+        elif hasattr(ast, "TypeAlias") and isinstance(node, ast.TypeAlias):
+            if isinstance(node.name, ast.Name):
+                bound.add(node.name.id)
+            continue
+        elif isinstance(node, ast.Lambda):
+            continue
+        elif isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            if not is_comprehension:
+                _collect_walrus_targets(node, bound)
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return bound
+
+
+def _arg_names(args: ast.arguments) -> set[str]:
+    names = {a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)}
+    if args.vararg:
+        names.add(args.vararg.arg)
+    if args.kwarg:
+        names.add(args.kwarg.arg)
+    return names
+
+
+def _type_param_names(node: ast.AST) -> set[str]:
+    return {tp.name for tp in getattr(node, "type_params", ()) if hasattr(tp, "name")}
+
+
+class _UndefinedNameChecker(ast.NodeVisitor):
+    """Lightweight scope-aware AST pass detecting unbound Name(ctx=Load) references."""
+
+    def __init__(self, allowed: frozenset[str], skip_annotations: bool) -> None:
+        self._allowed = allowed
+        self._skip_annotations = skip_annotations
+        self._scopes: list[set[str]] = []
+        self._class_scope: set[str] | None = None
+        self.undefined: list[tuple[int, str]] = []
+        self._seen_names: set[str] = set()
+
+    def _is_bound(self, name: str) -> bool:
+        if name in self._allowed:
+            return True
+        if self._class_scope is not None and name in self._class_scope:
+            return True
+        return any(name in scope for scope in self._scopes)
+
+    def _visit_in_scope(self, nodes: list[ast.AST] | ast.AST, extra_bindings: set[str]) -> None:
+        self._scopes.append(extra_bindings)
+        saved_class = self._class_scope
+        self._class_scope = None
+        try:
+            if isinstance(nodes, list):
+                for item in nodes:
+                    self.visit(item)
+            else:
+                self.visit(nodes)
+        finally:
+            self._class_scope = saved_class
+            self._scopes.pop()
+
+    def visit_Module(self, node: ast.Module) -> None:
+        bindings = _collect_scope_bindings(node.body)
+        self._visit_in_scope(list(node.body), bindings)
+
+    def visit_If(self, node: ast.If) -> None:
+        self.visit(node.test)
+        if not _is_type_checking_if(node):
+            for stmt in node.body:
+                self.visit(stmt)
+        for stmt in node.orelse:
+            self.visit(stmt)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self.visit(node.target)
+        if not self._skip_annotations:
+            self.visit(node.annotation)
+        if node.value is not None:
+            self.visit(node.value)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_func(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_func(node)
+
+    def _visit_func(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        for dec in node.decorator_list:
+            self.visit(dec)
+        for d in node.args.defaults:
+            self.visit(d)
+        for d in node.args.kw_defaults:
+            if d is not None:
+                self.visit(d)
+
+        tp_names = _type_param_names(node)
+        self._scopes.append(tp_names)
+        saved_class = self._class_scope
+        self._class_scope = None
+        try:
+            if not self._skip_annotations:
+                for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs):
+                    if arg.annotation is not None:
+                        self.visit(arg.annotation)
+                if node.args.vararg and node.args.vararg.annotation is not None:
+                    self.visit(node.args.vararg.annotation)
+                if node.args.kwarg and node.args.kwarg.annotation is not None:
+                    self.visit(node.args.kwarg.annotation)
+                if node.returns is not None:
+                    self.visit(node.returns)
+
+            func_bindings = _arg_names(node.args) | _collect_scope_bindings(node.body)
+            self._visit_in_scope(list(node.body), func_bindings)
+        finally:
+            self._class_scope = saved_class
+            self._scopes.pop()
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for dec in node.decorator_list:
+            self.visit(dec)
+        tp_names = _type_param_names(node)
+        self._scopes.append(tp_names)
+        saved_class = self._class_scope
+        self._class_scope = None
+        try:
+            for base in node.bases:
+                self.visit(base)
+            for kw in node.keywords:
+                self.visit(kw.value)
+            # Class body bindings are visible inside the class body itself,
+            # but NOT to nested functions/classes/methods inside it.
+            self._class_scope = _collect_scope_bindings(node.body)
+            for stmt in node.body:
+                self.visit(stmt)
+        finally:
+            self._class_scope = saved_class
+            self._scopes.pop()
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        for d in node.args.defaults:
+            self.visit(d)
+        for d in node.args.kw_defaults:
+            if d is not None:
+                self.visit(d)
+        self._visit_in_scope(node.body, _arg_names(node.args))
+
+    def _visit_comprehension(self, generators: list[ast.comprehension], body_nodes: list[ast.AST]) -> None:
+        if generators:
+            self.visit(generators[0].iter)
+        comp_bindings: set[str] = set()
+        for gen in generators:
+            comp_bindings |= _collect_scope_bindings(gen.target, is_comprehension=True)
+        self._scopes.append(comp_bindings)
+        saved_class = self._class_scope
+        self._class_scope = None
+        try:
+            for i, gen in enumerate(generators):
+                if i > 0:
+                    self.visit(gen.iter)
+                for cond in gen.ifs:
+                    self.visit(cond)
+            for b in body_nodes:
+                self.visit(b)
+        finally:
+            self._class_scope = saved_class
+            self._scopes.pop()
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node.generators, [node.elt])
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node.generators, [node.elt])
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node.generators, [node.elt])
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node.generators, [node.key, node.value])
+
+    def visit_TypeAlias(self, node: Any) -> None:
+        if not self._skip_annotations:
+            self._visit_in_scope(node.value, _type_param_names(node))
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Load) and not self._is_bound(node.id):
+            if node.id not in self._seen_names:
+                self._seen_names.add(node.id)
+                self.undefined.append((node.lineno, node.id))
+
+
+def _check_python_source(path: Path, content: str) -> list[str]:
+    """Run a fast stdlib-AST check on `.py` source, returning up to 10 warnings."""
+    if path.suffix != ".py":
+        return []
+    try:
+        tree = ast.parse(content, filename=str(path))
+    except SyntaxError as exc:
+        return [f"SyntaxError at line {exc.lineno}: {exc.msg}"]
+
+    has_star_import = any(
+        isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names)
+        for node in ast.walk(tree)
+    )
+    if has_star_import:
+        return []
+
+    has_future_annotations = any(
+        isinstance(stmt, ast.ImportFrom)
+        and stmt.module == "__future__"
+        and any(alias.name == "annotations" for alias in stmt.names)
+        for stmt in tree.body
+    )
+
+    allowed = _BUILTIN_NAMES
+    if path.name == "helpers.py" and path.parent.name == ".quartz":
+        allowed = _BUILTIN_NAMES | frozenset(BUILTIN_HELPERS.keys()) | PROTECTED_NAMES
+
+    checker = _UndefinedNameChecker(allowed=allowed, skip_annotations=has_future_annotations)
+    checker.visit(tree)
+    return [
+        f"line {lineno}: undefined name '{name}' (missing import?)"
+        for lineno, name in checker.undefined[:10]
+    ]
 
 
 @dataclasses.dataclass
@@ -382,6 +679,9 @@ def format_helpers_for_prompt(loaded: LoadedHelpers) -> str:
         "(use raw strings r'...' for regex patterns with backslashes to avoid Python SyntaxWarning, or fixed=True for literal string search)",
 
         "- `read(path, start=1, end=200)`, `edit(path, old, new)`, `write(path, content)`, `view_image(path)`, `gather(*coros)`",
+        "- Python stdlib modules (e.g. `Path`, `os`, `json`, `re`, `datetime`, `subprocess`, `collections`, etc.) "
+        "are auto-imported on attribute access in `<ipython>` cells, while explicit imports are still required "
+        "when writing or editing project `.py` files.",
     ]
 
     custom_helpers = [
