@@ -11,24 +11,24 @@ from typing import Any
 
 import pytest
 
-from agent.auth_store import (
+from quartz.auth_store import (
     GoogleCredentials,
     load_provider_auth,
     save_google_credentials,
     save_provider_auth,
     update_auth_json,
 )
-from agent.errors import (
+from quartz.errors import (
     AuthenticationError,
     ContextOverflowError,
     CredentialError,
     ProviderError,
     RateLimitError,
 )
-from agent.google_auth import _token_request
-from agent.google_provider import GoogleAntigravityProvider
-from agent.openai_client import OpenAIProvider
-from agent.provider import (
+from quartz.google_auth import _token_request
+from quartz.google_provider import GoogleAntigravityProvider
+from quartz.openai_client import OpenAIProvider
+from quartz.provider import (
     TextDelta,
     ThinkingDelta,
     ToolCallDelta,
@@ -120,9 +120,9 @@ def _make_provider(
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr("agent.google_provider.httpx2.Client", _FakeHTTP)
+    monkeypatch.setattr("quartz.google_provider.httpx2.Client", _FakeHTTP)
     monkeypatch.setattr(
-        "agent.google_provider.refresh_google_credentials",
+        "quartz.google_provider.refresh_google_credentials",
         lambda creds: GoogleCredentials("tok2", creds.refresh, creds.expires_ms, creds.project_id),
     )
     return GoogleAntigravityProvider()
@@ -340,10 +340,10 @@ def test_openai_build_body_keeps_reasoning_effort_for_openrouter() -> None:
 
 
 def test_openai_stream_parses_reasoning_details_summaries() -> None:
-    from agent.provider import ThinkingDelta
+    from quartz.provider import ThinkingDelta
 
     # Simulate SSE payloads via the stream handle by monkeypatching iter_sse_events.
-    import agent.openai_client as oc
+    import quartz.openai_client as oc
 
     payloads = [
         {
@@ -425,7 +425,7 @@ def test_google_invalid_grant_maps_to_credential_error(monkeypatch: Any) -> None
         status_code = 400
         text = '{"error": "invalid_grant", "error_description": "Token has been expired or revoked."}'
 
-    monkeypatch.setattr("agent.google_auth.httpx2.post", lambda *a, **kw: _ErrResp())
+    monkeypatch.setattr("quartz.google_auth.httpx2.post", lambda *a, **kw: _ErrResp())
     with pytest.raises(CredentialError, match="revoked or expired"):
         _token_request({"grant_type": "refresh_token"}, "Google token refresh")
 

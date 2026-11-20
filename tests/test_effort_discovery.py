@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-import agent.models as models
-from agent.openai_client import ModelDetails, parse_model_detail, parse_model_details
+import quartz.models as models
+from quartz.openai_client import ModelDetails, parse_model_detail, parse_model_details
 
 
 @pytest.fixture(autouse=True)
@@ -84,7 +84,7 @@ def test_parse_model_details_dedupes_and_skips_bad_entries() -> None:
 
 
 def test_list_model_details_offline_parse() -> None:
-    from agent.openai_client import OpenAIProvider
+    from quartz.openai_client import OpenAIProvider
 
     client = OpenAIProvider(api_key="k", base_url="https://openrouter.ai/api/v1")
     try:
@@ -157,7 +157,7 @@ def test_discover_model_efforts_caches_per_model(monkeypatch: pytest.MonkeyPatch
         def close(self) -> None:
             calls.append("close")
 
-    import agent.openai_client as oc
+    import quartz.openai_client as oc
 
     monkeypatch.setattr(oc, "OpenAIProvider", _FakeClient)
     monkeypatch.setattr(
@@ -194,9 +194,9 @@ def test_model_command_picker_uses_discovered_levels(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
     """The /model picker offers discovered levels and preselects the model default."""
-    import agent.commands as commands
-    from agent.runtime import AgentRuntime
-    from agent.loop import TurnUsage
+    import quartz.commands as commands
+    from quartz.runtime import AgentRuntime
+    from quartz.loop import TurnUsage
 
     monkeypatch.setattr(commands, "_provider_ready", lambda p: True)
     monkeypatch.setattr(commands, "discover_models", lambda p: (["meta/muse-ember"], None))
@@ -247,7 +247,7 @@ def test_model_command_picker_uses_discovered_levels(
 
 
 def test_build_provider_uses_discovered_effort(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
-    from agent import subcommands
+    from quartz import subcommands
 
     monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "auth.json"))
     monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "config.json"))
@@ -256,7 +256,7 @@ def test_build_provider_uses_discovered_effort(monkeypatch: pytest.MonkeyPatch, 
     monkeypatch.delenv("MODEL", raising=False)
     monkeypatch.setattr(models, "clear_effort_cache", lambda: None)
 
-    from agent.auth_store import save_provider_auth
+    from quartz.auth_store import save_provider_auth
 
     save_provider_auth("openrouter", "sk-or-test", "https://openrouter.ai/api/v1")
     monkeypatch.setattr(

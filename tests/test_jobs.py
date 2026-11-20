@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from agent.actions import describe_job_label
-from agent.banner import BannerState, format_banner_plain
-from agent.commands import _handle_slash_command
-from agent.kernel_client import KernelClient
-from agent.loop import TurnUsage
-from agent.runtime import AgentRuntime
-import agent.ui as ui
-from agent.ui import BlockPrinter
+from quartz.actions import describe_job_label
+from quartz.banner import BannerState, format_banner_plain
+from quartz.commands import _handle_slash_command
+from quartz.kernel_client import KernelClient
+from quartz.loop import TurnUsage
+from quartz.runtime import AgentRuntime
+import quartz.ui as ui
+from quartz.ui import BlockPrinter
 from rich.console import Console
 import io
 
@@ -229,7 +229,7 @@ def test_jobs_slash_command_lists_and_empty(tmp_path: Path, monkeypatch: pytest.
     buf = io.StringIO()
     test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
     test_printer = BlockPrinter(test_console)
-    import agent.cli as cli
+    import quartz.cli as cli
 
     monkeypatch.setattr(cli, "printer", test_printer)
     rt = AgentRuntime(
@@ -275,7 +275,7 @@ def test_jobs_slash_command_lists_and_empty(tmp_path: Path, monkeypatch: pytest.
 
 
 def test_dock_progress_shows_bg_jobs_when_idle() -> None:
-    from agent.interactive import InteractiveDock
+    from quartz.interactive import InteractiveDock
 
     dock = InteractiveDock.__new__(InteractiveDock)
     dock._lock = __import__("threading").RLock()
@@ -293,7 +293,7 @@ def test_dock_progress_shows_bg_jobs_when_idle() -> None:
 
 def test_slash_command_not_steered_while_turn_running(tmp_path: Path) -> None:
     """submit_input must route /... to slash handling even mid-turn."""
-    from agent.interactive import InteractiveDock
+    from quartz.interactive import InteractiveDock
 
     dock = InteractiveDock.__new__(InteractiveDock)
     import threading

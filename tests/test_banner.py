@@ -6,8 +6,8 @@ from pathlib import Path
 
 from prompt_toolkit.formatted_text import FormattedText
 
-from agent.banner import BannerState, _fmt_k, format_banner_lines, format_banner_plain
-from agent.loop import TurnUsage
+from quartz.banner import BannerState, _fmt_k, format_banner_lines, format_banner_plain
+from quartz.loop import TurnUsage
 
 
 def _make_state(
@@ -192,7 +192,7 @@ def test_bg_count_only_even_when_bg_jobs_present():
 
 
 def test_turn_footer_compact_format():
-    from agent.ui import _format_turn_footer
+    from quartz.ui import _format_turn_footer
 
     usage = TurnUsage(prompt_tokens=12_400, cached_tokens=6_200)
     assert _format_turn_footer(usage, 128_000) == "ctx 128.0k (9.7%) · CH 50.0%"
@@ -202,7 +202,7 @@ def test_turn_footer_compact_format():
 
 
 def test_banner_overflow_renders_warning():
-    from agent.ui import _format_turn_footer
+    from quartz.ui import _format_turn_footer
 
     # 71300 / 64000 = 111.4% — raw pct kept, warning appended.
     usage = TurnUsage(prompt_tokens=71_300, cached_tokens=50_000)
@@ -222,7 +222,7 @@ def test_banner_overflow_renders_warning():
 
 def test_banner_ch_one_decimal_shows_99_6_not_100():
     """Real session case: 64000/64230 = 99.64% must read 99.6%, not 100%."""
-    from agent.ui import _format_turn_footer
+    from quartz.ui import _format_turn_footer
 
     usage = TurnUsage(prompt_tokens=64_230, cached_tokens=64_000)
     footer = _format_turn_footer(usage, 128_000)

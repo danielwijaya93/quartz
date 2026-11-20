@@ -78,7 +78,7 @@ class KernelClient:
         env["PYTHONPATH"] = f"{repo_root}{os.pathsep}{existing_pp}" if existing_pp else repo_root
 
         self._proc = subprocess.Popen(
-            [sys.executable, "-u", "-m", "agent.kernel_worker"],
+            [sys.executable, "-u", "-m", "quartz.kernel_worker"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

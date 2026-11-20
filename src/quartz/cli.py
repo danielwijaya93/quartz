@@ -16,30 +16,30 @@ from typing import Any
 from rich.markup import escape
 from rich.text import Text
 
-from agent.commands import _handle_slash_command
-from agent.errors import CredentialError, EndpointConfigError
-from agent.settings import load_settings
-from agent.images import (
+from quartz.commands import _handle_slash_command
+from quartz.errors import CredentialError, EndpointConfigError
+from quartz.settings import load_settings
+from quartz.images import (
     ImageAttachment,
     build_user_content,
     extract_inline_image_mentions,
     load_image_file,
 )
-from agent.interactive import InteractiveDock
-from agent.kernel_client import CellResult, KernelClient
-from agent.loop import (
+from quartz.interactive import InteractiveDock
+from quartz.kernel_client import CellResult, KernelClient
+from quartz.loop import (
     TurnAborted,
     TurnUsage,
     agent_loop,
     drain_bash_events,
     format_bash_done_events,
 )
-from agent.models import PROVIDERS, resolve_context_tokens
-from agent.prompt import build_system_prompt
-from agent.runtime import AgentRuntime
-from agent.session import Session
-from agent.subcommands import _handle_auth_cli, _handle_mcp_cli, build_provider
-from agent.ui import (
+from quartz.models import PROVIDERS, resolve_context_tokens
+from quartz.prompt import build_system_prompt
+from quartz.runtime import AgentRuntime
+from quartz.session import Session
+from quartz.subcommands import _handle_auth_cli, _handle_mcp_cli, build_provider
+from quartz.ui import (
     MarkdownBlockStreamer,
     TurnProgressTracker,
     _format_turn_footer,
@@ -493,7 +493,7 @@ def main() -> None:
         parser.error("--fork requires -r <session-id> (or -c)")
 
     if args.acp:
-        from agent.acp import ACPServer
+        from quartz.acp import ACPServer
 
         _settings = load_settings()
         compact_reserve_tokens = _settings.compact_reserve_tokens

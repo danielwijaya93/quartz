@@ -12,13 +12,13 @@ import io
 import pytest
 from rich.console import Console
 
-import agent.cli as cli
-import agent.ui as ui
-from agent.completer import AgentCompleter
-from agent.kernel_client import CellResult, KernelClient
-from agent.loop import TurnUsage, agent_loop
-from agent.runtime import AgentRuntime
-from agent.ui import BlockPrinter, MarkdownBlockStreamer, format_compact_cell_summary
+import quartz.cli as cli
+import quartz.ui as ui
+from quartz.completer import AgentCompleter
+from quartz.kernel_client import CellResult, KernelClient
+from quartz.loop import TurnUsage, agent_loop
+from quartz.runtime import AgentRuntime
+from quartz.ui import BlockPrinter, MarkdownBlockStreamer, format_compact_cell_summary
 
 
 def test_slash_command_autocomplete(tmp_path: Path) -> None:
@@ -56,7 +56,7 @@ def test_compact_cell_summary() -> None:
 
 
 def test_streaming_agent_loop_with_tool_call(tmp_path: Path) -> None:
-    from agent.provider import TextDelta, ToolCallDelta, Usage, UsageEvent
+    from quartz.provider import TextDelta, ToolCallDelta, Usage, UsageEvent
 
     class _FakeStream:
         def __init__(self, events) -> None:
@@ -128,7 +128,7 @@ def test_streaming_agent_loop_with_tool_call(tmp_path: Path) -> None:
 
 def test_keyboard_interrupt_preserves_valid_tool_history(tmp_path: Path) -> None:
     import pytest
-    from agent.provider import ToolCallDelta
+    from quartz.provider import ToolCallDelta
 
     class _FakeStream:
         def __init__(self, events) -> None:
@@ -205,7 +205,7 @@ def test_markdown_block_streamer_respects_fences() -> None:
 
 
 def test_agent_loop_forwards_reasoning_effort(tmp_path: Path) -> None:
-    from agent.provider import TextDelta
+    from quartz.provider import TextDelta
 
     captured_kwargs: dict = {}
 
@@ -498,7 +498,7 @@ def test_parse_expand_range() -> None:
 
 
 def test_action_classifier_single_and_combined() -> None:
-    from agent.actions import describe_cell_actions, describe_group_actions
+    from quartz.actions import describe_cell_actions, describe_group_actions
 
     assert describe_cell_actions("import os\nos.listdir('.')") == "List directory and files"
     assert describe_cell_actions("bash('rg -n foo agent/')") == "Find files"
@@ -526,7 +526,7 @@ def test_action_classifier_single_and_combined() -> None:
 
 
 def test_cell_intent_sh_bash() -> None:
-    from agent.actions import describe_cell_intent
+    from quartz.actions import describe_cell_intent
 
     assert describe_cell_intent("print(sh('uv run pytest -q'))") == "Run pytest"
     assert describe_cell_intent("bash('pytest -q')") == "Run pytest"
@@ -544,7 +544,7 @@ def test_cell_intent_sh_bash() -> None:
 
 
 def test_cell_intent_read_edit_write_helpers() -> None:
-    from agent.actions import describe_cell_intent
+    from quartz.actions import describe_cell_intent
 
     assert describe_cell_intent("read('agent/ui.py', 200, 400)") == "Read agent/ui.py (200-400)"
     assert describe_cell_intent("read('agent/ui.py', 200)") == "Read agent/ui.py (from 200)"
@@ -563,7 +563,7 @@ def test_cell_intent_read_edit_write_helpers() -> None:
 
 
 def test_cell_intent_mcp_and_now() -> None:
-    from agent.actions import describe_cell_intent
+    from quartz.actions import describe_cell_intent
 
     assert (
         describe_cell_intent("await mcp.exa.web_search_exa(query='S&P 500 level')")
@@ -579,7 +579,7 @@ def test_cell_intent_mcp_and_now() -> None:
 
 
 def test_cell_intent_boilerplate_and_combination() -> None:
-    from agent.actions import describe_cell_intent
+    from quartz.actions import describe_cell_intent
 
     # Boilerplate only: imports, assignments, print wrappers, comments.
     assert describe_cell_intent("import subprocess") == "Run Python"
@@ -604,7 +604,7 @@ def test_cell_intent_boilerplate_and_combination() -> None:
 
 
 def test_cell_intent_never_raises_and_truncates() -> None:
-    from agent.actions import describe_cell_intent
+    from quartz.actions import describe_cell_intent
 
     for bad in ["", " ", "(((", "\x00\x01", "read(", "sh(unclosed", "mcp.."]:
         assert isinstance(describe_cell_intent(bad), str)
@@ -957,7 +957,7 @@ def test_block_printer_lifecycle_hooks() -> None:
 
 
 def test_wrap_safe_gutter_and_user_prompt_at_width_52(monkeypatch: pytest.MonkeyPatch) -> None:
-    from agent.ui import _render_gutter_block, render_user_prompt
+    from quartz.ui import _render_gutter_block, render_user_prompt
 
     buf = io.StringIO()
     test_console = Console(file=buf, force_terminal=False, width=52, color_system=None)
@@ -982,8 +982,8 @@ def test_wrap_safe_gutter_and_user_prompt_at_width_52(monkeypatch: pytest.Monkey
 
 
 def test_faithful_session_replay_and_ui_meta_persistence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from agent.session import Session
-    from agent.ui import _replay_session
+    from quartz.session import Session
+    from quartz.ui import _replay_session
 
     sess = Session.create(tmp_path, sessions_dir=tmp_path)
     msgs = [
@@ -1033,7 +1033,7 @@ def test_faithful_session_replay_and_ui_meta_persistence(tmp_path: Path, monkeyp
 
 
 def test_help_includes_keybindings() -> None:
-    from agent.commands import COMMAND_REGISTRY
+    from quartz.commands import COMMAND_REGISTRY
 
     help_text = COMMAND_REGISTRY.format_help()
     assert "Keybindings:" in help_text

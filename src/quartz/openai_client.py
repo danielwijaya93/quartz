@@ -9,8 +9,8 @@ from typing import Any
 
 import httpx2
 
-from agent.errors import parse_retry_after, provider_error
-from agent.provider import (
+from quartz.errors import parse_retry_after, provider_error
+from quartz.provider import (
     CompletionResult,
     ProviderCapabilities,
     StreamEvent,
@@ -22,7 +22,7 @@ from agent.provider import (
     UsageEvent,
     iter_sse_events,
 )
-from agent.provider_config import resolve_http_timeout
+from quartz.provider_config import resolve_http_timeout
 
 
 @dataclasses.dataclass

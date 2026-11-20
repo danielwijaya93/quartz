@@ -24,12 +24,12 @@ from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.text import Text
 
-from agent.actions import describe_cell_actions, describe_cell_intent
-from agent.banner import _fmt_k, _short_path, format_usage_metrics
-from agent.compact import CompactionReason, CompactionResult
-from agent.images import content_to_text
-from agent.kernel_client import CellResult
-from agent.loop import TurnUsage
+from quartz.actions import describe_cell_actions, describe_cell_intent
+from quartz.banner import _fmt_k, _short_path, format_usage_metrics
+from quartz.compact import CompactionReason, CompactionResult
+from quartz.images import content_to_text
+from quartz.kernel_client import CellResult
+from quartz.loop import TurnUsage
 
 console = Console()
 
@@ -242,7 +242,7 @@ printer = BlockPrinter(console)
 def _active_printer() -> BlockPrinter:
     import sys
 
-    cli_mod = sys.modules.get("agent.cli")
+    cli_mod = sys.modules.get("quartz.cli")
     if cli_mod is not None and hasattr(cli_mod, "printer"):
         return cli_mod.printer
     return printer

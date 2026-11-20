@@ -10,23 +10,23 @@ from typing import Any
 from rich.markup import escape
 from rich.text import Text
 
-from agent.errors import CredentialError, EndpointConfigError
-from agent.google_auth import (
+from quartz.errors import CredentialError, EndpointConfigError
+from quartz.google_auth import (
     CALLBACK_PORT,
     auth_file_path,
     delete_google_credentials,
     load_google_credentials,
     login_google_interactive,
 )
-from agent.google_provider import GoogleAntigravityProvider
-from agent.mcp_client import (
+from quartz.google_provider import GoogleAntigravityProvider
+from quartz.mcp_client import (
     add_mcp_server,
     default_mcp_config_path,
     load_raw_mcp_config,
     remove_mcp_server,
     set_mcp_server_enabled,
 )
-from agent.models import (
+from quartz.models import (
     PROVIDERS,
     delete_provider_auth,
     discover_models,
@@ -36,8 +36,8 @@ from agent.models import (
     resolve_provider_credentials,
     save_provider_auth,
 )
-from agent.provider import LLMProvider
-from agent.ui import (
+from quartz.provider import LLMProvider
+from quartz.ui import (
     _pick_option,
     _prompt_input,
     console,
@@ -142,7 +142,7 @@ def build_provider(
             f"No credentials found for '{chosen_provider}'. "
             f"Run `/login {chosen_provider}` or `quartz auth login {chosen_provider}`."
         )
-    from agent.openai_client import OpenAIProvider
+    from quartz.openai_client import OpenAIProvider
 
     client = OpenAIProvider(api_key=api_key, base_url=base_url)
     return client, chosen_provider, model, effort

@@ -11,19 +11,19 @@ import pytest
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from agent.commands import (
+from quartz.commands import (
     COMMAND_REGISTRY,
     CommandRegistry,
     SlashCommand,
     _handle_slash_command,
 )
-from agent.compact import CompactionReason, CompactionResult
-from agent.completer import AgentCompleter
-from agent.errors import CredentialError
-from agent.kernel_client import CellResult
-from agent.loop import TurnUsage
-from agent.runtime import AgentRuntime
-from agent.session import Session
+from quartz.compact import CompactionReason, CompactionResult
+from quartz.completer import AgentCompleter
+from quartz.errors import CredentialError
+from quartz.kernel_client import CellResult
+from quartz.loop import TurnUsage
+from quartz.runtime import AgentRuntime
+from quartz.session import Session
 
 
 def test_command_registry_registration_and_dispatch() -> None:
@@ -185,7 +185,7 @@ def test_real_runtime_cmd_compact(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
             estimated_tokens_after=40,
         )
 
-    monkeypatch.setattr("agent.runtime.compact_messages", _fake_compact_messages)
+    monkeypatch.setattr("quartz.runtime.compact_messages", _fake_compact_messages)
 
     assert _handle_slash_command(rt, "/compact keep key facts") is False
     assert rt.messages == compacted_msgs
@@ -230,21 +230,21 @@ def test_real_runtime_cmd_model_handles_credential_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rt = _make_real_runtime(tmp_path, monkeypatch)
-    monkeypatch.setattr("agent.commands._provider_ready", lambda p: True)
-    monkeypatch.setattr("agent.commands.discover_models", lambda p: (["deepseek-chat"], None))
+    monkeypatch.setattr("quartz.commands._provider_ready", lambda p: True)
+    monkeypatch.setattr("quartz.commands.discover_models", lambda p: (["deepseek-chat"], None))
     monkeypatch.setattr(
-        "agent.commands._pick_option",
+        "quartz.commands._pick_option",
         lambda title, opts, current=None: "deepseek" if title == "Provider" else "high",
     )
     monkeypatch.setattr(
-        "agent.commands._pick_searchable_option",
+        "quartz.commands._pick_searchable_option",
         lambda title, opts, current=None, allow_custom=True: "deepseek-chat",
     )
 
     def _raise_cred(*args, **kwargs):
         raise CredentialError("Missing key")
 
-    monkeypatch.setattr("agent.commands.build_provider", _raise_cred)
+    monkeypatch.setattr("quartz.commands.build_provider", _raise_cred)
 
     # Should catch CredentialError cleanly and return False without crashing
     assert _handle_slash_command(rt, "/model") is False
@@ -258,17 +258,17 @@ def test_real_runtime_cmd_model_switch_updates_max_context_tokens(
     rt = _make_real_runtime(tmp_path, monkeypatch)
     rt.max_context_tokens = 64_000  # stale DeepSeek window at startup
     monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "config.json"))
-    monkeypatch.setattr("agent.commands._provider_ready", lambda p: True)
-    monkeypatch.setattr("agent.commands.discover_models", lambda p: (["meta/muse-ember"], None))
+    monkeypatch.setattr("quartz.commands._provider_ready", lambda p: True)
+    monkeypatch.setattr("quartz.commands.discover_models", lambda p: (["meta/muse-ember"], None))
     monkeypatch.setattr(
-        "agent.commands._pick_option",
+        "quartz.commands._pick_option",
         lambda title, opts, current=None: "openrouter" if title == "Provider" else "high",
     )
     monkeypatch.setattr(
-        "agent.commands._pick_searchable_option",
+        "quartz.commands._pick_searchable_option",
         lambda title, opts, current=None, allow_custom=True: "meta/muse-ember",
     )
-    monkeypatch.setattr("agent.models.policy_efforts", lambda p, m: ["high"])
+    monkeypatch.setattr("quartz.models.policy_efforts", lambda p, m: ["high"])
 
     new_client = SimpleNamespace()
 
@@ -277,7 +277,7 @@ def test_real_runtime_cmd_model_switch_updates_max_context_tokens(
         assert model_override == "meta/muse-ember"
         return new_client, "openrouter", "meta/muse-ember", "high"
 
-    monkeypatch.setattr("agent.commands.build_provider", _build)
+    monkeypatch.setattr("quartz.commands.build_provider", _build)
 
     assert _handle_slash_command(rt, "/model") is False
     assert rt.provider_name == "openrouter"

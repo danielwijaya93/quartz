@@ -13,15 +13,15 @@ from typing import Any
 
 import pytest
 
-from agent.commands import _cmd_compact
-from agent.runtime import AgentRuntime as _CLIRuntime
-from agent.compact import _serialize_for_summary, clear_old_tool_results
-from agent.errors import ProviderError
-from agent.kernel_client import KernelClient
-from agent.loop import TurnAborted, TurnUsage, agent_loop
-from agent.models import resolve_provider_credentials
-from agent.provider import CompletionResult, TextDelta, Usage, UsageEvent
-from agent.session import Session
+from quartz.commands import _cmd_compact
+from quartz.runtime import AgentRuntime as _CLIRuntime
+from quartz.compact import _serialize_for_summary, clear_old_tool_results
+from quartz.errors import ProviderError
+from quartz.kernel_client import KernelClient
+from quartz.loop import TurnAborted, TurnUsage, agent_loop
+from quartz.models import resolve_provider_credentials
+from quartz.provider import CompletionResult, TextDelta, Usage, UsageEvent
+from quartz.session import Session
 
 
 class _FakeStream:

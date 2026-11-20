@@ -9,11 +9,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import agent.commands as commands
-from agent.commands import _handle_slash_command
-from agent.loop import TurnUsage
-from agent.runtime import AgentRuntime
-from agent.session import Session
+import quartz.commands as commands
+from quartz.commands import _handle_slash_command
+from quartz.loop import TurnUsage
+from quartz.runtime import AgentRuntime
+from quartz.session import Session
 
 
 def _make_rt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AgentRuntime:

@@ -5,10 +5,10 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from agent.actions import describe_cell_actions
-from agent.kernel_client import KernelClient
-from agent.loop import TOOLS
-from agent.prompt import build_system_prompt
+from quartz.actions import describe_cell_actions
+from quartz.kernel_client import KernelClient
+from quartz.loop import TOOLS
+from quartz.prompt import build_system_prompt
 
 
 def test_kernel_helpers_ls_find_rg_read_edit_write(tmp_path: Path) -> None:

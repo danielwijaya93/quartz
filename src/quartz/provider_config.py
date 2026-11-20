@@ -10,7 +10,7 @@ import os
 
 import httpx2
 
-from agent.errors import EndpointConfigError
+from quartz.errors import EndpointConfigError
 
 # Cloud Code Assist has two distinct entitlement surfaces:
 #   antigravity -> daily host, used by Antigravity Hub clients (what Quartz claims)

@@ -6,7 +6,7 @@ import dataclasses
 import os
 from pathlib import Path
 
-from agent.loop import TurnUsage
+from quartz.loop import TurnUsage
 
 type StyleFragment = tuple[str, str]
 type FormattedLine = list[StyleFragment]

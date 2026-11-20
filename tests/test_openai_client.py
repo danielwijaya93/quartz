@@ -9,9 +9,9 @@ from typing import Any
 
 import pytest
 
-from agent.errors import ContextOverflowError, ProviderError
-from agent.openai_client import OpenAIProvider
-from agent.provider import TextDelta, ToolCallDelta, UsageEvent
+from quartz.errors import ContextOverflowError, ProviderError
+from quartz.openai_client import OpenAIProvider
+from quartz.provider import TextDelta, ToolCallDelta, UsageEvent
 
 
 class _FakeStreamResp:
@@ -280,7 +280,7 @@ def test_models_list(monkeypatch: Any) -> None:
 
 
 def test_parse_usage_deepseek_prompt_cache_hit_tokens() -> None:
-    from agent.openai_client import _parse_usage
+    from quartz.openai_client import _parse_usage
 
     # Direct DeepSeek shape: prompt_cache_hit_tokens, no prompt_tokens_details.
     usage = _parse_usage(
@@ -298,7 +298,7 @@ def test_parse_usage_deepseek_prompt_cache_hit_tokens() -> None:
 
 
 def test_parse_usage_openai_shape_still_preferred() -> None:
-    from agent.openai_client import _parse_usage
+    from quartz.openai_client import _parse_usage
 
     usage = _parse_usage(
         {

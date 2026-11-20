@@ -11,14 +11,14 @@ from typing import Any
 
 import httpx2
 
-from agent.errors import parse_retry_after, provider_error
-from agent.google_auth import (
+from quartz.errors import parse_retry_after, provider_error
+from quartz.google_auth import (
     antigravity_user_agent,
     get_valid_google_credentials,
     refresh_google_credentials,
 )
-from agent.images import parse_data_url
-from agent.provider import (
+from quartz.images import parse_data_url
+from quartz.provider import (
     CompletionResult,
     ProviderCapabilities,
     StreamEvent,
@@ -30,7 +30,7 @@ from agent.provider import (
     collect_completion,
     iter_sse_events,
 )
-from agent.provider_config import resolve_cloudcode_endpoint, resolve_http_timeout
+from quartz.provider_config import resolve_cloudcode_endpoint, resolve_http_timeout
 
 ANTIGRAVITY_SYSTEM_INSTRUCTION = (
     "You are Antigravity, a powerful agentic AI coding assistant designed by the "
@@ -405,7 +405,7 @@ class GoogleAntigravityProvider:
         )
 
     def list_models(self) -> list[str]:
-        from agent.models import PROVIDERS
+        from quartz.models import PROVIDERS
 
         return list(PROVIDERS["google"].models)
 

@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from agent.compact import _find_safe_split_index, format_python_state_notice
-from agent.kernel_client import KernelClient
-from agent.loop import TurnUsage, format_bash_done_events
-from agent.prompt import build_system_prompt
+from quartz.compact import _find_safe_split_index, format_python_state_notice
+from quartz.kernel_client import KernelClient
+from quartz.loop import TurnUsage, format_bash_done_events
+from quartz.prompt import build_system_prompt
 
 
 def test_kernel_persistence_and_trailing_expr(tmp_path: Path) -> None:
@@ -183,7 +183,7 @@ def test_compaction_safe_split_and_python_state() -> None:
 
 
 def test_turn_usage_telemetry() -> None:
-    from agent.provider import Usage
+    from quartz.provider import Usage
 
     stats = TurnUsage()
     stats.update(Usage(input_tokens=1000, output_tokens=200, cached_tokens=750))
@@ -201,7 +201,7 @@ def test_turn_usage_telemetry() -> None:
 
 
 def test_turn_usage_empty_update_preserves_last_turn_pair() -> None:
-    from agent.provider import Usage
+    from quartz.provider import Usage
 
     stats = TurnUsage()
     stats.update(Usage(input_tokens=1000, output_tokens=200, cached_tokens=750))
@@ -219,7 +219,7 @@ def test_turn_usage_empty_update_preserves_last_turn_pair() -> None:
 
 
 def test_turn_usage_cache_hit_rate_clamped() -> None:
-    from agent.provider import Usage
+    from quartz.provider import Usage
 
     # Providers may report cached > prompt (field-semantics differences).
     stats = TurnUsage()
@@ -235,7 +235,7 @@ def test_agent_loop_abort_event(tmp_path: Path) -> None:
     import queue
     import threading
     from types import SimpleNamespace
-    from agent.loop import TurnAborted, agent_loop
+    from quartz.loop import TurnAborted, agent_loop
 
     abort_event = threading.Event()
     abort_event.set()
@@ -268,13 +268,13 @@ def test_agent_loop_steering_queue(tmp_path: Path) -> None:
     import pytest
     import queue
     from types import SimpleNamespace
-    from agent.loop import agent_loop
+    from quartz.loop import agent_loop
 
     steering_q: queue.Queue[str] = queue.Queue()
     seen_steering: list[str] = []
     calls = [0]
 
-    from agent.provider import CompletionResult, Usage
+    from quartz.provider import CompletionResult, Usage
 
     class _DummyClient:
         def complete(self, **kwargs: object) -> CompletionResult:
@@ -337,7 +337,7 @@ def test_kernel_close_cleans_up_child_processes(tmp_path: Path) -> None:
 
 
 def test_multiline_skill_frontmatter_discovery(tmp_path: Path) -> None:
-    from agent.prompt import discover_skills
+    from quartz.prompt import discover_skills
 
     skills_dir = tmp_path / "skills"
     sdir = skills_dir / "demo-skill"
@@ -359,8 +359,8 @@ def test_multiline_skill_frontmatter_discovery(tmp_path: Path) -> None:
 
 
 def test_compact_messages_summarizes_and_keeps_kernel(tmp_path: Path) -> None:
-    from agent.compact import CompactionReason, compact_messages
-    from agent.provider import CompletionResult, Usage
+    from quartz.compact import CompactionReason, compact_messages
+    from quartz.provider import CompletionResult, Usage
 
     class _DummyClient:
         def complete(self, **kwargs: object) -> CompletionResult:
@@ -443,7 +443,7 @@ def test_kernel_spill_large_output(tmp_path: Path) -> None:
 
 def test_mcp_proxy_delegates_to_call_tool() -> None:
     import asyncio
-    from agent.mcp_client import MCPManager
+    from quartz.mcp_client import MCPManager
 
     mgr = MCPManager()
     calls: list[tuple[str, str, dict[str, object] | None]] = []
@@ -471,7 +471,7 @@ def test_mcp_proxy_delegates_to_call_tool() -> None:
 
 def test_kernel_interrupt_sync_loop(tmp_path: Path) -> None:
     import threading
-    from agent.kernel_client import CellResult
+    from quartz.kernel_client import CellResult
 
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
@@ -519,9 +519,9 @@ def test_kernel_edit_returns_unified_diff(tmp_path: Path) -> None:
 def test_agent_loop_abort_during_parallel_ipython(tmp_path: Path) -> None:
     import threading
     from types import SimpleNamespace
-    from agent.loop import TurnAborted, agent_loop
+    from quartz.loop import TurnAborted, agent_loop
 
-    from agent.provider import CompletionResult, ToolCall, Usage
+    from quartz.provider import CompletionResult, ToolCall, Usage
 
     class _ParallelAbortClient:
         def complete(self, **kwargs):
@@ -564,7 +564,7 @@ def test_agent_loop_abort_during_parallel_ipython(tmp_path: Path) -> None:
 
 
 def test_kernel_snapshot_rejects_empty_dir() -> None:
-    from agent.kernel_worker import KernelWorker
+    from quartz.kernel_worker import KernelWorker
 
     worker = KernelWorker()
     with pytest.raises(ValueError, match="snapshot_dir"):
@@ -573,8 +573,8 @@ def test_kernel_snapshot_rejects_empty_dir() -> None:
 
 def test_agent_loop_streaming_steering_preemption(tmp_path: Path) -> None:
     import queue
-    from agent.loop import agent_loop
-    from agent.provider import TextDelta
+    from quartz.loop import agent_loop
+    from quartz.provider import TextDelta
 
     steering_q: queue.Queue[str] = queue.Queue()
     seen_steering: list[str] = []

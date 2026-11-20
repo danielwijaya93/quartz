@@ -9,23 +9,23 @@ from typing import Any
 
 import pytest
 
-from agent.subcommands import build_provider as _build_client
-from agent.errors import ProviderError
-from agent.google_auth import (
+from quartz.subcommands import build_provider as _build_client
+from quartz.errors import ProviderError
+from quartz.google_auth import (
     GoogleCredentials,
     delete_google_credentials,
     generate_pkce,
     load_google_credentials,
     save_google_credentials,
 )
-from agent.google_provider import (
+from quartz.google_provider import (
     GoogleAntigravityProvider,
     build_cloudcode_request,
     parse_sse_payload,
 )
-from agent.loop import TOOLS
-from agent.models import load_model_config, save_model_config
-from agent.provider import TextDelta, ToolCallDelta, UsageEvent
+from quartz.loop import TOOLS
+from quartz.models import load_model_config, save_model_config
+from quartz.provider import TextDelta, ToolCallDelta, UsageEvent
 
 
 def test_google_credentials_storage_and_expiry(tmp_path: Path, monkeypatch) -> None:
@@ -214,7 +214,7 @@ def _fake_google_http(monkeypatch: Any, responses: list[_FakeResp]) -> list[tupl
             calls.append((url, headers["Authorization"]))
             return responses[len(calls) - 1]
 
-    monkeypatch.setattr("agent.google_provider.httpx2.Client", _FakeClient)
+    monkeypatch.setattr("quartz.google_provider.httpx2.Client", _FakeClient)
     return calls
 
 
@@ -235,7 +235,7 @@ def test_google_provider_refreshes_once_and_stays_on_one_host(
         ],
     )
     monkeypatch.setattr(
-        "agent.google_provider.refresh_google_credentials",
+        "quartz.google_provider.refresh_google_credentials",
         lambda creds: GoogleCredentials("new-tok", creds.refresh, creds.expires_ms, creds.project_id),
     )
 
@@ -290,7 +290,7 @@ def test_build_client_honors_openai_env_model(tmp_path: Path, monkeypatch) -> No
     monkeypatch.setenv("OPENAI_BASE_URL", "https://evil.example/v1")
     monkeypatch.setenv("MODEL", "gpt-4.1")
     monkeypatch.setenv("QUARTZ_EFFORT_DISCOVERY", "0")
-    from agent.models import save_provider_auth
+    from quartz.models import save_provider_auth
 
     save_provider_auth("openai", "sk-stored", "https://api.openai.com/v1")
 
@@ -309,7 +309,7 @@ def test_build_client_env_api_keys_no_longer_select_provider(tmp_path: Path, mon
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
 
-    from agent.errors import CredentialError
+    from quartz.errors import CredentialError
 
     with pytest.raises(CredentialError, match="/login deepseek"):
         _build_client(provider="auto")
@@ -319,8 +319,8 @@ def test_authorization_url_carries_the_bundled_client_id(monkeypatch: Any) -> No
     """A clean machine must be able to start login with no configuration."""
     from urllib.parse import parse_qs, urlparse
 
-    from agent.google_auth import build_authorization_url
-    from agent.oauth_client import DEFAULT_CLIENT_ID
+    from quartz.google_auth import build_authorization_url
+    from quartz.oauth_client import DEFAULT_CLIENT_ID
 
     monkeypatch.delenv("QUARTZ_GOOGLE_CLIENT_ID", raising=False)
     url = build_authorization_url(DEFAULT_CLIENT_ID, "challenge", "state")
@@ -335,8 +335,8 @@ def test_authorization_url_carries_the_bundled_client_id(monkeypatch: Any) -> No
 def test_authorization_url_honours_an_env_override(monkeypatch: Any) -> None:
     from urllib.parse import parse_qs, urlparse
 
-    from agent.google_auth import build_authorization_url
-    from agent.oauth_client import resolve_oauth_client
+    from quartz.google_auth import build_authorization_url
+    from quartz.oauth_client import resolve_oauth_client
 
     monkeypatch.setenv("QUARTZ_GOOGLE_CLIENT_ID", "custom-id")
     monkeypatch.setenv("QUARTZ_GOOGLE_CLIENT_SECRET", "custom-secret")

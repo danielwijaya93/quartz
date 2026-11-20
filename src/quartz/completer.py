@@ -10,7 +10,7 @@ from pathlib import Path
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 
-from agent.commands import COMMAND_REGISTRY
+from quartz.commands import COMMAND_REGISTRY
 
 _IGNORE_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", ".mypy_cache"}
 

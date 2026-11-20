@@ -7,7 +7,7 @@ import json
 from collections.abc import Callable, Iterator
 from typing import Any, Protocol
 
-from agent.errors import ProviderError, provider_error
+from quartz.errors import ProviderError, provider_error
 
 
 @dataclasses.dataclass

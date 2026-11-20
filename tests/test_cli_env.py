@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-import agent.cli as cli
+import quartz.cli as cli
 
 
 def _prepare_home(tmp_path: Path, monkeypatch: Any) -> Path:

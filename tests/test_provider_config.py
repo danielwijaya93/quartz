@@ -8,20 +8,20 @@ from typing import Any
 import httpx2
 import pytest
 
-from agent import google_auth
-from agent.errors import CredentialError, EndpointConfigError, ProviderError
-from agent.google_auth import (
+from quartz import google_auth
+from quartz.errors import CredentialError, EndpointConfigError, ProviderError
+from quartz.google_auth import (
     FALLBACK_PROJECT_ID,
     GoogleCredentials,
     discover_project,
     refresh_google_credentials,
 )
-from agent.oauth_client import (
+from quartz.oauth_client import (
     DEFAULT_CLIENT_ID,
     DEFAULT_CLIENT_SECRET,
     resolve_oauth_client,
 )
-from agent.provider_config import (
+from quartz.provider_config import (
     DAILY_ENDPOINT,
     DEFAULT_READ_TIMEOUT_S,
     PROD_ENDPOINT,

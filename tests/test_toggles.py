@@ -6,10 +6,10 @@ import io
 
 from rich.console import Console
 
-import agent.cli as cli
-import agent.ui as ui
-from agent.kernel_client import CellResult
-from agent.ui import BlockPrinter
+import quartz.cli as cli
+import quartz.ui as ui
+from quartz.kernel_client import CellResult
+from quartz.ui import BlockPrinter
 
 
 def _tracker(buf: io.StringIO, **kwargs) -> ui.TurnProgressTracker:
@@ -95,7 +95,7 @@ def test_replay_renders_reasoning_and_details(monkeypatch) -> None:
     buf = io.StringIO()
     test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
     test_printer = BlockPrinter(test_console)
-    import agent.cli as cli_mod
+    import quartz.cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "printer", test_printer)
     test_printer.reset()
@@ -125,8 +125,8 @@ def test_replay_renders_reasoning_and_details(monkeypatch) -> None:
 
 
 def test_dock_toggle_propagates_to_active_tracker() -> None:
-    from agent.interactive import InteractiveDock
-    from agent.ui import TurnProgressTracker
+    from quartz.interactive import InteractiveDock
+    from quartz.ui import TurnProgressTracker
 
     dock = InteractiveDock.__new__(InteractiveDock)
     import threading
@@ -156,7 +156,7 @@ def test_dock_toggle_propagates_to_active_tracker() -> None:
 
 
 def test_dock_toggle_methods_flip_state() -> None:
-    from agent.interactive import InteractiveDock
+    from quartz.interactive import InteractiveDock
 
     dock = InteractiveDock.__new__(InteractiveDock)
     import threading

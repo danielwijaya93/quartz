@@ -10,17 +10,17 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 
-from agent.errors import CredentialError, EndpointConfigError
-from agent.images import load_clipboard_image, load_image_file
-from agent.loop import TurnUsage
-from agent.models import (
+from quartz.errors import CredentialError, EndpointConfigError
+from quartz.images import load_clipboard_image, load_image_file
+from quartz.loop import TurnUsage
+from quartz.models import (
     PROVIDERS,
     config_file_path,
     discover_models,
     resolve_context_tokens,
     save_model_config,
 )
-from agent.settings import (
+from quartz.settings import (
     DEFAULT_COMPACT_RESERVE_TOKENS,
     DEFAULT_KEEP_RECENT_TOKENS,
     Settings,
@@ -29,16 +29,16 @@ from agent.settings import (
     settings_as_dict,
     validate_tokens,
 )
-from agent.runtime import AgentRuntime
-from agent.session import Session
-from agent.subcommands import (
+from quartz.runtime import AgentRuntime
+from quartz.session import Session
+from quartz.subcommands import (
     _login_provider,
     _logout_provider,
     _provider_ready,
     _provider_status_label,
     build_provider,
 )
-from agent.ui import (
+from quartz.ui import (
     _active_printer,
     _format_turn_footer,
     _parse_expand_range,
@@ -223,7 +223,7 @@ def _cmd_model(rt: AgentRuntime, arg: str) -> bool | None:
     else:
         picked_model = models[0]
 
-    from agent.models import policy_efforts, resolve_effort
+    from quartz.models import policy_efforts, resolve_effort
 
     effort_choices = policy_efforts(picked_provider, picked_model) or list(pspec.efforts)
     effort_opts = [(e, e) for e in effort_choices]
@@ -407,7 +407,7 @@ def _cmd_vars(rt: AgentRuntime, arg: str) -> bool | None:
 )
 def _cmd_helpers(rt: AgentRuntime, arg: str) -> bool | None:
     del arg
-    from agent.helpers import load_helpers
+    from quartz.helpers import load_helpers
     from rich.table import Table
 
     if rt.kernel is not None:
@@ -661,8 +661,8 @@ def _cmd_jobs(rt: AgentRuntime, arg: str) -> bool | None:
     if not jobs:
         _active_printer().block(Text("No background jobs running.", style="dim"))
         return False
-    from agent.actions import describe_job_label
-    from agent.ui import _fmt_stopwatch
+    from quartz.actions import describe_job_label
+    from quartz.ui import _fmt_stopwatch
 
     for job in jobs:
         pid = job.get("pid", "?")

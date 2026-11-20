@@ -22,7 +22,7 @@ from typing import Any
 
 import httpx2
 
-from agent.auth_store import (
+from quartz.auth_store import (
     FALLBACK_PROJECT_ID,
     GoogleCredentials,
     auth_file_path,
@@ -33,9 +33,9 @@ from agent.auth_store import (
     save_google_credentials,
     write_auth_json,
 )
-from agent.errors import CredentialError, ProviderError
-from agent.oauth_client import resolve_oauth_client
-from agent.provider_config import resolve_cloudcode_endpoint
+from quartz.errors import CredentialError, ProviderError
+from quartz.oauth_client import resolve_oauth_client
+from quartz.provider_config import resolve_cloudcode_endpoint
 
 
 AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"

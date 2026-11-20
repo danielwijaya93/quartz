@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent.kernel_client import KernelClient
-from agent.session import Session
+from quartz.kernel_client import KernelClient
+from quartz.session import Session
 
 
 def test_session_jsonl_save_load_and_compaction(tmp_path: Path) -> None:

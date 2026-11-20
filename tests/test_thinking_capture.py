@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from agent.compact import compact_messages, strip_reasoning
-from agent.kernel_client import KernelClient
-from agent.loop import TurnUsage, agent_loop
-from agent.provider import TextDelta, ThinkingDelta, ToolCallDelta, Usage, UsageEvent
-from agent.session import Session
+from quartz.compact import compact_messages, strip_reasoning
+from quartz.kernel_client import KernelClient
+from quartz.loop import TurnUsage, agent_loop
+from quartz.provider import TextDelta, ThinkingDelta, ToolCallDelta, Usage, UsageEvent
+from quartz.session import Session
 
 
 class _FakeStream:
@@ -149,7 +149,7 @@ def test_compact_messages_strips_reasoning() -> None:
             assert all(
                 "reasoning" not in m for m in messages
             ), "reasoning must not be sent to summarizer"
-            from agent.provider import CompletionResult
+            from quartz.provider import CompletionResult
 
             return CompletionResult(text="summary")
 
@@ -189,13 +189,13 @@ def test_replay_ignores_reasoning_without_crashing() -> None:
 
     from rich.console import Console
 
-    import agent.cli as cli
-    from agent.ui import BlockPrinter, _replay_session
+    import quartz.cli as cli
+    from quartz.ui import BlockPrinter, _replay_session
 
     buf = io.StringIO()
     test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
     test_printer = BlockPrinter(test_console)
-    import agent.ui as ui
+    import quartz.ui as ui
 
     # _active_printer resolves via agent.cli.printer; patch it.
     old = cli.printer

@@ -8,16 +8,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.commands import _handle_slash_command
-from agent.runtime import AgentRuntime as _CLIRuntime
-from agent.helpers import (
+from quartz.commands import _handle_slash_command
+from quartz.runtime import AgentRuntime as _CLIRuntime
+from quartz.helpers import (
     PROTECTED_NAMES,
     format_helpers_for_prompt,
     load_helpers,
 )
-from agent.kernel_client import KernelClient
-from agent.prompt import build_system_prompt
-from agent.session import Session
+from quartz.kernel_client import KernelClient
+from quartz.prompt import build_system_prompt
+from quartz.session import Session
 
 
 def test_builtin_helpers_loaded_by_default() -> None:
@@ -288,7 +288,7 @@ def test_kernel_executes_custom_project_helper(tmp_path: Path) -> None:
 
 
 def test_slash_command_helpers_execution(tmp_path: Path) -> None:
-    from agent.loop import TurnUsage
+    from quartz.loop import TurnUsage
     session = Session.create(tmp_path)
     rt = _CLIRuntime(
         cwd=tmp_path,
@@ -356,7 +356,7 @@ def test_custom_helper_can_call_bash_in_kernel(tmp_path: Path) -> None:
 
 
 def test_edit_and_write_atomic_and_crlf_safe(tmp_path: Path) -> None:
-    from agent.helpers import edit, write
+    from quartz.helpers import edit, write
 
     # Test atomic write
     f = tmp_path / "crlf_test.txt"
@@ -378,7 +378,7 @@ def test_edit_and_write_atomic_and_crlf_safe(tmp_path: Path) -> None:
 
 def test_rg_fixed_literal_search(tmp_path: Path) -> None:
     from unittest.mock import patch
-    from agent.helpers import rg
+    from quartz.helpers import rg
 
     test_file = tmp_path / "sample.txt"
     test_file.write_text("prefix.middle\nprefix1middle\n[tag] item\ntag item\n", encoding="utf-8")
@@ -420,14 +420,14 @@ def test_format_helpers_for_prompt_includes_fixed_option() -> None:
     assert "fixed=True for literal string search" in prompt
 
 def test_prompt_rules_include_chaining_and_helper_prioritization() -> None:
-    from agent.prompt import PROMPT_RULES
+    from quartz.prompt import PROMPT_RULES
 
     assert "Batch and chain operations generously into one cell" in PROMPT_RULES
     assert "Prioritize available REPL helpers and primitives" in PROMPT_RULES
 
 
 def test_write_and_edit_py_check_missing_import(tmp_path: Path) -> None:
-    from agent.helpers import edit, write
+    from quartz.helpers import edit, write
 
     py_file = tmp_path / "mod.py"
     out_write = write(str(py_file), "def f():\n    return json.dumps({'a': 1})\n")
@@ -442,7 +442,7 @@ def test_write_and_edit_py_check_missing_import(tmp_path: Path) -> None:
 
 
 def test_write_and_edit_py_check_valid_and_edge_cases(tmp_path: Path) -> None:
-    from agent.helpers import _check_python_source, write
+    from quartz.helpers import _check_python_source, write
 
     valid_src = (
         "from __future__ import annotations\n"
@@ -468,13 +468,13 @@ def test_write_and_edit_py_check_valid_and_edge_cases(tmp_path: Path) -> None:
 
     # Real agent/*.py files must produce zero false positives
     repo_root = Path(__file__).resolve().parent.parent
-    for py_path in sorted((repo_root / "agent").glob("*.py")):
+    for py_path in sorted((repo_root / "src" / "quartz").rglob("*.py")):
         warnings = _check_python_source(py_path, py_path.read_text(encoding="utf-8"))
         assert warnings == [], f"Unexpected warnings for {py_path}: {warnings}"
 
 
 def test_write_py_check_syntax_error_and_non_py_skip(tmp_path: Path) -> None:
-    from agent.helpers import write
+    from quartz.helpers import write
 
     bad_py = tmp_path / "bad.py"
     out_bad = write(str(bad_py), "def broken(:\n    pass\n")
@@ -496,7 +496,7 @@ def test_system_prompt_mentions_stdlib_auto_import_and_explicit_py_imports(tmp_p
 def test_edit_preserves_mode_and_write_respects_umask(tmp_path: Path) -> None:
     import os
     import stat
-    from agent.helpers import edit, write
+    from quartz.helpers import edit, write
 
     script = tmp_path / "run.sh"
     script.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
@@ -515,7 +515,7 @@ def test_edit_preserves_mode_and_write_respects_umask(tmp_path: Path) -> None:
 
 
 def test_rg_leading_dash_patterns(tmp_path: Path) -> None:
-    from agent.helpers import rg
+    from quartz.helpers import rg
 
     target = tmp_path / "flags.txt"
     target.write_text("--verbose flag\n-n line\n", encoding="utf-8")
@@ -530,7 +530,7 @@ def test_rg_leading_dash_patterns(tmp_path: Path) -> None:
 
 
 def _pycheck(src: str, name: str = "m.py") -> list[str]:
-    from agent.pycheck import check_python_source
+    from quartz.pycheck import check_python_source
 
     return check_python_source(Path("/tmp") / name, src)
 
@@ -560,7 +560,7 @@ def test_pycheck_symtable_scoping_cases() -> None:
 
 
 def test_pycheck_quartz_helpers_allows_builtins(tmp_path: Path) -> None:
-    from agent.pycheck import check_python_source
+    from quartz.pycheck import check_python_source
 
     p = tmp_path / ".quartz" / "helpers.py"
     assert check_python_source(p, "def h():\n    return read('x') + str(Path('.'))\n") == []
@@ -571,7 +571,7 @@ def test_atomic_write_never_touches_process_umask(tmp_path: Path, monkeypatch: p
     import os
     import stat
 
-    from agent.helpers import _atomic_write
+    from quartz.helpers import _atomic_write
 
     def boom(_mask: int) -> int:
         raise AssertionError("os.umask must not be called")
@@ -586,7 +586,7 @@ def test_atomic_write_never_touches_process_umask(tmp_path: Path, monkeypatch: p
 def test_atomic_write_cleans_tmp_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import os
 
-    from agent.helpers import _atomic_write
+    from quartz.helpers import _atomic_write
 
     def bad_replace(*_a: object) -> None:
         raise OSError("nope")
@@ -600,7 +600,7 @@ def test_atomic_write_cleans_tmp_on_failure(tmp_path: Path, monkeypatch: pytest.
 def test_ls_find_rg_error_handling(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import subprocess
 
-    from agent import helpers
+    from quartz import helpers
 
     f = tmp_path / "a.txt"
     f.write_text("hello\n")
@@ -631,7 +631,7 @@ def test_ls_find_rg_error_handling(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 def test_find_skips_unreadable_and_symlink_dirs(tmp_path: Path) -> None:
     import os
 
-    from agent.helpers import find
+    from quartz.helpers import find
 
     (tmp_path / "real").mkdir()
     (tmp_path / "real" / "x.py").write_text("")
