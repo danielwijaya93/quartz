@@ -321,3 +321,57 @@ def test_authorization_url_honours_an_env_override(monkeypatch: Any) -> None:
     client_id, _ = resolve_oauth_client()
     url = build_authorization_url(client_id, "challenge", "state")
     assert parse_qs(urlparse(url).query)["client_id"] == ["custom-id"]
+
+
+def test_google_stream_is_closeable_from_another_thread(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    import inspect
+    import threading
+
+    monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "auth.json"))
+    save_google_credentials(
+        GoogleCredentials("tok", "ref", int(time.time() * 1000) + 600_000, "proj-1")
+    )
+
+    first_yielded = threading.Event()
+    closed_event = threading.Event()
+    exit_calls = 0
+
+    class _BlockingFakeResp(_FakeResp):
+        def __exit__(self, *args: Any) -> bool:
+            nonlocal exit_calls
+            exit_calls += 1
+            closed_event.set()
+            return False
+
+        def iter_lines(self) -> Any:
+            yield 'data: {"response": {"candidates": [{"content": {"parts": [{"text": "one"}]}}]}}'
+            first_yielded.set()
+            closed_event.wait(timeout=2.0)
+            yield 'data: {"response": {"candidates": [{"content": {"parts": [{"text": "two"}]}}]}}'
+
+    _fake_google_http(monkeypatch, [_BlockingFakeResp(200)])
+
+    client = GoogleAntigravityClient()
+    stream = client.chat.completions.create(
+        model="gemini-3.8-flash-medium",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    assert not inspect.isgenerator(stream)
+    assert callable(getattr(stream, "close", None))
+
+    def _close_after_first() -> None:
+        assert first_yielded.wait(timeout=2.0)
+        stream.close()
+
+    t = threading.Thread(target=_close_after_first, daemon=True)
+    t.start()
+
+    chunks = list(stream)
+    t.join(timeout=2.0)
+    assert [c.choices[0].delta.content for c in chunks] == ["one"]
+    # Thread-safe & idempotent: __exit__ called at most once even if close() is called again.
+    stream.close()
+    assert exit_calls == 1

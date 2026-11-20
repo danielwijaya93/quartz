@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import threading
 from collections.abc import Iterator
 from typing import Any
 
@@ -111,12 +112,18 @@ class _SSEStream:
         self._ctx = ctx
         self._resp = resp
         self._closed = False
+        self._lock = threading.Lock()
 
     def close(self) -> None:
-        if not self._closed:
+        with self._lock:
+            if self._closed:
+                return
             self._closed = True
+            ctx = self._ctx
+            self._ctx = None
+        if ctx is not None:
             try:
-                self._ctx.__exit__(None, None, None)
+                ctx.__exit__(None, None, None)
             except Exception:
                 pass
 
@@ -200,8 +207,10 @@ class _Completions:
             ctx = self._client._http.stream("POST", url, json=body, headers=headers)
             resp = ctx.__enter__()
             if resp.status_code >= 400:
-                err_text = resp.read().decode("utf-8", errors="replace")
-                ctx.__exit__(None, None, None)
+                try:
+                    err_text = resp.read().decode("utf-8", errors="replace")
+                finally:
+                    ctx.__exit__(None, None, None)
                 if is_context_overflow(resp.status_code, err_text):
                     raise ContextOverflowError(
                         "Prompt exceeds the model context window",

@@ -11,6 +11,9 @@ import json
 import os
 import re
 import secrets
+import select
+import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -151,14 +154,51 @@ class GoogleCredentials:
         )
 
 
-def load_google_credentials(path: Path | None = None) -> GoogleCredentials | None:
+def read_auth_json(path: Path | None = None) -> dict[str, Any]:
     cfg = path or auth_file_path()
     if not cfg.is_file():
-        return None
+        return {}
     try:
         data = json.loads(cfg.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return None
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_auth_json(data: dict[str, Any], path: Path | None = None) -> Path:
+    cfg = path or auth_file_path()
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=cfg.parent,
+            prefix=".auth.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            try:
+                os.chmod(tmp_path, 0o600)
+            except OSError:
+                pass
+            tmp.write(json.dumps(data, indent=2) + "\n")
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_path, cfg)
+    except BaseException:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
+    return cfg
+
+
+def load_google_credentials(path: Path | None = None) -> GoogleCredentials | None:
+    data = read_auth_json(path)
     google_data = data.get("google")
     if not isinstance(google_data, dict):
         return None
@@ -166,37 +206,20 @@ def load_google_credentials(path: Path | None = None) -> GoogleCredentials | Non
 
 
 def save_google_credentials(creds: GoogleCredentials, path: Path | None = None) -> Path:
-    cfg = path or auth_file_path()
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    data: dict[str, Any] = {}
-    if cfg.is_file():
-        try:
-            loaded = json.loads(cfg.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                data = loaded
-        except (OSError, json.JSONDecodeError):
-            data = {}
+    data = read_auth_json(path)
     data["google"] = creds.to_dict()
-    cfg.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    try:
-        os.chmod(cfg, 0o600)
-    except OSError:
-        pass
-    return cfg
+    return write_auth_json(data, path)
 
 
 def delete_google_credentials(path: Path | None = None) -> bool:
     cfg = path or auth_file_path()
     if not cfg.is_file():
         return False
-    try:
-        data = json.loads(cfg.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    if not isinstance(data, dict) or "google" not in data:
+    data = read_auth_json(cfg)
+    if "google" not in data:
         return False
     del data["google"]
-    cfg.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    write_auth_json(data, cfg)
     return True
 
 
@@ -419,39 +442,59 @@ def login_google_interactive(path: Path | None = None) -> GoogleCredentials:
     )
     srv_thread.start()
 
-    print("Open this URL in your browser to sign in with Google:\n")
-    print(f"  {auth_url}\n")
+    from rich.text import Text
+
+    from agent.ui import console, get_active_tui
+
+    console.print(Text("Open this URL in your browser to sign in with Google:\n"))
+    console.print(Text(f"  {auth_url}\n"))
     try:
         webbrowser.open(auth_url)
     except Exception:
         pass
-    print("Waiting for browser callback on http://localhost:51121 ...")
-    print("(If on a remote machine, paste the final redirect URL here and press Enter)")
+    console.print(Text(f"Waiting for browser callback on http://localhost:{CALLBACK_PORT} ..."))
+    if get_active_tui() is None:
+        console.print(
+            Text("(If on a remote machine, paste the final redirect URL here and press Enter)")
+        )
 
-    # Race browser callback against optional manual paste
+    # Race browser callback against optional manual paste (only when not in full-screen TUI)
     def _read_paste() -> None:
-        try:
-            pasted = input().strip()
-        except EOFError:
-            return
-        if not pasted or done_event.is_set():
-            return
-        parsed = urllib.parse.urlparse(pasted)
-        qs = urllib.parse.parse_qs(parsed.query)
-        code = qs.get("code", [None])[0]
-        cb_state = qs.get("state", [None])[0]
-        if code and (not cb_state or cb_state == state):
-            result_box["code"] = code
-            done_event.set()
+        while not done_event.is_set():
+            try:
+                readable, _, _ = select.select([sys.stdin], [], [], 0.2)
+            except (OSError, ValueError):
+                return
+            if not readable:
+                continue
+            try:
+                line = sys.stdin.readline()
+            except (OSError, ValueError):
+                return
+            if not line:
+                return
+            pasted = line.strip()
+            if not pasted or done_event.is_set():
+                return
+            parsed = urllib.parse.urlparse(pasted)
+            qs = urllib.parse.parse_qs(parsed.query)
+            code = qs.get("code", [None])[0]
+            cb_state = qs.get("state", [None])[0]
+            if code and (not cb_state or cb_state == state):
+                result_box["code"] = code
+                done_event.set()
+                return
 
-    paste_thread = threading.Thread(target=_read_paste, daemon=True)
-    paste_thread.start()
+    if get_active_tui() is None:
+        paste_thread = threading.Thread(target=_read_paste, daemon=True)
+        paste_thread.start()
 
     try:
         if not done_event.wait(timeout=300.0):
             raise RuntimeError("Google OAuth login timed out after 5 minutes.")
     finally:
         done_event.set()
+        srv_thread.join(timeout=1.0)
         server.server_close()
 
     if "error" in result_box:

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import secrets
+import threading
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -18,6 +18,18 @@ from agent.google_auth import (
     refresh_google_credentials,
 )
 from agent.images import parse_data_url
+from agent.openai_client import (
+    _Choice,
+    _Chunk,
+    _Delta,
+    _Function,
+    _Message,
+    _PromptDetails,
+    _Response,
+    _StreamChoice,
+    _ToolCall,
+    _Usage,
+)
 from agent.provider_config import resolve_cloudcode_endpoint, resolve_http_timeout
 
 ANTIGRAVITY_SYSTEM_INSTRUCTION = (
@@ -216,73 +228,6 @@ def build_cloudcode_request(
     }
 
 
-@dataclasses.dataclass
-class _PromptDetails:
-    cached_tokens: int = 0
-
-
-@dataclasses.dataclass
-class _Usage:
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    prompt_tokens_details: _PromptDetails | None = None
-
-
-@dataclasses.dataclass
-class _FnDelta:
-    name: str | None = None
-    arguments: str | None = None
-
-
-@dataclasses.dataclass
-class _TcDelta:
-    index: int
-    id: str | None = None
-    function: _FnDelta | None = None
-    thought_signature: str | None = None
-
-
-@dataclasses.dataclass
-class _Delta:
-    content: str | None = None
-    tool_calls: list[_TcDelta] | None = None
-
-
-@dataclasses.dataclass
-class _Choice:
-    delta: _Delta
-
-
-@dataclasses.dataclass
-class _Chunk:
-    choices: list[_Choice]
-    usage: _Usage | None = None
-
-
-@dataclasses.dataclass
-class _NonStreamToolCall:
-    id: str
-    function: _FnDelta
-    type: str = "function"
-
-
-@dataclasses.dataclass
-class _NonStreamMessage:
-    content: str | None
-    tool_calls: list[_NonStreamToolCall] | None = None
-
-
-@dataclasses.dataclass
-class _NonStreamChoice:
-    message: _NonStreamMessage
-
-
-@dataclasses.dataclass
-class _NonStreamResponse:
-    choices: list[_NonStreamChoice]
-    usage: _Usage | None = None
-
-
 def parse_sse_payload(payload: dict[str, Any], tc_counter: list[int]) -> _Chunk | None:
     """Parse one Cloud Code Assist SSE JSON object into an OpenAI-style _Chunk."""
     resp = payload.get("response", payload)
@@ -304,7 +249,7 @@ def parse_sse_payload(payload: dict[str, Any], tc_counter: list[int]) -> _Chunk 
 
     parts = (candidates[0].get("content") or {}).get("parts") or []
     text_parts: list[str] = []
-    tc_deltas: list[_TcDelta] = []
+    tc_deltas: list[_ToolCall] = []
 
     for part in parts:
         if not isinstance(part, dict):
@@ -320,10 +265,10 @@ def parse_sse_payload(payload: dict[str, Any], tc_counter: list[int]) -> _Chunk 
             tc_id = f"call_{secrets.token_hex(6)}"
             args_json = json.dumps(fc.get("args") or {}, ensure_ascii=False)
             tc_deltas.append(
-                _TcDelta(
+                _ToolCall(
                     index=idx,
                     id=tc_id,
-                    function=_FnDelta(name=str(fc.get("name", "")), arguments=args_json),
+                    function=_Function(name=str(fc.get("name", "")), arguments=args_json),
                     thought_signature=part.get("thoughtSignature"),
                 )
             )
@@ -332,7 +277,52 @@ def parse_sse_payload(payload: dict[str, Any], tc_counter: list[int]) -> _Chunk 
         content="".join(text_parts) if text_parts else None,
         tool_calls=tc_deltas or None,
     )
-    return _Chunk(choices=[_Choice(delta=delta)], usage=usage)
+    return _Chunk(choices=[_StreamChoice(delta=delta)], usage=usage)
+
+
+class _GoogleSSEStream:
+    """Iterator over Cloud Code Assist SSE chunks with `.close()` for immediate abort."""
+
+    def __init__(self, ctx: Any, resp: Any) -> None:
+        self._ctx = ctx
+        self._resp = resp
+        self._closed = False
+        self._lock = threading.Lock()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            ctx = self._ctx
+            self._ctx = None
+        if ctx is not None:
+            try:
+                ctx.__exit__(None, None, None)
+            except Exception:
+                pass
+
+    def __iter__(self) -> Iterator[_Chunk]:
+        tc_counter = [0]
+        try:
+            for raw_line in self._resp.iter_lines():
+                if self._closed:
+                    break
+                line = raw_line.strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                data_str = line[5:].strip()
+                if data_str == "[DONE]":
+                    break
+                try:
+                    payload = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+                chunk = parse_sse_payload(payload, tc_counter)
+                if chunk is not None:
+                    yield chunk
+        finally:
+            self.close()
 
 
 class _GoogleCompletions:
@@ -344,13 +334,13 @@ class _GoogleCompletions:
             self._http = httpx2.Client(timeout=resolve_http_timeout())
         return self._http
 
-    def _stream_sse(
+    def _open_stream(
         self,
         model: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
         effort: str | None = None,
-    ) -> Iterator[_Chunk]:
+    ) -> _GoogleSSEStream:
         endpoint = resolve_cloudcode_endpoint()
         url = f"{endpoint}/v1internal:streamGenerateContent?alt=sse"
         creds = get_valid_google_credentials()
@@ -366,15 +356,26 @@ class _GoogleCompletions:
                 "Content-Type": "application/json",
                 "Accept": "text/event-stream",
             }
-            with self._get_http().stream("POST", url, json=body, headers=headers) as resp:
+            ctx = self._get_http().stream("POST", url, json=body, headers=headers)
+            resp = ctx.__enter__()
+            exited = False
+            try:
                 if resp.status_code == 401 and not refreshed:
-                    resp.read()
+                    try:
+                        resp.read()
+                    finally:
+                        exited = True
+                        ctx.__exit__(None, None, None)
                     creds = refresh_google_credentials(creds)
                     refreshed = True
                     continue
 
                 if resp.status_code >= 400:
-                    err_text = resp.read().decode("utf-8", errors="replace")
+                    try:
+                        err_text = resp.read().decode("utf-8", errors="replace")
+                    finally:
+                        exited = True
+                        ctx.__exit__(None, None, None)
                     if is_context_overflow(resp.status_code, err_text):
                         raise ContextOverflowError(
                             "Prompt exceeds the Gemini context window",
@@ -388,23 +389,11 @@ class _GoogleCompletions:
                         status_code=resp.status_code,
                         detail=err_text,
                     )
-
-                tc_counter = [0]
-                for raw_line in resp.iter_lines():
-                    line = raw_line.strip()
-                    if not line or not line.startswith("data:"):
-                        continue
-                    data_str = line[5:].strip()
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        payload = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
-                    chunk = parse_sse_payload(payload, tc_counter)
-                    if chunk is not None:
-                        yield chunk
-                return
+            except BaseException:
+                if not exited:
+                    ctx.__exit__(None, None, None)
+                raise
+            return _GoogleSSEStream(ctx, resp)
 
     def create(
         self,
@@ -417,16 +406,16 @@ class _GoogleCompletions:
         reasoning_effort: str | None = None,
     ) -> Any:
         del stream_options
-        gen = self._stream_sse(
+        sse_stream = self._open_stream(
             model=model, messages=messages, tools=tools, effort=reasoning_effort
         )
         if stream:
-            return gen
+            return sse_stream
 
         content_parts: list[str] = []
-        tool_calls: list[_NonStreamToolCall] = []
+        tool_calls: list[_ToolCall] = []
         usage: _Usage | None = None
-        for chunk in gen:
+        for chunk in sse_stream:
             if chunk.usage is not None:
                 usage = chunk.usage
             if not chunk.choices:
@@ -438,16 +427,17 @@ class _GoogleCompletions:
                 for tc in delta.tool_calls:
                     if tc.function is not None:
                         tool_calls.append(
-                            _NonStreamToolCall(
+                            _ToolCall(
                                 id=tc.id or f"call_{secrets.token_hex(6)}",
                                 function=tc.function,
+                                thought_signature=tc.thought_signature,
                             )
                         )
         content = "".join(content_parts) if content_parts else None
-        return _NonStreamResponse(
+        return _Response(
             choices=[
-                _NonStreamChoice(
-                    message=_NonStreamMessage(
+                _Choice(
+                    message=_Message(
                         content=content,
                         tool_calls=tool_calls or None,
                     )
