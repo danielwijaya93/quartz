@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from collections.abc import Callable, Iterator
+import threading
+from collections.abc import Callable, Iterable, Iterator
 from typing import Any, Protocol
 
 from quartz.errors import ProviderError, provider_error
@@ -172,6 +173,60 @@ def iter_sse_events(
         parsed = _parse_sse_frame(data_lines, provider=provider)
         if parsed is not None:
             yield parsed
+
+
+class SSEStreamHandle:
+    """StreamHandle over an SSE response; each provider supplies only a parser.
+
+    Owns the one cross-thread close contract: ``close()`` is idempotent, safe to call
+    from another thread while ``__iter__`` is blocked in ``iter_lines()``, and always
+    releases the request context.
+    """
+
+    def __init__(
+        self,
+        ctx: Any,
+        resp: Any,
+        *,
+        provider: str,
+        parse: Callable[[dict[str, Any]], Iterable[StreamEvent]],
+    ) -> None:
+        self._ctx = ctx
+        self._resp = resp
+        self._provider = provider
+        self._parse = parse
+        self._closed = False
+        self._lock = threading.Lock()
+
+    def __enter__(self) -> SSEStreamHandle:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.close()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            ctx = self._ctx
+            self._ctx = None
+        if ctx is not None:
+            try:
+                ctx.__exit__(None, None, None)
+            except Exception:
+                pass
+
+    def __iter__(self) -> Iterator[StreamEvent]:
+        try:
+            for payload in iter_sse_events(
+                self._resp,
+                provider=self._provider,
+                is_closed=lambda: self._closed,
+            ):
+                yield from self._parse(payload)
+        finally:
+            self.close()
 
 
 def collect_completion(stream_handle: StreamHandle) -> CompletionResult:

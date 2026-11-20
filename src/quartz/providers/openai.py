@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import threading
 from collections.abc import Iterator
 from typing import Any
 
@@ -13,14 +12,15 @@ from quartz.errors import parse_retry_after, provider_error
 from quartz.providers.base import (
     CompletionResult,
     ProviderCapabilities,
+    SSEStreamHandle,
     StreamEvent,
+    StreamHandle,
     TextDelta,
     ThinkingDelta,
     ToolCall,
     ToolCallDelta,
     Usage,
     UsageEvent,
-    iter_sse_events,
 )
 from quartz.providers.config import resolve_http_timeout
 
@@ -150,85 +150,49 @@ def _parse_usage(raw: Any) -> Usage | None:
     )
 
 
-class _OpenAIStreamHandle:
-    """Iterator over OpenAI SSE StreamEvents with `.close()` for immediate abort."""
+def _openai_events(payload: dict[str, Any]) -> Iterator[StreamEvent]:
+    """Parse one OpenAI-compatible SSE payload into unified StreamEvents."""
+    usage = _parse_usage(payload.get("usage"))
+    if usage is not None:
+        yield UsageEvent(usage=usage)
 
-    def __init__(self, ctx: Any, resp: Any, provider: str) -> None:
-        self._ctx = ctx
-        self._resp = resp
-        self._provider = provider
-        self._closed = False
-        self._lock = threading.Lock()
+    raw_choices = payload.get("choices") or []
+    if not raw_choices:
+        return
+    raw_delta = raw_choices[0].get("delta") or {}
 
-    def __enter__(self) -> _OpenAIStreamHandle:
-        return self
+    reasoning = raw_delta.get("reasoning_content") or raw_delta.get("reasoning")
+    if isinstance(reasoning, str) and reasoning:
+        yield ThinkingDelta(text=reasoning)
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        self.close()
+    # OpenRouter may stream summaries only via reasoning_details
+    # (e.g. muse-ember with tools); surface them as thinking too.
+    details = raw_delta.get("reasoning_details")
+    if isinstance(details, list):
+        for detail in details:
+            if not isinstance(detail, dict):
+                continue
+            if detail.get("type") != "reasoning.summary":
+                continue
+            summary = detail.get("summary")
+            if isinstance(summary, str) and summary:
+                yield ThinkingDelta(text=summary)
 
-    def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            ctx = self._ctx
-            self._ctx = None
-        if ctx is not None:
-            try:
-                ctx.__exit__(None, None, None)
-            except Exception:
-                pass
+    text = raw_delta.get("content")
+    if isinstance(text, str) and text:
+        yield TextDelta(text=text)
 
-    def __iter__(self) -> Iterator[StreamEvent]:
-        try:
-            for payload in iter_sse_events(
-                self._resp,
-                provider=self._provider,
-                is_closed=lambda: self._closed,
-            ):
-                usage = _parse_usage(payload.get("usage"))
-                if usage is not None:
-                    yield UsageEvent(usage=usage)
-
-                raw_choices = payload.get("choices") or []
-                if not raw_choices:
-                    continue
-                raw_delta = raw_choices[0].get("delta") or {}
-
-                reasoning = raw_delta.get("reasoning_content") or raw_delta.get("reasoning")
-                if isinstance(reasoning, str) and reasoning:
-                    yield ThinkingDelta(text=reasoning)
-
-                # OpenRouter may stream summaries only via reasoning_details
-                # (e.g. muse-ember with tools); surface them as thinking too.
-                details = raw_delta.get("reasoning_details")
-                if isinstance(details, list):
-                    for detail in details:
-                        if not isinstance(detail, dict):
-                            continue
-                        if detail.get("type") != "reasoning.summary":
-                            continue
-                        summary = detail.get("summary")
-                        if isinstance(summary, str) and summary:
-                            yield ThinkingDelta(text=summary)
-
-                text = raw_delta.get("content")
-                if isinstance(text, str) and text:
-                    yield TextDelta(text=text)
-
-                for tc in raw_delta.get("tool_calls") or []:
-                    fn = tc.get("function") or {}
-                    sig = tc.get("thought_signature")
-                    meta = {"thought_signature": str(sig)} if sig else {}
-                    yield ToolCallDelta(
-                        index=int(tc.get("index", 0)),
-                        id=str(tc["id"]) if tc.get("id") else None,
-                        name=str(fn["name"]) if fn.get("name") else None,
-                        arguments_delta=str(fn.get("arguments") or ""),
-                        meta=meta,
-                    )
-        finally:
-            self.close()
+    for tc in raw_delta.get("tool_calls") or []:
+        fn = tc.get("function") or {}
+        sig = tc.get("thought_signature")
+        meta = {"thought_signature": str(sig)} if sig else {}
+        yield ToolCallDelta(
+            index=int(tc.get("index", 0)),
+            id=str(tc["id"]) if tc.get("id") else None,
+            name=str(fn["name"]) if fn.get("name") else None,
+            arguments_delta=str(fn.get("arguments") or ""),
+            meta=meta,
+        )
 
 
 class OpenAIProvider:
@@ -295,7 +259,7 @@ class OpenAIProvider:
         tools: list[dict[str, Any]] | None = None,
         *,
         effort: str | None = None,
-    ) -> _OpenAIStreamHandle:
+    ) -> StreamHandle:
         url = f"{self.base_url}/chat/completions"
         headers = self._headers()
         for _ in range(3):
@@ -309,7 +273,7 @@ class OpenAIProvider:
             ctx = self._http.stream("POST", url, json=body, headers=headers)
             resp = ctx.__enter__()
             if resp.status_code < 400:
-                return _OpenAIStreamHandle(ctx, resp, self.base_url)
+                return SSEStreamHandle(ctx, resp, provider=self.base_url, parse=_openai_events)
             try:
                 err_text = resp.read().decode("utf-8", errors="replace")
             finally:

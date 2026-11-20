@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import json
 import secrets
-import threading
 import time
-from collections.abc import Iterator
 from typing import Any
 
 import httpx2
@@ -21,14 +19,15 @@ from quartz.core.images import parse_data_url
 from quartz.providers.base import (
     CompletionResult,
     ProviderCapabilities,
+    SSEStreamHandle,
     StreamEvent,
+    StreamHandle,
     TextDelta,
     ThinkingDelta,
     ToolCallDelta,
     Usage,
     UsageEvent,
     collect_completion,
-    iter_sse_events,
 )
 from quartz.providers.config import resolve_cloudcode_endpoint, resolve_http_timeout
 
@@ -279,47 +278,6 @@ def parse_sse_payload(payload: dict[str, Any], tc_counter: list[int]) -> list[St
     return events
 
 
-class _GoogleStreamHandle:
-    """Iterator over Cloud Code Assist SSE StreamEvents with `.close()` for immediate abort."""
-
-    def __init__(self, ctx: Any, resp: Any) -> None:
-        self._ctx = ctx
-        self._resp = resp
-        self._closed = False
-        self._lock = threading.Lock()
-
-    def __enter__(self) -> _GoogleStreamHandle:
-        return self
-
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        self.close()
-
-    def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            ctx = self._ctx
-            self._ctx = None
-        if ctx is not None:
-            try:
-                ctx.__exit__(None, None, None)
-            except Exception:
-                pass
-
-    def __iter__(self) -> Iterator[StreamEvent]:
-        tc_counter = [0]
-        try:
-            for payload in iter_sse_events(
-                self._resp,
-                provider="google",
-                is_closed=lambda: self._closed,
-            ):
-                yield from parse_sse_payload(payload, tc_counter)
-        finally:
-            self.close()
-
-
 class GoogleAntigravityProvider:
     """LLMProvider backed by Google Antigravity OAuth subscription."""
 
@@ -343,7 +301,7 @@ class GoogleAntigravityProvider:
         tools: list[dict[str, Any]] | None = None,
         *,
         effort: str | None = None,
-    ) -> _GoogleStreamHandle:
+    ) -> StreamHandle:
         endpoint = resolve_cloudcode_endpoint()
         url = f"{endpoint}/v1internal:streamGenerateContent?alt=sse"
         creds = get_valid_google_credentials()
@@ -390,7 +348,13 @@ class GoogleAntigravityProvider:
                 if not exited:
                     ctx.__exit__(None, None, None)
                 raise
-            return _GoogleStreamHandle(ctx, resp)
+            tc_counter: list[int] = [0]
+            return SSEStreamHandle(
+                ctx,
+                resp,
+                provider="google",
+                parse=lambda payload: parse_sse_payload(payload, tc_counter),
+            )
 
     def complete(
         self,
