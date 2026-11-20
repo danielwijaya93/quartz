@@ -271,6 +271,13 @@ class InteractiveDock:
         with self._lock:
             self._show_thinking = not self._show_thinking
             on = self._show_thinking
+            tracker = getattr(self, "_active_tracker", None)
+        if tracker is not None:
+            try:
+                tracker.show_thinking = on
+                tracker._render_current()
+            except Exception:
+                pass
         self._invalidate()
         return on
 
@@ -278,6 +285,13 @@ class InteractiveDock:
         with self._lock:
             self._show_details = not self._show_details
             on = self._show_details
+            tracker = getattr(self, "_active_tracker", None)
+        if tracker is not None:
+            try:
+                tracker.show_details = on
+                tracker._render_current()
+            except Exception:
+                pass
         self._invalidate()
         return on
 
@@ -660,6 +674,11 @@ class InteractiveDock:
             return
 
         if self.is_turn_running:
+            # Slash commands are local inspection (e.g. /jobs, /help) and must
+            # not be steered into the running turn as a model message.
+            if text.startswith("/"):
+                self._launch_worker(lambda: self._handle_submitted_idle(text))
+                return
             self._steering_queue.put(text)
             with self._lock:
                 tracker = self._active_tracker

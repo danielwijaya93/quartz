@@ -124,6 +124,37 @@ def test_replay_renders_reasoning_and_details(monkeypatch) -> None:
     assert "debug reasoning" not in buf.getvalue()
 
 
+def test_dock_toggle_propagates_to_active_tracker() -> None:
+    from agent.interactive import InteractiveDock
+    from agent.ui import TurnProgressTracker
+
+    dock = InteractiveDock.__new__(InteractiveDock)
+    import threading
+
+    dock._lock = threading.RLock()
+    dock._show_thinking = False
+    dock._show_details = False
+    dock._invalidate = lambda: None  # type: ignore[assignment]
+    buf = io.StringIO()
+    test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
+    test_printer = BlockPrinter(test_console)
+    test_printer.reset()
+    live: list = []
+    tracker = TurnProgressTracker(
+        test_console,
+        test_printer,
+        show_thinking=False,
+        show_details=False,
+        live_renderer=live.append,
+    )
+    dock._active_tracker = tracker
+    assert tracker.show_thinking is False
+    assert dock.toggle_thinking() is True
+    assert tracker.show_thinking is True
+    assert dock.toggle_details() is True
+    assert tracker.show_details is True
+
+
 def test_dock_toggle_methods_flip_state() -> None:
     from agent.interactive import InteractiveDock
 
