@@ -293,26 +293,48 @@ def _strip_env_prefix(tokens: list[str]) -> list[str]:
     return tokens[idx:]
 
 
+def _is_prompt_indirection(prompt: str) -> bool:
+    """Return True when ``prompt`` is launcher plumbing, not a real prompt.
+
+    ``launch_worker`` builds ``quartz -p "$(cat <prompt_file>)"``: the prompt
+    token is a shell indirection (``$(cat ...)``, backticks, ``cat <file>``).
+    Such tokens carry zero information about the job, so they must never become
+    its label.
+    """
+    text = prompt.strip()
+    if not text:
+        return True
+    if text.startswith(("$(", "`", "$'", "$(cat", "`cat", "cat ")):
+        return True
+    return False
+
+
 def _describe_quartz_command(args: list[str]) -> str:
     """Label a ``quartz`` invocation (e.g. forked workers launched by bash()).
 
     ``uv run quartz -p "<prompt>" -r <sid> --fork --cwd <worktree>`` ->
-    ``Quartz: <prompt snippet> · <worktree basename>``. Bare ``quartz``
-    invocations fall back to ``Run quartz``.
+    ``Quartz: <prompt snippet> · <worktree basename>``. Launcher plumbing
+    (``-p "$(cat <prompt_file>)"``) is dropped instead: ``Quartz worker``
+    (plus the worktree basename). Bare ``quartz`` invocations fall back to
+    ``Run quartz``.
     """
     prompt: str | None = None
+    prompt_present = False
     cwd: str | None = None
     idx = 0
     while idx < len(args):
         tok = args[idx]
         if tok in ("-p", "--prompt") and idx + 1 < len(args):
             prompt = args[idx + 1]
+            prompt_present = True
             idx += 2
             continue
         if tok.startswith("--prompt="):
             prompt = tok.split("=", 1)[1]
+            prompt_present = True
         elif tok.startswith("-p") and len(tok) > 2:
             prompt = tok[2:]
+            prompt_present = True
         elif tok == "--cwd" and idx + 1 < len(args):
             cwd = args[idx + 1]
             idx += 2
@@ -321,18 +343,22 @@ def _describe_quartz_command(args: list[str]) -> str:
             cwd = tok.split("=", 1)[1]
         idx += 1
 
-    parts: list[str] = []
-    if prompt and prompt.strip():
-        snippet = " ".join(prompt.split())
-        if len(snippet) > 30:
-            snippet = snippet[:29].rstrip() + "…"
-        parts.append(f"Quartz: {snippet}")
-    else:
-        parts.append("Run quartz")
+    base = ""
     if cwd and cwd.strip() and cwd.strip() != ".":
         base = cwd.rstrip("/").rsplit("/", 1)[-1]
-        if base:
-            parts.append(base)
+    parts: list[str] = []
+    if prompt_present:
+        if prompt is not None and prompt.strip() and not _is_prompt_indirection(prompt):
+            snippet = " ".join(prompt.split())
+            if len(snippet) > 30:
+                snippet = snippet[:29].rstrip() + "…"
+            parts.append(f"Quartz: {snippet}")
+        else:
+            parts.append("Quartz worker")
+    else:
+        parts.append("Run quartz")
+    if base:
+        parts.append(base)
     result = " · ".join(parts)
     if len(result) > _MAX_INTENT_LEN:
         result = result[: _MAX_INTENT_LEN - 1].rstrip() + "…"
