@@ -611,3 +611,74 @@ def test_agent_loop_streaming_steering_preemption(tmp_path: Path) -> None:
         assert any(m.get("role") == "user" and m.get("content") == "Stop and do Y instead" for m in updated)
     finally:
         kernel.close()
+
+
+def test_kernel_fd1_write_does_not_corrupt_protocol(tmp_path: Path) -> None:
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        r1 = kernel.exec_cell('import os; os.write(1, b"NO_NEWLINE")')
+        assert r1.ok
+        r2 = kernel.exec_cell("1 + 2")
+        assert r2.ok
+        assert r2.result == "3"
+        assert not kernel.has_pending_events()
+    finally:
+        kernel.close()
+
+
+def test_kernel_snapshot_restore_function_kwdefaults_doc_annotations(tmp_path: Path) -> None:
+    snap_dir = tmp_path / "snap"
+    k1 = KernelClient(cwd=tmp_path)
+    k1.start()
+    try:
+        r1 = k1.exec_cell(
+            'def greet(name: str, *, excited: bool = False) -> str:\n'
+            '    """Return greeting."""\n'
+            '    return f"hi {name}" + ("!" if excited else "")\n'
+        )
+        assert r1.ok
+        manifest = k1.snapshot(snap_dir)
+        assert "greet" in manifest["saved"]
+    finally:
+        k1.close()
+
+    k2 = KernelClient(cwd=tmp_path)
+    k2.start()
+    try:
+        restored = k2.restore(snap_dir)
+        assert "greet" in restored["restored"]
+        r_default = k2.exec_cell('greet("alice")')
+        assert r_default.ok
+        assert r_default.result == "'hi alice'"
+        r_kw = k2.exec_cell('greet("alice", excited=True)')
+        assert r_kw.ok
+        assert r_kw.result == "'hi alice!'"
+        r_meta = k2.exec_cell('(greet.__doc__, list(greet.__annotations__.keys()))')
+        assert r_meta.ok
+        assert r_meta.result == "('Return greeting.', ['name', 'excited', 'return'])"
+    finally:
+        k2.close()
+
+
+def test_kernel_corrupt_manifest_and_invalid_snapshot_keep_kernel_alive(tmp_path: Path) -> None:
+    bad_snap = tmp_path / "bad_snap"
+    bad_snap.mkdir()
+    (bad_snap / "manifest.json").write_text("{not valid json", encoding="utf-8")
+
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        restored = kernel.restore(bad_snap)
+        assert restored == {"restored": [], "skipped": []}
+
+        not_a_dir = tmp_path / "not_a_dir"
+        not_a_dir.write_text("x", encoding="utf-8")
+        snap_res = kernel.snapshot(not_a_dir / "snap")
+        assert snap_res == {"saved": [], "skipped": []}
+
+        alive = kernel.exec_cell("40 + 2")
+        assert alive.ok
+        assert alive.result == "42"
+    finally:
+        kernel.close()

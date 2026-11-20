@@ -12,8 +12,6 @@ import builtins
 import contextlib
 import contextvars
 import dataclasses
-import difflib
-import fnmatch
 import importlib
 import importlib.util
 import inspect
@@ -40,7 +38,6 @@ from agent.helpers import (
     _truncate,
     load_helpers,
 )
-from agent.images import load_image_file
 from agent.mcp_client import MCPManager
 
 MAX_OUTPUT_CHARS = 128_000
@@ -168,26 +165,6 @@ class _ContextStreamProxy:
     def __getattr__(self, name: str) -> Any:
         buf = self._var.get()
         return getattr(buf if buf is not None else self._fallback, name)
-
-
-
-from agent.helpers import (
-    edit,
-    find,
-    ls,
-    read,
-    rg,
-    view_image,
-    write,
-)
-
-_helper_ls = ls
-_helper_find = find
-_helper_rg = rg
-_helper_read = read
-_helper_edit = edit
-_helper_write = write
-_helper_view_image = view_image
 
 
 def _spill_or_truncate(text: str, limit: int, kind: str, cell_id: str) -> str:
@@ -330,10 +307,19 @@ class BashHandle:
 
 
 class KernelWorker:
-    def __init__(self) -> None:
-        # Duplicate fd 1 for JSONL protocol output so cell stdout never corrupts it.
-        proto_fd = os.dup(1)
-        self._proto_out = os.fdopen(proto_fd, "w", encoding="utf-8", buffering=1)
+    def __init__(self, *, proto_out: Any | None = None, isolate_stdio: bool = False) -> None:
+        if proto_out is not None:
+            self._proto_out = proto_out
+        else:
+            # Duplicate fd 1 for JSONL protocol output so cell stdout never corrupts it.
+            proto_fd = os.dup(1)
+            self._proto_out = os.fdopen(proto_fd, "w", encoding="utf-8", buffering=1)
+            if isolate_stdio:
+                devnull_fd = os.open(os.devnull, os.O_WRONLY)
+                try:
+                    os.dup2(devnull_fd, 1)
+                finally:
+                    os.close(devnull_fd)
 
         self._active_cell_ids: set[str] = set()
         self._handles: list[BashHandle] = []
@@ -609,9 +595,20 @@ class KernelWorker:
 
             manifest = {"saved": saved, "skipped": skipped, "cwd": os.getcwd()}
             (tmp_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            backup_dir: Path | None = None
             if target.exists():
-                shutil.rmtree(target)
-            tmp_dir.rename(target)
+                backup_dir = target.parent / f".{target.name}.{os.getpid()}.bak"
+                if backup_dir.exists():
+                    shutil.rmtree(backup_dir, ignore_errors=True)
+                target.rename(backup_dir)
+            try:
+                tmp_dir.rename(target)
+            except BaseException:
+                if backup_dir is not None and backup_dir.exists() and not target.exists():
+                    backup_dir.rename(target)
+                raise
+            if backup_dir is not None and backup_dir.exists():
+                shutil.rmtree(backup_dir, ignore_errors=True)
         except BaseException:
             if tmp_dir.exists():
                 shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -652,13 +649,17 @@ class KernelWorker:
                 if inspect.isfunction(loaded):
                     import types
 
-                    loaded = types.FunctionType(
+                    rebuilt = types.FunctionType(
                         loaded.__code__,
                         self._namespace,
                         loaded.__name__,
                         loaded.__defaults__,
                         loaded.__closure__,
                     )
+                    rebuilt.__kwdefaults__ = loaded.__kwdefaults__
+                    rebuilt.__doc__ = loaded.__doc__
+                    rebuilt.__annotations__ = loaded.__annotations__
+                    loaded = rebuilt
                 self._namespace[name] = loaded
                 restored.append(name)
             except Exception:
@@ -689,7 +690,7 @@ async def _stdin_reader(queue: asyncio.Queue[dict[str, Any] | None]) -> None:
 
 
 async def _main() -> None:
-    worker = KernelWorker()
+    worker = KernelWorker(isolate_stdio=True)
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     reader_task = asyncio.create_task(_stdin_reader(queue))
 
@@ -745,11 +746,17 @@ async def _main() -> None:
             count = sum(1 for h in worker._handles if h.running)
             worker._send({"type": "running_bash_result", "id": req_id, "count": count})
         elif msg_type == "snapshot":
-            manifest = worker.snapshot_vars(msg.get("dir", ""))
-            worker._send({"type": "snapshot_result", "id": req_id, "manifest": manifest})
+            try:
+                manifest = worker.snapshot_vars(msg.get("dir", ""))
+                worker._send({"type": "snapshot_result", "id": req_id, "manifest": manifest})
+            except Exception as exc:
+                worker._send({"type": "error", "id": req_id, "error": str(exc)})
         elif msg_type == "restore":
-            result = worker.restore_vars(msg.get("dir", ""))
-            worker._send({"type": "restore_result", "id": req_id, **result})
+            try:
+                result = worker.restore_vars(msg.get("dir", ""))
+                worker._send({"type": "restore_result", "id": req_id, **result})
+            except Exception as exc:
+                worker._send({"type": "error", "id": req_id, "error": str(exc)})
         elif msg_type == "shutdown":
             break
 

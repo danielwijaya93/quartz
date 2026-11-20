@@ -100,3 +100,72 @@ def test_mcp_cli_add_list_remove_and_disabled(tmp_path: Path, monkeypatch) -> No
     assert remove_mcp_server("http_srv", cfg_path) is True
     assert remove_mcp_server("missing", cfg_path) is False
     assert set(load_mcp_servers().keys()) == set()
+
+
+def test_add_mcp_server_writes_0600_mode(tmp_path: Path) -> None:
+    import stat
+
+    cfg_path = add_mcp_server(
+        "sec",
+        {"url": "https://example.com/mcp", "x-api-key": "secret"},
+        config_path=tmp_path / "mcp.json",
+    )
+    assert stat.S_IMODE(cfg_path.stat().st_mode) == 0o600
+
+
+def test_mcp_http_auth_uses_read_timeout_300(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+    from contextlib import asynccontextmanager
+    import httpx2
+    import mcp
+    import mcp.client.streamable_http as streamable_http
+    from agent.mcp_client import MCPManager
+
+    captured: dict[str, object] = {}
+
+    @asynccontextmanager
+    async def fake_async_client(*, headers=None, timeout=None, **kwargs):
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        yield object()
+
+    @asynccontextmanager
+    async def fake_streamable_http_client(url, http_client=None, **kwargs):
+        captured["url"] = url
+        captured["http_client"] = http_client
+        yield ("r", "w", None)
+
+    class FakeSession:
+        def __init__(self, r, w) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def initialize(self) -> None:
+            captured["initialized"] = True
+
+    monkeypatch.setattr(httpx2, "AsyncClient", fake_async_client)
+    monkeypatch.setattr(streamable_http, "streamable_http_client", fake_streamable_http_client)
+    monkeypatch.setattr(mcp, "ClientSession", FakeSession)
+
+    cfg = tmp_path / "mcp.json"
+    add_mcp_server("auth_http", {"url": "https://example.com/mcp", "x-api-key": "tok"}, config_path=cfg)
+    monkeypatch.setenv("MCP_CONFIG", str(cfg))
+
+    async def _run() -> None:
+        mgr = MCPManager(cwd=tmp_path)
+        try:
+            await mgr._connect_session("auth_http")
+        finally:
+            await mgr.close()
+
+    asyncio.run(_run())
+    assert captured["headers"] == {"x-api-key": "tok"}
+    timeout = captured["timeout"]
+    assert isinstance(timeout, httpx2.Timeout)
+    assert timeout.read == 300.0
+    assert captured["initialized"] is True
