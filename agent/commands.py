@@ -454,7 +454,7 @@ def _cmd_usage(rt: AgentRuntime, arg: str) -> bool | None:
     )
     console_print(
         f"Last context:  {rt.usage_stats.prompt_tokens:,} / {rt.max_context_tokens:,} ({pct:.1f}%)\n"
-        f"Last cache:    {rt.usage_stats.cached_tokens:,} cached ({cache_pct:.1f}%)\n"
+        f"Last cache (CH):    {rt.usage_stats.cached_tokens:,} cached ({cache_pct:.1f}%)\n"
         f"Session total: {rt.usage_stats.total_prompt_tokens:,} in / "
         f"{rt.usage_stats.total_completion_tokens:,} out / "
         f"{rt.usage_stats.total_cached_tokens:,} cached ({total_cache:.1f}%)"

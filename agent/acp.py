@@ -99,11 +99,11 @@ class ACPServer:
 
     def __init__(
         self,
-        client_factory: Callable[[], tuple[Any, str, str, str]],
+        client_factory: Callable[[], tuple[Any, ...]],
         *,
         in_stream: TextIO | None = None,
         out_stream: TextIO | None = None,
-        max_context_tokens: int = 128_000,
+        max_context_tokens: int | None = None,
         compact_reserve_tokens: int = 16_384,
         keep_recent_tokens: int = DEFAULT_KEEP_RECENT_TOKENS,
     ) -> None:
@@ -124,7 +124,13 @@ class ACPServer:
     def _ensure_client(self) -> tuple[Any, str, str | None]:
         with self._client_lock:
             if self._client is None:
-                self._client, _, self._model, self._effort = self._client_factory()
+                result = self._client_factory()
+                if len(result) == 5:
+                    self._client, _, self._model, self._effort, resolved_ctx = result
+                    if resolved_ctx is not None:
+                        self._max_context_tokens = int(resolved_ctx)
+                else:
+                    self._client, _, self._model, self._effort = result
             return self._client, self._model, self._effort
 
     def _send(self, payload: dict[str, Any]) -> None:
@@ -333,7 +339,7 @@ class ACPServer:
                     state.system_prompt,
                     state.messages,
                     state.kernel,
-                    max_context_tokens=self._max_context_tokens,
+                    max_context_tokens=self._max_context_tokens or 128_000,
                     compact_reserve_tokens=self._compact_reserve_tokens,
                     keep_recent_tokens=self._keep_recent_tokens,
                     on_tool_call=_on_tool_call,

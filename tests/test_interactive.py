@@ -116,7 +116,7 @@ def test_banner_and_divider_states(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         banner = _plain_text(dock._get_banner_fragments())
         assert "quartz v0.1.0" in banner
         assert "gpt-5 (high)" in banner
-        assert "ctx 12.0k/100.0k (12.0%)" in banner
+        assert "ctx 100.0k (12.0%)" in banner
 
         assert "/help for commands" in _plain_text(dock._get_divider_fragments())
 

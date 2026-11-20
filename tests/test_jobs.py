@@ -52,7 +52,7 @@ def test_describe_job_label_fallback_never_raises() -> None:
     assert len(describe_job_label("\x00\xff")) <= 60
 
 
-def test_banner_prefers_job_chips_over_count() -> None:
+def test_banner_shows_count_only_even_with_job_labels() -> None:
     usage = TurnUsage(prompt_tokens=0, cached_tokens=0)
     state = BannerState(
         model="m",
@@ -64,12 +64,12 @@ def test_banner_prefers_job_chips_over_count() -> None:
         bg_jobs=("Run pytest 2m", "git log 5s"),
     )
     line = format_banner_plain(state, width=140)[0]
-    assert "bg Run pytest 2m" in line
-    assert "bg git log 5s" in line
-    assert "bg 2" not in line
+    assert line.endswith("· bg x2")
+    assert "Run pytest" not in line
+    assert "git log" not in line
 
 
-def test_banner_falls_back_to_count_without_jobs() -> None:
+def test_banner_count_without_jobs() -> None:
     usage = TurnUsage(prompt_tokens=0, cached_tokens=0)
     state = BannerState(
         model="m",
@@ -81,7 +81,7 @@ def test_banner_falls_back_to_count_without_jobs() -> None:
         bg_jobs=(),
     )
     line = format_banner_plain(state, width=140)[0]
-    assert line.endswith("· bg 3")
+    assert line.endswith("· bg x3")
 
 
 def test_kernel_running_bash_jobs_roundtrip(tmp_path: Path) -> None:

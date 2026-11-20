@@ -34,7 +34,7 @@ from agent.loop import (
     drain_bash_events,
     format_bash_done_events,
 )
-from agent.models import PROVIDERS
+from agent.models import PROVIDERS, resolve_context_tokens
 from agent.prompt import build_system_prompt
 from agent.runtime import AgentRuntime
 from agent.session import Session
@@ -314,7 +314,6 @@ def _run_interactive(rt: AgentRuntime, resumed: bool) -> None:
 
 def _build_runtime(args: argparse.Namespace) -> tuple[AgentRuntime, bool]:
     cwd = args.cwd.resolve()
-    max_context_tokens, compact_reserve_tokens, keep_recent_tokens = _context_budget_from_env()
 
     kernel = KernelClient(cwd=cwd)
     kernel_err: list[BaseException] = []
@@ -331,6 +330,8 @@ def _build_runtime(args: argparse.Namespace) -> tuple[AgentRuntime, bool]:
         client, provider_name, model, effort = build_provider(
             provider=args.provider, model_override=args.model, effort_override=args.effort
         )
+        max_context_tokens = resolve_context_tokens(provider_name, model, client)
+        _, compact_reserve_tokens, keep_recent_tokens = _context_budget_from_env()
         system_prompt = build_system_prompt(cwd, headless=bool(args.prompt))
     except (CredentialError, EndpointConfigError) as exc:
         kernel_thread.join()
@@ -390,7 +391,7 @@ def _build_runtime(args: argparse.Namespace) -> tuple[AgentRuntime, bool]:
 
 
 def _context_budget_from_env() -> tuple[int, int, int]:
-    """Read (max_context_tokens, compact_reserve_tokens, keep_recent_tokens) from env."""
+    """Read compaction budget from env; context window is now per-model automatic."""
     def _env_int(name: str, default: int) -> int:
         raw = os.getenv(name)
         if raw is None or not raw.strip():
@@ -400,8 +401,10 @@ def _context_budget_from_env() -> tuple[int, int, int]:
         except ValueError:
             return default
 
+    # Context window is per-model automatic (see resolve_context_tokens);
+    # MAX_CONTEXT_TOKENS is intentionally ignored here.
     return (
-        _env_int("MAX_CONTEXT_TOKENS", 128_000),
+        0,
         _env_int("COMPACT_RESERVE_TOKENS", 16_384),
         _env_int("COMPACT_KEEP_RECENT_TOKENS", DEFAULT_KEEP_RECENT_TOKENS),
     )
@@ -496,12 +499,17 @@ def main() -> None:
     if args.acp:
         from agent.acp import ACPServer
 
-        max_context_tokens, compact_reserve_tokens, keep_recent_tokens = _context_budget_from_env()
-        server = ACPServer(
-            lambda: build_provider(
+        _, compact_reserve_tokens, keep_recent_tokens = _context_budget_from_env()
+
+        def _provider_with_resolved_context():
+            client, pname, model_name, effort_name = build_provider(
                 provider=args.provider, model_override=args.model, effort_override=args.effort
-            ),
-            max_context_tokens=max_context_tokens,
+            )
+            resolved = resolve_context_tokens(pname, model_name, client)
+            return client, pname, model_name, effort_name, resolved
+
+        server = ACPServer(
+            _provider_with_resolved_context,
             compact_reserve_tokens=compact_reserve_tokens,
             keep_recent_tokens=keep_recent_tokens,
         )
