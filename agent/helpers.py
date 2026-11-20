@@ -15,6 +15,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -329,6 +330,7 @@ def _load_helper_file(
     if not file_path.is_file():
         return
     mod_name = f"_quartz_helpers_{source}_{file_path.stem}"
+    mod = None
     try:
         spec = importlib.util.spec_from_file_location(mod_name, file_path)
         if spec is None or spec.loader is None:
@@ -341,8 +343,16 @@ def _load_helper_file(
         # Also pre-inject any already-registered custom functions from prior files
         for name, fn in target.functions.items():
             mod.__dict__.setdefault(name, fn)
+        # Register before executing, mirroring the import system. Decorators that
+        # resolve annotations through sys.modules (dataclass, NamedTuple, Enum)
+        # otherwise fail with "'NoneType' object has no attribute '__dict__'".
+        sys.modules[mod_name] = mod
         spec.loader.exec_module(mod)
     except Exception as exc:
+        # Like importlib._bootstrap._load: never leave a half-executed module
+        # registered, or a later load would find a broken entry.
+        if mod is not None and sys.modules.get(mod_name) is mod:
+            sys.modules.pop(mod_name, None)
         target.warnings.append(f"Failed to load helpers from {file_path}: {exc}")
         return
 
