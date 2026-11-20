@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from conftest import RecordingObserver
 
 from quartz.tui.commands import _cmd_compact
 from quartz.core.runtime import AgentRuntime as _CLIRuntime
@@ -337,7 +338,7 @@ def test_cmd_compact_resets_prompt_tokens_preventing_double_compact(tmp_path: Pa
         _cmd_compact(rt, "")
         assert rt.usage_stats.prompt_tokens < 16_000
 
-        compactions: list[Any] = []
+        observer = RecordingObserver()
         text, _, _ = agent_loop(
             client,
             "test-model",
@@ -348,10 +349,10 @@ def test_cmd_compact_resets_prompt_tokens_preventing_double_compact(tmp_path: Pa
             compact_reserve_tokens=4_000,
             keep_recent_tokens=2_000,
             initial_prompt_tokens=rt.usage_stats.prompt_tokens,
-            on_compaction=compactions.append,
+            observer=observer,
         )
         assert text == "Done."
-        assert compactions == []
+        assert observer.compactions == []
     finally:
         kernel.close()
 

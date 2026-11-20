@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 import pytest
+from conftest import RecordingObserver
 
 from quartz.core.compact import _find_safe_split_index, format_python_state_notice
 from quartz.kernel.client import KernelClient
@@ -271,7 +272,7 @@ def test_agent_loop_steering_queue(tmp_path: Path) -> None:
     from quartz.core.loop import agent_loop
 
     steering_q: queue.Queue[str] = queue.Queue()
-    seen_steering: list[str] = []
+    observer = RecordingObserver()
     calls = [0]
 
     from quartz.providers.base import CompletionResult, Usage
@@ -305,11 +306,11 @@ def test_agent_loop_steering_queue(tmp_path: Path) -> None:
             kernel,
             stream=False,
             steering_queue=steering_q,
-            on_steering=seen_steering.append,
+            observer=observer,
         )
         assert answer == "Checked bar as well"
         assert calls[0] == 2
-        assert seen_steering == ["Actually check bar too"]
+        assert observer.steering == ["Actually check bar too"]
         assert any(m.get("role") == "user" and m.get("content") == "Actually check bar too" for m in updated)
     finally:
         kernel.close()
@@ -577,7 +578,7 @@ def test_agent_loop_streaming_steering_preemption(tmp_path: Path) -> None:
     from quartz.providers.base import TextDelta
 
     steering_q: queue.Queue[str] = queue.Queue()
-    seen_steering: list[str] = []
+    observer = RecordingObserver()
     calls = [0]
     chunks_yielded = [0]
 
@@ -627,11 +628,11 @@ def test_agent_loop_streaming_steering_preemption(tmp_path: Path) -> None:
             kernel,
             stream=True,
             steering_queue=steering_q,
-            on_steering=seen_steering.append,
+            observer=observer,
         )
         assert answer == "Handled Y instead"
         assert calls[0] == 2
-        assert seen_steering == ["Stop and do Y instead"]
+        assert observer.steering == ["Stop and do Y instead"]
         assert chunks_yielded[0] < 10
         assert any(m.get("role") == "user" and m.get("content") == "Stop and do Y instead" for m in updated)
     finally:

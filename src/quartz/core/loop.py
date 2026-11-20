@@ -6,7 +6,6 @@ import dataclasses
 import json
 import queue
 import threading
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -17,6 +16,7 @@ from quartz.core.compact import (
     compact_messages,
     estimate_context_tokens,
 )
+from quartz.core.events import NO_OBSERVER, TurnObserver
 from quartz.errors import ContextOverflowError
 from quartz.kernel.client import CellResult, KernelClient
 from quartz.providers.base import (
@@ -205,10 +205,8 @@ def _call_model(
     full_messages: list[dict[str, Any]],
     *,
     stream: bool,
+    observer: TurnObserver = NO_OBSERVER,
     effort: str | None = None,
-    on_status: Callable[[str | None], None] | None,
-    on_text_delta: Callable[[str], None] | None,
-    on_thinking_delta: Callable[[str], None] | None = None,
     abort_event: threading.Event | None = None,
     steering_queue: queue.Queue[str] | None = None,
 ) -> tuple[dict[str, Any], Usage | None]:
@@ -217,8 +215,7 @@ def _call_model(
         raise TurnAborted()
 
     if not stream:
-        if on_status:
-            on_status("Thinking...")
+        observer.on_status("Thinking...")
         try:
             result = client.complete(
                 model=model,
@@ -227,14 +224,12 @@ def _call_model(
                 effort=effort,
             )
         finally:
-            if on_status:
-                on_status(None)
+            observer.on_status(None)
         if abort_event is not None and abort_event.is_set():
             raise TurnAborted()
         return _completion_to_dict(result), result.usage
 
-    if on_status:
-        on_status("Thinking...")
+    observer.on_status("Thinking...")
     stream_done = threading.Event()
     preempted = threading.Event()
     aborted_stream = threading.Event()
@@ -292,17 +287,14 @@ def _call_model(
                 elif isinstance(event, ThinkingDelta):
                     if event.text:
                         thinking_parts.append(event.text)
-                        if on_thinking_delta:
-                            on_thinking_delta(event.text)
+                        observer.on_thinking_delta(event.text)
                 elif isinstance(event, TextDelta):
                     if event.text:
                         if not status_cleared:
-                            if on_status:
-                                on_status(None)
+                            observer.on_status(None)
                             status_cleared = True
                         content_parts.append(event.text)
-                        if on_text_delta:
-                            on_text_delta(event.text)
+                        observer.on_text_delta(event.text)
                 elif isinstance(event, ToolCallDelta):
                     entry = tool_calls_acc.setdefault(
                         event.index,
@@ -323,8 +315,7 @@ def _call_model(
             raise
     finally:
         stream_done.set()
-        if on_status:
-            on_status(None)
+        observer.on_status(None)
 
     if preempted.is_set():
         tool_calls_acc.clear()
@@ -356,7 +347,7 @@ def _call_model(
 def _drain_steering(
     steering_queue: queue.Queue[str] | None,
     messages: list[dict[str, Any]],
-    on_steering: Callable[[str], None] | None = None,
+    observer: TurnObserver = NO_OBSERVER,
 ) -> list[str]:
     """Drain any mid-turn user steering messages and append them to `messages`."""
     if steering_queue is None:
@@ -371,8 +362,7 @@ def _drain_steering(
             continue
         messages.append({"role": "user", "content": text})
         injected.append(text)
-        if on_steering:
-            on_steering(text)
+        observer.on_steering(text)
     return injected
 
 
@@ -383,27 +373,23 @@ def agent_loop(
     messages: list[dict[str, Any]],
     kernel: KernelClient,
     *,
+    observer: TurnObserver = NO_OBSERVER,
     max_context_tokens: int = 128_000,
     compact_reserve_tokens: int = 16_384,
     keep_recent_tokens: int = DEFAULT_KEEP_RECENT_TOKENS,
     stream: bool = True,
-    on_tool_call: Callable[[str, str], None] | None = None,
-    on_tool_result: Callable[[str, CellResult], None] | None = None,
-    on_compaction: Callable[[CompactionResult], None] | None = None,
-    on_bash_notice: Callable[[str], None] | None = None,
-    on_status: Callable[[str | None], None] | None = None,
-    on_text_delta: Callable[[str], None] | None = None,
-    on_thinking_delta: Callable[[str], None] | None = None,
     usage_stats: TurnUsage | None = None,
     initial_prompt_tokens: int = 0,
     effort: str | None = None,
     abort_event: threading.Event | None = None,
     steering_queue: queue.Queue[str] | None = None,
-    on_steering: Callable[[str], None] | None = None,
 ) -> tuple[str, list[dict[str, Any]], int]:
     """Run one turn of the agent loop until the model stops calling tools.
 
-    Returns (final_text, updated_messages, last_prompt_tokens).
+    Every lifecycle event (streamed text, thinking, tool call/result, compaction,
+    background bash notices, steering) is reported to ``observer``; the default
+    observer ignores all of them. Returns (final_text, updated_messages,
+    last_prompt_tokens).
     """
     last_prompt_tokens = initial_prompt_tokens
     # Number of leading messages already covered by `last_prompt_tokens`.
@@ -430,8 +416,7 @@ def agent_loop(
         if result.changed:
             last_prompt_tokens = system_tokens + result.estimated_tokens_after
             measured_message_count = len(messages)
-            if on_compaction:
-                on_compaction(result)
+            observer.on_compaction(result)
         return result
 
     while True:
@@ -439,8 +424,8 @@ def agent_loop(
             raise TurnAborted()
 
         notice = drain_bash_events(kernel, messages)
-        if notice and on_bash_notice:
-            on_bash_notice(notice)
+        if notice:
+            observer.on_bash_notice(notice)
 
         if projected_prompt_tokens() >= compact_threshold and len(messages) > 1:
             run_compaction(budget=compact_threshold, keep_tokens=keep_recent_tokens)
@@ -452,10 +437,8 @@ def agent_loop(
                 model,
                 full_messages,
                 stream=stream,
+                observer=observer,
                 effort=effort,
-                on_status=on_status,
-                on_text_delta=on_text_delta,
-                on_thinking_delta=on_thinking_delta,
                 abort_event=abort_event,
                 steering_queue=steering_queue,
             )
@@ -482,14 +465,14 @@ def agent_loop(
         if (
             not tool_calls
             and assistant_dict.get("content") is None
-            and _drain_steering(steering_queue, messages, on_steering=on_steering)
+            and _drain_steering(steering_queue, messages, observer)
         ):
             continue
 
         messages.append(assistant_dict)
 
         if not tool_calls:
-            if _drain_steering(steering_queue, messages, on_steering=on_steering):
+            if _drain_steering(steering_queue, messages, observer):
                 continue
             return (assistant_dict.get("content") or "").strip(), messages, last_prompt_tokens
 
@@ -513,11 +496,9 @@ def agent_loop(
 
         if ipython_indices:
             for i in ipython_indices:
-                if on_tool_call:
-                    tc_id, _, code = parsed_calls[i]
-                    on_tool_call(tc_id, code or "")
-            if on_status:
-                on_status("Running ipython...")
+                tc_id, _, code = parsed_calls[i]
+                observer.on_tool_call(tc_id, code or "")
+            observer.on_status("Running ipython...")
             try:
                 if len(ipython_indices) > 1:
                     with ThreadPoolExecutor(max_workers=min(len(ipython_indices), 8)) as pool:
@@ -528,8 +509,7 @@ def agent_loop(
                     i = ipython_indices[0]
                     results_by_idx[i] = kernel.exec_cell(parsed_calls[i][2] or "")
             except (KeyboardInterrupt, TurnAborted) as exc:
-                if on_status:
-                    on_status(None)
+                observer.on_status(None)
                 kernel.interrupt()
                 marker = "[aborted by user]" if isinstance(exc, TurnAborted) else "[interrupted by user]"
                 for rem_tc in tool_calls:
@@ -542,8 +522,7 @@ def agent_loop(
                     )
                 raise
             finally:
-                if on_status:
-                    on_status(None)
+                observer.on_status(None)
 
         for i, (tc_id, fn_name, _) in enumerate(parsed_calls):
             if fn_name != "ipython":
@@ -558,8 +537,7 @@ def agent_loop(
             cell_res = results_by_idx[i]
             if cell_res.images:
                 step_images.extend(cell_res.images)
-            if on_tool_result:
-                on_tool_result(tc_id, cell_res)
+            observer.on_tool_result(tc_id, cell_res)
             messages.append(
                 {
                     "role": "tool",
@@ -587,4 +565,4 @@ def agent_loop(
 
         if abort_event is not None and abort_event.is_set():
             raise TurnAborted()
-        _drain_steering(steering_queue, messages, on_steering=on_steering)
+        _drain_steering(steering_queue, messages, observer)

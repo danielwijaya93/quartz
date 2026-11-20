@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from quartz.core.compact import DEFAULT_KEEP_RECENT_TOKENS
+from quartz.core.events import TurnObserver
 from quartz.core.images import content_to_text
 from quartz.kernel.client import CellResult, KernelClient
 from quartz.core.loop import TurnAborted, TurnUsage, agent_loop
@@ -92,6 +93,58 @@ def _image_content_blocks(images: list[dict[str, str]]) -> list[dict[str, Any]]:
         for img in images or []
         if img.get("data") and img.get("mime_type")
     ]
+
+
+class _AcpObserver(TurnObserver):
+    """Streams turn events to the ACP client as ``session/update`` notifications.
+
+    Only the events ACP renders today are implemented. ``on_status``,
+    ``on_thinking_delta``, ``on_compaction``, ``on_bash_notice`` and ``on_steering``
+    stay unimplemented on purpose: the ACP event mapping for thinking and
+    compaction is a tracked follow-up.
+    """
+
+    def __init__(self, server: ACPServer, session_id: str) -> None:
+        self._server = server
+        self._session_id = session_id
+        self._tc_map: dict[str, str] = {}
+
+    def on_text_delta(self, text: str) -> None:
+        self._server._send_update(
+            self._session_id,
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": text},
+            },
+        )
+
+    def on_tool_call(self, tool_call_id: str, code: str) -> None:
+        acp_tc_id = tool_call_id or f"tc_{uuid.uuid4().hex[:8]}"
+        self._tc_map[tool_call_id] = acp_tc_id
+        self._server._send_update(
+            self._session_id,
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": acp_tc_id,
+                "title": "ipython",
+                "kind": "execute",
+                "status": "in_progress",
+                "rawInput": {"code": code},
+            },
+        )
+
+    def on_tool_result(self, tool_call_id: str, cell: CellResult) -> None:
+        acp_tc_id = self._tc_map.pop(tool_call_id, tool_call_id or f"tc_{uuid.uuid4().hex[:8]}")
+        update: dict[str, Any] = {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": acp_tc_id,
+            "status": "completed" if cell.ok else "failed",
+            "rawOutput": cell.format_for_model(),
+        }
+        image_blocks = _image_content_blocks(cell.images)
+        if image_blocks:
+            update["content"] = image_blocks
+        self._server._send_update(self._session_id, update)
 
 
 class ACPServer:
@@ -293,44 +346,7 @@ class ACPServer:
             state.messages.append({"role": "user", "content": prompt_content})
 
             client, model, effort = self._ensure_client()
-            tc_map: dict[str, str] = {}
-
-            def _on_text_delta(chunk: str) -> None:
-                self._send_update(
-                    session_id,
-                    {
-                        "sessionUpdate": "agent_message_chunk",
-                        "content": {"type": "text", "text": chunk},
-                    },
-                )
-
-            def _on_tool_call(tc_id: str, code: str) -> None:
-                acp_tc_id = tc_id or f"tc_{uuid.uuid4().hex[:8]}"
-                tc_map[tc_id] = acp_tc_id
-                self._send_update(
-                    session_id,
-                    {
-                        "sessionUpdate": "tool_call",
-                        "toolCallId": acp_tc_id,
-                        "title": "ipython",
-                        "kind": "execute",
-                        "status": "in_progress",
-                        "rawInput": {"code": code},
-                    },
-                )
-
-            def _on_tool_result(tc_id: str, res: CellResult) -> None:
-                acp_tc_id = tc_map.pop(tc_id, tc_id or f"tc_{uuid.uuid4().hex[:8]}")
-                update: dict[str, Any] = {
-                    "sessionUpdate": "tool_call_update",
-                    "toolCallId": acp_tc_id,
-                    "status": "completed" if res.ok else "failed",
-                    "rawOutput": res.format_for_model(),
-                }
-                image_blocks = _image_content_blocks(res.images)
-                if image_blocks:
-                    update["content"] = image_blocks
-                self._send_update(session_id, update)
+            observer = _AcpObserver(self, session_id)
 
             try:
                 _, updated_msgs, _ = agent_loop(
@@ -342,9 +358,7 @@ class ACPServer:
                     max_context_tokens=self._max_context_tokens or 128_000,
                     compact_reserve_tokens=self._compact_reserve_tokens,
                     keep_recent_tokens=self._keep_recent_tokens,
-                    on_tool_call=_on_tool_call,
-                    on_tool_result=_on_tool_result,
-                    on_text_delta=_on_text_delta,
+                    observer=observer,
                     usage_stats=state.usage,
                     initial_prompt_tokens=state.usage.prompt_tokens,
                     effort=effort,
