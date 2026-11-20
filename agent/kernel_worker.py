@@ -183,6 +183,7 @@ class BashHandle:
         self.dropped_lines = 0
         self._partial = ""
         self._start_time = time.monotonic()
+        self._started_wall = time.time()
         self._result: BashResult | None = None
         self._awaited = False
         self._timed_out = False
@@ -408,7 +409,12 @@ class KernelWorker:
 
     def _send_bg_count(self) -> None:
         jobs = [
-            {"pid": h.pid, "command": h.command, "elapsed_s": max(0.0, time.monotonic() - h._start_time)}
+            {
+                "pid": h.pid,
+                "command": h.command,
+                "elapsed_s": max(0.0, time.monotonic() - h._start_time),
+                "started_at": h._started_wall,
+            }
             for h in self._handles
             if h.running
         ]

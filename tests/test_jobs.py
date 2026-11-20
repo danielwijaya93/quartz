@@ -88,9 +88,51 @@ def test_kernel_running_bash_jobs_roundtrip(tmp_path: Path) -> None:
         assert jobs[0]["command"] == "sleep 0.4 && echo jobs_ok"
         assert isinstance(jobs[0]["pid"], int)
         assert float(jobs[0]["elapsed_s"]) >= 0
+        # started_at stamp enables host-side recompute (frozen-elapsed fix)
+        assert isinstance(jobs[0].get("started_at"), float)
+        first_pid = jobs[0]["pid"]
+        first_elapsed = float(jobs[0]["elapsed_s"])
+        # Read again after a beat: same job, live (increasing) elapsed.
+        import time
+
+        time.sleep(0.15)
+        jobs2 = kernel.running_bash_jobs()
+        assert len(jobs2) == 1
+        assert jobs2[0]["pid"] == first_pid
+        assert float(jobs2[0]["elapsed_s"]) >= first_elapsed
+        assert float(jobs2[0]["elapsed_s"]) > 0  # was frozen at ~0 before the fix
         events = kernel.wait_for_events(timeout=3.0)
         assert events and events[0]["event"] == "bash_done"
         assert kernel.running_bash_count() == 0
+    finally:
+        kernel.close()
+
+
+def test_running_bash_jobs_fallback_without_started_at(tmp_path: Path) -> None:
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        # Simulate a legacy worker push: no started_at, only frozen elapsed_s.
+        kernel._running_bash_jobs = [
+            {"pid": 12345, "command": "sleep 9", "elapsed_s": 1.5}
+        ]
+        jobs = kernel.running_bash_jobs()
+        assert len(jobs) == 1
+        assert jobs[0]["pid"] == 12345
+        assert float(jobs[0]["elapsed_s"]) == 1.5  # fallback: stored value untouched
+        # And a job WITH started_at is recomputed (future started_at -> floored at 0).
+        import time
+
+        kernel._running_bash_jobs = [
+            {"pid": 12346, "command": "sleep 9", "elapsed_s": 99.0, "started_at": time.time() + 1000.0}
+        ]
+        jobs = kernel.running_bash_jobs()
+        assert float(jobs[0]["elapsed_s"]) == 0.0  # wall-clock jump guard
+        kernel._running_bash_jobs = [
+            {"pid": 12347, "command": "sleep 9", "elapsed_s": 0.0, "started_at": time.time() - 5.0}
+        ]
+        jobs = kernel.running_bash_jobs()
+        assert 4.5 <= float(jobs[0]["elapsed_s"]) <= 6.0
     finally:
         kernel.close()
 
