@@ -361,34 +361,73 @@ def test_tool_result_panel_keeps_literal_brackets(monkeypatch: pytest.MonkeyPatc
 
 
 def test_grouped_cell_summary_single_and_multi() -> None:
-    single, ok1 = ui.format_grouped_cell_summary(
+    single = ui.format_grouped_cell_summary(
         [(1, "x = 1", CellResult(True, "", "", None), 0.02)]
     )
-    assert ok1 is True
-    assert single == "· #1 · Run Python · no output · 0.02s"
+    assert [r.plain for r in single.renderables] == [
+        "· #1 · Run Python · no output · 0.02s"
+    ]
+    assert single.renderables[0].style == "dim"
 
-    multi, ok_multi = ui.format_grouped_cell_summary(
+    multi = ui.format_grouped_cell_summary(
         [
             (1, "a = 1", CellResult(True, "", "", None), 0.10),
             (2, "b = 2", CellResult(True, "2\n", "", None), 0.25),
             (3, "c = 3", CellResult(True, "3\n", "", None), 0.15),
         ]
     )
-    assert ok_multi is True
-    assert multi == "· #1..#3 · Run Python · 3 cells · 0.50s · /expand 1..3"
+    assert [r.plain for r in multi.renderables] == [
+        "  ✓ #1 · Run Python · 0.10s",
+        "  ✓ #2 · Run Python · 0.25s",
+        "  ✓ #3 · Run Python · 0.15s",
+        "  3 cells · 0.50s · /expand 1..3",
+    ]
+    assert all(r.style == "dim" for r in multi.renderables)
 
 
 def test_grouped_cell_summary_with_failure() -> None:
-    summary, ok = ui.format_grouped_cell_summary(
+    grouped = ui.format_grouped_cell_summary(
         [
             (1, "a = 1", CellResult(True, "", "", None), 0.10),
             (2, "1 / 0", CellResult(False, "", "ZeroDivisionError: division by zero", None), 0.05),
             (3, "b = 2", CellResult(True, "", "", None), 0.05),
         ]
     )
-    assert ok is False
-    assert "× #1..#3 · Run Python · 3 cells, 1 failed (last #2: ZeroDivisionError: division by zero) · 0.20s" in summary
-    assert "/expand 2" in summary
+    plains = [r.plain for r in grouped.renderables]
+    assert plains == [
+        "  ✓ #1 · Run Python · 0.10s",
+        "  ✗ #2 · Run Python · 0.05s · ZeroDivisionError: division by zero",
+        "  ✓ #3 · Run Python · 0.05s",
+        "  2 ok · 1 failed · 0.20s · /expand 2",
+    ]
+    # Only the failed line is red; ok lines and count stay dim.
+    assert grouped.renderables[0].style == "dim"
+    assert grouped.renderables[1].style == "red"
+    assert grouped.renderables[2].style == "dim"
+    assert grouped.renderables[3].style == "dim"
+    assert "/expand 2" in plains[-1]
+
+
+def test_grouped_cell_summary_two_failures_expand_first() -> None:
+    grouped = ui.format_grouped_cell_summary(
+        [
+            (1, "a = 1", CellResult(True, "", "", None), 0.10),
+            (2, "1 / 0", CellResult(False, "", "ZeroDivisionError: division by zero", None), 0.05),
+            (3, "b = 2", CellResult(True, "", "", None), 0.05),
+            (4, "1 / 0", CellResult(False, "", "ValueError: bad", None), 0.04),
+            (5, "c = 3", CellResult(True, "", "", None), 0.06),
+        ]
+    )
+    plains = [r.plain for r in grouped.renderables]
+    assert plains == [
+        "  ✓ #1 · Run Python · 0.10s",
+        "  ✗ #2 · Run Python · 0.05s · ZeroDivisionError: division by zero",
+        "  ✓ #3 · Run Python · 0.05s",
+        "  ✗ #4 · Run Python · 0.04s · ValueError: bad",
+        "  ✓ #5 · Run Python · 0.06s",
+        "  3 ok · 2 failed · 0.30s · /expand 2",
+    ]
+    assert [r.style for r in grouped.renderables] == ["dim", "red", "dim", "red", "dim", "dim"]
 
 
 def test_cell_group_buffer_flushes_once_per_run(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -403,7 +442,12 @@ def test_cell_group_buffer_flushes_once_per_run(monkeypatch: pytest.MonkeyPatch)
     cli.printer.markdown("Done.")
 
     assert _visible_lines(buf.getvalue()) == [
-        "· #1..#5 · Run Python · 5 cells · 0.50s · /expand 1..5",
+        "  ✓ #1 · Run Python · 0.10s",
+        "  ✓ #2 · Run Python · 0.10s",
+        "  ✓ #3 · Run Python · 0.10s",
+        "  ✓ #4 · Run Python · 0.10s",
+        "  ✓ #5 · Run Python · 0.10s",
+        "  5 cells · 0.50s · /expand 1..5",
         "",
         "Done.",
     ]
@@ -421,11 +465,23 @@ def test_cell_group_buffer_chunking_every_five(monkeypatch: pytest.MonkeyPatch) 
 
     lines = _visible_lines(buf.getvalue())
     assert lines == [
-        "· #1..#5 · Run Python · 5 cells · 0.50s · /expand 1..5",
+        "  ✓ #1 · Run Python · 0.10s",
+        "  ✓ #2 · Run Python · 0.10s",
+        "  ✓ #3 · Run Python · 0.10s",
+        "  ✓ #4 · Run Python · 0.10s",
+        "  ✓ #5 · Run Python · 0.10s",
+        "  5 cells · 0.50s · /expand 1..5",
         "",
-        "· #6..#10 · Run Python · 5 cells · 0.50s · /expand 6..10",
+        "  ✓ #6 · Run Python · 0.10s",
+        "  ✓ #7 · Run Python · 0.10s",
+        "  ✓ #8 · Run Python · 0.10s",
+        "  ✓ #9 · Run Python · 0.10s",
+        "  ✓ #10 · Run Python · 0.10s",
+        "  5 cells · 0.50s · /expand 6..10",
         "",
-        "· #11..#12 · Run Python · 2 cells · 0.20s · /expand 11..12",
+        "  ✓ #11 · Run Python · 0.10s",
+        "  ✓ #12 · Run Python · 0.10s",
+        "  2 cells · 0.20s · /expand 11..12",
     ]
 
 
@@ -648,10 +704,11 @@ def test_run_turn_thought_line_separate_from_grouped_cells(
     cli._run_turn(rt)
 
     lines = [ln.strip() for ln in buf.getvalue().splitlines() if ln.strip()]
-    assert len(lines) == 3
     assert lines[0].startswith("Thought for ")
-    assert lines[1].startswith("· #1..#2 · ")
-    assert lines[2] == "All done."
+    assert lines[1].startswith("✓ #1 · Run Python · ")
+    assert lines[2].startswith("✓ #2 · Run Python · ")
+    assert lines[3].endswith("· /expand 1..2")
+    assert lines[4] == "All done."
 
 
 def test_run_turn_matches_out_of_order_tool_call_ids(
@@ -748,9 +805,11 @@ def test_turn_progress_tracker_in_progress_and_collapsing() -> None:
 
     raw_lines = buf.getvalue().splitlines()
     assert raw_lines[0].startswith("Thought for ")
-    assert raw_lines[1].startswith("· #1..#2 · Read and Edit files · 2 cells")
-    assert raw_lines[2] == ""
-    assert raw_lines[3].startswith("Final answer text.")
+    assert raw_lines[1] == "  ✓ #1 · Read files · 0.05s"
+    assert raw_lines[2] == "  ✓ #2 · Edit files · 0.04s"
+    assert raw_lines[3] == "  2 cells · 0.09s · /expand 1..2"
+    assert raw_lines[4] == ""
+    assert raw_lines[5].startswith("Final answer text.")
 
 
 def test_turn_progress_tracker_conversational_no_tools() -> None:
@@ -808,24 +867,25 @@ def test_turn_progress_tracker_chunking_every_five() -> None:
         elif i == 5:
             # Chunk 1 (#1..#5) must have auto-flushed
             assert len(tracker.tool_entries) == 0
-            assert "· #1..#5 · Run Python · 5 cells" in buf.getvalue()
+            assert "  5 cells · 0.25s · /expand 1..5" in buf.getvalue()
+            assert "  ✓ #1 · Run Python" in buf.getvalue()
         elif 6 <= i < 10:
             assert len(tracker.tool_entries) == i - 5
         elif i == 10:
             # Chunk 2 (#6..#10) must have auto-flushed
             assert len(tracker.tool_entries) == 0
-            assert "· #6..#10 · Run Python · 5 cells" in buf.getvalue()
+            assert "  5 cells · 0.25s · /expand 6..10" in buf.getvalue()
         elif i > 10:
             assert len(tracker.tool_entries) == i - 10
 
     # Before end-of-turn flush, chunk 3 (#11..#12) is still buffered
     assert len(tracker.tool_entries) == 2
-    assert "· #11..#12" not in buf.getvalue()
+    assert "#11" not in buf.getvalue()
 
     # Flush remaining chunk at end of turn
     tracker.flush()
     assert len(tracker.tool_entries) == 0
-    assert "· #11..#12 · Run Python · 2 cells" in buf.getvalue()
+    assert "  2 cells · 0.10s · /expand 11..12" in buf.getvalue()
 
     # Repeated flush should do nothing (no duplicate blocks)
     curr_len = len(buf.getvalue())
@@ -835,12 +895,16 @@ def test_turn_progress_tracker_chunking_every_five() -> None:
     # Verify order of blocks
     lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
     thought_lines = [ln for ln in lines if ln.startswith("Thought for ")]
-    cell_lines = [ln for ln in lines if ln.startswith("· #")]
+    cell_lines = [ln for ln in lines if ln.strip().startswith("✓ #")]
+    count_lines = [ln for ln in lines if "/expand" in ln]
     assert len(thought_lines) == 3
-    assert len(cell_lines) == 3
-    assert cell_lines[0].startswith("· #1..#5")
-    assert cell_lines[1].startswith("· #6..#10")
-    assert cell_lines[2].startswith("· #11..#12")
+    assert len(cell_lines) == 12
+    assert len(count_lines) == 3
+    assert cell_lines[0].endswith("#1 · Run Python · 0.05s")
+    assert cell_lines[-1].endswith("#12 · Run Python · 0.05s")
+    assert count_lines[0].endswith("/expand 1..5")
+    assert count_lines[1].endswith("/expand 6..10")
+    assert count_lines[2].endswith("/expand 11..12")
 
 
 def test_turn_progress_tracker_interactive_steering() -> None:
