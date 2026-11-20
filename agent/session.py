@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import shutil
 import uuid
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -171,17 +173,23 @@ class Session:
             raw_line = raw_line.strip()
             if not raw_line:
                 continue
-            record = json.loads(raw_line)
+            try:
+                record = json.loads(raw_line)
+            except json.JSONDecodeError as exc:
+                warnings.warn(f"Skipping corrupt JSONL line in {session.jsonl_path}: {exc}", stacklevel=2)
+                continue
+            if not isinstance(record, dict):
+                continue
             rec_type = record.get("type")
-            if rec_type == "message":
+            if rec_type == "message" and isinstance(record.get("message"), dict):
                 messages.append(record["message"])
-            elif rec_type == "compaction":
+            elif rec_type == "compaction" and isinstance(record.get("messages"), list):
                 messages = list(record["messages"])
             elif rec_type == "usage" and isinstance(record.get("usage"), dict):
                 session.last_usage = {k: int(v) for k, v in record["usage"].items()}
 
         session._persisted_count = len(messages)
-        session._persisted_refs = [dict(m) for m in messages]
+        session._persisted_refs = [copy.deepcopy(m) for m in messages]
         return session, messages
 
     @classmethod
@@ -194,7 +202,7 @@ class Session:
             forked._ensure_meta_written()
             forked._append_record({"type": "compaction", "messages": messages})
             forked._persisted_count = len(messages)
-            forked._persisted_refs = [dict(m) for m in messages]
+            forked._persisted_refs = [copy.deepcopy(m) for m in messages]
         if src.last_usage:
             forked.save_usage(src.last_usage)
         if src.snapshot_dir.is_dir():
@@ -221,7 +229,7 @@ class Session:
         if compacted or prefix_changed:
             self._append_record({"type": "compaction", "messages": messages})
             self._persisted_count = len(messages)
-            self._persisted_refs = [dict(m) for m in messages]
+            self._persisted_refs = [copy.deepcopy(m) for m in messages]
             return
 
         new_msgs = messages[self._persisted_count :]
@@ -233,7 +241,7 @@ class Session:
             with self.jsonl_path.open("a", encoding="utf-8") as f:
                 f.write(lines)
         self._persisted_count = len(messages)
-        self._persisted_refs = [dict(m) for m in messages]
+        self._persisted_refs = [copy.deepcopy(m) for m in messages]
 
     def save_usage(self, usage: dict[str, int]) -> None:
         self._ensure_meta_written()

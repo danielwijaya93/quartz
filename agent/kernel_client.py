@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+from collections import deque
 import dataclasses
 import json
 import os
@@ -52,6 +53,9 @@ class KernelClient:
         self._ready_event = threading.Event()
         self._worker_exited = False
         self._reader_thread: threading.Thread | None = None
+        self._stderr_thread: threading.Thread | None = None
+        self._stderr_tail: deque[str] = deque(maxlen=200)
+        self._running_bash_count: int = 0
         self._atexit_registered = False
         self.dirty = False
 
@@ -61,6 +65,8 @@ class KernelClient:
 
         self._ready_event.clear()
         self._worker_exited = False
+        self._running_bash_count = 0
+        self._stderr_tail.clear()
         env = os.environ.copy()
         # Ensure the package root is importable even if cwd differs
         repo_root = str(Path(__file__).resolve().parent.parent)
@@ -81,19 +87,28 @@ class KernelClient:
         )
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._reader_thread.start()
+        if self._proc.stderr is not None:
+            self._stderr_thread = threading.Thread(
+                target=self._read_stderr_loop,
+                args=(self._proc.stderr,),
+                daemon=True,
+            )
+            self._stderr_thread.start()
         if not self._atexit_registered:
             atexit.register(self.close)
             self._atexit_registered = True
 
         if not self._ready_event.wait(timeout=timeout) or self._worker_exited or self._proc.poll() is not None:
-            stderr_out = ""
-            if self._proc and self._proc.stderr:
-                try:
-                    stderr_out = self._proc.stderr.read()
-                except Exception:
-                    pass
             self.close()
+            stderr_out = "".join(self._stderr_tail)
             raise RuntimeError(f"Python kernel failed to start within {timeout}s. {stderr_out}")
+
+    def _read_stderr_loop(self, stderr_pipe: Any) -> None:
+        try:
+            for line in stderr_pipe:
+                self._stderr_tail.append(line)
+        except Exception:
+            pass
 
     def _read_loop(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
@@ -109,6 +124,8 @@ class KernelClient:
             msg_type = msg.get("type")
             if msg_type == "ready":
                 self._ready_event.set()
+            elif msg_type == "bg_count":
+                self._running_bash_count = int(msg.get("count", 0))
             elif msg_type == "event":
                 with self._events_cond:
                     self._events.append(msg)
@@ -123,6 +140,7 @@ class KernelClient:
 
         # Unblock any waiters if the worker exited unexpectedly
         self._worker_exited = True
+        self._running_bash_count = 0
         self._ready_event.set()
         with self._events_cond:
             self._events_cond.notify_all()
@@ -149,12 +167,14 @@ class KernelClient:
             try:
                 return q.get(timeout=timeout)
             except queue.Empty:
-                self.interrupt()
-                # Give the interrupted cell a moment to return its KeyboardInterrupt result
-                try:
-                    return q.get(timeout=3.0)
-                except queue.Empty:
-                    raise TimeoutError(f"Kernel request timed out after {timeout}s")
+                if payload.get("type") == "exec":
+                    self.interrupt()
+                    # Give the interrupted cell a moment to return its KeyboardInterrupt result
+                    try:
+                        return q.get(timeout=3.0)
+                    except queue.Empty:
+                        pass
+                raise TimeoutError(f"Kernel request timed out after {timeout}s")
         finally:
             with self._pending_lock:
                 self._pending.pop(req_id, None)
@@ -204,10 +224,10 @@ class KernelClient:
         }
 
     def running_bash_count(self, timeout: float = 5.0) -> int:
+        del timeout
         if self._proc is None or self._proc.poll() is not None:
             return 0
-        resp = self._request({"type": "running_bash"}, timeout=timeout)
-        return int(resp.get("count", 0))
+        return self._running_bash_count
 
     def has_pending_events(self) -> bool:
         with self._events_cond:
@@ -247,6 +267,7 @@ class KernelClient:
     def close(self) -> None:
         proc = self._proc
         self._proc = None
+        self._running_bash_count = 0
         self.dirty = False
         if proc is None:
             return
@@ -277,6 +298,9 @@ class KernelClient:
                     proc.wait(timeout=1.0)
                 except Exception:
                     pass
+        if self._stderr_thread is not None:
+            self._stderr_thread.join(timeout=0.5)
+            self._stderr_thread = None
 
     def restart(self) -> None:
         self.close()

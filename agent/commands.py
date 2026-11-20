@@ -18,7 +18,7 @@ from rich.text import Text
 if TYPE_CHECKING:
     from agent.openai_client import OpenAICompatClient
 
-from agent.compact import compact_messages
+from agent.compact import compact_messages, estimate_context_tokens, estimate_text_tokens
 from agent.google_auth import (
     auth_file_path,
     delete_google_credentials,
@@ -149,12 +149,12 @@ def _build_client(
             chosen_provider = "google"
         elif any(p in PROVIDERS and p != "google" for p in logged_in):
             chosen_provider = next(p for p in PROVIDERS if p != "google" and p in logged_in)
-        elif api_key_env:
-            chosen_provider = "deepseek"
-        elif os.getenv("OPENROUTER_API_KEY"):
-            chosen_provider = "openrouter"
         elif os.getenv("DEEPSEEK_API_KEY"):
             chosen_provider = "deepseek"
+        elif api_key_env:
+            chosen_provider = "openai"
+        elif os.getenv("OPENROUTER_API_KEY"):
+            chosen_provider = "openrouter"
         elif has_google:
             chosen_provider = "google"
         else:
@@ -886,6 +886,7 @@ def _cmd_compact(rt: _CLIRuntime, arg: str) -> bool | None:
     if not result.changed:
         console.print("[dim]Nothing to compact yet.[/dim]")
         return False
+    rt.usage_stats.prompt_tokens = estimate_context_tokens(result.messages) + estimate_text_tokens(rt.system_prompt)
     rt.persist(compacted=True)
     _render_compaction(result)
     console.print(f"[dim]Context is now ~{result.estimated_tokens_after:,} tokens.[/dim]")

@@ -213,6 +213,8 @@ def _call_model(
     if on_status:
         on_status("Thinking...")
     stream_done = threading.Event()
+    preempted = threading.Event()
+    aborted_stream = threading.Event()
     try:
         try:
             stream_resp = client.chat.completions.create(
@@ -243,6 +245,7 @@ def _call_model(
             def _watch_preempt() -> None:
                 while not stream_done.is_set():
                     if abort_event is not None and abort_event.is_set():
+                        aborted_stream.set()
                         try:
                             close_fn = getattr(stream_resp, "close", None)
                             if callable(close_fn):
@@ -251,6 +254,7 @@ def _call_model(
                             pass
                         return
                     if steering_queue is not None and not steering_queue.empty():
+                        preempted.set()
                         try:
                             close_fn = getattr(stream_resp, "close", None)
                             if callable(close_fn):
@@ -270,8 +274,10 @@ def _call_model(
 
         for chunk in stream_resp:
             if abort_event is not None and abort_event.is_set():
+                aborted_stream.set()
                 raise TurnAborted()
             if steering_queue is not None and not steering_queue.empty():
+                preempted.set()
                 try:
                     close_fn = getattr(stream_resp, "close", None)
                     if callable(close_fn):
@@ -313,17 +319,18 @@ def _call_model(
                     if getattr(fn, "arguments", None):
                         entry["arguments"] += fn.arguments
     except Exception:
-        if abort_event is not None and abort_event.is_set():
+        if aborted_stream.is_set() or (abort_event is not None and abort_event.is_set()):
             raise TurnAborted()
-        if steering_queue is None or steering_queue.empty():
+        if not preempted.is_set():
             raise
     finally:
         stream_done.set()
         if on_status:
             on_status(None)
 
-    if steering_queue is not None and not steering_queue.empty():
+    if preempted.is_set():
         tool_calls_acc.clear()
+        content_parts.clear()
 
     assistant_dict: dict[str, Any] = {
         "role": "assistant",
