@@ -25,6 +25,91 @@ from agent.provider import (
 from agent.provider_config import resolve_http_timeout
 
 
+@dataclasses.dataclass
+class ModelDetails:
+    """Per-model capability metadata discovered from a provider's /models endpoint.
+
+    Unknown fields stay ``None`` so callers can fall back to static provider
+    presets without guessing.
+    """
+
+    id: str
+    supported_efforts: list[str] | None = None
+    default_effort: str | None = None
+    reasoning_param_supported: bool | None = None
+    reasoning_effort_param_supported: bool | None = None
+
+
+def _string_list(value: Any) -> list[str] | None:
+    """Return a cleaned list of non-empty strings, or None when unusable/empty."""
+    if not isinstance(value, (list, tuple)):
+        return None
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+    return out or None
+
+
+def parse_model_detail(raw: Any) -> ModelDetails | None:
+    """Parse one /models entry into ModelDetails across known provider shapes.
+
+    Shapes handled:
+      * OpenRouter: ``reasoning: {supported_efforts, default_effort}`` plus
+        ``supported_parameters`` (which reasoning keys the model accepts).
+      * DeepSeek: ``effort: {supported_levels, default_level}``.
+    Unknown shapes keep the ``None`` fields.
+    """
+    if not isinstance(raw, dict):
+        return None
+    model_id = raw.get("id")
+    if not isinstance(model_id, str) or not model_id.strip():
+        return None
+    details = ModelDetails(id=model_id.strip())
+
+    reasoning = raw.get("reasoning")
+    if isinstance(reasoning, dict):
+        details.supported_efforts = _string_list(reasoning.get("supported_efforts"))
+        default_effort = reasoning.get("default_effort")
+        if isinstance(default_effort, str) and default_effort.strip():
+            details.default_effort = default_effort.strip()
+
+    if details.supported_efforts is None:
+        effort_meta = raw.get("effort")
+        if isinstance(effort_meta, dict):
+            details.supported_efforts = _string_list(effort_meta.get("supported_levels"))
+            default_level = effort_meta.get("default_level")
+            if isinstance(default_level, str) and default_level.strip():
+                details.default_effort = default_level.strip()
+
+    params = _string_list(raw.get("supported_parameters"))
+    if params is not None:
+        details.reasoning_param_supported = "reasoning" in params
+        details.reasoning_effort_param_supported = "reasoning_effort" in params
+
+    return details
+
+
+def parse_model_details(items: Any) -> list[ModelDetails]:
+    """Parse a /models payload list into ModelDetails, skipping unusable entries."""
+    if not isinstance(items, (list, tuple)):
+        return []
+    out: list[ModelDetails] = []
+    seen: set[str] = set()
+    for item in items:
+        details = parse_model_detail(item)
+        if details is None or details.id in seen:
+            continue
+        seen.add(details.id)
+        out.append(details)
+    return out
+
+
 def _parse_usage(raw: Any) -> Usage | None:
     if not isinstance(raw, dict):
         return None
@@ -266,7 +351,7 @@ class OpenAIProvider:
                 )
         return CompletionResult(text=text, tool_calls=tool_calls, usage=usage)
 
-    def list_models(self) -> list[str]:
+    def _fetch_raw_models(self) -> list[Any]:
         url = f"{self.base_url}/models"
         resp = self._http.get(url, headers=self._headers())
         if resp.status_code >= 400:
@@ -278,11 +363,19 @@ class OpenAIProvider:
             )
         payload = resp.json()
         raw_data = payload.get("data") if isinstance(payload, dict) else payload
-        return [
-            str(item["id"])
-            for item in (raw_data or [])
-            if isinstance(item, dict) and item.get("id")
-        ]
+        return list(raw_data) if isinstance(raw_data, list) else []
+
+    def list_models(self) -> list[str]:
+        return [details.id for details in self.list_model_details()]
+
+    def list_model_details(self, raw: list[Any] | None = None) -> list[ModelDetails]:
+        """Return per-model capability metadata (effort levels, reasoning params).
+
+        ``raw`` accepts an already-fetched /models payload for offline parsing;
+        when omitted the endpoint is queried.
+        """
+        items = self._fetch_raw_models() if raw is None else raw
+        return parse_model_details(items)
 
     def close(self) -> None:
         self._http.close()

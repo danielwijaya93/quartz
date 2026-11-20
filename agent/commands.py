@@ -208,11 +208,19 @@ def _cmd_model(rt: AgentRuntime, arg: str) -> bool | None:
     else:
         picked_model = models[0]
 
-    effort_opts = [(e, e) for e in pspec.efforts]
+    from agent.models import policy_efforts, resolve_effort
+
+    effort_choices = policy_efforts(picked_provider, picked_model) or list(pspec.efforts)
+    effort_opts = [(e, e) for e in effort_choices]
+    default_effort = (
+        rt.effort
+        if picked_provider == rt.provider_name
+        else resolve_effort(picked_provider, picked_model)
+    )
     picked_effort = _pick_option(
         f"Reasoning Effort ({picked_model})",
         effort_opts,
-        current=rt.effort if picked_provider == rt.provider_name else pspec.default_effort,
+        current=default_effort,
     )
     if not picked_effort:
         console.print("[dim]Cancelled.[/dim]")

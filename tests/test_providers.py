@@ -81,6 +81,9 @@ def test_build_client_uses_stored_openrouter_auth(tmp_path: Path, monkeypatch) -
     monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(cfg_path))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("MODEL", raising=False)
+    # Keep this test hermetic: without the kill switch it would call the real
+    # OpenRouter /models endpoint to discover per-model effort levels.
+    monkeypatch.setenv("QUARTZ_EFFORT_DISCOVERY", "0")
 
     save_provider_auth("openrouter", "sk-or-v1-test", "https://openrouter.ai/api/v1")
 

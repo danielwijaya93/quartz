@@ -5,6 +5,8 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import sys
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -180,6 +182,138 @@ def discover_models(
         return fallback, "Provider returned an empty model list"
     discovered.sort()
     return discovered, None
+
+
+# ---------------------------------------------------------------------------
+# Per-model reasoning-effort discovery
+# ---------------------------------------------------------------------------
+# ProviderSpec.efforts is only a static fallback: providers expose the real
+# levels per model. OpenRouter returns
+#   reasoning: {supported_efforts: [...], default_effort: "..."}
+# and DeepSeek returns
+#   effort: {supported_levels: [...], default_level: "..."}
+# in GET /models. We parse both shapes and cache the result per (provider, model).
+
+_EFFORT_CACHE: dict[tuple[str, str], "tuple[list[str] | None, str | None]"] = {}
+_EFFORT_CACHE_LOCK = threading.Lock()
+
+
+def clear_effort_cache() -> None:
+    """Drop cached effort metadata (tests and `/model` re-discovery)."""
+    with _EFFORT_CACHE_LOCK:
+        _EFFORT_CACHE.clear()
+
+
+def _effort_discovery_enabled() -> bool:
+    """Honour ``QUARTZ_EFFORT_DISCOVERY`` (default on) for offline/air-gapped runs."""
+    raw = os.getenv("QUARTZ_EFFORT_DISCOVERY")
+    if raw is None:
+        return True
+    return raw.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+def discover_model_efforts(
+    provider: str,
+    model: str,
+    *,
+    timeout_s: float = 3.0,
+    use_cache: bool = True,
+) -> tuple[list[str] | None, str | None]:
+    """Return (supported_levels, default_level) for one model, or (None, None).
+
+    Best effort: network failures, timeouts and missing credentials are
+    swallowed so callers always fall back to static presets.
+    """
+    key = (provider, model)
+    if use_cache:
+        with _EFFORT_CACHE_LOCK:
+            hit = _EFFORT_CACHE.get(key)
+        if hit is not None:
+            return hit
+
+    if not _effort_discovery_enabled():
+        return (None, None)
+
+    spec = PROVIDERS.get(provider)
+    result: tuple[list[str] | None, str | None] = (None, None)
+    if spec is not None and spec.backend == "openai":
+        api_key, base_url, _ = resolve_provider_credentials(provider)
+        if api_key:
+            from agent.openai_client import OpenAIProvider
+
+            client: Any = None
+            try:
+                client = OpenAIProvider(api_key=api_key, base_url=base_url, timeout=timeout_s)
+                for details in client.list_model_details():
+                    if details.id != model:
+                        continue
+                    result = (details.supported_efforts, details.default_effort)
+                    break
+            except Exception:
+                result = (None, None)
+            finally:
+                if client is not None:
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+
+    if use_cache:
+        with _EFFORT_CACHE_LOCK:
+            _EFFORT_CACHE[key] = result
+    return result
+
+
+def discovered_efforts(provider: str, model: str) -> list[str] | None:
+    """Return the discovered effort levels for a model, or None when unknown."""
+    levels, _ = discover_model_efforts(provider, model)
+    return levels
+
+
+def policy_efforts(provider: str, model: str) -> list[str]:
+    """Effort choices to present in pickers: discovered levels, else static preset."""
+    levels = discovered_efforts(provider, model)
+    if levels:
+        return list(levels)
+    spec = PROVIDERS.get(provider)
+    return list(spec.efforts) if spec else []
+
+
+def resolve_effort(
+    provider: str,
+    model: str,
+    *,
+    override: str | None = None,
+    override_source: str = "cli",
+    use_cache: bool = True,
+) -> str:
+    """Resolve the reasoning effort for (provider, model).
+
+    Order: validated explicit override -> discovered default -> first discovered
+    level -> static provider default. An unrecognised override warns once and
+    falls back instead of sending a level the model would reject.
+    """
+    spec = PROVIDERS.get(provider)
+    static_default = spec.default_effort if spec else ""
+    levels, discovered_default = discover_model_efforts(
+        provider, model, use_cache=use_cache
+    )
+
+    fallback = discovered_default or (levels[0] if levels else static_default)
+
+    requested = (override or "").strip()
+    if requested:
+        if levels and requested not in levels:
+            print(
+                f"[quartz] effort '{requested}' ({override_source}) is not supported by "
+                f"{provider}/{model}; supported: {', '.join(levels)}. "
+                f"Falling back to '{fallback}'.",
+                file=sys.stderr,
+            )
+        else:
+            return requested
+
+    return fallback
 
 
 def config_file_path() -> Path:
