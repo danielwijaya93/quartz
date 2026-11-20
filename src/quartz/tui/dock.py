@@ -7,7 +7,6 @@ import queue
 import shutil
 import sys
 import threading
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -708,9 +707,9 @@ class InteractiveDock:
         self._execute_dock_turn()
 
     def _execute_dock_turn(self) -> None:
-        from quartz.cli.app import _run_turn
-        from quartz.core.loop import TurnAborted
+        from quartz.core.turn import TurnStatus, run_interactive_turn
         from quartz.tui.render import TurnProgressTracker, console
+        from quartz.tui.turn_view import make_turn_view
 
         active_printer = _active_printer()
         active_console = console
@@ -745,31 +744,25 @@ class InteractiveDock:
             preview = msg[:60] + ("..." if len(msg) > 60 else "")
             active_printer.block(Text(f"[steering] {preview}", style="cyan"))
 
-        t0 = time.monotonic()
         try:
-            _, self.rt.messages, _ = _run_turn(
+            view = make_turn_view(self.rt, tracker=tracker, on_steering=_on_steering)
+            outcome = run_interactive_turn(
                 self.rt,
-                tracker=tracker,
+                view,
                 abort_event=self._abort_event,
                 steering_queue=self._steering_queue,
-                on_steering=_on_steering,
             )
-        except TurnAborted:
-            self.rt.kernel.interrupt()
-            self.rt.persist()
-            active_printer.block(Text("Aborted (Esc).", style="yellow"))
-        except KeyboardInterrupt:
-            self.rt.kernel.interrupt()
-            active_printer.block(Text("Interrupted.", style="yellow"))
-        except Exception as exc:
-            active_printer.block(Text(f"Error: {exc}", style="red"))
-        else:
-            turn_elapsed = time.monotonic() - t0
-            self.rt.total_elapsed_s += turn_elapsed
-            self.rt.turn_count += 1
-            self.rt.persist()
-            timing = _format_turn_timing(turn_elapsed, self.rt.total_elapsed_s, self.rt.turn_count)
-            active_printer.block(Text(timing, style="dim"))
+            if outcome.status is TurnStatus.ABORTED:
+                active_printer.block(Text("Aborted (Esc).", style="yellow"))
+            elif outcome.status is TurnStatus.INTERRUPTED:
+                active_printer.block(Text("Interrupted.", style="yellow"))
+            elif outcome.status is TurnStatus.ERROR:
+                active_printer.block(Text(f"Error: {outcome.error}", style="red"))
+            else:
+                timing = _format_turn_timing(
+                    outcome.elapsed_s, self.rt.total_elapsed_s, self.rt.turn_count
+                )
+                active_printer.block(Text(timing, style="dim"))
         finally:
             tracker.close()
             with self._lock:

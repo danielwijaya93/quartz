@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from quartz.cli.subcommands import build_provider as _build_client
+from quartz.providers.selection import build_provider as _build_client
 from quartz.errors import ProviderError
 from quartz.auth.google import (
     GoogleCredentials,

@@ -327,13 +327,13 @@ def test_render_compaction_distinguishes_summary_from_clearing(monkeypatch: Any)
 
     from rich.console import Console
 
-    import quartz.cli.app as cli
+    import quartz.tui.render as ui
     from quartz.core.compact import CompactionReason, CompactionResult
     from quartz.tui.render import BlockPrinter, _render_compaction
 
     buf = io.StringIO()
     test_console = Console(file=buf, force_terminal=False, width=200, color_system=None)
-    monkeypatch.setattr(cli, "printer", BlockPrinter(test_console))
+    monkeypatch.setattr(ui, "printer", BlockPrinter(test_console))
 
     _render_compaction(
         CompactionResult(

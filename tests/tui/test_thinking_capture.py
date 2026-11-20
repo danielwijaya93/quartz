@@ -190,18 +190,17 @@ def test_replay_ignores_reasoning_without_crashing() -> None:
 
     from rich.console import Console
 
-    import quartz.cli.app as cli
+    import quartz.tui.render as ui
     from quartz.tui.render import BlockPrinter
     from quartz.tui.replay import _replay_session
 
     buf = io.StringIO()
     test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
     test_printer = BlockPrinter(test_console)
-    import quartz.tui.render as ui
 
-    # _active_printer resolves via agent.cli.printer; patch it.
-    old = cli.printer
-    cli.printer = test_printer  # type: ignore[assignment]
+    # _active_printer reads tui.render.printer; patch it.
+    old = ui.printer
+    ui.printer = test_printer  # type: ignore[assignment]
     try:
         hist: list = []
         msgs = [
@@ -211,6 +210,6 @@ def test_replay_ignores_reasoning_without_crashing() -> None:
         _replay_session(msgs, hist)
         out = buf.getvalue()
     finally:
-        cli.printer = old  # type: ignore[assignment]
+        ui.printer = old  # type: ignore[assignment]
     assert "SHOULD NOT APPEAR IN SCROLLBACK" not in out
     assert "a" in out

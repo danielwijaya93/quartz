@@ -1,24 +1,18 @@
-"""Provider setup and CLI subcommands (`auth`, `mcp`)."""
+"""The `mcp` and `auth` subcommands: argument parsing, and nothing else.
+
+Both dispatch before the main parser runs (see `cli/app.py::main`). `auth` only
+parses its flags here — the flows it runs are interactive and live in
+`quartz.tui.provider_setup`.
+"""
 
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from typing import Any
 
 from rich.markup import escape
-from rich.text import Text
 
-from quartz.errors import CredentialError, EndpointConfigError
-from quartz.auth.google import (
-    CALLBACK_PORT,
-    auth_file_path,
-    delete_google_credentials,
-    load_google_credentials,
-    login_google_interactive,
-)
-from quartz.providers.google import GoogleAntigravityProvider
 from quartz.mcp.client import (
     add_mcp_server,
     default_mcp_config_path,
@@ -26,225 +20,11 @@ from quartz.mcp.client import (
     remove_mcp_server,
     set_mcp_server_enabled,
 )
-from quartz.providers.registry import (
-    PROVIDERS,
-    delete_provider_auth,
-    discover_models,
-    list_logged_in_providers,
-    load_model_config,
-    resolve_effort,
-    resolve_provider_credentials,
-    save_provider_auth,
-)
-from quartz.providers.base import LLMProvider
-from quartz.tui.modals import _pick_option, _prompt_input
-from quartz.tui.render import (
-    console,
-    console_print,
-    dock_status,
-    get_active_dock,
-)
+from quartz.providers.registry import PROVIDERS
+from quartz.tui.provider_setup import _login_provider, _logout_provider, show_auth_status
+from quartz.tui.render import console
 
-
-def _provider_ready(provider: str) -> bool:
-    pspec = PROVIDERS.get(provider)
-    if not pspec:
-        return False
-    if pspec.auth_type == "oauth":
-        return load_google_credentials() is not None
-    api_key, _, _ = resolve_provider_credentials(provider)
-    return bool(api_key)
-
-
-def _provider_status_label(provider: str) -> str:
-    pspec = PROVIDERS[provider]
-    if pspec.auth_type == "oauth":
-        return "logged in • oauth" if load_google_credentials() is not None else "not logged in • oauth"
-    _, _, source = resolve_provider_credentials(provider)
-    if source == "auth.json":
-        return "logged in • api key"
-    return "not configured • api key"
-
-
-def build_provider(
-    provider: str = "auto",
-    model_override: str | None = None,
-    effort_override: str | None = None,
-) -> tuple[LLMProvider, str, str, str]:
-    """Instantiate an LLMProvider, returning (client, provider_name, model, effort).
-
-    Raises EndpointConfigError for unknown providers and CredentialError when
-    required credentials are missing.
-    """
-    has_google = load_google_credentials() is not None
-    logged_in = list_logged_in_providers()
-    saved = load_model_config()
-    env_model = model_override or os.getenv("MODEL")
-
-    if provider == "auto":
-        saved_provider = saved.get("provider")
-        if saved_provider in PROVIDERS and _provider_ready(saved_provider):
-            chosen_provider = saved_provider
-        elif env_model and env_model.startswith("gemini-") and has_google:
-            chosen_provider = "google"
-        elif any(p in PROVIDERS and p != "google" for p in logged_in):
-            chosen_provider = next(p for p in PROVIDERS if p != "google" and p in logged_in)
-        elif has_google:
-            chosen_provider = "google"
-        else:
-            chosen_provider = "deepseek"
-    elif provider in PROVIDERS:
-        chosen_provider = provider
-    else:
-        raise EndpointConfigError(f"Unknown provider '{provider}'.")
-
-    spec = PROVIDERS[chosen_provider]
-    if model_override:
-        model = model_override
-    elif provider == "auto" and saved.get("provider") == chosen_provider and saved.get("model"):
-        model = saved["model"]
-    elif env_model and (spec.backend == "openai" or env_model in spec.models):
-        model = env_model
-    else:
-        model = spec.default_model
-
-    # Effort: explicit override / saved / env wins when the (discovered) model
-    # supports it; otherwise fall back to the model's own default. Levels differ
-    # per model (e.g. OpenRouter exposes max/xhigh/minimal on some models only).
-    requested_effort: str | None
-    effort_source: str
-    if effort_override:
-        requested_effort, effort_source = effort_override, "--effort"
-    elif provider == "auto" and saved.get("provider") == chosen_provider and saved.get("effort"):
-        requested_effort, effort_source = saved["effort"], "saved config"
-    elif os.getenv("EFFORT"):
-        requested_effort, effort_source = os.getenv("EFFORT"), "EFFORT env"
-    else:
-        requested_effort, effort_source = None, "default"
-    effort = resolve_effort(
-        chosen_provider,
-        model,
-        override=requested_effort,
-        override_source=effort_source,
-    )
-
-    if spec.backend == "google":
-        if not has_google:
-            raise CredentialError(
-                "Not logged in to Google. Run `/login google` or `quartz auth login google` first."
-            )
-        return GoogleAntigravityProvider(), chosen_provider, model, effort
-
-    api_key, base_url, _ = resolve_provider_credentials(chosen_provider)
-    if not api_key:
-        raise CredentialError(
-            f"No credentials found for '{chosen_provider}'. "
-            f"Run `/login {chosen_provider}` or `quartz auth login {chosen_provider}`."
-        )
-    from quartz.providers.openai import OpenAIProvider
-
-    client = OpenAIProvider(api_key=api_key, base_url=base_url)
-    return client, chosen_provider, model, effort
-
-
-def _login_provider(target_provider: str | None = None) -> str | None:
-    """Interactive login flow differentiating OAuth vs API-key providers."""
-    if target_provider is None:
-        opts = [(pname, f"{pspec.label} ({_provider_status_label(pname)})") for pname, pspec in PROVIDERS.items()]
-        target_provider = _pick_option("Log in to Provider", opts)
-        if not target_provider:
-            console.print("[dim]Cancelled.[/dim]")
-            return None
-
-    if target_provider not in PROVIDERS:
-        console.print(
-            f"[red]Unknown provider '{escape(target_provider)}'. "
-            f"Available: {', '.join(PROVIDERS.keys())}[/red]"
-        )
-        return None
-
-    spec = PROVIDERS[target_provider]
-    if spec.auth_type == "oauth":
-        in_dock = get_active_dock() is not None
-
-        def _on_url(auth_url: str) -> None:
-            console_print(Text("Open this URL in your browser to sign in with Google:\n"))
-            console_print(Text(f"  {auth_url}\n"))
-            console_print(Text(f"Waiting for browser callback on http://localhost:{CALLBACK_PORT} ..."))
-            if not in_dock:
-                console_print(
-                    Text("(If on a remote machine, paste the final redirect URL here and press Enter)")
-                )
-
-        try:
-            creds = login_google_interactive(
-                on_url=_on_url,
-                interactive_paste=not in_dock,
-            )
-        except Exception as exc:
-            console.print(f"[red]Login failed: {escape(str(exc))}[/red]")
-            return None
-        console.print(
-            f"[green]Logged in to Google (OAuth)![/green] Project: [bold]{escape(creds.project_id)}[/bold] "
-            f"(saved to {auth_file_path()})"
-        )
-        return target_provider
-
-    api_key = _prompt_input(f"{target_provider} API key: ", secret=True)
-    if not api_key:
-        console.print("[dim]Cancelled.[/dim]")
-        return None
-
-    base_url: str | None = spec.base_url or None
-    if target_provider == "custom":
-        entered_url = _prompt_input("Base URL (e.g. https://api.example.com/v1): ")
-        if not entered_url:
-            console.print("[dim]Cancelled.[/dim]")
-            return None
-        base_url = entered_url
-
-    saved_path = save_provider_auth(target_provider, api_key, base_url)
-    with dock_status(f"[dim]Verifying {target_provider} & discovering models...[/dim]"):
-        models, err = discover_models(target_provider)
-    if err:
-        console.print(
-            f"[yellow]Saved API key for [bold]{escape(target_provider)}[/bold] to {saved_path}, "
-            f"but model discovery failed: {escape(err)}[/yellow]"
-        )
-    else:
-        console.print(
-            f"[green]Logged in to [bold]{escape(target_provider)}[/bold] (API key)![/green] "
-            f"Discovered [bold]{len(models)}[/bold] model(s) (saved to {saved_path})."
-        )
-    return target_provider
-
-
-def _logout_provider(target_provider: str | None = None) -> bool:
-    """Remove stored credentials for a provider from ~/.quartz/auth.json."""
-    logged_in = list_logged_in_providers()
-    if target_provider is None:
-        if not logged_in:
-            console.print(f"[dim]No stored provider logins found in {auth_file_path()}.[/dim]")
-            return False
-        opts = [
-            (pname, f"{PROVIDERS[pname].label if pname in PROVIDERS else pname} ({atype})")
-            for pname, atype in logged_in.items()
-        ]
-        target_provider = _pick_option("Log out from Provider", opts)
-        if not target_provider:
-            console.print("[dim]Cancelled.[/dim]")
-            return False
-
-    if target_provider == "google":
-        removed = delete_google_credentials()
-    else:
-        removed = delete_provider_auth(target_provider)
-
-    if removed:
-        console.print(f"[green]Logged out from [bold]{escape(target_provider)}[/bold].[/green]")
-    else:
-        console.print(f"[dim]No stored credentials found for {escape(target_provider)}.[/dim]")
-    return removed
+__all__ = ["_handle_auth_cli", "_handle_mcp_cli"]
 
 
 def _handle_auth_cli(argv: list[str]) -> None:
@@ -271,22 +51,12 @@ def _handle_auth_cli(argv: list[str]) -> None:
         return
 
     if args.action == "status":
-        creds = load_google_credentials()
-        if creds is None:
-            console.print(f"[dim]google (oauth): not logged in ({auth_file_path()})[/dim]")
-        else:
-            status = "expired (will auto-refresh)" if creds.is_expired() else "active"
-            console.print(
-                f"[green]google (oauth): logged in[/green] | project: [bold]{creds.project_id}[/bold] | token: {status}"
-            )
-        for pname, pspec in PROVIDERS.items():
-            if pspec.auth_type == "oauth":
-                continue
-            console.print(f"  [cyan]{pname}[/cyan]: {_provider_status_label(pname)}")
+        show_auth_status()
         return
 
     if args.action == "logout":
         _logout_provider(args.provider)
+
 
 
 def _parse_kv_pairs(items: list[str], flag_name: str) -> dict[str, str]:

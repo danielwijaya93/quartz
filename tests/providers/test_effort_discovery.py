@@ -247,7 +247,7 @@ def test_model_command_picker_uses_discovered_levels(
 
 
 def test_build_provider_uses_discovered_effort(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
-    from quartz.cli import subcommands
+    from quartz.providers import selection
 
     monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "auth.json"))
     monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "config.json"))
@@ -262,16 +262,16 @@ def test_build_provider_uses_discovered_effort(monkeypatch: pytest.MonkeyPatch, 
     monkeypatch.setattr(
         models, "discover_model_efforts", lambda provider, model, **kw: (["max", "xhigh"], "max")
     )
-    monkeypatch.setattr(subcommands, "resolve_effort", lambda p, m, **kw: models.resolve_effort(p, m, **kw))
+    monkeypatch.setattr(selection, "resolve_effort", lambda p, m, **kw: models.resolve_effort(p, m, **kw))
 
-    _client, provider, _model, effort = subcommands.build_provider(
+    _client, provider, _model, effort = selection.build_provider(
         provider="openrouter", model_override="meta/muse-ember"
     )
     assert provider == "openrouter"
     assert effort == "max"
 
     # An explicit but unsupported override falls back to the discovered default.
-    _client2, _p, _m, effort2 = subcommands.build_provider(
+    _client2, _p, _m, effort2 = selection.build_provider(
         provider="openrouter", model_override="meta/muse-ember", effort_override="minimal"
     )
     assert effort2 == "max"

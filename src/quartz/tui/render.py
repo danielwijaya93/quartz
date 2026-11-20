@@ -240,11 +240,11 @@ printer = BlockPrinter(console)
 
 
 def _active_printer() -> BlockPrinter:
-    import sys
+    """The printer new output must go through.
 
-    cli_mod = sys.modules.get("quartz.cli.app")
-    if cli_mod is not None and hasattr(cli_mod, "printer"):
-        return cli_mod.printer
+    Read through this (or `render.printer`) rather than importing `printer` by
+    name: tests swap the module global to capture output.
+    """
     return printer
 
 

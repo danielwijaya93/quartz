@@ -14,6 +14,7 @@ from conftest import RecordingObserver
 from rich.console import Console
 
 import quartz.cli.app as cli
+import quartz.core.turn as turn
 import quartz.tui.render as ui
 from quartz.tui.completer import AgentCompleter
 from quartz.kernel.client import CellResult, KernelClient
@@ -329,10 +330,10 @@ def test_printer_reset_starts_a_turn_without_leading_blank_line() -> None:
 
 def test_cell_summary_chip_keeps_cell_index(monkeypatch: pytest.MonkeyPatch) -> None:
     console, buf = _recording_console()
-    monkeypatch.setattr(cli, "printer", BlockPrinter(console))
+    monkeypatch.setattr(ui, "printer", BlockPrinter(console))
 
-    cli.printer.reset()
-    cli.printer.markdown("Running a cell now.")
+    ui.printer.reset()
+    ui.printer.markdown("Running a cell now.")
     cell_group = ui.CellGroupBuffer()
     cell_group.add(1, "print('hello')", CellResult(True, "hello\n", "", None), 0.01)
     cell_group.flush()
@@ -347,10 +348,10 @@ def test_cell_summary_chip_keeps_cell_index(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_tool_result_panel_keeps_literal_brackets(monkeypatch: pytest.MonkeyPatch) -> None:
     console, buf = _recording_console()
-    monkeypatch.setattr(cli, "printer", BlockPrinter(console))
+    monkeypatch.setattr(ui, "printer", BlockPrinter(console))
 
-    cli.printer.reset()
-    cli._render_tool_result(
+    ui.printer.reset()
+    ui._render_tool_result(
         CellResult(ok=False, stdout="", stderr="ValueError: bad [red]thing[/red] here", result=None)
     )
 
@@ -431,14 +432,14 @@ def test_grouped_cell_summary_two_failures_expand_first() -> None:
 
 def test_cell_group_buffer_flushes_once_per_run(monkeypatch: pytest.MonkeyPatch) -> None:
     console, buf = _recording_console()
-    monkeypatch.setattr(cli, "printer", BlockPrinter(console))
+    monkeypatch.setattr(ui, "printer", BlockPrinter(console))
 
-    cli.printer.reset()
+    ui.printer.reset()
     group = ui.CellGroupBuffer()
     for i in range(1, 6):
         group.add(i, f"x = {i}", CellResult(True, "", "", None), 0.1)
     group.flush()
-    cli.printer.markdown("Done.")
+    ui.printer.markdown("Done.")
 
     assert _visible_lines(buf.getvalue()) == [
         "  ✓ #1 · Run Python · 0.10s",
@@ -454,9 +455,9 @@ def test_cell_group_buffer_flushes_once_per_run(monkeypatch: pytest.MonkeyPatch)
 
 def test_cell_group_buffer_chunking_every_five(monkeypatch: pytest.MonkeyPatch) -> None:
     console, buf = _recording_console()
-    monkeypatch.setattr(cli, "printer", BlockPrinter(console))
+    monkeypatch.setattr(ui, "printer", BlockPrinter(console))
 
-    cli.printer.reset()
+    ui.printer.reset()
     group = ui.CellGroupBuffer(max_group_size=5)
     for i in range(1, 13):
         group.add(i, f"x = {i}", CellResult(True, "", "", None), 0.1)
@@ -652,8 +653,8 @@ def test_run_turn_thought_line_separate_from_grouped_cells(
     buf = io.StringIO()
     test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
     test_printer = BlockPrinter(test_console)
-    monkeypatch.setattr(cli, "console", test_console)
-    monkeypatch.setattr(cli, "printer", test_printer)
+    monkeypatch.setattr(ui, "console", test_console)
+    monkeypatch.setattr(ui, "printer", test_printer)
 
     def _fake_agent_loop(*args, **kwargs):
         observer = kwargs["observer"]
@@ -677,7 +678,7 @@ def test_run_turn_thought_line_separate_from_grouped_cells(
         observer.on_text_delta("All done.")
         return "All done.", [], 10
 
-    monkeypatch.setattr(cli, "agent_loop", _fake_agent_loop)
+    monkeypatch.setattr(turn, "agent_loop", _fake_agent_loop)
 
     rt = AgentRuntime(
         cwd=tmp_path,
@@ -712,8 +713,8 @@ def test_run_turn_matches_out_of_order_tool_call_ids(
 ) -> None:
     test_console, _ = _recording_console()
     test_printer = BlockPrinter(test_console)
-    monkeypatch.setattr(cli, "console", test_console)
-    monkeypatch.setattr(cli, "printer", test_printer)
+    monkeypatch.setattr(ui, "console", test_console)
+    monkeypatch.setattr(ui, "printer", test_printer)
 
     def _fake_agent_loop(*args, **kwargs):
         observer = kwargs["observer"]
@@ -724,7 +725,7 @@ def test_run_turn_matches_out_of_order_tool_call_ids(
         observer.on_tool_result("tc_first", CellResult(ok=True, stdout="one\n", stderr="", result=None))
         return "Done.", [], 10
 
-    monkeypatch.setattr(cli, "agent_loop", _fake_agent_loop)
+    monkeypatch.setattr(turn, "agent_loop", _fake_agent_loop)
     rt = AgentRuntime(
         cwd=tmp_path,
         kernel=object(),  # type: ignore[arg-type]
@@ -756,7 +757,7 @@ def test_turn_progress_tracker_in_progress_and_collapsing() -> None:
     test_printer = BlockPrinter(test_console)
     test_printer.reset()
 
-    tracker = cli.TurnProgressTracker(test_console, test_printer)
+    tracker = ui.TurnProgressTracker(test_console, test_printer)
 
     tracker.start_thinking()
     grp1 = tracker._render_group()
@@ -813,7 +814,7 @@ def test_turn_progress_tracker_conversational_no_tools() -> None:
     test_printer = BlockPrinter(test_console)
     test_printer.reset()
 
-    tracker = cli.TurnProgressTracker(test_console, test_printer)
+    tracker = ui.TurnProgressTracker(test_console, test_printer)
     tracker.start_thinking()
     tracker.stop_thinking()
     tracker.flush()
@@ -831,7 +832,7 @@ def test_turn_progress_tracker_with_tool_failure() -> None:
     test_printer = BlockPrinter(test_console)
     test_printer.reset()
 
-    tracker = cli.TurnProgressTracker(test_console, test_printer)
+    tracker = ui.TurnProgressTracker(test_console, test_printer)
     tracker.start_thinking()
     tracker.start_tool("1 / 0")
     tracker.add_tool_result(1, "1 / 0", CellResult(ok=False, stdout="", stderr="ZeroDivisionError", result=None), 0.02)
@@ -849,7 +850,7 @@ def test_turn_progress_tracker_chunking_every_five() -> None:
     test_printer = BlockPrinter(test_console)
     test_printer.reset()
 
-    tracker = cli.TurnProgressTracker(test_console, test_printer, chunk_size=5)
+    tracker = ui.TurnProgressTracker(test_console, test_printer, chunk_size=5)
 
     # 12 steps of thinking + tool calls
     for i in range(1, 13):
@@ -908,7 +909,7 @@ def test_turn_progress_tracker_interactive_steering() -> None:
     test_printer = BlockPrinter(test_console)
     test_printer.reset()
 
-    tracker = cli.TurnProgressTracker(test_console, test_printer)
+    tracker = ui.TurnProgressTracker(test_console, test_printer)
     tracker.start_thinking()
 
     # User types partial steering message
@@ -957,7 +958,7 @@ def test_wrap_safe_gutter_and_user_prompt_at_width_52(monkeypatch: pytest.Monkey
     buf = io.StringIO()
     test_console = Console(file=buf, force_terminal=False, width=52, color_system=None)
     test_printer = BlockPrinter(test_console)
-    monkeypatch.setattr(cli, "printer", test_printer)
+    monkeypatch.setattr(ui, "printer", test_printer)
 
     long_prompt = "Please inspect the repository structure and explain how the kernel worker communicates over IPC."
     rendered_prompt = render_user_prompt(long_prompt, width=52)
@@ -1008,7 +1009,7 @@ def test_faithful_session_replay_and_ui_meta_persistence(tmp_path: Path, monkeyp
 
     buf = io.StringIO()
     test_console = Console(file=buf, force_terminal=False, width=100, color_system=None)
-    monkeypatch.setattr(cli, "printer", BlockPrinter(test_console))
+    monkeypatch.setattr(ui, "printer", BlockPrinter(test_console))
 
     cell_history: list[Any] = []
     _replay_session(
@@ -1057,7 +1058,7 @@ def test_turn_progress_tracker_spinner_animates(monkeypatch: pytest.MonkeyPatch)
     test_printer = BlockPrinter(test_console)
     test_printer.reset()
 
-    tracker = cli.TurnProgressTracker(test_console, test_printer)
+    tracker = ui.TurnProgressTracker(test_console, test_printer)
     clock = [1000.0]
     monkeypatch.setattr(ui.time, "monotonic", lambda: clock[0])
 
