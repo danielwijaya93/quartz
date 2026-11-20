@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -111,6 +112,132 @@ def test_syntax_error_in_helpers_handled_gracefully(tmp_path: Path) -> None:
     assert "read" in loaded.functions
     assert len(loaded.warnings) == 1
     assert "Failed to load helpers" in loaded.warnings[0]
+
+
+def test_helper_file_with_dataclass_loads(tmp_path: Path) -> None:
+    """Decorators that resolve annotations via sys.modules need registration first.
+
+    With ``from __future__ import annotations``, ``@dataclass`` looks up the module
+    in ``sys.modules`` to resolve string annotations. Helper modules were executed
+    without ever being registered, so any helper file containing a dataclass raised
+    "'NoneType' object has no attribute '__dict__'" and every helper in that file
+    was silently discarded.
+    """
+    helper_file = tmp_path / "dc_helpers.py"
+    helper_file.write_text(
+        "from __future__ import annotations\n"
+        "\n"
+        "from dataclasses import dataclass\n"
+        "\n"
+        "\n"
+        "@dataclass\n"
+        "class Limits:\n"
+        "    \"\"\"Per-model token limits.\"\"\"\n"
+        "    context: int = 100_000\n"
+        "    output: int = 8_192\n"
+        "\n"
+        "\n"
+        "def effective_limit(limits: Limits, ratio: float = 0.5) -> int:\n"
+        "    \"\"\"Return the usable context window.\"\"\"\n"
+        "    return int(limits.context * ratio)\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_helpers(global_helpers_path=helper_file)
+    mod_name = "_quartz_helpers_global_dc_helpers"
+    try:
+        assert loaded.warnings == []
+        assert "effective_limit" in loaded.functions
+        # The module is registered while executing, like a real import.
+        assert mod_name in sys.modules
+
+        limits_cls = sys.modules[mod_name].Limits
+        assert limits_cls(context=200_000, output=8_192).context == 200_000
+        assert loaded.functions["effective_limit"](limits_cls(context=200_000)) == 100_000
+    finally:
+        sys.modules.pop(mod_name, None)
+
+
+def test_failed_helper_file_leaves_no_module_entry(tmp_path: Path) -> None:
+    """A helper file that raises mid-execution must not stay in sys.modules."""
+    bad_file = tmp_path / "boom_helpers.py"
+    bad_file.write_text(
+        "def partial():\n"
+        "    return 1\n"
+        "raise RuntimeError('boom during import')\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_helpers(global_helpers_path=bad_file)
+    mod_name = "_quartz_helpers_global_boom_helpers"
+    try:
+        assert "read" in loaded.functions  # builtins survive
+        assert loaded.warnings and "boom during import" in loaded.warnings[0]
+        assert mod_name not in sys.modules
+    finally:
+        sys.modules.pop(mod_name, None)
+
+
+def test_reloading_same_helper_file_replaces_module_entry(tmp_path: Path) -> None:
+    """Repeated load_helpers calls (e.g. /helpers) must not leak stale modules.
+
+    The rewritten source deliberately differs in length: CPython invalidates a
+    cached .pyc by (mtime rounded to seconds, source size), so a same-size edit
+    made within the same second would legitimately reuse the old bytecode.
+    """
+    helper_file = tmp_path / "reload_helpers.py"
+    helper_file.write_text(
+        "def version():\n"
+        "    \"\"\"Return 1.\"\"\"\n"
+        "    return 1\n",
+        encoding="utf-8",
+    )
+    mod_name = "_quartz_helpers_global_reload_helpers"
+    try:
+        first = load_helpers(global_helpers_path=helper_file)
+        assert first.functions["version"]() == 1
+        first_mod = sys.modules[mod_name]
+
+        helper_file.write_text(
+            "def version():\n"
+            "    \"\"\"Return two, from the rewritten helper file.\"\"\"\n"
+            "    return 2\n",
+            encoding="utf-8",
+        )
+        second = load_helpers(global_helpers_path=helper_file)
+        assert second.functions["version"]() == 2
+        assert sys.modules[mod_name] is not first_mod
+    finally:
+        sys.modules.pop(mod_name, None)
+
+
+def test_same_stem_global_and_project_helpers_coexist(tmp_path: Path) -> None:
+    """Global and project helper files share the stem 'helpers' but not a module name."""
+    global_file = tmp_path / "global" / "helpers.py"
+    global_file.parent.mkdir()
+    global_file.write_text(
+        "def from_global():\n"
+        "    \"\"\"Global.\"\"\"\n"
+        "    return 'global'\n",
+        encoding="utf-8",
+    )
+    project_dir = tmp_path / ".quartz"
+    project_dir.mkdir()
+    (project_dir / "helpers.py").write_text(
+        "def from_project():\n"
+        "    \"\"\"Project.\"\"\"\n"
+        "    return 'project'\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_helpers(cwd=tmp_path, global_helpers_path=global_file)
+    try:
+        assert loaded.functions["from_global"]() == "global"
+        assert loaded.functions["from_project"]() == "project"
+        assert loaded.warnings == []
+    finally:
+        sys.modules.pop("_quartz_helpers_global_helpers", None)
+        sys.modules.pop("_quartz_helpers_project_helpers", None)
 
 
 def test_format_helpers_for_prompt_includes_custom(tmp_path: Path) -> None:
