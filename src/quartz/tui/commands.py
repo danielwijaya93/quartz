@@ -12,6 +12,7 @@ from rich.text import Text
 
 from quartz.errors import CredentialError, EndpointConfigError
 from quartz.core.images import load_clipboard_image, load_image_file
+from quartz.tui.images import show_image_preview
 from quartz.core.loop import TurnUsage
 from quartz.providers.registry import (
     PROVIDERS,
@@ -356,6 +357,7 @@ def _cmd_image(rt: AgentRuntime, arg: str) -> bool | None:
         f"[green]Attached [bold]{escape(img.label)}[/bold] ([cyan]{escape(img.mime_type)}[/cyan]); "
         f"{len(rt.pending_images)} image(s) queued for next message.[/green]"
     )
+    show_image_preview(img)
     return False
 
 
@@ -375,6 +377,7 @@ def _cmd_paste(rt: AgentRuntime, arg: str) -> bool | None:
         f"[green]Attached clipboard image ([bold]{escape(img.mime_type)}[/bold]); "
         f"{len(rt.pending_images)} image(s) queued for next message.[/green]"
     )
+    show_image_preview(img)
     return False
 
 
