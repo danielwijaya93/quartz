@@ -71,3 +71,22 @@ def test_core_turn_has_no_front_end_edge() -> None:
     tree = _modules()["quartz.core.turn"]
     imported = _imports("quartz.core.turn", tree)
     assert sorted(m for m in imported if _belongs_to(m, "quartz.tui") or _belongs_to(m, "quartz.cli")) == []
+
+
+def test_core_never_imports_a_front_end() -> None:
+    """`core/` is the transport-independent half of quartz.
+
+    A `rich` import in core is how "the web transport cannot reuse this" starts:
+    the command layer would print again, and the web server's only remaining option
+    would be a second implementation. Same for `quartz.tui`, which owns the terminal.
+    """
+    offenders = sorted(
+        f"{name} -> {imported}"
+        for name, tree in _modules().items()
+        if _belongs_to(name, "quartz.core")
+        for imported in _imports(name, tree)
+        if imported == "rich"
+        or imported.startswith("rich.")
+        or _belongs_to(imported, "quartz.tui")
+    )
+    assert offenders == []

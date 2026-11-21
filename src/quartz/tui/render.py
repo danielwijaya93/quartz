@@ -27,6 +27,9 @@ from rich.text import Text
 from quartz.kernel.actions import describe_cell_actions, describe_cell_intent
 from quartz.tui.banner import _fmt_k, _short_path, format_usage_metrics
 from quartz.core.compact import CompactionReason, CompactionResult
+# `/expand` parses in core so the web transport can read the same ranges; the
+# name stays here because this is where callers (and tests) look for it.
+from quartz.core.commands import parse_expand_range as _parse_expand_range
 from quartz.core.images import content_to_text
 from quartz.kernel.client import CellResult
 from quartz.core.loop import TurnUsage
@@ -713,23 +716,6 @@ class TurnProgressTracker:
             self.active_tool_code = None
             self.active_tool_start = None
             self._flush_chunk()
-
-
-def _parse_expand_range(arg: str, total: int) -> tuple[int, int]:
-    """Parse `/expand` argument (`""`, `"N"`, or `"A..B"`) into inclusive 1-based `(start, end)`."""
-    if not arg:
-        return total, total
-    if ".." in arg:
-        left, right = arg.split("..", 1)
-        start = int(left.strip())
-        end = int(right.strip())
-        if not (1 <= start <= end <= total):
-            raise ValueError
-        return start, end
-    idx = int(arg)
-    if not (1 <= idx <= total):
-        raise ValueError
-    return idx, idx
 
 
 # ---------------------------------------------------------------------------
