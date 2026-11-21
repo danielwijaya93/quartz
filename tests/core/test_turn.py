@@ -113,6 +113,33 @@ def test_successful_turn_persists_once_and_advances_the_counters(
     assert interrupts == []
 
 
+def test_progress_cadence_is_read_fresh_for_every_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/settings progress takes effect on the next turn, not only a new session.
+
+    A session often changes pace partway through -- lots of back-and-forth first,
+    then long unattended stretches -- so the cadence has to follow the user within
+    one session. Each turn reads the live runtime value rather than a cadence
+    captured once at startup.
+    """
+    seen: list[int] = []
+
+    def _loop(*args: Any, **kwargs: Any) -> tuple[str, list[dict[str, Any]], int]:
+        seen.append(kwargs["progress_every"])
+        return "answer", [], 1
+
+    monkeypatch.setattr(turn, "agent_loop", _loop)
+    rt = _runtime(tmp_path, [])
+    rt.progress_every = 3
+
+    run_interactive_turn(rt, _View())
+    rt.progress_every = 15  # the work phase begins mid-session
+    run_interactive_turn(rt, _View())
+
+    assert seen == [3, 15]
+
+
 def test_streamed_answer_is_not_rendered_twice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rt = _runtime(tmp_path, [])
     view = _View(streamed=True)

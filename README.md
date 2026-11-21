@@ -125,7 +125,10 @@ The trigger is the harness's, so it cannot be forgotten; only the wording is the
 model's.
 
 - Turn it off, or change the cadence, with `/settings progress <n>`
-  (`/settings progress 0` disables it).
+  (`/settings progress 0` disables it). The change is saved for future sessions
+  and takes effect on the **next turn**, so one session can discuss at `5` and
+  then work quietly at `20`. A `/settings` command typed while a turn is running
+  is queued and applied when that turn ends.
 - `-p` runs stay quiet by default, where stdout is the answer and nothing else;
   pass `--progress-every N` to opt a long headless run in.
 
