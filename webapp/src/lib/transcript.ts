@@ -176,6 +176,32 @@ function makeId(prefix: string): string {
   return `${prefix}-${idCounter}`;
 }
 
+/** Locally created rows are prefixed, so history can retire them by text. */
+const LOCAL_PREFIX = "local-";
+
+function isLocalRow(id: string): boolean {
+  return id.startsWith(LOCAL_PREFIX);
+}
+
+/**
+ * Echo a prompt into the transcript as it is sent.
+ *
+ * The protocol has no `user_message` frame -- the server only stores the message
+ * in the session -- so without this the user's own turn is invisible until a
+ * reload. The id is local and the row is retired by `mergeHistory` when history
+ * catches up, so the echo never duplicates.
+ */
+export function addUserPrompt(
+  state: TranscriptState,
+  text: string,
+  images: ImageAttachment[] = [],
+): TranscriptState {
+  const trimmed = text.trim();
+  if (!trimmed) return state;
+  const row: UserRow = { kind: "user", id: `${LOCAL_PREFIX}user-${makeId("u")}`, text: trimmed, images };
+  return appendRow(state, row);
+}
+
 /** Test seam: reset the id counter so assertions stay stable. */
 export function resetIdCounter(): void {
   idCounter = 0;
@@ -301,12 +327,32 @@ function rowsFromMessage(message: Message, index: number): Row[] {
 function mergeHistory(state: TranscriptState, messages: Message[]): TranscriptState {
   const incoming = messages.flatMap(rowsFromMessage);
   const fresh = incoming.filter((row) => !state.seen.has(row.id));
-  if (fresh.length === 0) return state;
+
+  // A prompt is echoed locally the moment it is sent (the wire has no
+  // `user_message` frame), so history will eventually contain the same prompt
+  // under a positional id. Retire the local copy by text, one for one, or a
+  // reconnect shows every prompt twice.
+  const pending = new Map<string, number>();
+  for (const row of incoming) {
+    if (row.kind === "user") pending.set(row.text, (pending.get(row.text) ?? 0) + 1);
+  }
+  const retired = new Set<string>();
+  for (const row of state.rows) {
+    if (row.kind !== "user" || !isLocalRow(row.id)) continue;
+    const left = pending.get(row.text) ?? 0;
+    if (left > 0) {
+      pending.set(row.text, left - 1);
+      retired.add(row.id);
+    }
+  }
+
+  const before = state.rows.filter((row) => !retired.has(row.id));
+  if (fresh.length === 0 && retired.size === 0) return state;
 
   // History belongs above live rows: it is everything that happened before.
   const historyIds = new Set(incoming.map((row) => row.id));
-  const liveRows = state.rows.filter((row) => !historyIds.has(row.id));
-  const ordered = [...state.rows.filter((row) => historyIds.has(row.id)), ...fresh, ...liveRows];
+  const liveRows = before.filter((row) => !historyIds.has(row.id));
+  const ordered = [...before.filter((row) => historyIds.has(row.id)), ...fresh, ...liveRows];
   return withRows(state, ordered);
 }
 

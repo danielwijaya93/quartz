@@ -232,6 +232,11 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "auth":
         _handle_auth_cli(sys.argv[2:])
         return
+    if len(sys.argv) > 1 and sys.argv[1] == "web":
+        from quartz.cli.subcommands import _handle_web_cli
+
+        _handle_web_cli(sys.argv[2:])
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "acp":
         sys.argv[1] = "--acp"
 
