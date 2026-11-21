@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
 from quartz.kernel.client import KernelClient
-from quartz.core.session import Session
+from quartz.core.session import Session, prune_snapshots
 
 
 def test_session_jsonl_save_load_and_compaction(tmp_path: Path) -> None:
@@ -266,3 +268,68 @@ def test_session_save_messages_detects_in_place_and_grown_compaction(tmp_path: P
     s.save_messages(summarized_and_grown)
     _, reloaded2 = Session.load(s.id, sessions_dir=sessions_dir)
     assert reloaded2 == summarized_and_grown
+
+
+def _fake_session(root: Path, sid: str, *, age_days: float, payload: int = 1024) -> None:
+    """Write a session transcript plus snapshot dir, aged `age_days` into the past."""
+    (root / f"{sid}.jsonl").write_text('{"type": "meta"}\n')
+    snap = root / f"{sid}.snapshot"
+    snap.mkdir()
+    (snap / "obj00000.dill").write_bytes(b"x" * payload)
+    (snap / "manifest.json").write_text("{}")
+    stamp = time.time() - age_days * 86400
+    for f in [root / f"{sid}.jsonl", snap, snap / "obj00000.dill", snap / "manifest.json"]:
+        os.utime(f, (stamp, stamp))
+
+
+def test_prune_removes_old_snapshots_and_keeps_transcripts(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    _fake_session(root, "old", age_days=30, payload=4096)
+    _fake_session(root, "fresh", age_days=1, payload=2048)
+
+    result = prune_snapshots(root, older_than_days=7)
+
+    assert result.snapshots_removed == 1
+    assert result.bytes_freed > 0
+    assert not (root / "old.snapshot").exists()
+    assert (root / "old.jsonl").exists()          # transcript survives
+    assert (root / "fresh.snapshot").is_dir()     # young enough to keep
+    assert (root / "fresh.jsonl").exists()
+
+
+def test_prune_dry_run_frees_nothing(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    _fake_session(root, "old", age_days=30, payload=4096)
+
+    result = prune_snapshots(root, older_than_days=7, dry_run=True)
+
+    assert result.snapshots_removed == 1
+    assert result.bytes_freed >= 4096
+    assert (root / "old.snapshot").is_dir()
+
+
+def test_prune_zero_days_disables_pruning(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    _fake_session(root, "ancient", age_days=3650)
+
+    assert prune_snapshots(root, older_than_days=0).snapshots_removed == 0
+    assert (root / "ancient.snapshot").is_dir()
+
+
+def test_prune_uses_transcript_mtime_over_snapshot_mtime(tmp_path: Path) -> None:
+    """A session resumed yesterday keeps its snapshot even if the dir looks old."""
+    root = tmp_path / "sessions"
+    root.mkdir()
+    _fake_session(root, "resumed", age_days=40)
+    now = time.time()
+    os.utime(root / "resumed.jsonl", (now, now))
+
+    assert prune_snapshots(root, older_than_days=7).snapshots_removed == 0
+    assert (root / "resumed.snapshot").is_dir()
+
+
+def test_prune_missing_dir_is_not_an_error(tmp_path: Path) -> None:
+    assert prune_snapshots(tmp_path / "nope", older_than_days=7).snapshots_removed == 0

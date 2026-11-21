@@ -30,7 +30,7 @@ from quartz.core.loop import TurnUsage
 from quartz.core.progress import resolve_every
 from quartz.core.prompt import build_system_prompt
 from quartz.core.runtime import AgentRuntime
-from quartz.core.session import Session
+from quartz.core.session import Session, default_sessions_dir, prune_snapshots
 from quartz.errors import SessionNotFoundError
 from quartz.kernel.client import KernelClient
 from quartz.providers.registry import resolve_context_tokens
@@ -121,6 +121,15 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
         # so the caller sees the original traceback.
         if kernel_err:
             raise kernel_err[0]
+
+        # Snapshot pruning is opportunistic housekeeping, not a startup step: it runs
+        # after the session resolves so a resumed session's own snapshot is already
+        # known-good, and every failure is swallowed so a read-only or vanishing
+        # sessions dir can never stop a user from starting work.
+        try:
+            prune_snapshots(default_sessions_dir(), older_than_days=settings.snapshot_retention_days)
+        except Exception:  # noqa: BLE001 - housekeeping must not break startup
+            pass
 
         messages: list[dict[str, Any]] = []
         resumed = False
