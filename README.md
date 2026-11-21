@@ -116,13 +116,18 @@ thinking trace and `Ctrl+O` toggles full tool-call details.
 
 Quartz does not leave you watching a spinner in silence. Every `progress_every`
 `ipython` calls (default `5`) the harness injects a short `[progress]` notice
-asking the model to say, in a sentence or two, what it found and what happens
-next — then carry on in the same response, so the checkpoint costs no extra round
-trip. If the model already narrated on its own, the notice is skipped and the
-count restarts, so you never read the same update twice.
+telling the model to update you before it carries on. If the model already
+narrated on its own, the notice is skipped and the count restarts, so you never
+read the same update twice.
 
-The trigger is the harness's, so it cannot be forgotten; only the wording is the
-model's.
+The trigger is the harness's, so it cannot be forgotten, and the notice is
+enforced rather than merely suggested. A model that answers a checkpoint with
+another tool call and no text is refused: those cells do not run, and the call
+returns `Update the user first.` as its result. Writing the update releases the
+gate and the same turn continues, so a compliant model loses nothing and a silent
+one cannot keep working. Thinking does not count — you cannot see it. After three
+refusals the gate lets the work continue anyway, so a model that refuses to speak
+can slow a turn down but never wedge it.
 
 - Turn it off, or change the cadence, with `/settings progress <n>`
   (`/settings progress 0` disables it). The change is saved for future sessions

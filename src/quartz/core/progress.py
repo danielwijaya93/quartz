@@ -1,12 +1,17 @@
-"""Scheduled user updates: ask the model to report back every N tool calls.
+"""Scheduled user updates: make the model report back every N tool calls.
 
 Working silently is right for an unattended run and wrong for a watched one, and
 nothing in a prompt can guarantee the difference. So the *trigger* is the
 harness's and only the *words* are the model's: every ``every`` executed ipython
-calls, ``agent_loop`` injects a short user-role notice asking for a sentence to
-the user, which the model answers in the same response as its next tool call. The
-turn costs no extra round trip, and the user is updated on a schedule the model
-cannot drift away from.
+calls, ``agent_loop`` injects a short user-role notice asking for the update.
+
+A notice is an instruction, and a model optimising for its next tool call can
+answer it with that call and no text -- which is exactly how a watched session
+stayed silent through checkpoint after checkpoint. So the gate enforces what the
+notice asks: while an update is owed, a response that carries tool calls but no
+text for the user has those calls refused instead of executed, and the model
+reads the refusal as its tool result. Writing the update releases the gate and
+the same turn carries on.
 
 The notice is a ``[progress]``-prefixed user message -- the same channel the
 harness already uses for ``[bash-done]`` notices, and the convention the system
@@ -18,7 +23,9 @@ from __future__ import annotations
 from typing import Any
 
 __all__ = [
+    "MAX_REFUSALS",
     "PROGRESS_NOTICE",
+    "REFUSAL",
     "ProgressCheckpointer",
     "announced_to_user",
     "progress_notice",
@@ -29,10 +36,17 @@ __all__ = [
 #: it is paid for on every checkpoint, and long instructions invite a long reply.
 PROGRESS_NOTICE = (
     "[progress] {n} ipython calls have run since your last update to the user.\n"
-    "Write one or two sentences for them now: what you found and what happens next.\n"
-    "Then keep working by calling `ipython` again in the same response.\n"
-    "Stop without a tool call only if you are finished or need the user to decide something.\n"
-    "Do not mention this reminder itself."
+    "Update the user now on the progress.\n"
+    "Only continue working if you have updated the user."
+)
+
+#: Returned as the tool result for calls made while an update is owed. It has to
+#: read as a message from the tool, because that is the channel the model is
+#: already attending to when it wants to run the next cell.
+REFUSAL = (
+    "Update the user first. Your last checkpoints were answered with tool calls and "
+    "no words, so the user saw nothing. Write the update as the text of your next "
+    "response, then call `ipython` again in that same response."
 )
 
 
@@ -55,17 +69,29 @@ def announced_to_user(messages: list[dict[str, Any]]) -> bool:
     return False
 
 
+#: How many times one checkpoint may refuse the model's tool calls before it gives
+#: up and lets the work continue. A model that will not write the update must not be
+#: able to wedge the turn; three prompts is enough for the one that will.
+MAX_REFUSALS = 3
+
+
 class ProgressCheckpointer:
     """Counts executed tool calls and decides when the model owes the user a line.
 
     ``every <= 0`` disables it, which is how ``-p`` runs stay silent by default.
     The count restarts whenever the checkpoint is due -- including when the model
     had already spoken unprompted, since the user has just been updated either way.
+
+    Once a notice goes out the checkpointer is *owed* a reply: :meth:`refuse` hands
+    back the error that stops the model working until it has written one. Thinking
+    does not settle the debt; only text the user can read does.
     """
 
     def __init__(self, every: int) -> None:
         self._every = max(0, int(every))
         self._since = 0
+        self._owed = False
+        self._refusals = 0
 
     @property
     def every(self) -> int:
@@ -75,6 +101,11 @@ class ProgressCheckpointer:
     def since(self) -> int:
         """Tool calls executed since the last update (or the start of the turn)."""
         return self._since
+
+    @property
+    def owed(self) -> bool:
+        """True while a checkpoint has been raised and not yet answered."""
+        return self._owed
 
     def record(self, calls: int = 1) -> None:
         """Count ``calls`` executed tool calls."""
@@ -89,7 +120,34 @@ class ProgressCheckpointer:
         if not self._every or self._since < self._every:
             return None
         self._since = 0
-        return None if user_was_told else progress_notice(self._every)
+        if user_was_told:
+            return None
+        self._owed = True
+        self._refusals = 0
+        return progress_notice(self._every)
+
+    def settle(self, *, updated: bool) -> bool:
+        """Clear a raised checkpoint once the model spoke; return True if it did."""
+        if not self._owed or not updated:
+            return False
+        self._owed = False
+        self._refusals = 0
+        return True
+
+    def refuse(self) -> str | None:
+        """Return the error to hand back instead of running tools, or ``None``.
+
+        ``None`` means the checkpoint is not owed, or the gate has given up after
+        ``MAX_REFUSALS`` attempts and the model may carry on regardless.
+        """
+        if not self._owed:
+            return None
+        self._refusals += 1
+        if self._refusals > MAX_REFUSALS:
+            self._owed = False
+            self._refusals = 0
+            return None
+        return REFUSAL
 
 
 def resolve_every(override: int | None, *, headless: bool, default: int) -> int:

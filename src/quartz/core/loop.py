@@ -484,6 +484,22 @@ def agent_loop(
         ):
             continue
 
+        # A checkpoint the model answered with work instead of words: hand back an
+        # error in place of the tool results, so the next thing it reads is what the
+        # user did not get. Thinking is not an update -- the user cannot see it.
+        answered = bool((assistant_dict.get("content") or "").strip())
+        progress.settle(updated=answered)
+        if not answered:
+            refusal = progress.refuse()
+            if refusal is not None:
+                if tool_calls:
+                    messages.append(assistant_dict)
+                    for tc in tool_calls:
+                        messages.append({"role": "tool", "tool_call_id": tc["id"], "content": refusal})
+                else:
+                    messages.append({"role": "user", "content": refusal})
+                continue
+
         messages.append(assistant_dict)
 
         if not tool_calls:
