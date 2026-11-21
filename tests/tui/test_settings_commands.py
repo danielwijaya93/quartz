@@ -138,6 +138,44 @@ def test_settings_rejects_invalid_values_without_saving(
     assert not (tmp_path / "config.json").exists()
 
 
+@pytest.mark.parametrize(
+    "spelling",
+    ["reserve", "reserve_tokens", "compact_reserve_tokens"],
+)
+def test_settings_accepts_the_config_file_key_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str
+) -> None:
+    """Someone who opened config.json types its key, and it works."""
+    rt = _make_rt(tmp_path, monkeypatch)
+    assert _handle_slash_command(rt, f"/settings {spelling} 32768") is False
+    assert rt.compact_reserve_tokens == 32768
+    data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert data["compact_reserve_tokens"] == 32768
+
+
+@pytest.mark.parametrize("spelling", ["progress", "progress_every"])
+def test_progress_accepts_both_spellings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str
+) -> None:
+    rt = _make_rt(tmp_path, monkeypatch)
+    assert _handle_slash_command(rt, f"/settings {spelling} 12") is False
+    assert rt.progress_every == 12
+
+
+def test_saved_confirmation_says_when_it_applies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The missing fact: the edit lands now, but a running turn keeps its cadence."""
+    rt = _make_rt(tmp_path, monkeypatch)
+    printed: list[str] = []
+    monkeypatch.setattr(commands, "console_print", lambda msg, **kw: printed.append(str(msg)))
+
+    assert _handle_slash_command(rt, "/settings progress 20") is False
+    assert len(printed) == 1
+    assert "progress_every = 20" in printed[0]
+    assert "next message" in printed[0]
+
+
 def test_settings_list_shows_stored_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rt = _make_rt(tmp_path, monkeypatch)
     assert _handle_slash_command(rt, "/settings reserve 12345") is False

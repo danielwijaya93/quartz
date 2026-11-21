@@ -127,8 +127,8 @@ model's.
 - Turn it off, or change the cadence, with `/settings progress <n>`
   (`/settings progress 0` disables it). The change is saved for future sessions
   and takes effect on the **next turn**, so one session can discuss at `5` and
-  then work quietly at `20`. A `/settings` command typed while a turn is running
-  is queued and applied when that turn ends.
+  then work quietly at `20`. `/settings` answers immediately even mid-turn; a
+  turn already running keeps the cadence it started with.
 - `-p` runs stay quiet by default, where stdout is the answer and nothing else;
   pass `--progress-every N` to opt a long headless run in.
 
@@ -151,6 +151,7 @@ model's.
 | `/prompt` | Show the assembled system prompt. |
 | `/reset` | Clear history, start a new session, and restart the kernel. |
 | `/jobs` | List running background `bash()` jobs with elapsed time and output tail. |
+| `/settings` | Show or change user preferences: `reserve`, `keep_recent`, `progress` (stored in `~/.quartz/config.json`). |
 | `/help` | Show available slash commands. |
 | `/exit` | Exit the agent. Alias: `/quit`. |
 

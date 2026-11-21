@@ -710,9 +710,54 @@ class InteractiveDock:
                 tracker = self._active_tracker
             if tracker is not None:
                 tracker.add_steering_message(text)
+        elif action is SubmitAction.RUN_LOCAL_COMMAND:
+            self._handle_local_command(text)
         else:
-            # RUN, or RUN_LOCAL_COMMAND (a slash command while a turn runs).
+            # RUN: an idle prompt or slash command starts a turn.
             self._launch_worker(lambda: self._handle_submitted_idle(text))
+
+    def _handle_local_command(self, text: str) -> None:
+        """Handle a slash command typed while a turn is running.
+
+        A slash command is local: it never becomes a steering message. But most of
+        them still need the turn to be over -- either because they touch the kernel
+        (``/vars``, ``/jobs``) or because they rewrite the conversation. Those wait
+        for the worker lock, so they are announced first: silently queueing is what
+        made ``/settings`` look like it had done nothing at all.
+
+        Commands registered as ``immediate`` only touch local state, so they run on
+        their own thread right away and answer while the turn keeps going.
+        """
+        from quartz.tui.commands import COMMAND_REGISTRY
+
+        cmd = COMMAND_REGISTRY.lookup(text)
+        if cmd is not None and cmd.immediate:
+            threading.Thread(
+                target=self._run_slash_command, args=(text,), daemon=True
+            ).start()
+            return
+        self._announce_queued(cmd.name if cmd is not None else text.split()[0])
+        self._launch_worker(lambda: self._handle_submitted_idle(text))
+
+    def _run_slash_command(self, text: str) -> None:
+        """Run one slash command off the UI thread, without the worker lock."""
+        from quartz.tui.commands import _handle_slash_command
+
+        if _handle_slash_command(self.rt, text) is True:
+            self.exit()
+            return
+        self._refresh_bg_count()
+        self._invalidate()
+
+    def _announce_queued(self, name: str) -> None:
+        """Say that a command is waiting for the running turn to finish."""
+        try:
+            _active_printer().block(
+                Text(f"{name} queued — runs when this turn finishes.", style="dim")
+            )
+        except Exception:
+            # A courtesy line is never worth breaking a turn over.
+            pass
 
     def _launch_worker(self, fn: Callable[[], None]) -> None:
         def _runner() -> None:
