@@ -1,14 +1,17 @@
-"""The `mcp` and `auth` subcommands: argument parsing, and nothing else.
+"""The `mcp`, `auth` and `web` subcommands: argument parsing, and nothing else.
 
-Both dispatch before the main parser runs (see `cli/app.py::main`). `auth` only
+All three dispatch before the main parser runs (see `cli/app.py::main`). `auth` only
 parses its flags here — the flows it runs are interactive and live in
-`quartz.tui.provider_setup`.
+`quartz.tui.provider_setup`. `web` builds the same runtime the terminal does, then
+hands it to the browser transport; every import that needs FastAPI or uvicorn is
+lazy so a user who never runs `quartz web` never loads them.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from typing import Any
 
 from rich.markup import escape
@@ -24,7 +27,7 @@ from quartz.providers.registry import PROVIDERS
 from quartz.tui.provider_setup import _login_provider, _logout_provider, show_auth_status
 from quartz.tui.render import console
 
-__all__ = ["_handle_auth_cli", "_handle_mcp_cli"]
+__all__ = ["_handle_auth_cli", "_handle_mcp_cli", "_handle_web_cli"]
 
 
 def _handle_auth_cli(argv: list[str]) -> None:
@@ -179,3 +182,103 @@ def _handle_mcp_cli(argv: list[str]) -> None:
 
         saved_path = add_mcp_server(args.name, spec, cfg_path)
         console.print(f"[green]Saved MCP server '{args.name}' to {saved_path}[/green]")
+
+
+# -- web ---------------------------------------------------------------
+
+_LOOPBACK = {"127.0.0.1", "::1", "localhost", "localhost.localdomain"}
+
+
+def _is_loopback(host: str) -> bool:
+    """Whether binding ``host`` stays on this machine."""
+    return host.strip().lower() in _LOOPBACK or host.strip().startswith("127.")
+
+
+def _handle_web_cli(argv: list[str]) -> None:
+    """Run `quartz web`: the browser transport over the same core as the terminal."""
+    parser = argparse.ArgumentParser(
+        prog="quartz web",
+        description="Serve the Quartz web client (one WebSocket over one AgentRuntime).",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="Bind address (default: loopback only).")
+    parser.add_argument("--port", type=int, default=8765, help="Bind port (default: 8765).")
+    parser.add_argument("--cwd", type=Path, default=Path.cwd(), help="Working directory for the agent.")
+    parser.add_argument("--open", action="store_true", help="Open the default browser once listening.")
+    parser.add_argument(
+        "--dev",
+        action="store_true",
+        help="API-only: serve no built client, for use with `npm run dev` in webapp/.",
+    )
+    args = parser.parse_args(argv)
+
+    cwd = args.cwd.expanduser().resolve()
+    if not cwd.is_dir():
+        console.print(f"[red]Error: --cwd is not a directory: {escape(str(cwd))}[/red]")
+        sys.exit(2)
+
+    # There is no auth by design (a local single-user tool), so a reachable bind
+    # address is a real exposure. Say so before starting rather than after.
+    if not _is_loopback(args.host):
+        console.print(
+            f"[bold yellow]Warning:[/bold yellow] binding {escape(args.host)} exposes Quartz "
+            "to your network, and the web transport has no authentication. "
+            "Use [cyan]--host 127.0.0.1[/cyan] unless you know what is in front of it."
+        )
+
+    from quartz.bootstrap import BootstrapOptions, build_runtime
+
+    def build(session_id: str | None) -> Any:
+        """Build the runtime for a new session (``None``) or an existing one.
+
+        A browser tab resuming history goes through the same bootstrap the terminal
+        uses, so a web session is indistinguishable on disk from a terminal session.
+        """
+        return build_runtime(
+            BootstrapOptions(
+                cwd=cwd,
+                resume_id=session_id,
+                headless=False,
+                plain_output=False,
+            )
+        )
+
+    from quartz.web.app import create_app
+
+    app = create_app(build=build, cwd=cwd, dev=args.dev)
+
+    if args.open:
+        _open_browser_when_ready(args.host, args.port)
+
+    import uvicorn
+
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    except KeyboardInterrupt:
+        pass
+
+
+def _open_browser_when_ready(host: str, port: int, timeout: float = 15.0) -> None:
+    """Open the browser once the port accepts connections, off the main thread.
+
+    Polling rather than opening immediately because uvicorn binds after `run` is
+    called: opening first would land the user on a connection-refused page.
+    """
+    import socket
+    import threading
+    import time
+    import webbrowser
+
+    target = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    url = f"http://{target}:{port}/"
+
+    def _wait() -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.25)
+                if probe.connect_ex((target, port)) == 0:
+                    webbrowser.open(url)
+                    return
+            time.sleep(0.1)
+
+    threading.Thread(target=_wait, name="quartz-web-open", daemon=True).start()
