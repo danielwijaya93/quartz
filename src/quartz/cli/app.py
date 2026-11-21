@@ -6,15 +6,15 @@ import argparse
 import os
 import signal
 import sys
-import threading
 from pathlib import Path
 from typing import Any
 
 from rich.markup import escape
 from rich.text import Text
 
+from quartz.bootstrap import BootstrapOptions, build_runtime
 from quartz.tui.commands import _handle_slash_command
-from quartz.errors import CredentialError, EndpointConfigError
+from quartz.errors import CredentialError, EndpointConfigError, SessionNotFoundError
 from quartz.settings import load_settings
 from quartz.core.images import (
     ImageAttachment,
@@ -23,13 +23,9 @@ from quartz.core.images import (
     load_image_file,
 )
 from quartz.tui.dock import InteractiveDock
-from quartz.kernel.client import KernelClient
-from quartz.core.loop import TurnUsage, drain_bash_events, format_bash_done_events
+from quartz.core.loop import drain_bash_events, format_bash_done_events
 from quartz.providers.registry import PROVIDERS, resolve_context_tokens
-from quartz.core.progress import resolve_every
-from quartz.core.prompt import build_system_prompt
 from quartz.core.runtime import AgentRuntime
-from quartz.core.session import Session
 from quartz.core.turn import TurnStatus, run_interactive_turn, run_turn
 from quartz.providers.selection import build_provider
 from quartz.cli.subcommands import _handle_auth_cli, _handle_mcp_cli
@@ -159,89 +155,44 @@ def _run_interactive(rt: AgentRuntime, resumed: bool) -> None:
         _run_one_turn()
 
 
-def _build_runtime(args: argparse.Namespace) -> tuple[AgentRuntime, bool]:
-    cwd = args.cwd.resolve()
+def _bootstrap_options(args: argparse.Namespace) -> BootstrapOptions:
+    """Translate the parsed command line into transport-neutral bootstrap input.
 
-    kernel = KernelClient(cwd=cwd)
-    kernel_err: list[BaseException] = []
-
-    def _start_kernel() -> None:
-        try:
-            kernel.start()
-        except BaseException as exc:
-            kernel_err.append(exc)
-
-    kernel_thread = threading.Thread(target=_start_kernel, daemon=True)
-    kernel_thread.start()
-    try:
-        client, provider_name, model, effort = build_provider(
-            provider=args.provider, model_override=args.model, effort_override=args.effort
-        )
-        max_context_tokens = resolve_context_tokens(provider_name, model, client)
-        _settings = load_settings()
-        compact_reserve_tokens = _settings.compact_reserve_tokens
-        keep_recent_tokens = _settings.keep_recent_tokens
-        system_prompt = build_system_prompt(cwd, headless=bool(args.prompt))
-    except (CredentialError, EndpointConfigError) as exc:
-        kernel_thread.join()
-        kernel.close()
-        console.print(f"[red]Error: {escape(str(exc))}[/red]")
-        sys.exit(1)
-    finally:
-        kernel_thread.join()
-    if kernel_err:
-        raise kernel_err[0]
-
-    messages: list[dict[str, Any]] = []
-    resumed = False
-    if args.cont or args.resume:
-        target_id = args.resume or Session.latest_id(cwd=cwd)
-        if not target_id:
-            kernel.close()
-            console.print(f"[red]Error: No previous session found for {escape(_short_path(cwd))}.[/red]")
-            sys.exit(1)
-        try:
-            if args.fork:
-                active_session, messages = Session.fork(target_id, cwd)
-            else:
-                active_session, messages = Session.load(target_id)
-        except FileNotFoundError as exc:
-            kernel.close()
-            console.print(f"[red]Error: {escape(str(exc))}[/red]")
-            sys.exit(1)
-        resumed = True
-        restored_notice = active_session.restore_kernel(kernel)
-        if restored_notice:
-            messages.append({"role": "user", "content": restored_notice})
-    else:
-        active_session = Session.create(cwd)
-
-    rt = AgentRuntime(
-        cwd=cwd,
-        kernel=kernel,
-        client=client,
-        provider_name=provider_name,
-        model=model,
-        effort=effort,
-        system_prompt=system_prompt,
-        active_session=active_session,
-        messages=messages,
-        usage_stats=TurnUsage.from_dict(active_session.last_usage),
-        max_context_tokens=max_context_tokens,
-        compact_reserve_tokens=compact_reserve_tokens,
-        keep_recent_tokens=keep_recent_tokens,
+    The only decisions made here are the ones that genuinely belong to a terminal:
+    `plain_output` folds `--prompt` together with TTY detection, which a server has
+    no use for.
+    """
+    return BootstrapOptions(
+        cwd=args.cwd,
+        provider=args.provider,
+        model=args.model,
+        effort=args.effort,
+        headless=bool(args.prompt),
+        resume_id=args.resume,
+        fork=args.fork,
+        cont=args.cont,
         verbose=args.verbose,
         plain_output=bool(args.prompt) or not sys.stdout.isatty(),
-        headless=bool(args.prompt),
         show_thinking=args.show_thinking,
         show_details=args.show_details,
-        progress_every=resolve_every(
-            args.progress_every,
-            headless=bool(args.prompt),
-            default=_settings.progress_every,
-        ),
+        progress_every=args.progress_every,
     )
-    return rt, resumed
+
+
+def _build_runtime(args: argparse.Namespace) -> tuple[AgentRuntime, bool]:
+    """Build the runtime for a terminal run, or exit 1 with the same red line as before.
+
+    `build_runtime` raises instead of exiting so a server can survive a bad request;
+    the terminal keeps its old contract by reporting and exiting here.
+    """
+    try:
+        return build_runtime(_bootstrap_options(args))
+    except SessionNotFoundError as exc:
+        console.print(f"[red]Error: No previous session found for {escape(_short_path(exc.cwd))}.[/red]")
+        sys.exit(1)
+    except (CredentialError, EndpointConfigError, FileNotFoundError) as exc:
+        console.print(f"[red]Error: {escape(str(exc))}[/red]")
+        sys.exit(1)
 
 
 def _context_budget_from_settings() -> tuple[int, int, int]:
