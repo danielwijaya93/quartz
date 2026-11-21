@@ -12,6 +12,23 @@ import { CompactionRowView } from "./rows/CompactionRowView";
 import { ErrorRowView } from "./rows/ErrorRowView";
 import { TurnEndRowView } from "./rows/TurnEndRowView";
 import { CommandRowView } from "./rows/CommandRowView";
+/**
+ * The A2UI renderer (`@a2ui/react` + lit web components) is a large, opt-in chunk:
+ * a user who never opens a dashboard never downloads it. It is also the newest
+ * dependency in the tree, so it is isolated behind a boundary rather than in the
+ * critical path.
+ */
+const A2uiRowView = React.lazy(() =>
+  import("./rows/A2uiRowView").then((module) => ({ default: module.A2uiRowView })),
+);
+
+function RowLoading(): React.ReactElement {
+  return (
+    <p className="text-xs text-muted" role="status">
+      Loading dashboard…
+    </p>
+  );
+}
 
 function RowView({ row, streaming }: { row: Row; streaming: boolean }): React.ReactElement {
   switch (row.kind) {
@@ -35,6 +52,12 @@ function RowView({ row, streaming }: { row: Row; streaming: boolean }): React.Re
       return <TurnEndRowView row={row} />;
     case "command":
       return <CommandRowView row={row} />;
+    case "a2ui":
+      return (
+        <React.Suspense fallback={<RowLoading />}>
+          <A2uiRowView row={row} />
+        </React.Suspense>
+      );
     default:
       return <></>;
   }

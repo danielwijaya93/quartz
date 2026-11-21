@@ -12,6 +12,7 @@
  */
 
 import type {
+  A2uiEnvelope,
   Command,
   CommandResult,
   ImageAttachment,
@@ -99,6 +100,21 @@ export interface CommandRow {
   result: CommandResult;
 }
 
+/**
+ * A generated UI surface, as it arrived.
+ *
+ * The row carries the envelopes verbatim and in order: rendering is the A2UI
+ * renderer's job, and the reducer's only opinion is *where* the surface sits in
+ * the transcript. `id` is derived from the frame (turn + surface), so a replayed
+ * frame dedupes instead of stacking a second copy.
+ */
+export interface A2uiRow {
+  kind: "a2ui";
+  id: string;
+  surfaceId: string;
+  messages: A2uiEnvelope[];
+}
+
 export type Row =
   | UserRow
   | AssistantRow
@@ -109,7 +125,8 @@ export type Row =
   | CompactionRow
   | ErrorRow
   | TurnEndRow
-  | CommandRow;
+  | CommandRow
+  | A2uiRow;
 
 export type RowKind = Row["kind"];
 
@@ -497,6 +514,28 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
         }),
         fatalError: message.fatal ? message.message : state.fatalError,
       };
+
+    case "a2ui": {
+      // Nothing here trusts the frame: a malformed payload still yields a row, so
+      // the view can explain itself instead of the surface vanishing silently.
+      const messages = Array.isArray(message.messages)
+        ? message.messages.filter(
+            (entry): entry is A2uiEnvelope =>
+              typeof entry === "object" && entry !== null && !Array.isArray(entry),
+          )
+        : [];
+      const surfaceId = typeof message.surfaceId === "string" ? message.surfaceId : "";
+      // Turn + surface identifies the frame: the same frame twice is one surface.
+      const id = `a2ui-${typeof message.turnId === "string" ? message.turnId : "unknown"}-${
+        surfaceId || "unnamed"
+      }`;
+      return appendRow({ ...state, openRowId: null }, {
+        kind: "a2ui",
+        id,
+        surfaceId,
+        messages,
+      });
+    }
 
     case "command_result":
       return appendRow(state, {

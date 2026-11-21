@@ -58,9 +58,9 @@ server.on("connection", (socket) => {
       case "prompt": {
         // Echo the user turn so the transcript shows it, exactly as the real
         // server does before any deltas arrive.
-        log(`prompt: ${String(message.text).slice(0, 60)}…`);
+        log(`prompt: ${String(message.text).slice(0, 60)}…${message.richUi ? " [dashboard]" : ""}`);
         clearTimers();
-        const frames = scriptedTurn();
+        const frames = scriptedTurn({ richUi: message.richUi === true });
         frames.forEach((frame, index) => {
           const timer = setTimeout(() => send(frame), index * DELAY);
           timers.push(timer);

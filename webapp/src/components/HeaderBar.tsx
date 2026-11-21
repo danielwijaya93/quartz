@@ -2,7 +2,9 @@ import * as React from "react";
 import { Button, Chip, Separator } from "@heroui/react";
 import { Plus } from "lucide-react";
 import { ThemeToggle } from "./ThemeToggle";
+import { RichUiToggle } from "./RichUiToggle";
 import type { ConnectionStatus } from "@/lib/connection";
+import type { RichUiMode } from "@/lib/richUi";
 import type { SessionMeta } from "@/lib/transcript";
 
 const STATUS_COPY: Record<
@@ -56,10 +58,14 @@ function MetaChip({
 export function HeaderBar({
   session,
   status,
+  richUiMode,
+  onRichUiModeChange,
   onNewSession,
 }: {
   session: SessionMeta;
   status: ConnectionStatus;
+  richUiMode: RichUiMode;
+  onRichUiModeChange: (mode: RichUiMode) => void;
   onNewSession: () => void;
 }): React.ReactElement {
   const copy = STATUS_COPY[status];
@@ -98,6 +104,7 @@ export function HeaderBar({
               </span>
             </Chip>
           </span>
+          <RichUiToggle mode={richUiMode} onChange={onRichUiModeChange} />
           <ThemeToggle />
           <Button size="sm" variant="outline" onPress={onNewSession} aria-label="Start a new session">
             <Plus aria-hidden="true" className="size-3.5" />

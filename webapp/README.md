@@ -45,23 +45,56 @@ src/
     connection.ts          transport abstraction: connect/send/emit, reconnect backoff
     transcript.ts          pure reducer: protocol frames -> render rows (no React)
     theme.ts               light/dark/system: the one theme contract
+    richUi.ts              markdown vs dashboard response format (persisted, per prompt)
+    a2ui/processor.ts      the only place A2UI's processor + catalog are wired up
+    a2ui/useA2uiSurfaceSet.ts  one processor per frame, disposed on unmount
     announcements.ts       rows -> the coarse events a screen reader should hear
     commandText.ts         columnar `kind: "text"` bodies (e.g. /help) -> lists
   components/
     Markdown.tsx           streaming-aware markdown + theme-aware highlighting
     HeaderBar.tsx          session chips, connection chip, theme toggle, New
     ThemeToggle.tsx        light / dark / system
+    RichUiToggle.tsx       markdown / dashboard response format
     Transcript.tsx         role="log", follows the tail unless the user scrolled up
     TranscriptAnnouncer.tsx  the only aria-live node in the transcript area
     StatusLine.tsx         spinner + status label / reconnect banner
     Composer.tsx           auto-grow textarea, steer-vs-prompt, image attach
     CommandPalette.tsx     Modal + fuzzy filter over session_state.commands
     rows/                  one component per row kind
+                           rows/A2uiRowView.tsx draws an `a2ui` surface (lazy chunk)
 mock/
   script.mjs               the scripted session, pure frame builders
+  a2ui-fixture.mjs         the canned A2UI v1.0 surface, mirroring the server's
+  check-a2ui.mjs           validate the fixture against the real renderer, no browser
   server.mjs               ws server replaying it — `npm run mock`
   smoke.mjs                headless end-to-end check of the frame sequence
 ```
+
+## A2UI surfaces
+
+A surface arrives as one `a2ui` frame: an ordered list of A2UI v1.0 wire
+envelopes (`createSurface`, then `updateComponents`). `lib/a2ui/processor.ts` feeds
+them to a `MessageProcessor` and `rows/A2uiRowView.tsx` draws each resulting
+surface with `A2uiSurface` from `@a2ui/react`. Rendering is a lazy chunk, so a
+user who stays in Markdown mode never downloads the renderer.
+
+The frame is emitted only when the client asks: the header's **Markdown /
+Dashboard** control sets `richUi: true` on the next `prompt` frame and persists
+the choice in `localStorage`.
+
+Two things it deliberately does not do yet:
+
+- **The surface is canned.** `src/quartz/web/a2ui_fixture.py` returns a fixed
+  surface; no model chose its components. This is a renderer check, not
+  generation.
+- **The catalog is Google's basic catalog**, so the surface looks like generic
+  A2UI widgets, not like Quartz. A Quartz catalog implemented with HeroUI
+  components is the next step, and it plugs in at `lib/a2ui/processor.ts` and in
+  `src/quartz/web/` on the agent side — nowhere else.
+
+Theming is one block of CSS variables in `src/index.css`: `--a2ui-color-*` mapped
+onto HeroUI tokens inside `.a2ui-scope`, so both themes come from the design
+system and no component carries a raw colour.
 
 ## Commands
 
@@ -74,6 +107,7 @@ npm run test      # vitest (reducer + components)
 npm run typecheck # tsc --noEmit (strict)
 npm run build     # static bundle -> dist/
 npm run verify    # typecheck + test + smoke + build
+node mock/check-a2ui.mjs   # the fixture's envelopes vs. the real A2UI processor
 ```
 
 ### Developing against the mock

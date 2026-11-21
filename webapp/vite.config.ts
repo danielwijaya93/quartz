@@ -27,11 +27,35 @@ export default defineConfig({
     rollupOptions: {
       output: {
         /**
-         * Three chunks instead of one 680 kB bundle: the highlight.js language
-         * pack is by far the heaviest dependency and changes least often, so
-         * splitting it keeps the app chunk small and cacheable.
+         * Named chunks instead of one bundle: the highlight.js language pack is
+         * by far the heaviest dependency and changes least often, so splitting it
+         * keeps the app chunk small and cacheable.
          */
         manualChunks: (id: string) => {
+          /**
+           * A2UI is *excluded* from manual chunking rather than given a chunk of
+           * its own. Naming a chunk does not make it lazy: the generic vendor rule
+           * below would pull the renderer and its ~470 kB of lit/zod/markdown-it
+           * into the eager vendor bundle, so everyone would download a renderer
+           * most users never open. Returning nothing here lets Rollup place them
+           * in the chunk the `React.lazy` import creates, which is not preloaded.
+           */
+          if (
+            id.includes("node_modules/@a2ui/") ||
+            id.includes("node_modules/lit/") ||
+            id.includes("node_modules/lit-html/") ||
+            id.includes("node_modules/@lit/") ||
+            id.includes("node_modules/@preact/signals-core/") ||
+            id.includes("node_modules/markdown-it/") ||
+            id.includes("node_modules/dompurify/") ||
+            id.includes("node_modules/redos-detector/") ||
+            id.includes("node_modules/validate-color/") ||
+            id.includes("node_modules/zod")
+          ) {
+            // No manual chunk: Rollup's own splitting then places these in the
+            // chunk the `React.lazy` import creates and nowhere else.
+            return undefined;
+          }
           if (id.includes("node_modules/highlight.js") || id.includes("node_modules/lowlight")) {
             return "highlight";
           }

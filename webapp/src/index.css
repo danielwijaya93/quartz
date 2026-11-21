@@ -311,3 +311,58 @@
     font-weight: 600;
   }
 }
+
+/*
+ * A2UI surfaces.
+ *
+ * A2UI's basic catalog is themed entirely by CSS variables, so this is the whole
+ * bridge: map `--a2ui-*` onto HeroUI's tokens once, and a generated surface picks
+ * up this app's palette, radius and typography in both themes. Nothing below is a
+ * colour literal, so light and dark stay in step with the rest of the app and the
+ * Quartz catalog (step 2) inherits the same mapping.
+ *
+ * `html .a2ui-scope` outranks the `:root` block that `injectBasicCatalogStyles()`
+ * adopts, which is what lets one rule override the catalog's defaults.
+ */
+html .a2ui-scope {
+  --a2ui-color-background: var(--background);
+  --a2ui-color-on-background: var(--foreground);
+
+  --a2ui-color-surface: var(--surface);
+  --a2ui-color-on-surface: var(--surface-foreground);
+
+  --a2ui-color-primary: var(--accent);
+  --a2ui-color-on-primary: var(--accent-foreground);
+  --a2ui-color-primary-light: color-mix(in oklab, var(--accent) 85%, white);
+  --a2ui-color-primary-dark: color-mix(in oklab, var(--accent) 85%, black);
+  --a2ui-color-primary-hover: light-dark(
+    var(--a2ui-color-primary-dark),
+    var(--a2ui-color-primary-light)
+  );
+
+  --a2ui-color-secondary: var(--surface-secondary);
+  --a2ui-color-on-secondary: var(--surface-secondary-foreground);
+  --a2ui-color-secondary-light: color-mix(in oklab, var(--surface-secondary) 85%, white);
+  --a2ui-color-secondary-dark: color-mix(in oklab, var(--surface-secondary) 95%, black);
+  --a2ui-color-secondary-hover: light-dark(
+    var(--a2ui-color-secondary-dark),
+    var(--a2ui-color-secondary-light)
+  );
+
+  --a2ui-color-border: var(--border);
+  --a2ui-border-width: var(--border-width);
+  --a2ui-border-radius: var(--radius);
+
+  --a2ui-color-input: var(--surface-secondary);
+  --a2ui-color-on-input: var(--foreground);
+
+  --a2ui-text-caption-color: var(--muted);
+  --a2ui-font-family-title: var(--font-sans);
+  --a2ui-font-family-monospace: var(--font-mono);
+  --a2ui-font-size: 0.9375rem;
+
+  /* Cards are flat with a border in this app; shadow and outer gutter would be
+     chrome the reskin deliberately removed. */
+  --a2ui-card-box-shadow: none;
+  --a2ui-card-margin: 0;
+}

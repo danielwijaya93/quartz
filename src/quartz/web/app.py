@@ -238,7 +238,12 @@ async def _dispatch(
                     }
                 )
                 return
-            session.start_turn(text, _attachments(message.get("images")), push)
+            session.start_turn(
+                text,
+                _attachments(message.get("images")),
+                push,
+                rich_ui=message.get("richUi") is True,
+            )
 
         elif kind == "steer":
             text = str(message.get("text") or "").strip()

@@ -636,3 +636,95 @@ describe("the local prompt echo", () => {
     expect(texts).toContain("an older question");
   });
 });
+
+describe("a2ui surfaces", () => {
+  const surface = (turnId: string, surfaceId = "quartz-dashboard"): ServerMessage => ({
+    type: "a2ui",
+    turnId,
+    surfaceId,
+    messages: [
+      { version: "1.0", createSurface: { surfaceId } },
+      { version: "1.0", updateComponents: { surfaceId, components: [] } },
+    ],
+  });
+
+  it("produces one row, ordered after turn_start", () => {
+    const state = fold([{ type: "turn_start", turnId: "t1" }, surface("t1")]);
+    expect(state.rows.map((row) => row.kind)).toEqual(["a2ui"]);
+    expect(state.rows[0]).toMatchObject({ kind: "a2ui", surfaceId: "quartz-dashboard" });
+  });
+
+  it("keeps the envelopes in the order they arrived", () => {
+    const state = fold([{ type: "turn_start", turnId: "t1" }, surface("t1")]);
+    const row = state.rows[0];
+    if (row === undefined || row.kind !== "a2ui") throw new Error("expected an a2ui row");
+    expect(row.messages.map((message) => Object.keys(message))).toEqual([
+      ["version", "createSurface"],
+      ["version", "updateComponents"],
+    ]);
+  });
+
+  it("appends a second turn's surface rather than replacing the first", () => {
+    const state = fold([
+      { type: "turn_start", turnId: "t1" },
+      surface("t1"),
+      { type: "turn_end", status: "ok", tokens: 0, elapsedMs: 0 },
+      { type: "turn_start", turnId: "t2" },
+      surface("t2"),
+    ]);
+    const ids = state.rows.filter((row) => row.kind === "a2ui").map((row) => row.id);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it("dedupes a frame replayed across a reconnect", () => {
+    const once = fold([{ type: "turn_start", turnId: "t1" }, surface("t1")]);
+    const twice = fold([{ type: "turn_start", turnId: "t1" }, surface("t1"), surface("t1")]);
+    expect(twice.rows.filter((row) => row.kind === "a2ui")).toHaveLength(1);
+    expect(twice.rows[0]?.id).toBe(once.rows[0]?.id);
+  });
+
+  it("survives a malformed frame instead of throwing", () => {
+    const state = fold([
+      { type: "turn_start", turnId: "t1" },
+      { type: "a2ui", turnId: "t1", surfaceId: 7, messages: "nope" } as unknown as ServerMessage,
+    ]);
+    const row = state.rows[0];
+    expect(row?.kind).toBe("a2ui");
+    if (row === undefined || row.kind !== "a2ui") throw new Error("expected an a2ui row");
+    // Coerced to the empty surface, which the view explains rather than hides.
+    expect(row.messages).toEqual([]);
+    expect(row.surfaceId).toBe("");
+  });
+
+  it("drops non-object envelopes but keeps the valid ones", () => {
+    const state = fold([
+      { type: "turn_start", turnId: "t1" },
+      {
+        type: "a2ui",
+        turnId: "t1",
+        surfaceId: "s",
+        messages: [{ version: "1.0", createSurface: { surfaceId: "s" } }, null, 3] as unknown as Record<
+          string,
+          unknown
+        >[],
+      },
+    ]);
+    const row = state.rows[0];
+    if (row === undefined || row.kind !== "a2ui") throw new Error("expected an a2ui row");
+    expect(row.messages).toHaveLength(1);
+  });
+
+  it("does not close an open text row's identity", () => {
+    const state = fold([
+      { type: "turn_start", turnId: "t1" },
+      { type: "text_delta", text: "before" },
+      surface("t1"),
+      { type: "text_delta", text: "after" },
+    ]);
+    const texts = state.rows.filter((row) => row.kind === "assistant").map((row) => row.text);
+    // The surface ends the prose, so "after" is a new row: a delta never jumps
+    // backwards over a surface to keep appending to an earlier paragraph.
+    expect(texts).toEqual(["before", "after"]);
+  });
+});
