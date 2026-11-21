@@ -71,15 +71,29 @@ When the user requests working on a feature, bug fix, or investigation in parall
    ```bash
    git worktree add -b <branch-name> .worktrees/<branch-name> main
    ```
-2. **Session Forking**: Spawn a background worker using `bash(...)` with session forking so the worker inherits the warm context and kernel snapshot:
+2. **Fresh worker session**: Write the task to a brief file and spawn a background worker with `quartz -p`. With no `-r`/`-c`, this starts a brand new session:
    ```python
-   from agent.session import Session
-   sid = Session.latest_id()
-   handle = bash(f"uv run quartz -p '<clear, actionable instructions>' -r {sid} --fork --cwd .worktrees/<branch-name>")
+   handle = bash(
+       "cd .worktrees/<branch-name> && "
+       "env -u PYTHONPATH uv run quartz -p \"$(cat ../.worker-prompt-<name>.md)\" --cwd ."
+   )
    ```
+   **Write a brief file; do not rely on inherited context.** A self-contained brief is faster and more
+   reliable than inherited history:
+   - A worker that inherits an orchestrator's conversation tends to adopt its *role* — it starts
+     delegating, reviewing and polling instead of implementing. Observed repeatedly: workers that were given
+     a self-contained brief finished in 4-6 minutes; workers forked from a long coordination session stalled,
+     spawned nested workers, or delivered nothing.
+   - The parent's context is already partly spent. A worker that starts at 25%+ has less room to work.
+   - The brief must stand alone: the goal, the files to read, the constraints, the verification steps, and
+     the git/PR instructions. If the task truly needs this conversation's findings, put those findings *in
+     the brief*.
+   - Start the brief with an explicit role line (e.g. "YOU ARE A WORKER. YOU IMPLEMENT. YOU DO NOT
+     ORCHESTRATE.") and tell it not to spawn sub-workers or poll other processes.
 3. **Background Execution**:
    - The cell returns immediately with `handle.pid`, leaving the main session free to continue interacting with the user.
    - The worker runs headlessly in `.worktrees/<branch-name>`, implements the task, executes tests (`uv run pytest`), commits, and opens a PR.
+   - Do not poll a running worker. The harness wakes you with `[bash-done pid:... exit:...]`; report progress to the user only when they ask or when the worker reports.
 4. **Harness Wake-up & Cleanup**:
    - When the worker finishes, the harness automatically emits `[bash-done pid:... exit:...]`, waking Quartz up to review the outcome.
    - Once complete or merged, clean up the worktree:
