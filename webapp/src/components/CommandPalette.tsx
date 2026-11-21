@@ -1,12 +1,7 @@
 import * as React from "react";
-import { CornerDownLeft, Terminal } from "lucide-react";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from "./ui/dialog";
-import { cn } from "@/lib/utils";
+import { Input, Kbd, Modal, useOverlayState } from "@heroui/react";
+import { CornerDownLeft, Search, Terminal } from "lucide-react";
+import { cn } from "@heroui/react";
 import type { Command } from "@/protocol";
 
 /**
@@ -64,8 +59,8 @@ export interface CommandPaletteProps {
 /**
  * Command palette.
  *
- * A list, a filter, Enter. Commands that need a terminal still appear — hiding
- * them would make the web transport feel like it lost half the app — and they
+ * A list, a filter, Enter. Commands that need a terminal still appear - hiding
+ * them would make the web transport feel like it lost half the app - and they
  * report back what to run instead.
  */
 export function CommandPalette({
@@ -74,6 +69,7 @@ export function CommandPalette({
   onOpenChange,
   onRun,
 }: CommandPaletteProps): React.ReactElement {
+  const state = useOverlayState({ isOpen: open, onOpenChange });
   const [query, setQuery] = React.useState("");
   const [active, setActive] = React.useState(0);
   const inputRef = React.useRef<HTMLInputElement | null>(null);
@@ -81,12 +77,17 @@ export function CommandPalette({
   const filtered = React.useMemo(() => filterCommands(commands, query), [commands, query]);
 
   React.useEffect(() => {
-    if (open) {
-      setQuery("");
-      setActive(0);
-      // Radix focuses the first focusable; ensure it is the filter input.
-      window.requestAnimationFrame(() => inputRef.current?.focus());
-    }
+    if (!open) return;
+    setQuery("");
+    setActive(0);
+  }, [open]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    // The filter is the only thing worth typing into; make it the focus target
+    // once the dialog has mounted rather than relying on tab order.
+    const frame = window.requestAnimationFrame(() => inputRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
   }, [open]);
 
   React.useEffect(() => {
@@ -141,84 +142,99 @@ export function CommandPalette({
   );
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent aria-label="Command palette">
-        <DialogTitle className="sr-only">Command palette</DialogTitle>
-        <DialogDescription className="sr-only">
-          Type to filter Quartz slash commands. Enter runs the selected command, Escape closes.
-        </DialogDescription>
+    <Modal state={state}>
+      <Modal.Backdrop variant="blur">
+        <Modal.Container size="md" scroll="inside">
+          <Modal.Dialog className="p-0">
+            <Modal.Header className="border-b border-separator px-4 py-3">
+              <Modal.Heading className="text-base font-semibold">Commands</Modal.Heading>
+            </Modal.Header>
 
-        <div className="flex items-center gap-2 border-b border-line px-3 py-2">
-          <span aria-hidden="true" className="font-mono text-xs text-accent">
-            /
-          </span>
-          <input
-            ref={inputRef}
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={onKeyDown}
-            placeholder="Filter commands…"
-            aria-label="Filter commands"
-            aria-controls="command-list"
-            aria-activedescendant={
-              filtered[active] ? `command-option-${filtered[active].name}` : undefined
-            }
-            role="combobox"
-            aria-expanded="true"
-            spellCheck={false}
-            autoComplete="off"
-            className="w-full bg-transparent font-mono text-sm text-ink placeholder:text-ink-dim focus-visible:outline-none"
-          />
-        </div>
-
-        <ul
-          id="command-list"
-          role="listbox"
-          aria-label="Available commands"
-          className="max-h-[50vh] overflow-y-auto py-1"
-        >
-          {filtered.length === 0 ? (
-            <li className="px-3 py-4 text-center font-mono text-xs text-ink-dim">
-              No command matches “{query}”.
-            </li>
-          ) : null}
-          {filtered.map((command, index) => (
-            <li
-              key={command.name}
-              id={`command-option-${command.name}`}
-              role="option"
-              aria-selected={index === active}
-              className={cn(
-                "flex cursor-pointer items-baseline gap-2 px-3 py-1 transition-colors duration-[var(--duration-feedback)]",
-                index === active ? "bg-elevated" : "hover:bg-surface",
-              )}
-              onMouseEnter={() => setActive(index)}
-              onClick={() => run(command)}
-            >
-              <Terminal
-                aria-hidden="true"
-                className={cn(
-                  "size-3 shrink-0 self-center",
-                  index === active ? "text-accent" : "text-ink-dim",
-                )}
+            <div className="flex items-center gap-2 px-4 py-3">
+              <Search aria-hidden="true" className="size-4 shrink-0 text-muted" />
+              <Input
+                ref={inputRef}
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={onKeyDown}
+                placeholder="Search commands…"
+                aria-label="Filter commands"
+                role="combobox"
+                aria-expanded="true"
+                aria-controls="command-list"
+                aria-autocomplete="list"
+                aria-activedescendant={
+                  filtered[active] ? `command-option-${filtered[active].name}` : undefined
+                }
+                spellCheck={false}
+                autoComplete="off"
+                autoFocus
+                className="border-0 bg-transparent px-0 shadow-none"
               />
-              <span className="shrink-0 font-mono text-xs text-ink">/{command.name}</span>
-              {command.usage ? (
-                <span className="shrink-0 font-mono text-2xs text-ink-dim">{command.usage}</span>
-              ) : null}
-              <span className="min-w-0 truncate text-2xs text-ink-muted">
-                {command.description}
-              </span>
-              {index === active ? (
-                <CornerDownLeft
-                  aria-hidden="true"
-                  className="ml-auto size-3 shrink-0 self-center text-ink-dim"
-                />
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      </DialogContent>
-    </Dialog>
+            </div>
+
+            <Modal.Body className="max-h-[50vh] overflow-y-auto px-2 pb-2">
+              <ul id="command-list" role="listbox" aria-label="Available commands">
+                {filtered.length === 0 ? (
+                  <li className="px-3 py-6 text-center text-sm text-muted">
+                    No command matches “{query}”.
+                  </li>
+                ) : null}
+                {filtered.map((command, index) => (
+                  <li
+                    key={command.name}
+                    id={`command-option-${command.name}`}
+                    role="option"
+                    aria-selected={index === active}
+                    data-selected={index === active}
+                    className={cn(
+                      "flex cursor-pointer items-baseline gap-2 rounded-lg px-3 py-2",
+                      index === active ? "bg-accent-soft text-accent-soft-foreground" : "text-foreground",
+                    )}
+                    onMouseEnter={() => setActive(index)}
+                    onClick={() => run(command)}
+                  >
+                    <Terminal
+                      aria-hidden="true"
+                      className={cn(
+                        "size-3.5 shrink-0 self-center",
+                        index === active ? "text-accent" : "text-muted",
+                      )}
+                    />
+                    <span className="shrink-0 font-mono text-sm font-medium">/{command.name}</span>
+                    {command.usage ? (
+                      <span className="shrink-0 font-mono text-xs text-muted">{command.usage}</span>
+                    ) : null}
+                    <span className="min-w-0 truncate text-xs text-muted">{command.description}</span>
+                    {index === active ? (
+                      <CornerDownLeft
+                        aria-hidden="true"
+                        className="ml-auto size-3.5 shrink-0 self-center text-muted"
+                      />
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </Modal.Body>
+
+            <Modal.Footer className="border-t border-separator px-4 py-2">
+              <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+                <span className="flex items-center gap-1">
+                  <Kbd>↑</Kbd>
+                  <Kbd>↓</Kbd>
+                  to move
+                </span>
+                <span className="flex items-center gap-1">
+                  <Kbd>Enter</Kbd> to run
+                </span>
+                <span className="flex items-center gap-1">
+                  <Kbd>Esc</Kbd> to close
+                </span>
+              </p>
+            </Modal.Footer>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+    </Modal>
   );
 }

@@ -1,7 +1,8 @@
 import * as React from "react";
-import { AlertTriangle, Check, Copy, List, MonitorSmartphone, X } from "lucide-react";
+import { Alert, Button, Card, Chip, Separator } from "@heroui/react";
+import { Check, Copy, Terminal } from "lucide-react";
 import { Markdown } from "../Markdown";
-import { RowFrame } from "./RowFrame";
+import { parseCommandText, type CommandTextRow } from "@/lib/commandText";
 import type { CommandResult } from "@/protocol";
 import type { CommandRow } from "@/lib/transcript";
 
@@ -19,22 +20,67 @@ function CopyableCommand({ command }: { command: string }): React.ReactElement {
   }, [command]);
 
   return (
-    <div className="mt-1 flex items-center gap-2">
-      <code className="min-w-0 flex-1 truncate rounded-[3px] border border-line bg-surface px-2 py-1 font-mono text-xs text-ink">
+    <div className="flex items-center gap-2">
+      <code className="min-w-0 flex-1 truncate rounded-md border border-border bg-background px-2.5 py-1.5 font-mono text-xs">
         {command}
       </code>
-      <button
-        type="button"
-        onClick={copy}
+      <Button
+        size="sm"
+        variant="outline"
+        onPress={copy}
         aria-label={copied ? "Copied" : `Copy ${command}`}
-        className="inline-flex size-6 shrink-0 items-center justify-center rounded-[var(--radius-cell)] text-ink-muted transition-colors duration-[var(--duration-feedback)] hover:bg-elevated hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
       >
-        {copied ? (
-          <Check aria-hidden="true" className="size-3 text-ok" />
-        ) : (
-          <Copy aria-hidden="true" className="size-3" />
-        )}
-      </button>
+        {copied ? <Check aria-hidden="true" className="size-3.5" /> : <Copy aria-hidden="true" className="size-3.5" />}
+        {copied ? "Copied" : "Copy"}
+      </Button>
+    </div>
+  );
+}
+
+/** A two-column block: label left, description right, one row per item. */
+function ColumnList({ rows }: { rows: readonly CommandTextRow[] }): React.ReactElement {
+  return (
+    <ul className="divide-y divide-separator rounded-md border border-border">
+      {rows.map((row, index) => (
+        <li
+          key={`${row.label}-${index}`}
+          className="flex flex-col gap-0.5 px-3 py-1.5 sm:flex-row sm:items-baseline sm:gap-3"
+        >
+          <span className="shrink-0 font-mono text-xs font-medium text-foreground">{row.label}</span>
+          {row.detail !== "" ? (
+            <span className="text-xs text-muted sm:ml-auto sm:text-right">{row.detail}</span>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * `kind: "text"` bodies.
+ *
+ * Some of them (notably `/help`) are really tables, and markdown would flatten
+ * them into one run-on paragraph. `parseCommandText` recognises that shape and
+ * this renders it as a list; everything else is ordinary markdown.
+ */
+function TextBody({ body }: { body: string }): React.ReactElement {
+  const parsed = React.useMemo(() => parseCommandText(body), [body]);
+
+  if (parsed === null) return <Markdown>{body}</Markdown>;
+
+  return (
+    <div className="space-y-3">
+      {parsed.intro !== null ? <Markdown>{parsed.intro}</Markdown> : null}
+      {parsed.sections.map((section, index) => (
+        <div key={`${section.heading ?? "section"}-${index}`} className="space-y-1.5">
+          {section.heading !== null ? (
+            <p className="text-xs font-semibold tracking-wide text-muted uppercase">
+              {section.heading}
+            </p>
+          ) : null}
+          <ColumnList rows={section.rows} />
+        </div>
+      ))}
     </div>
   );
 }
@@ -49,100 +95,85 @@ function CommandBody({
   switch (result.kind) {
     case "text":
       return (
-        <div>
+        <div className="space-y-2">
           {result.title ? (
-            <p className="mb-0.5 font-mono text-2xs uppercase tracking-[0.08em] text-ink-muted">
+            <p className="text-xs font-semibold tracking-wide text-muted uppercase">
               {result.title}
             </p>
           ) : null}
-          {result.body ? <Markdown>{result.body}</Markdown> : null}
+          {result.body ? <TextBody body={result.body} /> : null}
         </div>
       );
 
     case "list": {
-      const items = result.items ?? [];
-      if (items.length === 0) {
-        return <p className="font-mono text-xs text-ink-dim">(empty)</p>;
-      }
+      const items = (result.items ?? []).map((item, index) => ({
+        label: item.label,
+        detail: item.detail ?? "",
+        key: `${item.label}-${index}`,
+      }));
       return (
-        <div>
+        <div className="space-y-2">
           {result.title ? (
-            <p className="mb-0.5 font-mono text-2xs uppercase tracking-[0.08em] text-ink-muted">
+            <p className="text-xs font-semibold tracking-wide text-muted uppercase">
               {result.title}
             </p>
           ) : null}
-          <ul className="divide-y divide-line border border-line">
-            {items.map((item, index) => (
-              <li
-                key={`${item.label}-${index}`}
-                className="flex items-baseline gap-2 px-2 py-1 text-xs"
-              >
-                <List aria-hidden="true" className="size-3 shrink-0 text-ink-dim" />
-                <span className="font-mono text-ink">{item.label}</span>
-                {item.detail ? (
-                  <span className="ml-auto shrink-0 font-mono text-2xs text-ink-dim">
-                    {item.detail}
-                  </span>
-                ) : null}
-              </li>
-            ))}
-          </ul>
+          {items.length === 0 ? (
+            <p className="text-sm text-muted">Nothing to show.</p>
+          ) : (
+            <ColumnList rows={items} />
+          )}
         </div>
       );
     }
 
     case "error":
       return (
-        <div className="flex items-start gap-2">
-          <AlertTriangle aria-hidden="true" className="mt-0.5 size-3 shrink-0 text-danger" />
-          <p className="whitespace-pre-wrap font-mono text-xs text-ink">
-            {result.message || "Command failed."}
-          </p>
-        </div>
+        <Alert status="danger" className="rounded-lg p-3">
+          <Alert.Indicator />
+          <Alert.Content>
+            <Alert.Title>/{name} failed</Alert.Title>
+            <Alert.Description>
+              <span className="text-sm">{result.message || "The command did not complete."}</span>
+            </Alert.Description>
+          </Alert.Content>
+        </Alert>
       );
 
     case "needs_terminal":
       // Deliberately not an error: this command works, it just needs a TTY.
       return (
-        <div className="border border-line bg-surface px-2 py-1.5">
-          <div className="flex items-center gap-1.5">
-            <MonitorSmartphone aria-hidden="true" className="size-3 shrink-0 text-warn" />
-            <p className="font-mono text-xs text-ink">Run this in the terminal</p>
+        <Card variant="secondary" className="gap-2 rounded-lg px-3.5 py-3">
+          <div className="flex items-center gap-2">
+            <Terminal aria-hidden="true" className="size-4 shrink-0 text-warning" />
+            <p className="text-sm font-medium">Run this in the terminal</p>
           </div>
-          <p className="mt-0.5 text-2xs text-ink-muted">
+          <p className="text-xs text-muted">
             {result.message || `/${name} needs an interactive terminal.`}
           </p>
-          {/* Copy what the user must actually run. `quartz` is already running —
-              the browser is talking to it — so the useful clipboard payload is the
-              slash command itself, and the label says exactly that. */}
+          {/* Copy what the user must actually run. `quartz` is already running -
+              the browser is talking to it - so the useful clipboard payload is
+              the slash command itself, and the label says exactly that. */}
           <CopyableCommand command={`/${name}`} />
-        </div>
+        </Card>
       );
 
     default:
-      return <p className="font-mono text-xs text-ink-dim">(unrecognised result)</p>;
+      return <p className="text-sm text-muted">This command returned a result this client cannot show.</p>;
   }
 }
 
 export function CommandRowView({ row }: { row: CommandRow }): React.ReactElement {
   return (
-    <RowFrame
-      label="command"
-      tone={row.ok ? "plain" : "danger"}
-      meta={
-        <span className="inline-flex items-center gap-1.5">
-          <span>/{row.name}</span>
-          {row.ok ? (
-            <Check aria-hidden="true" className="size-3 text-ok" />
-          ) : (
-            <X aria-hidden="true" className="size-3 text-danger" />
-          )}
-        </span>
-      }
-    >
-      <div className="space-y-1">
-        <CommandBody name={row.name} result={row.result} />
-      </div>
-    </RowFrame>
+    <Card className="gap-2 rounded-xl px-4 py-3">
+      <header className="flex items-center gap-2">
+        <span className="font-mono text-sm font-medium text-foreground">/{row.name}</span>
+        <Chip size="sm" variant="soft" color={row.ok ? "success" : "danger"} className="ml-auto">
+          {row.ok ? "Done" : "Failed"}
+        </Chip>
+      </header>
+      <Separator />
+      <CommandBody name={row.name} result={row.result} />
+    </Card>
   );
 }

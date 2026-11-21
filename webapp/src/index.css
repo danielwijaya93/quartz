@@ -1,66 +1,63 @@
 @import "tailwindcss";
+@import "@heroui/styles";
 
 /*
- * Design tokens.
+ * Quartz web theme layer.
  *
- * Dark-first, quiet, technical: a terminal that grew up. Everything here is a CSS
- * custom property so a theme is a variable swap, not a refactor. Exactly one
- * accent colour, reserved for state (running, focused, selected) — never decoration.
+ * The visual foundation is HeroUI v3; everything below is a deliberate, small
+ * adjustment on top of it. Tokens are only ever declared here - no component
+ * carries a raw colour - so light and dark stay in sync by construction and one
+ * file is enough to re-skin the whole app.
  */
-@theme {
-  /* Surfaces, darkest to lightest. */
-  --color-base: oklch(17% 0.006 265);
-  --color-surface: oklch(20.5% 0.007 265);
-  --color-elevated: oklch(24% 0.008 265);
-  --color-line: oklch(30% 0.009 265);
-  --color-line-strong: oklch(38% 0.011 265);
 
-  /* Text, brightest to dimmest. */
-  --color-ink: oklch(93% 0.004 265);
-  --color-ink-muted: oklch(72% 0.007 265);
-  --color-ink-dim: oklch(56% 0.008 265);
+:root {
+  /* A hair softer than HeroUI's 8px: reads as a product, not a control panel. */
+  --radius: 0.625rem;
 
-  /* The one accent. State only. */
-  --color-accent: oklch(72% 0.13 196);
-  --color-accent-ink: oklch(17% 0.006 265);
-
-  /* Semantic state. Paired with an icon so state is never colour-only. */
-  --color-ok: oklch(72% 0.12 152);
-  --color-warn: oklch(78% 0.12 78);
-  --color-danger: oklch(68% 0.16 22);
-
-  /* Type. */
   --font-sans:
-    "Inter var", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Inter var", Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     "Helvetica Neue", sans-serif;
   --font-mono:
-    ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Mono", "Roboto Mono",
-    Menlo, Consolas, monospace;
+    ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas,
+    monospace;
 
-  /* Type scale. Dense by intent: transcript body is 13px. */
-  --text-2xs: 0.6875rem;  /* 11px — metrics, chips */
-  --text-xs: 0.75rem;     /* 12px — labels, notices */
-  --text-sm: 0.8125rem;   /* 13px — transcript body */
-  --text-base: 0.875rem;  /* 14px — composer */
-  --text-lg: 1rem;        /* 16px — section headings */
+  /* Motion budget: interactive feedback only, never longer than 150ms. */
+  --duration-feedback: 120ms;
+  --ease-feedback: cubic-bezier(0.2, 0, 0.2, 1);
+}
 
-  /* Rhythm. Compact: 4/8/12/16. */
-  --spacing-row: 0.5rem;
-  --radius-cell: 0.25rem;
+/*
+ * Syntax highlighting, as a token set rather than a theme file.
+ *
+ * rehype-highlight emits `.hljs-*` classes; a single ruleset below reads these
+ * variables, so light and dark are two palettes over one structure and a code
+ * block can never keep a dark background on a light page.
+ * Light values are the accessible half of GitHub's light palette (>= 4.5:1 on
+ * the code surface); dark values mirror its dark palette.
+ */
+:root,
+[data-theme="light"] {
+  --code-keyword: oklch(52% 0.19 22);
+  --code-string: oklch(32% 0.11 258);
+  --code-number: oklch(43% 0.14 250);
+  --code-title: oklch(48% 0.2 300);
+  --code-comment: oklch(56% 0.012 250);
+  --code-type: oklch(45% 0.13 55);
+  --code-meta: oklch(43% 0.14 250);
+}
+
+.dark,
+[data-theme="dark"] {
+  --code-keyword: oklch(70% 0.15 22);
+  --code-string: oklch(84% 0.08 235);
+  --code-number: oklch(78% 0.11 245);
+  --code-title: oklch(80% 0.12 300);
+  --code-comment: oklch(65% 0.012 250);
+  --code-type: oklch(80% 0.12 65);
+  --code-meta: oklch(78% 0.11 245);
 }
 
 @layer base {
-  :root {
-    color-scheme: dark;
-    /* Motion budget: interactive feedback only, never longer than 150ms. */
-    --duration-feedback: 120ms;
-    --ease-feedback: cubic-bezier(0.2, 0, 0.2, 1);
-  }
-
-  * {
-    border-color: var(--color-line);
-  }
-
   html,
   body,
   #root {
@@ -69,29 +66,19 @@
 
   body {
     margin: 0;
-    background-color: var(--color-base);
-    color: var(--color-ink);
     font-family: var(--font-sans);
-    font-size: var(--text-base);
-    line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
 
   /* Visible focus, everywhere. Never removed, only styled. */
   :focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 1px;
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
   }
 
   ::selection {
-    background-color: color-mix(in oklch, var(--color-accent) 30%, transparent);
-  }
-
-  /* Quiet scrollbars: this is a log, the scrollbar is furniture. */
-  * {
-    scrollbar-width: thin;
-    scrollbar-color: var(--color-line-strong) transparent;
+    background-color: color-mix(in oklab, var(--accent) 24%, transparent);
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -106,152 +93,166 @@
   }
 }
 
-/*
- * Markdown inside the transcript.
- *
- * Assistant prose is sans; anything code-shaped is mono. Prose is deliberately
- * tight — paragraph spacing matches the log rhythm, not a blog post.
- */
 @layer components {
-  .prose-quartz {
-    font-family: var(--font-sans);
-    font-size: var(--text-sm);
-    line-height: 1.6;
-    color: var(--color-ink);
+  /*
+   * Assistant markdown.
+   *
+   * Comfortable reading measure at 15px: this is prose in a web app, not a log
+   * tail. Prose is sans, anything code-shaped is mono, and both ride the HeroUI
+   * tokens so they invert cleanly with the theme.
+   */
+  .transcript-prose {
+    font-size: 0.9375rem;
+    line-height: 1.7;
+    color: var(--foreground);
+    overflow-wrap: anywhere;
   }
 
-  .prose-quartz > * + * {
-    margin-top: 0.5rem;
+  .transcript-prose > * + * {
+    margin-top: 0.75rem;
   }
 
-  .prose-quartz p {
+  .transcript-prose p {
     margin: 0;
   }
 
-  .prose-quartz strong {
+  .transcript-prose strong {
     font-weight: 600;
-    color: var(--color-ink);
   }
 
-  .prose-quartz em {
+  .transcript-prose em {
     font-style: italic;
-    color: var(--color-ink-muted);
+    color: var(--muted);
   }
 
-  .prose-quartz a {
-    color: var(--color-accent);
+  .transcript-prose a {
+    color: var(--accent);
     text-decoration: underline;
     text-underline-offset: 2px;
     text-decoration-thickness: 1px;
   }
 
-  .prose-quartz ul,
-  .prose-quartz ol {
+  .transcript-prose ul,
+  .transcript-prose ol {
     margin: 0;
-    padding-left: 1.25rem;
+    padding-left: 1.375rem;
   }
 
-  .prose-quartz ul {
+  .transcript-prose ul {
     list-style: disc;
   }
 
-  .prose-quartz ol {
+  .transcript-prose ol {
     list-style: decimal;
   }
 
-  .prose-quartz li + li {
-    margin-top: 0.125rem;
+  .transcript-prose li + li {
+    margin-top: 0.25rem;
   }
 
-  .prose-quartz li::marker {
-    color: var(--color-ink-dim);
+  .transcript-prose li::marker {
+    color: var(--muted);
   }
 
-  .prose-quartz h1,
-  .prose-quartz h2,
-  .prose-quartz h3,
-  .prose-quartz h4 {
-    font-size: var(--text-sm);
+  .transcript-prose h1,
+  .transcript-prose h2,
+  .transcript-prose h3,
+  .transcript-prose h4 {
     font-weight: 600;
     letter-spacing: -0.01em;
-    margin: 0.75rem 0 0;
-    color: var(--color-ink);
+    margin: 0;
+    color: var(--foreground);
   }
 
-  .prose-quartz h1 {
-    font-size: var(--text-lg);
+  .transcript-prose h1 {
+    font-size: 1.25rem;
   }
 
-  .prose-quartz h2 {
-    font-size: var(--text-base);
+  .transcript-prose h2 {
+    font-size: 1.125rem;
   }
 
-  /* Inline code and fenced code are mono; inline gets a hairline chip. */
-  .prose-quartz code {
+  .transcript-prose h3,
+  .transcript-prose h4 {
+    font-size: 1rem;
+  }
+
+  .transcript-prose h1 + *,
+  .transcript-prose h2 + *,
+  .transcript-prose h3 + *,
+  .transcript-prose h4 + * {
+    margin-top: 0.375rem;
+  }
+
+  /* Inline code: a quiet chip, legible in both modes. */
+  .transcript-prose code {
     font-family: var(--font-mono);
-    font-size: 0.9em;
-    background-color: var(--color-elevated);
-    border: 1px solid var(--color-line);
-    border-radius: 3px;
-    padding: 0.05em 0.3em;
+    font-size: 0.85em;
+    background-color: var(--surface-secondary);
+    color: var(--surface-secondary-foreground);
+    border: 1px solid var(--border);
+    border-radius: 0.375rem;
+    padding: 0.1em 0.35em;
   }
 
-  .prose-quartz pre {
+  /* Fenced code: a real panel with its own surface, not a leftover gutter. */
+  .transcript-prose pre {
     margin: 0;
     overflow-x: auto;
-    background-color: var(--color-surface);
-    border: 1px solid var(--color-line);
-    border-left: 2px solid var(--color-line-strong);
-    border-radius: var(--radius-cell);
-    padding: 0.625rem 0.75rem;
-    font-size: var(--text-xs);
-    line-height: 1.55;
+    background-color: var(--surface-secondary);
+    color: var(--surface-secondary-foreground);
+    border: 1px solid var(--border);
+    border-radius: calc(var(--radius) * 0.75);
+    padding: 0.75rem 0.875rem;
+    font-size: 0.8125rem;
+    line-height: 1.65;
+    tab-size: 2;
   }
 
-  .prose-quartz pre code {
+  .transcript-prose pre code {
     background: none;
     border: 0;
     padding: 0;
+    border-radius: 0;
     font-size: inherit;
+    color: inherit;
   }
 
-  .prose-quartz blockquote {
+  .transcript-prose blockquote {
     margin: 0;
-    padding-left: 0.75rem;
-    border-left: 2px solid var(--color-line-strong);
-    color: var(--color-ink-muted);
+    padding-left: 0.875rem;
+    border-left: 2px solid var(--border);
+    color: var(--muted);
   }
 
-  .prose-quartz table {
+  .transcript-prose table {
     width: 100%;
     border-collapse: collapse;
-    font-size: var(--text-xs);
-    font-family: var(--font-mono);
+    font-size: 0.875rem;
   }
 
-  .prose-quartz th,
-  .prose-quartz td {
-    border: 1px solid var(--color-line);
-    padding: 0.25rem 0.5rem;
+  .transcript-prose th,
+  .transcript-prose td {
+    border: 1px solid var(--border);
+    padding: 0.375rem 0.625rem;
     text-align: left;
   }
 
-  .prose-quartz th {
-    background-color: var(--color-surface);
+  .transcript-prose th {
+    background-color: var(--surface-secondary);
     font-weight: 600;
-    color: var(--color-ink-muted);
   }
 
-  .prose-quartz hr {
+  .transcript-prose hr {
     border: 0;
-    border-top: 1px solid var(--color-line);
-    margin: 0.75rem 0;
+    border-top: 1px solid var(--separator);
+    margin: 1rem 0;
   }
 
-  /* Syntax highlighting: muted, terminal-like, no rainbow. */
+  /* One structure, two palettes: see the `--code-*` variables above. */
   .hljs-comment,
   .hljs-quote {
-    color: var(--color-ink-dim);
+    color: var(--code-comment);
     font-style: italic;
   }
 
@@ -259,39 +260,54 @@
   .hljs-selector-tag,
   .hljs-literal,
   .hljs-section,
-  .hljs-link {
-    color: oklch(75% 0.1 300);
+  .hljs-link,
+  .hljs-doctag {
+    color: var(--code-keyword);
   }
 
-  .hljs-function .hljs-title,
+  .hljs-title,
   .hljs-title.function_,
-  .hljs-title {
-    color: var(--color-accent);
+  .hljs-name,
+  .hljs-selector-id,
+  .hljs-selector-class {
+    color: var(--code-title);
   }
 
   .hljs-string,
   .hljs-attr,
   .hljs-template-variable,
-  .hljs-addition {
-    color: oklch(76% 0.1 140);
+  .hljs-addition,
+  .hljs-regexp {
+    color: var(--code-string);
   }
 
   .hljs-number,
   .hljs-symbol,
   .hljs-bullet,
   .hljs-variable,
-  .hljs-template-tag {
-    color: oklch(78% 0.11 60);
+  .hljs-template-tag,
+  .hljs-params {
+    color: var(--code-number);
   }
 
   .hljs-built_in,
   .hljs-type,
-  .hljs-class .hljs-title {
-    color: oklch(74% 0.09 240);
+  .hljs-class .hljs-title,
+  .hljs-selector-pseudo {
+    color: var(--code-type);
   }
 
   .hljs-meta,
-  .hljs-deletion {
-    color: var(--color-danger);
+  .hljs-deletion,
+  .hljs-tag {
+    color: var(--code-meta);
+  }
+
+  .hljs-emphasis {
+    font-style: italic;
+  }
+
+  .hljs-strong {
+    font-weight: 600;
   }
 }

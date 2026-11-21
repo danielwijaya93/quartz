@@ -2,7 +2,7 @@ import * as React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { cn } from "@/lib/utils";
+import { cn } from "@heroui/react";
 
 /**
  * Assistant markdown.
@@ -11,6 +11,9 @@ import { cn } from "@/lib/utils";
  * every delta and flicker between "code block" and "paragraph of backticks". We
  * close an unterminated fence before rendering, so a partial block renders as a
  * code block from its first character and never changes shape mid-stream.
+ *
+ * Syntax colours come from the `--code-*` variables in index.css, so one
+ * structure serves both themes.
  */
 export function closeUnterminatedFence(markdown: string): string {
   const fences = markdown.match(/^```/gm);
@@ -33,7 +36,7 @@ export function Markdown({
 }: MarkdownProps): React.ReactElement {
   const source = streaming ? closeUnterminatedFence(children) : children;
   return (
-    <div className={cn("prose-quartz", className)}>
+    <div className={cn("transcript-prose", className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}

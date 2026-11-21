@@ -182,6 +182,10 @@ export function scriptedTurn() {
   push({ type: "steering", text: "also show the image output path" });
   push({ type: "status", label: "Checking image output..." });
 
+  // A recoverable error mid-turn: rendered as a danger callout, not a stopped
+  // session, so the turn carries on.
+  push({ type: "error", message: "Provider stream stalled for 12s; resumed automatically.", fatal: false });
+
   // A failing cell: the reducer must render failure, not swallow it.
   push({ type: "tool_call", id: "call-fail-3", code: "open('/nonexistent/path').read()" });
   push({
@@ -226,8 +230,38 @@ export function scriptedTurn() {
   return frames;
 }
 
+/**
+ * Verbose help, exactly as `CommandRegistry.format_help()` pads it: two columns,
+ * then a keybinding block. It is `kind: "text"`, and it is why the client has to
+ * recognise columnar text - markdown would flatten it into one paragraph.
+ */
+const HELP_BODY = [
+  "/compact         Compact the conversation now",
+  "/expand [n]      Show the full output of an earlier cell",
+  "/help            Show available slash commands",
+  "/helpers         List quartz helper functions",
+  "/image <path>    Attach an image file to the next prompt",
+  "/jobs            List background bash jobs",
+  "/model [prov]    Choose provider, model, and reasoning effort",
+  "/settings [key val]Show or change compaction settings",
+  "/usage           Show token and cost usage",
+  "",
+  "Keybindings:",
+  "  Enter            Submit prompt or steer running turn",
+  "  Ctrl+J / \\+Enter Insert newline",
+  "  Esc              Abort running turn or cancel modal/completion",
+  "  Ctrl+O           Toggle detail tool calls",
+].join("\n");
+
 export function commandResultFrame(name) {
   switch (name) {
+    case "help":
+      return {
+        type: "command_result",
+        name,
+        ok: true,
+        result: { kind: "text", body: HELP_BODY },
+      };
     case "usage":
       return {
         type: "command_result",

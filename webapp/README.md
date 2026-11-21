@@ -18,37 +18,45 @@ measurable metrics.
 
 ## Design
 
-Dark-first and dense. This is a working tool, not a consumer chat app:
+Built on **HeroUI v3** with first-class light and dark themes. The library is the
+foundation; the transcript is the part designed for this app.
 
-- **The transcript is a log**, not a conversation. Every event is a row in one
-  vertical stream with a mono gutter label and a subtle left rule. No bubbles.
-- **Typography carries the weight.** Monospace for code, tool calls, paths and
-  metrics; sans for prose. Base size in the transcript is 13px.
-- **One accent**, in `src/index.css`, used only for state (running, focused,
-  selected). Re-theming is editing one custom property.
-- **State is never colour-only.** Status always ships an icon or a word too.
-- Keyboard first: the composer always holds focus, `/` opens the palette, `Esc`
-  cancels a turn, `Up` recalls the previous prompt.
+- **Both themes are first-class.** Light, dark, and system, in one control. The
+  theme is applied before first paint, so there is no flash. Tokens live in
+  `src/index.css` and `@heroui/styles`; no component carries a raw colour.
+- **Comfortable, not cramped.** Prose is 15px on a 768px reading column. The
+  transcript is a sequence of turns and cells, not a log tail.
+- **The transcript is a structure, not an announcement.** It carries `role="log"`
+  but is *not* a live region: a separate announcer speaks coarse events only
+  (turn started, tool finished, turn finished, error).
+- **State is never colour-only.** Every status carries an icon or a word too.
+- **Keyboard first:** the composer always holds focus, `/` opens the palette, `Esc`
+  cancels a turn or closes the palette and returns focus to the composer, `Up`
+  recalls the previous prompt.
 
 ## Layout
 
 ```
 src/
   protocol.ts              wire types — the single source of truth, mirrors the doc
-  index.css                design tokens (@theme) + transcript typography
+  index.css                HeroUI import + theme tokens + transcript typography
   useQuartz.ts             the only place transport meets reducer
   lib/
     connection.ts          transport abstraction: connect/send/emit, reconnect backoff
     transcript.ts          pure reducer: protocol frames -> render rows (no React)
+    theme.ts               light/dark/system: the one theme contract
+    announcements.ts       rows -> the coarse events a screen reader should hear
+    commandText.ts         columnar `kind: "text"` bodies (e.g. /help) -> lists
   components/
-    Markdown.tsx           streaming-aware markdown + syntax highlighting
-    HeaderBar.tsx          session, cwd, model, connection dot, New
+    Markdown.tsx           streaming-aware markdown + theme-aware highlighting
+    HeaderBar.tsx          session chips, connection chip, theme toggle, New
+    ThemeToggle.tsx        light / dark / system
     Transcript.tsx         role="log", follows the tail unless the user scrolled up
-    StatusLine.tsx         status label / reconnect banner
+    TranscriptAnnouncer.tsx  the only aria-live node in the transcript area
+    StatusLine.tsx         spinner + status label / reconnect banner
     Composer.tsx           auto-grow textarea, steer-vs-prompt, image attach
-    CommandPalette.tsx     fuzzy filter over session_state.commands
+    CommandPalette.tsx     Modal + fuzzy filter over session_state.commands
     rows/                  one component per row kind
-    ui/                    shadcn-style primitives (Radix)
 mock/
   script.mjs               the scripted session, pure frame builders
   server.mjs               ws server replaying it — `npm run mock`
@@ -86,6 +94,18 @@ the app at it directly:
 VITE_WS_URL=ws://127.0.0.1:8799 npm run dev
 ```
 
+## Theming
+
+`src/lib/theme.ts` is the one place the three-state theme lives. It wraps HeroUI's
+`useTheme`, which persists the user's *intent* (`light` / `dark` / `system`), watches
+`prefers-color-scheme` live while in system mode, and applies both the `.dark`/`.light`
+class and `data-theme` on `<html>` in a layout effect.
+
+The no-flash guarantee is a second, deliberate duplication: a small inline script
+in `index.html` reads the same `localStorage` key and applies the same class before
+the first paint. `src/lib/theme.test.ts` runs that script out of the HTML to prove
+it agrees with the hook.
+
 ## Testing without a browser
 
 `npm run smoke` boots the mock on an ephemeral port, connects as a client, sends
@@ -98,9 +118,8 @@ No API key, no model, no Python.
 
 | Package | Why |
 | --- | --- |
-| `react-markdown` + `remark-gfm` + `rehype-highlight` + `highlight.js` | Assistant text is markdown with fenced code. `react-markdown` renders to React elements instead of `dangerouslySetInnerHTML`, so model output is never injected as HTML. |
-| `@radix-ui/react-*` | shadcn/ui primitives. Collapsible rows and the palette dialog need real focus management and ARIA, which is exactly what should not be hand-rolled. |
-| `class-variance-authority`, `clsx`, `tailwind-merge` | The shadcn/ui baseline for variant styling. |
-| `lucide-react` | Icons. Every state marker is an icon *plus* text. |
+| `@heroui/react` v3 + `@heroui/styles` | The design system. Components, tokens, and both themes. No provider needed in v3. |
+| `react-markdown` + `remark-gfm` + `rehype-highlight` + `highlight.js` | Assistant text is markdown with fenced code. `react-markdown` renders to React elements instead of `dangerouslySetInnerHTML`, so model output is never injected as HTML. `highlight.js` is only used through `rehype-highlight`; its colours are two token palettes in `index.css`, not a bundled theme file. |
+| `lucide-react` | Icons outside HeroUI's own set — HeroUI ships only info/warning/danger/success/chevron glyphs, and this app needs sun, moon, monitor, arrow, stop, plus, brain, terminal, image and copy. |
 | `ws` (dev) | The mock server. |
 | `vitest`, `@testing-library/*`, `jsdom` (dev) | The reducer and component tests. |
