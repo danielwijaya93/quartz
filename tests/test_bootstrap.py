@@ -212,6 +212,85 @@ def test_credential_failure_propagates_and_closes_the_kernel(
     assert kernel.closed is True
 
 
+def _recording_provider() -> tuple[Any, dict[str, Any]]:
+    """A `build_provider` stand-in that records what `build_runtime` asked for.
+
+    The defect this guards was a *dispatch* bug: the runtime never reached a real
+    provider because the option arrived as `None`. Asserting on the received
+    kwargs catches that at the boundary the bug crossed, instead of inferring it
+    from downstream behaviour.
+    """
+    seen: dict[str, Any] = {}
+
+    def _provider(
+        *,
+        provider: str | None = None,
+        model_override: str | None = None,
+        effort_override: str | None = None,
+    ) -> tuple[Any, str, str, str]:
+        seen["provider"] = provider
+        seen["model_override"] = model_override
+        seen["effort_override"] = effort_override
+        return object(), "stub", "stub-model", "medium"
+
+    return _provider, seen
+
+
+def test_an_unset_provider_reaches_build_provider_as_auto(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`None` must mean auto, not "no provider": the web server omits it entirely.
+
+    The terminal always supplies `"auto"` from argparse, so this only surfaced once
+    a transport without a provider flag existed -- `quartz web` refused every prompt
+    with `Unknown provider 'None'`.
+    """
+    provider, seen = _recording_provider()
+    monkeypatch.setattr(bootstrap, "build_provider", provider)
+
+    bootstrap.build_runtime(_options(env))
+
+    assert seen["provider"] == "auto"
+
+
+def test_an_explicit_provider_is_forwarded_unchanged(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider, seen = _recording_provider()
+    monkeypatch.setattr(bootstrap, "build_provider", provider)
+
+    bootstrap.build_runtime(_options(env, provider="deepseek"))
+
+    assert seen["provider"] == "deepseek"
+
+
+def test_an_empty_provider_also_means_auto(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Falsy means unset: an empty string from a config default resolves like `None`."""
+    provider, seen = _recording_provider()
+    monkeypatch.setattr(bootstrap, "build_provider", provider)
+
+    bootstrap.build_runtime(_options(env, provider=""))
+
+    assert seen["provider"] == "auto"
+
+
+def test_none_and_auto_compose_the_same_runtime(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The two spellings of "unset" are indistinguishable to a caller."""
+    monkeypatch.setattr(bootstrap, "build_provider", _stub_provider)
+
+    from_none, _ = bootstrap.build_runtime(_options(env))
+    from_auto, _ = bootstrap.build_runtime(_options(env, provider="auto"))
+
+    assert (from_none.provider_name, from_none.model, from_none.effort) == (
+        from_auto.provider_name,
+        from_auto.model,
+        from_auto.effort,
+    )
+    assert from_none.cwd == from_auto.cwd
+
+
 def test_bootstrap_imports_neither_tui_nor_cli() -> None:
     source = Path(bootstrap.__file__).read_text(encoding="utf-8")
     imported: set[str] = set()

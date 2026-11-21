@@ -50,6 +50,11 @@ class BootstrapOptions:
     """
 
     cwd: Path
+    # `None` (or "") means "resolve automatically", exactly like the terminal's
+    # `--provider auto` default -- NOT "no provider". A transport that has no
+    # provider selector at all (the web server) leaves this alone and gets the
+    # same auto-resolution the terminal does; `build_runtime` applies the
+    # coercion, so no caller has to remember it. An explicit name still wins.
     provider: str | None = None
     model: str | None = None
     effort: str | None = None
@@ -99,8 +104,11 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
     kernel_thread.start()
     try:
         try:
+            # `build_provider` is a library function and rightly rejects junk, so
+            # the "unset means auto" decision lives here rather than there: every
+            # transport that omits a provider gets auto-resolution for free.
             client, provider_name, model, effort = build_provider(
-                provider=options.provider,
+                provider=options.provider or "auto",
                 model_override=options.model,
                 effort_override=options.effort,
             )
