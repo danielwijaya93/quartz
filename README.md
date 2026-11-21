@@ -78,6 +78,7 @@ that reads each variable.
 | `PROVIDER` | `auto` | Provider backend; `--provider` overrides it. |
 | `EFFORT` | provider default | Reasoning effort; `--effort` overrides it. |
 | `QUARTZ_SYNC_OUTPUT` | auto-detect | `1`/`0` forces CSI 2026 synchronized output on/off (flicker-free dock repaints). |
+| `QUARTZ_IMAGE_PROTOCOL` | auto-detect | `kitty`, `iterm2` or `none`: inline preview for `/image` and `/paste` (Kitty needs PNG; disabled under tmux). |
 | (compaction) | `16384` / `32000` | `reserve_tokens` / `keep_recent_tokens` via `/settings` (stored in `~/.quartz/config.json`). |
 | `QUARTZ_CLOUDCODE_ENDPOINT` | `antigravity` | Google Cloud Code host alias (`antigravity`, `gemini-cli`) or an `http(s)` URL. |
 | `QUARTZ_HTTP_TIMEOUT` | `300` | Provider read timeout, in seconds. |
