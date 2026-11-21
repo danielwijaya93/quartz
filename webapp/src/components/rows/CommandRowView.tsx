@@ -1,7 +1,6 @@
 import * as React from "react";
 import { AlertTriangle, Check, Copy, List, MonitorSmartphone, X } from "lucide-react";
 import { Markdown } from "../Markdown";
-import { Badge } from "@/components/ui/badge";
 import { RowFrame } from "./RowFrame";
 import type { CommandResult } from "@/protocol";
 import type { CommandRow } from "@/lib/transcript";
@@ -143,9 +142,6 @@ export function CommandRowView({ row }: { row: CommandRow }): React.ReactElement
     >
       <div className="space-y-1">
         <CommandBody name={row.name} result={row.result} />
-        {row.result.kind !== "needs_terminal" ? (
-          <Badge>kind: {row.result.kind}</Badge>
-        ) : null}
       </div>
     </RowFrame>
   );

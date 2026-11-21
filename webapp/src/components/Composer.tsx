@@ -196,7 +196,9 @@ export function Composer({
             }}
             placeholder={
               disabled
-                ? "Disconnected — waiting for the server…"
+                ? offline
+                  ? "Disconnected — waiting for the server…"
+                  : "Blocked by an error — start a new session, or fix it and reconnect"
                 : turnRunning
                   ? "Steer the running turn…"
                   : "Prompt quartz — / for commands"

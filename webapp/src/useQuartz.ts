@@ -4,7 +4,7 @@ import {
   resolveSocketUrl,
   type ConnectionStatus,
 } from "./lib/connection";
-import { initialState, reduce, type TranscriptState } from "./lib/transcript";
+import { addUserPrompt, initialState, reduce, type TranscriptState } from "./lib/transcript";
 import type { ImageAttachment } from "./protocol";
 
 export interface QuartzApi {
@@ -51,6 +51,9 @@ export function useQuartz(url?: string): QuartzApi {
   }, [url]);
 
   const prompt = React.useCallback((text: string, images: ImageAttachment[]) => {
+    // Echo first: the wire has no `user_message` frame, so the transcript would
+    // otherwise not show what was asked until the page reloaded.
+    setState((prev) => addUserPrompt(prev, text, images));
     connectionRef.current?.sendPrompt(text, images);
   }, []);
 
@@ -67,6 +70,7 @@ export function useQuartz(url?: string): QuartzApi {
   }, []);
 
   const newSession = React.useCallback(() => {
+    setState((prev) => ({ ...initialState, session: prev.session }));
     connectionRef.current?.sendNewSession();
   }, []);
 

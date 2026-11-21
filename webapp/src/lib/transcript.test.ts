@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import {
+  addUserPrompt,
   approxTokens,
   initialState,
   lineCount,
@@ -531,5 +532,107 @@ describe("helpers", () => {
     expect(approxTokens("")).toBe(0);
     expect(approxTokens("abcd")).toBe(1);
     expect(approxTokens("abcde")).toBe(2);
+  });
+});
+
+describe("the local prompt echo", () => {
+  it("shows the prompt immediately, before any server frame", () => {
+    const state = addUserPrompt(initialState, "  what is 6*7?  ");
+    expect(state.rows).toHaveLength(1);
+    expect(state.rows[0]).toMatchObject({ kind: "user", text: "what is 6*7?" });
+  });
+
+  it("ignores an empty prompt", () => {
+    expect(addUserPrompt(initialState, "   ").rows).toHaveLength(0);
+  });
+
+  it("keeps the prompt above the turn it started", () => {
+    const state = fold(
+      [
+        { type: "turn_start", turnId: "t1" },
+        { type: "text_delta", text: "42" },
+      ],
+      addUserPrompt(initialState, "what is 6*7?"),
+    );
+    expect(state.rows.map((row) => row.kind)).toEqual(["user", "assistant"]);
+  });
+
+  it("retires the local echo when history replays the same prompt", () => {
+    // A reconnect sends `session_state`; the prompt is in both places and must
+    // appear exactly once.
+    const echoed = addUserPrompt(initialState, "what is 6*7?");
+    const state = fold(
+      [
+        {
+          type: "session_state",
+          sessionId: "s1",
+          cwd: "/tmp",
+          model: "m",
+          effort: "high",
+          turnRunning: false,
+          commands: [],
+          messages: [
+            { role: "user", content: "what is 6*7?" },
+            { role: "assistant", content: "42" },
+          ],
+        },
+      ],
+      echoed,
+    );
+    const users = state.rows.filter((row) => row.kind === "user");
+    expect(users).toHaveLength(1);
+    expect(users[0]?.text).toBe("what is 6*7?");
+  });
+
+  it("retires each repeated identical prompt one for one", () => {
+    let state = addUserPrompt(initialState, "again");
+    state = addUserPrompt(state, "again");
+    expect(state.rows.filter((row) => row.kind === "user")).toHaveLength(2);
+
+    state = fold(
+      [
+        {
+          type: "session_state",
+          sessionId: "s1",
+          cwd: "/tmp",
+          model: "m",
+          effort: "",
+          turnRunning: false,
+          commands: [],
+          messages: [
+            { role: "user", content: "again" },
+            { role: "assistant", content: "1" },
+            { role: "user", content: "again" },
+            { role: "assistant", content: "2" },
+          ],
+        },
+      ],
+      state,
+    );
+    expect(state.rows.filter((row) => row.kind === "user")).toHaveLength(2);
+  });
+
+  it("does not retire a local echo that history has not caught up with", () => {
+    // History arrives before persistence includes the last prompt (a reconnect
+    // mid-turn). The echo must survive, or the prompt vanishes.
+    const echoed = addUserPrompt(initialState, "just asked");
+    const state = fold(
+      [
+        {
+          type: "session_state",
+          sessionId: "s1",
+          cwd: "/tmp",
+          model: "m",
+          effort: "",
+          turnRunning: true,
+          commands: [],
+          messages: [{ role: "user", content: "an older question" }],
+        },
+      ],
+      echoed,
+    );
+    const texts = state.rows.filter((row) => row.kind === "user").map((row) => row.text);
+    expect(texts).toContain("just asked");
+    expect(texts).toContain("an older question");
   });
 });
