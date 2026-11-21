@@ -10,6 +10,7 @@ and the test asserts each one reached the wire.
 from __future__ import annotations
 
 import dataclasses
+import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -73,19 +74,54 @@ def make_runtime(tmp_path: Path) -> AgentRuntime:
     )
 
 
+GATE_TIMEOUT_S = 10.0
+"""How long a gated turn waits for the test to release it.
+
+A test that forgets to release the gate must fail, not hang CI: the turn times out,
+raises, and the server turns that into one `turn_end` -- which is also why the gate
+is released in a `finally` in every test that closes one.
+"""
+
+
 class ScriptedTurn:
     """A runner that fires every observer hook once, in protocol order.
 
     Deliberately covers all seven: the parity claim of this transport is that it
     renders what the terminal renders, and a hook missing here is a hook missing
     from the browser.
+
+    A turn normally returns immediately, which is what makes the frame tests fast --
+    and what made one of them racy: a test that wants to observe a turn *while it is
+    running* had no way to keep it running. `hold()` closes a gate; the turn then
+    fires its hooks, sets `started`, and blocks until `release()`. With no gate the
+    runner behaves exactly as before, so every other test is untouched.
     """
 
-    def __init__(self, *, status: TurnStatus = TurnStatus.OK, tokens: int = 7) -> None:
+    def __init__(
+        self,
+        *,
+        status: TurnStatus = TurnStatus.OK,
+        tokens: int = 7,
+        gate: threading.Event | None = None,
+    ) -> None:
         self.status = status
         self.tokens = tokens
         self.calls = 0
         self.seen_abort: list[Any] = []
+        self.gate = gate
+        self.started = threading.Event()
+        """Set once a turn's hooks have fired, i.e. while the turn is still in flight."""
+
+    def hold(self) -> threading.Event:
+        """Close the gate: the next turn fires its hooks, then blocks until `release`."""
+        self.gate = threading.Event()
+        self.started.clear()
+        return self.gate
+
+    def release(self) -> None:
+        """Open the gate. Idempotent, and a no-op when no gate was ever closed."""
+        if self.gate is not None:
+            self.gate.set()
 
     def __call__(
         self,
@@ -124,6 +160,12 @@ class ScriptedTurn:
         observer.on_steering("cut in")
         observer.on_status(None)
         observer.finish()
+        self.started.set()
+        if self.gate is not None and not self.gate.wait(timeout=GATE_TIMEOUT_S):
+            raise AssertionError(
+                f"the turn gate was still closed after {GATE_TIMEOUT_S}s; "
+                "the test never released it"
+            )
         return TurnOutcome(self.status, tokens=self.tokens, elapsed_s=0.25)
 
 
@@ -145,6 +187,8 @@ class App:
     client: TestClient
     runner: ScriptedTurn
     runtime: AgentRuntime
+    server: Any
+    """The ASGI app, so a test can read the live `WebSession` state it owns."""
 
 
 @pytest.fixture()
@@ -163,7 +207,7 @@ def app_client(
 
     app = create_app(build=build, cwd=tmp_path, static_dir=tmp_path / "missing", runner=runner)
     with TestClient(app) as client:
-        yield App(client=client, runner=runner, runtime=runtime)
+        yield App(client=client, runner=runner, runtime=runtime, server=app)
 
 
 class Wire:
