@@ -15,10 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import json
 import os
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
@@ -79,9 +78,14 @@ def resolve_static_dir(explicit: Path | None = None) -> Path | None:
     installed wheel where the build is copied inside the package. Returning ``None``
     rather than raising is deliberate: the caller shows a page, not a traceback.
     """
-    candidates: list[Path] = []
+    # An explicit directory is authoritative, right or wrong: a caller that passes
+    # one is stating where the client is, and silently falling back to some other
+    # build would serve a different client than the one asked for (and makes tests
+    # depend on whether `webapp/dist` happens to exist on the machine).
     if explicit is not None:
-        candidates.append(explicit)
+        return explicit if (explicit / "index.html").is_file() else None
+
+    candidates: list[Path] = []
     env = os.environ.get("QUARTZ_WEB_STATIC")
     if env:
         candidates.append(Path(env).expanduser())
@@ -109,13 +113,26 @@ def create_app(
     frame-parity test asserts that every `TurnObserver` hook reaches the wire.
     """
     session = WebSession(build, cwd=cwd, runner=runner)
-    app = FastAPI(title="quartz web", docs_url=None, redoc_url=None, openapi_url=None)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        """Close the kernel on shutdown, on a thread: `close` blocks on a join."""
+        try:
+            yield
+        finally:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(session.close)
+
+    app = FastAPI(
+        title="quartz web",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
+    )
     app.state.session = session
     app.state.cwd = cwd
 
-    @app.on_event("shutdown")
-    async def _shutdown() -> None:  # pragma: no cover - exercised by the server
-        await asyncio.to_thread(session.close)
 
     @app.get("/api/health")
     async def health() -> JSONResponse:
@@ -266,6 +283,11 @@ async def _dispatch(
 
     except WebSocketDisconnect:
         raise
+    except _AlreadyReported:
+        # `_ensure` already sent a fatal frame with the real reason. Letting this
+        # fall through to the generic handler would show the user the name of this
+        # private control-flow exception instead.
+        return
     except TurnBusyError as exc:
         push({"type": "error", "message": str(exc), "fatal": False})
     except Exception as exc:  # noqa: BLE001 - one bad frame must not kill the socket
@@ -343,6 +365,3 @@ def _list_item(item: dict[str, Any]) -> dict[str, str]:
     ]
     return {"label": label, "detail": " · ".join(parts)}
 
-
-def _unused(self: Any) -> None:  # pragma: no cover - keeps dataclasses import honest
-    del self
