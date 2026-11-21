@@ -115,10 +115,16 @@ thinking trace and `Ctrl+O` toggles full tool-call details.
 ### Staying updated
 
 Quartz does not leave you watching a spinner in silence. Every `progress_every`
-`ipython` calls (default `5`) the harness injects a short `[progress]` notice
-telling the model to update you before it carries on. If the model already
-narrated on its own, the notice is skipped and the count restarts, so you never
-read the same update twice.
+`ipython` calls (default `5`) the harness injects one line:
+
+```
+[progress] Update the user now on the progress.
+```
+
+That is the whole notice. It names no call count, because only the harness counts
+and a number in the prompt is stale the moment a checkpoint is refused. If the
+model already narrated on its own, the notice is skipped and the count restarts,
+so you never read the same update twice.
 
 The trigger is the harness's, so it cannot be forgotten, and the notice is
 enforced rather than merely suggested. A model that answers a checkpoint with

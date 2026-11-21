@@ -32,13 +32,11 @@ __all__ = [
     "resolve_every",
 ]
 
-#: Injected as a user message when the model owes the user an update. Kept short:
-#: it is paid for on every checkpoint, and long instructions invite a long reply.
-PROGRESS_NOTICE = (
-    "[progress] {n} ipython calls have run since your last update to the user.\n"
-    "Update the user now on the progress.\n"
-    "Only continue working if you have updated the user."
-)
+#: Injected as a user message when the model owes the user an update. One line, and
+#: no call count: only the harness counts, and a number in the prompt gives the model
+#: arithmetic to reason about instead of words to write. Enforcement is the gate's
+#: job, so the notice does not have to threaten anything to be obeyed.
+PROGRESS_NOTICE = "[progress] Update the user now on the progress."
 
 #: Returned as the tool result for calls made while an update is owed. It has to
 #: read as a message from the tool, because that is the channel the model is
@@ -50,9 +48,9 @@ REFUSAL = (
 )
 
 
-def progress_notice(every: int) -> dict[str, str]:
+def progress_notice() -> dict[str, str]:
     """Build the user-role message that asks the model to update the user."""
-    return {"role": "user", "content": PROGRESS_NOTICE.format(n=every)}
+    return {"role": "user", "content": PROGRESS_NOTICE}
 
 
 def announced_to_user(messages: list[dict[str, Any]]) -> bool:
@@ -124,7 +122,7 @@ class ProgressCheckpointer:
             return None
         self._owed = True
         self._refusals = 0
-        return progress_notice(self._every)
+        return progress_notice()
 
     def settle(self, *, updated: bool) -> bool:
         """Clear a raised checkpoint once the model spoke; return True if it did."""

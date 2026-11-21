@@ -231,13 +231,17 @@ def test_unprompted_narration_restarts_the_count() -> None:
 # --- the notice itself ------------------------------------------------------
 
 
-def test_notice_names_the_cadence_and_demands_the_update_first() -> None:
-    text = progress_notice(7)["content"]
-    assert text.startswith("[progress]")
-    assert "7 ipython calls" in text
-    assert "Update the user now on the progress." in text
-    assert "Only continue working if you have updated the user." in text
-    assert text == PROGRESS_NOTICE.format(n=7)
+def test_notice_is_one_line_and_names_no_call_count() -> None:
+    notice = progress_notice()
+    text = notice["content"]
+    assert notice["role"] == "user"
+    assert text == PROGRESS_NOTICE
+    assert text.startswith("[progress] Update the user now on the progress.")
+    # One line: every extra one is paid for at every checkpoint.
+    assert "\n" not in text
+    # Only the harness counts. A number here would also be stale the moment the gate
+    # refuses a tool call, since no second notice is injected to update it.
+    assert not any(char.isdigit() for char in text)
 
 
 # --- the gate: no work until the user has been updated ----------------------
