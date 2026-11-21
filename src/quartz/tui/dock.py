@@ -158,6 +158,7 @@ class InteractiveDock:
         self._transient_status: Any | None = None
         self._active_tracker: Any | None = None
         self._modal: InlineModalState | None = None
+        self._ansi_cache: tuple[tuple[int, int], Any, StyleAndTextTuples] | None = None
 
         self._bg_thread: threading.Thread | None = None
         self._refresh_thread: threading.Thread | None = None
@@ -386,6 +387,18 @@ class InteractiveDock:
         self._invalidate()
 
     def _render_ansi_fragments(self, renderable: Any) -> StyleAndTextTuples:
+        # prompt_toolkit repaints for reasons unrelated to the live block
+        # (typing, cursor, ticks); reuse the last render while the same
+        # renderable object is shown at the same width.
+        key = (id(renderable), self.terminal_width)
+        cached = self._ansi_cache
+        if cached is not None and cached[0] == key and cached[1] is renderable:
+            return cached[2]
+        frags = self._render_ansi_fragments_uncached(renderable)
+        self._ansi_cache = (key, renderable, frags)
+        return frags
+
+    def _render_ansi_fragments_uncached(self, renderable: Any) -> StyleAndTextTuples:
         buf = io.StringIO()
         offscreen = Console(
             file=buf,

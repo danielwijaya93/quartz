@@ -35,6 +35,9 @@ console = Console()
 
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
+# Minimum seconds between live repaints triggered by streaming thinking deltas.
+THINKING_RENDER_INTERVAL = 0.05
+
 
 def _spinner_frame(elapsed: float, interval: float = 0.08) -> str:
     idx = int(max(0.0, elapsed) / interval) % len(_SPINNER_FRAMES)
@@ -470,6 +473,7 @@ class TurnProgressTracker:
         self.input_buffer: str = ""
         self.steering_messages: list[str] = []
         self._flushed = False
+        self._last_render_at: float = 0.0
 
         if not self.plain_output and not self.verbose:
             self.printer.before_print = self._before_print
@@ -496,6 +500,7 @@ class TurnProgressTracker:
     def _render_current(self) -> None:
         if self.plain_output or self.verbose or self._live_renderer is None:
             return
+        self._last_render_at = time.monotonic()
         group = self._render_group()
         self._live_renderer(group if group.renderables else None)
 
@@ -560,6 +565,10 @@ class TurnProgressTracker:
         with self.lock:
             self.thinking_text += text
             self._flushed = False
+            # Streaming deltas arrive far faster than the dock can repaint;
+            # coalesce them. tick() (every 0.1s) and flush() pick up the rest.
+            if time.monotonic() - self._last_render_at < THINKING_RENDER_INTERVAL:
+                return
             self._render_current()
 
     def set_input_buffer(self, text: str) -> None:
