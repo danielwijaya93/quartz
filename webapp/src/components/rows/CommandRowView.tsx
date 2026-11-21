@@ -113,10 +113,10 @@ function CommandBody({
           <p className="mt-0.5 text-2xs text-ink-muted">
             {result.message || `/${name} needs an interactive terminal.`}
           </p>
-          <CopyableCommand command={`quartz`} />
-          <p className="mt-1 font-mono text-2xs text-ink-dim">
-            then run <span className="text-ink-muted">/{name}</span>
-          </p>
+          {/* Copy what the user must actually run. `quartz` is already running —
+              the browser is talking to it — so the useful clipboard payload is the
+              slash command itself, and the label says exactly that. */}
+          <CopyableCommand command={`/${name}`} />
         </div>
       );
 

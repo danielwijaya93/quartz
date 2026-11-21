@@ -148,7 +148,7 @@ export function Composer({
 
   return (
     <div className="shrink-0 border-t border-line bg-base px-4 pb-3 pt-2">
-      <div className="mx-auto w-full max-w-3xl">
+      <div className="mx-auto w-full max-w-5xl">
         {blocked ? (
           <p className="mb-1.5 font-mono text-2xs text-danger" role="alert">
             Input blocked after a fatal error: {fatalError} — start a new session to continue.

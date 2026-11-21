@@ -1,7 +1,7 @@
 /** Types for the mock's scripted frames, so the reducer test can import them. */
 import type { Command, Message } from "../src/protocol";
 
-export declare const TINY_PNG: string;
+export declare const PLOT_PNG: string;
 
 export declare const COMMANDS: Command[];
 
