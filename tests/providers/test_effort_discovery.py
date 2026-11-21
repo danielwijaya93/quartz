@@ -241,7 +241,9 @@ def test_model_command_picker_uses_discovered_levels(
         plain_output=True,
         headless=True,
     )
-    assert commands._cmd_model(rt, "") is False
+    # The terminal handler draws the pickers itself and reports nothing to render;
+    # the assertions that matter are the captured options below.
+    assert commands._terminal_model(rt, "") is None
     assert captured["options"] == [("max", "max"), ("xhigh", "xhigh"), ("high", "high")]
     assert captured["current"] == "max"
 
