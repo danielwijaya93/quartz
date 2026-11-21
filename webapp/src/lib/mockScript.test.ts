@@ -3,7 +3,7 @@ import { initialState, reduceAll, resetIdCounter } from "./transcript";
 import type { ServerMessage } from "../protocol";
 // The mock is the reference recording of a turn, so the reducer is tested against
 // the same frames a developer sees in the browser.
-import { scriptedTurn } from "../../mock/script.mjs";
+import { commandResultFrame, scriptedTurn } from "../../mock/script.mjs";
 
 const frames = scriptedTurn() as ServerMessage[];
 
@@ -66,5 +66,27 @@ describe("the mock's scripted turn", () => {
     expect(twice.rows.slice(0, once.rows.length).map((row) => row.id)).toEqual(
       once.rows.map((row) => row.id),
     );
+  });
+});
+
+/**
+ * `/help` returns `kind: "text"` with padded columns and a keybinding block. The
+ * web client parses that shape (see `lib/commandText.ts`); this keeps the mock
+ * honest about what the real command registry actually emits.
+ */
+describe("the mock's /help reply", () => {
+  const frame = commandResultFrame("help") as {
+    result: { kind: string; body: string };
+  };
+
+  it("is a columnar text body, as the core registry formats it", () => {
+    expect(frame.result.kind).toBe("text");
+    const lines = frame.result.body.split("\n");
+    expect(lines.some((line) => line.includes("Keybindings:"))).toBe(true);
+    expect(lines.filter((line) => /^\/\w+/.test(line)).length).toBeGreaterThan(5);
+  });
+
+  it("has at least one row where the padded column overflowed", () => {
+    expect(frame.result.body).toContain("/settings [key val]Show or change");
   });
 });

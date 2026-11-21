@@ -5,26 +5,13 @@ import { StatusLine } from "./components/StatusLine";
 import { Composer } from "./components/Composer";
 import { CommandPalette } from "./components/CommandPalette";
 import { useQuartz } from "./useQuartz";
+import { useCommandPalette } from "./lib/useCommandPalette";
 import type { ImageAttachment } from "./protocol";
 
 export function App(): React.ReactElement {
   const quartz = useQuartz();
-  const [paletteOpen, setPaletteOpen] = React.useState(false);
-
-  // `/` opens the palette from anywhere, except while typing in a field. The
-  // composer handles its own `/`, so this is the global fallback.
-  React.useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
-      const target = event.target as HTMLElement | null;
-      const tag = target?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
-      event.preventDefault();
-      setPaletteOpen(true);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  const composerRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const palette = useCommandPalette(composerRef);
 
   const onSubmit = React.useCallback(
     (text: string, images: ImageAttachment[]) => {
@@ -34,7 +21,7 @@ export function App(): React.ReactElement {
   );
 
   return (
-    <div className="flex h-full flex-col bg-base">
+    <div className="flex h-full flex-col bg-background text-foreground">
       <HeaderBar
         session={quartz.state.session}
         status={quartz.status}
@@ -53,12 +40,13 @@ export function App(): React.ReactElement {
         onSubmit={onSubmit}
         onSteer={quartz.steer}
         onCancel={quartz.cancel}
-        onOpenPalette={() => setPaletteOpen(true)}
+        onOpenPalette={palette.openPalette}
+        textareaRef={composerRef}
       />
       <CommandPalette
-        open={paletteOpen}
+        open={palette.open}
         commands={quartz.state.session.commands}
-        onOpenChange={setPaletteOpen}
+        onOpenChange={palette.onOpenChange}
         onRun={quartz.runCommand}
       />
     </div>

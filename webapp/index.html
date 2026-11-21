@@ -1,10 +1,44 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light dark" />
     <title>Quartz</title>
+    <!--
+      Theme bootstrap. Runs before the stylesheet paints and before React mounts,
+      so the first frame is already in the right theme: no flash, no wait.
+
+      It mirrors the contract of HeroUI's `useTheme` hook exactly - same storage
+      key, same "system" resolution, same class + data-theme pair on <html> - so
+      the inline script and the React hook can never disagree.
+    -->
+    <script>
+      (function bootstrapTheme() {
+        var STORAGE_KEY = "heroui-theme";
+        var root = document.documentElement;
+        var stored = null;
+        try {
+          stored = window.localStorage.getItem(STORAGE_KEY);
+        } catch (error) {
+          /* Private mode or blocked storage: fall through to the OS preference. */
+        }
+        var prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        var dark = stored === "dark" || (stored !== "light" && stored !== "dark" && prefersDark);
+        var resolved = dark ? "dark" : "light";
+        root.classList.add(resolved);
+        root.setAttribute("data-theme", resolved);
+      })();
+    </script>
+    <style>
+      /* Paint the canvas in the active theme even before index.css arrives. */
+      html {
+        background-color: oklch(0.9702 0 0);
+      }
+      html.dark {
+        background-color: oklch(12% 0.005 285.823);
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

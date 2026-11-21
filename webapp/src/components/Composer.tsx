@@ -1,8 +1,6 @@
 import * as React from "react";
+import { Alert, Button, TextArea } from "@heroui/react";
 import { ArrowUp, CornerDownRight, ImagePlus, Square, X } from "lucide-react";
-import { Button } from "./ui/button";
-import { Textarea } from "./ui/textarea";
-import { cn } from "@/lib/utils";
 import type { ConnectionStatus } from "@/lib/connection";
 import type { ImageAttachment } from "@/protocol";
 
@@ -17,6 +15,8 @@ export interface ComposerProps {
   onSteer: (text: string) => void;
   onCancel: () => void;
   onOpenPalette: () => void;
+  /** Exposed so the app can return focus here after an overlay closes. */
+  textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
 }
 
 /** Read a File as base64 without the `data:` prefix the protocol expects. */
@@ -37,9 +37,9 @@ async function readAsAttachment(file: File): Promise<ImageAttachment> {
 /**
  * The input.
  *
- * One textarea, one button, and a rule: while a turn is running the same Enter key
- * means "steer" instead of "prompt", mirroring the TUI. That is the whole
- * interaction model — no mode switch to learn.
+ * One field, one primary button, and a rule: while a turn is running the same
+ * Enter key means "steer" instead of "prompt", mirroring the TUI. That is the
+ * whole interaction model - no mode switch to learn.
  */
 export function Composer({
   connection,
@@ -49,12 +49,14 @@ export function Composer({
   onSteer,
   onCancel,
   onOpenPalette,
+  textareaRef: forwardedRef,
 }: ComposerProps): React.ReactElement {
   const [text, setText] = React.useState("");
   const [images, setImages] = React.useState<ImageAttachment[]>([]);
   const [history, setHistory] = React.useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = React.useState<number | null>(null);
-  const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const localRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const textareaRef = forwardedRef ?? localRef;
   const fileRef = React.useRef<HTMLInputElement | null>(null);
 
   const offline = connection !== "connected";
@@ -67,7 +69,7 @@ export function Composer({
     if (!node) return;
     node.style.height = "auto";
     node.style.height = `${Math.min(node.scrollHeight, MAX_TEXTAREA_PX)}px`;
-  }, []);
+  }, [textareaRef]);
 
   React.useEffect(() => {
     resize();
@@ -77,7 +79,7 @@ export function Composer({
   // submit is the single most common papercut in chat UIs.
   React.useEffect(() => {
     if (!disabled) textareaRef.current?.focus();
-  }, [disabled, turnRunning]);
+  }, [disabled, turnRunning, textareaRef]);
 
   const submit = React.useCallback(() => {
     const value = text.trim();
@@ -146,70 +148,73 @@ export function Composer({
     });
   }, []);
 
+  const placeholder = disabled
+    ? offline
+      ? "Disconnected — waiting for the server…"
+      : "Blocked after an error — start a new session to continue"
+    : turnRunning
+      ? "Steer the running turn…"
+      : "Ask Quartz anything — press / for commands";
+
   return (
-    <div className="shrink-0 border-t border-line bg-base px-4 pb-3 pt-2">
-      <div className="mx-auto w-full max-w-5xl">
+    <div className="shrink-0 border-t border-separator bg-background px-4 pt-3 pb-4">
+      <div className="mx-auto w-full max-w-3xl space-y-2">
         {blocked ? (
-          <p className="mb-1.5 font-mono text-2xs text-danger" role="alert">
-            Input blocked after a fatal error: {fatalError} — start a new session to continue.
-          </p>
+          <Alert status="danger" role="alert">
+            <Alert.Indicator />
+            <Alert.Content>
+              <Alert.Title>Input is blocked</Alert.Title>
+              <Alert.Description>
+                <span className="text-sm">
+                  {fatalError} — start a new session to continue.
+                </span>
+              </Alert.Description>
+            </Alert.Content>
+          </Alert>
         ) : null}
 
         {images.length > 0 ? (
-          <ul className="mb-1.5 flex flex-wrap gap-1.5" aria-label="Pending attachments">
+          <ul className="flex flex-wrap gap-2" aria-label="Pending attachments">
             {images.map((image, index) => (
               <li key={`pending-${index}`} className="relative">
                 <img
                   src={`data:${image.mimeType};base64,${image.data}`}
                   alt={`Pending attachment ${index + 1}`}
-                  className="h-12 w-12 rounded-[var(--radius-cell)] border border-line object-cover"
+                  className="size-14 rounded-lg border border-border object-cover"
                 />
                 <button
                   type="button"
                   onClick={() => setImages((prev) => prev.filter((_, i) => i !== index))}
                   aria-label={`Remove attachment ${index + 1}`}
-                  className="absolute -right-1 -top-1 inline-flex size-4 items-center justify-center rounded-full border border-line bg-elevated text-ink-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                  className="absolute -top-1.5 -right-1.5 inline-flex size-5 cursor-pointer items-center justify-center rounded-full border border-border bg-surface text-muted hover:text-foreground"
                 >
-                  <X aria-hidden="true" className="size-2.5" />
+                  <X aria-hidden="true" className="size-3" />
                 </button>
               </li>
             ))}
           </ul>
         ) : null}
 
-        <div
-          className={cn(
-            "flex items-end gap-2 rounded-[var(--radius-cell)] border bg-surface px-2 py-1.5 transition-colors duration-[var(--duration-feedback)]",
-            disabled ? "border-line opacity-60" : "border-line-strong focus-within:border-accent",
-          )}
-        >
-          <Textarea
-            ref={textareaRef}
-            rows={1}
-            value={text}
-            disabled={disabled}
-            onChange={(event) => setText(event.target.value)}
-            onKeyDown={onKeyDown}
-            onPaste={(event) => {
-              const files = event.clipboardData?.files;
-              if (files && files.length > 0) addFiles(files);
-            }}
-            placeholder={
-              disabled
-                ? offline
-                  ? "Disconnected — waiting for the server…"
-                  : "Blocked by an error — start a new session, or fix it and reconnect"
-                : turnRunning
-                  ? "Steer the running turn…"
-                  : "Prompt quartz — / for commands"
-            }
-            aria-label={turnRunning ? "Steer the running turn" : "Prompt quartz"}
-            spellCheck={false}
-            autoCapitalize="off"
-            autoComplete="off"
-            className="max-h-[200px] min-h-6 py-0.5"
-          />
+        <TextArea
+          ref={textareaRef}
+          rows={1}
+          value={text}
+          disabled={disabled}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={onKeyDown}
+          onPaste={(event) => {
+            const files = event.clipboardData?.files;
+            if (files && files.length > 0) addFiles(files);
+          }}
+          placeholder={placeholder}
+          aria-label={turnRunning ? "Steer the running turn" : "Prompt quartz"}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoComplete="off"
+          className="max-h-[200px] min-h-[52px] w-full resize-none py-3 text-[0.9375rem]"
+        />
 
+        <div className="flex items-center gap-2">
           <input
             ref={fileRef}
             type="file"
@@ -223,57 +228,55 @@ export function Composer({
             }}
           />
           <Button
+            size="sm"
             variant="ghost"
-            size="iconSm"
-            disabled={disabled}
-            onClick={() => fileRef.current?.click()}
+            isIconOnly
+            isDisabled={disabled}
+            onPress={() => fileRef.current?.click()}
             aria-label="Attach an image"
           >
-            <ImagePlus aria-hidden="true" />
+            <ImagePlus aria-hidden="true" className="size-4" />
           </Button>
 
-          {turnRunning ? (
-            <Button
-              variant="outline"
-              size="iconSm"
-              onClick={onCancel}
-              aria-label="Cancel the running turn"
-            >
-              <Square aria-hidden="true" />
-            </Button>
-          ) : null}
+          <p className="hidden text-xs text-muted sm:block">
+            <kbd className="font-mono">Enter</kbd> {turnRunning ? "to steer" : "to send"}
+            <span aria-hidden="true"> · </span>
+            <kbd className="font-mono">Shift+Enter</kbd> for a new line
+          </p>
 
-          <Button
-            variant={canSend ? "accent" : "outline"}
-            size="sm"
-            disabled={!canSend}
-            onClick={submit}
-            aria-label={turnRunning ? "Steer the running turn" : "Send prompt"}
-            className="h-6"
-          >
+          <div className="ml-auto flex items-center gap-2">
             {turnRunning ? (
-              <>
-                <CornerDownRight aria-hidden="true" />
-                Steer
-              </>
-            ) : (
-              <>
-                <ArrowUp aria-hidden="true" />
-                Send
-              </>
-            )}
-          </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onPress={onCancel}
+                aria-label="Cancel the running turn"
+              >
+                <Square aria-hidden="true" className="size-3.5" />
+                Stop
+              </Button>
+            ) : null}
+            <Button
+              size="sm"
+              variant={canSend ? "primary" : "outline"}
+              isDisabled={!canSend}
+              onPress={submit}
+              aria-label={turnRunning ? "Steer the running turn" : "Send prompt"}
+            >
+              {turnRunning ? (
+                <>
+                  <CornerDownRight aria-hidden="true" className="size-3.5" />
+                  Steer
+                </>
+              ) : (
+                <>
+                  <ArrowUp aria-hidden="true" className="size-3.5" />
+                  Send
+                </>
+              )}
+            </Button>
+          </div>
         </div>
-
-        <p className="mt-1 flex items-center gap-2 font-mono text-2xs text-ink-dim">
-          <span>enter send</span>
-          <span aria-hidden="true">·</span>
-          <span>shift+enter newline</span>
-          <span aria-hidden="true">·</span>
-          <span>esc {turnRunning ? "cancel" : "clear"}</span>
-          <span aria-hidden="true">·</span>
-          <span>/ commands</span>
-        </p>
       </div>
     </div>
   );

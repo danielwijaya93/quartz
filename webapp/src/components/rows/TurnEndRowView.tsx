@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Chip } from "@heroui/react";
 import type { TurnEndRow } from "@/lib/transcript";
 
 function formatElapsed(ms: number): string {
@@ -6,18 +7,28 @@ function formatElapsed(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-/** The turn footer: cost and outcome, in one quiet mono line. */
+const STATUS_COPY: Record<
+  TurnEndRow["status"],
+  { label: string; color: "success" | "warning" | "danger" }
+> = {
+  ok: { label: "Finished", color: "success" },
+  aborted: { label: "Aborted", color: "warning" },
+  interrupted: { label: "Interrupted", color: "warning" },
+  error: { label: "Failed", color: "danger" },
+};
+
+/** The turn footer: outcome and cost, quiet enough to skip while scanning. */
 export function TurnEndRowView({ row }: { row: TurnEndRow }): React.ReactElement {
-  const tone =
-    row.status === "ok" ? "text-ink-dim" : row.status === "error" ? "text-danger" : "text-warn";
+  const status = STATUS_COPY[row.status];
   return (
-    <div className="flex items-baseline gap-2 py-0.5 font-mono text-2xs text-ink-dim tabular-nums">
-      <span className={tone}>{row.status}</span>
-      <span>·</span>
-      <span>{row.tokens.toLocaleString()} tok</span>
-      <span>·</span>
-      <span>{formatElapsed(row.elapsedMs)}</span>
-      {row.error !== undefined ? <span className="text-danger">· {row.error}</span> : null}
-    </div>
+    <p className="flex flex-wrap items-center gap-2 text-xs text-muted">
+      <Chip size="sm" variant="soft" color={status.color}>
+        {status.label}
+      </Chip>
+      <span className="tabular-nums">{row.tokens.toLocaleString()} tokens</span>
+      <span aria-hidden="true">·</span>
+      <span className="tabular-nums">{formatElapsed(row.elapsedMs)}</span>
+      {row.error !== undefined ? <span className="text-danger">{row.error}</span> : null}
+    </p>
   );
 }

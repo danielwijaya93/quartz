@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Spinner } from "@heroui/react";
 import { ConnectionBanner } from "./ConnectionBanner";
 import type { ConnectionStatus } from "@/lib/connection";
 
@@ -23,11 +24,12 @@ export function StatusLine({
     <div
       role="status"
       aria-live="polite"
-      className="flex shrink-0 items-center gap-2 border-t border-line px-4 py-1 font-mono text-2xs text-ink-muted"
+      className="flex shrink-0 items-center gap-2 px-5 py-1.5 text-xs text-muted"
     >
-      <span className="size-1.5 animate-pulse rounded-full bg-accent motion-reduce:animate-none" aria-hidden="true" />
+      <Spinner size="sm" color="current" aria-hidden="true" />
       <span>{label}</span>
-      {turnRunning ? <span className="text-ink-dim">· running</span> : null}
+      {turnRunning ? <span aria-hidden="true">·</span> : null}
+      {turnRunning ? <span>running</span> : null}
     </div>
   );
 }

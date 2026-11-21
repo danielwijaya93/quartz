@@ -1,45 +1,39 @@
 import * as React from "react";
-import { ChevronRight } from "lucide-react";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import { RowFrame } from "./RowFrame";
+import { Disclosure } from "@heroui/react";
+import { Brain } from "lucide-react";
 import { approxTokens, lineCount, type ThinkingRow } from "@/lib/transcript";
 
 /**
- * Thinking is present but quiet: collapsed to one dimmed line, expandable on
- * demand. It never competes with the answer for attention.
+ * Thinking is present but quiet: one collapsed line that says how much there is,
+ * expandable on demand. It never competes with the answer for attention.
  */
 export function ThinkingRowView({ row }: { row: ThinkingRow }): React.ReactElement {
   const lines = lineCount(row.text);
   const tokens = approxTokens(row.text);
 
   return (
-    <RowFrame label="thinking" tone="muted">
-      <Collapsible>
-        <CollapsibleTrigger asChild>
-          <button
-            type="button"
-            className="group flex w-full items-center gap-1.5 rounded-[var(--radius-cell)] py-0.5 text-left text-xs text-ink-dim transition-colors duration-[var(--duration-feedback)] hover:text-ink-muted focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-            aria-label={`Thinking, ${lines} lines, about ${tokens} tokens. Expand to read.`}
-          >
-            <ChevronRight
-              aria-hidden="true"
-              className="size-3 shrink-0 transition-transform duration-[var(--duration-feedback)] group-data-[state=open]:rotate-90"
-            />
-            <span className="font-mono text-2xs tabular-nums">
-              {lines} {lines === 1 ? "line" : "lines"} · ~{tokens} tok
-            </span>
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap border-l border-line pl-2 font-mono text-xs leading-relaxed text-ink-dim">
+    <Disclosure className="rounded-lg border border-border bg-surface-secondary/60">
+      <Disclosure.Heading>
+        <Disclosure.Trigger
+          className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-xs text-muted"
+          aria-label={`Thinking, ${lines} lines, about ${tokens} tokens. Expand to read.`}
+        >
+          <Brain aria-hidden="true" className="size-3.5 shrink-0" />
+          <span className="font-medium">Thinking</span>
+          <span aria-hidden="true">·</span>
+          <span className="tabular-nums">
+            {lines} {lines === 1 ? "line" : "lines"} · ~{tokens} tokens
+          </span>
+          <Disclosure.Indicator className="ml-auto size-3.5" />
+        </Disclosure.Trigger>
+      </Disclosure.Heading>
+      <Disclosure.Content>
+        <Disclosure.Body className="px-3 pb-3">
+          <pre className="max-h-72 overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-muted">
             {row.text}
           </pre>
-        </CollapsibleContent>
-      </Collapsible>
-    </RowFrame>
+        </Disclosure.Body>
+      </Disclosure.Content>
+    </Disclosure>
   );
 }

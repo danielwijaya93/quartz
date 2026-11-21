@@ -1,5 +1,7 @@
 import * as React from "react";
+import { ScrollShadow } from "@heroui/react";
 import type { Row } from "@/lib/transcript";
+import { TranscriptAnnouncer } from "./TranscriptAnnouncer";
 import { UserRowView } from "./rows/UserRowView";
 import { AssistantRowView } from "./rows/AssistantRowView";
 import { ThinkingRowView } from "./rows/ThinkingRowView";
@@ -39,11 +41,15 @@ function RowView({ row, streaming }: { row: Row; streaming: boolean }): React.Re
 }
 
 /**
- * The log.
+ * The conversation.
  *
- * A single vertical stream with no bubbles. It follows the tail while the user is
- * already at the bottom, and stops following the moment they scroll up to read —
- * the classic streaming-UI bug is yanking the viewport away from a reader.
+ * A single vertical stream of turns and cells, in a comfortable reading column.
+ * It follows the tail while the user is already at the bottom, and stops
+ * following the moment they scroll up to read - the classic streaming-UI bug is
+ * yanking the viewport away from a reader.
+ *
+ * Note what is *not* here: `aria-live`. The log is a structure, not an
+ * announcement; `TranscriptAnnouncer` owns the live region.
  */
 export function Transcript({
   rows,
@@ -81,7 +87,7 @@ export function Transcript({
    * Row count and identity are not enough. A streamed assistant row reflows after
    * its final token, a webfont swap changes the metrics of text already laid out,
    * an inline image decodes at its natural size, and a collapsible opening adds
-   * height — none of which add a row. Without this observer the content grows
+   * height - none of which add a row. Without this observer the content grows
    * below the fold, and the scroll listener cannot self-correct: it measures the
    * distance at the last scroll event, so it keeps reporting "pinned" while the
    * real distance has grown.
@@ -111,46 +117,42 @@ export function Transcript({
   }, []);
 
   return (
-    <div
-      ref={scrollRef}
-      className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-2"
-    >
-      <div
-        ref={contentRef}
-        role="log"
-        aria-live="polite"
-        aria-relevant="additions text"
-        aria-label="Session transcript"
-        className="mx-auto flex w-full max-w-5xl flex-col gap-1.5"
+    <>
+      <ScrollShadow
+        ref={scrollRef}
+        orientation="vertical"
+        size={32}
+        className="min-h-0 flex-1 px-4 py-5"
       >
-        {rows.length === 0 ? <EmptyTranscript /> : null}
-        {rows.map((row, index) => (
-          <RowView
-            key={row.id}
-            row={row}
-            streaming={turnRunning && index === rows.length - 1}
-          />
-        ))}
-        <div ref={endRef} aria-hidden="true" className="h-px" />
-      </div>
-    </div>
+        <div
+          ref={contentRef}
+          role="log"
+          aria-label="Session transcript"
+          className="mx-auto flex w-full max-w-3xl flex-col gap-4"
+        >
+          {rows.length === 0 ? <EmptyTranscript /> : null}
+          {rows.map((row, index) => (
+            <RowView
+              key={row.id}
+              row={row}
+              streaming={turnRunning && index === rows.length - 1}
+            />
+          ))}
+          <div ref={endRef} aria-hidden="true" className="h-px" />
+        </div>
+      </ScrollShadow>
+      <TranscriptAnnouncer rows={rows} turnRunning={turnRunning} />
+    </>
   );
 }
 
 function EmptyTranscript(): React.ReactElement {
   return (
-    <div className="py-12 text-center">
-      <p className="font-mono text-xs text-ink-dim">
-        No turns yet. Type a prompt, or <Kbd>/</Kbd> for commands.
+    <div className="flex flex-col items-center gap-2 py-24 text-center">
+      <p className="text-base font-medium text-foreground">No turns yet</p>
+      <p className="text-sm text-muted">
+        Type a prompt below, or press <kbd className="font-mono">/</kbd> for commands.
       </p>
     </div>
-  );
-}
-
-function Kbd({ children }: { children: React.ReactNode }): React.ReactElement {
-  return (
-    <kbd className="rounded-[3px] border border-line bg-elevated px-1 py-px font-mono text-2xs text-ink-muted">
-      {children}
-    </kbd>
   );
 }

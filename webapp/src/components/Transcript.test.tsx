@@ -45,8 +45,22 @@ function renderRows(rows: Row[]): void {
 describe("Transcript", () => {
   it("exposes an accessible log region", () => {
     renderRows([userRow]);
+    expect(screen.getByRole("log", { name: "Session transcript" })).toBeInTheDocument();
+  });
+
+  it("is not a live region - streaming text must not be announced per token", () => {
+    renderRows([assistantRow, { ...assistantRow, id: "a2", text: "second" } as Row]);
+
     const log = screen.getByRole("log", { name: "Session transcript" });
-    expect(log).toHaveAttribute("aria-live", "polite");
+    expect(log).not.toHaveAttribute("aria-live");
+    expect(log).not.toHaveAttribute("aria-atomic");
+    // The only live region in the transcript area is the coarse announcer, and it
+    // is not the node the deltas land in.
+    const liveRegions = Array.from(document.querySelectorAll("[aria-live]"));
+    expect(liveRegions).toHaveLength(1);
+    const [liveRegion] = liveRegions;
+    expect(liveRegion).not.toBe(log);
+    expect(liveRegion === undefined ? true : log.contains(liveRegion)).toBe(false);
   });
 
   it("shows an empty state with the palette hint", () => {
@@ -57,7 +71,7 @@ describe("Transcript", () => {
   it("renders a user row", () => {
     renderRows([userRow]);
     expect(screen.getByText("hello")).toBeInTheDocument();
-    expect(screen.getByText("you")).toBeInTheDocument();
+    expect(screen.getByText("You")).toBeInTheDocument();
   });
 
   it("renders assistant markdown as html", () => {
@@ -69,21 +83,23 @@ describe("Transcript", () => {
     const user = userEvent.setup();
     renderRows([thinkingRow]);
     const trigger = screen.getByRole("button", { name: /Thinking, 3 lines/ });
-    expect(document.querySelector("pre")).toBeNull();
+    const body = (): Element | null => document.querySelector("pre");
+    expect(body()).not.toBeVisible();
     await user.click(trigger);
-    expect(document.querySelector("pre")?.textContent).toBe("a\nb\nc");
+    expect(body()).toBeVisible();
+    expect(body()?.textContent).toBe("a\nb\nc");
   });
 
   it("renders a tool row with its status and duration", () => {
     renderRows([toolRow]);
-    expect(screen.getByText("ok", { selector: ".sr-only" })).toBeInTheDocument();
+    expect(screen.getByText("Succeeded")).toBeInTheDocument();
     expect(screen.getByText("12ms")).toBeInTheDocument();
   });
 
   it("renders a failed tool row with the error output visible", () => {
     renderRows([{ ...toolRow, status: "failed", output: "NameError: x" } as Row]);
-    expect(screen.getByText("failed", { selector: ".sr-only" })).toBeInTheDocument();
-    expect(screen.getByText("NameError: x")).toBeInTheDocument();
+    expect(screen.getByText("Failed")).toBeInTheDocument();
+    expect(screen.getByText("NameError: x")).toBeVisible();
   });
 
   it("expands a tool row that carries an image, since the image is the output", () => {
@@ -102,7 +118,7 @@ describe("Transcript", () => {
   it("renders action chips as text, not colour", async () => {
     const user = userEvent.setup();
     renderRows([{ ...toolRow, actions: { wrote: "plot.png", cells: 4 } } as Row]);
-    await user.click(screen.getByRole("button", { name: /Tool call, ok/ }));
+    await user.click(screen.getByRole("button", { name: /Tool call, Succeeded/ }));
     expect(screen.getByRole("list", { name: "Side effects" })).toBeInTheDocument();
     expect(screen.getByText("wrote: plot.png")).toBeInTheDocument();
     expect(screen.getByText("cells: 4")).toBeInTheDocument();
@@ -111,15 +127,15 @@ describe("Transcript", () => {
   it("renders a bash notice, a steering row and a compaction marker", () => {
     renderRows([noticeRow, steeringRow, compactionRow]);
     expect(screen.getByText("job 3 finished")).toBeInTheDocument();
-    expect(screen.getByText(/you steered/)).toBeInTheDocument();
+    expect(screen.getByText(/You steered the turn/)).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Context compacted" })).toBeInTheDocument();
-    expect(screen.getByText(/30→8 msgs/)).toBeInTheDocument();
+    expect(screen.getByText(/30→8 messages/)).toBeInTheDocument();
   });
 
   it("renders an error row", () => {
     renderRows([errorRow]);
     expect(screen.getByText("boom")).toBeInTheDocument();
-    expect(screen.getByText("error", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("Something went wrong")).toBeInTheDocument();
   });
 
   it("marks a fatal error as an alert", () => {
@@ -129,7 +145,7 @@ describe("Transcript", () => {
 
   it("renders the turn footer", () => {
     renderRows([turnEndRow]);
-    expect(screen.getByText("12 tok")).toBeInTheDocument();
+    expect(screen.getByText("12 tokens")).toBeInTheDocument();
     expect(screen.getByText("340ms")).toBeInTheDocument();
   });
 
@@ -137,7 +153,7 @@ describe("Transcript", () => {
     renderRows([commandRow]);
     expect(screen.getByText("Run this in the terminal")).toBeInTheDocument();
     expect(screen.getByText("needs a terminal")).toBeInTheDocument();
-    // The name appears in the row meta and in the instructions, so match all.
+    // The name appears in the header and in the copyable command, so match all.
     expect(screen.getAllByText(/\/model/).length).toBeGreaterThan(0);
   });
 
@@ -155,7 +171,38 @@ describe("Transcript", () => {
       commandRow,
     ]);
     const log = screen.getByRole("log");
-    expect(log.querySelectorAll("article").length).toBeGreaterThanOrEqual(5);
+    // One element per row, plus the scroll sentinel.
+    expect(log.children).toHaveLength(11);
+  });
+});
+
+describe("TranscriptAnnouncer", () => {
+  it("announces a turn starting and finishing, not each delta", () => {
+    const { rerender } = render(<Transcript rows={[]} turnRunning={false} />);
+    const announcer = screen.getByTestId("transcript-announcer");
+
+    rerender(<Transcript rows={[]} turnRunning />);
+    expect(announcer).toHaveTextContent("Turn started.");
+
+    // A streamed delta grows the assistant row but must not re-announce.
+    const streaming: Row = { kind: "assistant", id: "a1", text: "hel" };
+    rerender(<Transcript rows={[streaming]} turnRunning />);
+    expect(announcer).toHaveTextContent("Turn started.");
+    rerender(<Transcript rows={[{ ...streaming, text: "hello world" } as Row]} turnRunning />);
+    expect(announcer.textContent).not.toContain("hello world");
+
+    rerender(<Transcript rows={[streaming, turnEndRow]} turnRunning={false} />);
+    expect(announcer).toHaveTextContent("Turn finished in 0.3 seconds.");
+  });
+
+  it("announces a tool call finishing once, not while it runs", () => {
+    const running: Row = { ...toolRow, status: "running" } as Row;
+    const { rerender } = render(<Transcript rows={[running]} turnRunning />);
+    const announcer = screen.getByTestId("transcript-announcer");
+    expect(announcer.textContent).toBe("");
+
+    rerender(<Transcript rows={[toolRow]} turnRunning />);
+    expect(announcer).toHaveTextContent("A tool call finished.");
   });
 });
 
@@ -163,12 +210,13 @@ describe("Transcript", () => {
  * Tail following is the one behaviour in this component with a real user cost when
  * it breaks: the transcript silently drifts out from under a reader who never
  * scrolled. jsdom has no layout, so these tests drive the two inputs the component
- * actually uses — the scroll listener's metrics, and the size observer's callback.
+ * actually uses - the scroll listener's metrics, and the size observer's callback.
  */
 describe("Transcript tail following", () => {
   interface ObserverRecord {
     callback: ResizeObserverCallback;
     targets: Element[];
+    disconnected: boolean;
   }
 
   const realResizeObserver = globalThis.ResizeObserver;
@@ -178,14 +226,16 @@ describe("Transcript tail following", () => {
     class RecordingResizeObserver implements ResizeObserver {
       private readonly record: ObserverRecord;
       constructor(callback: ResizeObserverCallback) {
-        this.record = { callback, targets: [] };
+        this.record = { callback, targets: [], disconnected: false };
         records.push(this.record);
       }
       observe(target: Element): void {
         this.record.targets.push(target);
       }
       unobserve(): void {}
-      disconnect(): void {}
+      disconnect(): void {
+        this.record.disconnected = true;
+      }
     }
     // vitest.setup.ts installs its stub with defineProperty, so it is writable but
     // not configurable: assign directly rather than using vi.stubGlobal.
@@ -195,6 +245,16 @@ describe("Transcript tail following", () => {
 
   function logNode(): HTMLElement {
     return screen.getByRole("log");
+  }
+
+  /**
+   * HeroUI's ScrollShadow runs its own observer on the scroll container for its
+   * fade edges, so pick ours by what it watches: the reading column.
+   */
+  function contentObserver(records: ObserverRecord[]): ObserverRecord {
+    const record = records.find((entry) => entry.targets.includes(logNode()));
+    if (!record) throw new Error("no observer on the transcript content column");
+    return record;
   }
 
   /** The scroll container the component measures; the log element is its child. */
@@ -229,8 +289,7 @@ describe("Transcript tail following", () => {
 
     // The observer must sit on the node that grows (the reading column), because
     // the scroll container's own box does not change when rows reflow.
-    expect(records).toHaveLength(1);
-    expect(records[0]?.targets).toEqual([logNode()]);
+    expect(contentObserver(records).targets).toEqual([logNode()]);
   });
 
   it("re-pins to the tail when a row grows while the reader is at the bottom", async () => {
@@ -244,7 +303,8 @@ describe("Transcript tail following", () => {
     const sentinel = logNode().lastElementChild as HTMLElement;
     const scrollIntoView = vi.spyOn(sentinel, "scrollIntoView").mockImplementation(() => {});
 
-    act(() => records[0]?.callback([], records[0] as unknown as ResizeObserver));
+    const observer = contentObserver(records);
+    act(() => observer.callback([], observer as unknown as ResizeObserver));
     await flushFrames();
 
     // Growing content below the fold is exactly the reflow (markdown, webfont,
@@ -264,7 +324,8 @@ describe("Transcript tail following", () => {
     const sentinel = logNode().lastElementChild as HTMLElement;
     const scrollIntoView = vi.spyOn(sentinel, "scrollIntoView").mockImplementation(() => {});
 
-    act(() => records[0]?.callback([], records[0] as unknown as ResizeObserver));
+    const observer = contentObserver(records);
+    act(() => observer.callback([], observer as unknown as ResizeObserver));
     await flushFrames();
 
     expect(scrollIntoView).not.toHaveBeenCalled();
@@ -281,11 +342,12 @@ describe("Transcript tail following", () => {
     const sentinel = logNode().lastElementChild as HTMLElement;
     const scrollIntoView = vi.spyOn(sentinel, "scrollIntoView").mockImplementation(() => {});
 
+    const observer = contentObserver(records);
+    const asObserver = observer as unknown as ResizeObserver;
     act(() => {
-      const observer = records[0] as unknown as ResizeObserver;
-      records[0]?.callback([], observer);
-      records[0]?.callback([], observer);
-      records[0]?.callback([], observer);
+      observer.callback([], asObserver);
+      observer.callback([], asObserver);
+      observer.callback([], asObserver);
     });
     await flushFrames();
 
@@ -293,18 +355,12 @@ describe("Transcript tail following", () => {
   });
 
   it("stops observing the content column on unmount", () => {
-    let disconnected = false;
-    class TrackingResizeObserver implements ResizeObserver {
-      observe(): void {}
-      unobserve(): void {}
-      disconnect(): void {
-        disconnected = true;
-      }
-    }
-    globalThis.ResizeObserver = TrackingResizeObserver;
+    const records = stubResizeObserver();
 
     const { unmount } = render(<Transcript rows={[userRow]} turnRunning={false} />);
+    const observer = contentObserver(records);
+    expect(observer.disconnected).toBe(false);
     unmount();
-    expect(disconnected).toBe(true);
+    expect(observer.disconnected).toBe(true);
   });
 });
