@@ -73,7 +73,7 @@ def test_install_sync_output_is_idempotent_and_skips_dummy() -> None:
 
 
 def test_dock_emit_wraps_scrollback_writes_when_enabled(tmp_path, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
-    from tests.tui.test_interactive import _make_dock
+    from test_interactive import _make_dock
 
     monkeypatch.setenv("QUARTZ_SYNC_OUTPUT", "1")
     with _make_dock(tmp_path) as (dock, _):
@@ -84,7 +84,7 @@ def test_dock_emit_wraps_scrollback_writes_when_enabled(tmp_path, monkeypatch, c
 
 
 def test_dock_emit_plain_when_disabled(tmp_path, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
-    from tests.tui.test_interactive import _make_dock
+    from test_interactive import _make_dock
 
     monkeypatch.setenv("QUARTZ_SYNC_OUTPUT", "0")
     with _make_dock(tmp_path) as (dock, _):
