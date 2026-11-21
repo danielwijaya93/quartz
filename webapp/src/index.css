@@ -1,5 +1,12 @@
 @import "tailwindcss";
 @import "@heroui/styles";
+/*
+ * The OpenUI component library's stylesheet is *not* imported here. It is ~700 kB
+ * of pre-compiled component CSS, it keys its palette off `[data-openui-theme]`
+ * (which `App` mirrors from the resolved HeroUI theme), and only Rich UI needs
+ * it -- so `components/OpenUISurface.tsx` imports it, and Vite loads it as a
+ * dependency of that lazy chunk instead of on every page.
+ */
 
 /*
  * Quartz web theme layer.
@@ -309,5 +316,27 @@
 
   .hljs-strong {
     font-weight: 600;
+  }
+}
+
+@layer components {
+  /*
+   * An OpenUI surface.
+   *
+   * The library owns its internals; this only positions it in the transcript:
+   * full column width, and a subtle rounded frame so a rendered dashboard reads
+   * as an object rather than as loose prose. Backgrounds stay transparent so the
+   * library's own surfaces (cards, charts) sit on our page colour in both themes.
+   */
+  .openui-surface {
+    width: 100%;
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    color: var(--foreground);
+    overflow-wrap: anywhere;
+  }
+
+  .openui-surface > * {
+    max-width: 100%;
   }
 }

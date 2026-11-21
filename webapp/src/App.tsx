@@ -6,16 +6,37 @@ import { Composer } from "./components/Composer";
 import { CommandPalette } from "./components/CommandPalette";
 import { useQuartz } from "./useQuartz";
 import { useCommandPalette } from "./lib/useCommandPalette";
+import { useOpenUISystemPrompt, useRichUiMode } from "./lib/useRichUi";
+import { useOpenUIThemeMirror } from "./lib/theme";
+import { wantsRichUi } from "./lib/richUi";
 import type { ImageAttachment } from "./protocol";
 
 export function App(): React.ReactElement {
-  const quartz = useQuartz();
+  // Rich UI is a preference with a consequence: it decides both how a reply is
+  // drawn *and* whether the session is told to produce OpenUI Lang at all.
+  const richUi = useRichUiMode();
+  const systemPromptAppend = useOpenUISystemPrompt(richUi.mode);
+  const quartz = useQuartz(undefined, systemPromptAppend);
+
   const composerRef = React.useRef<HTMLTextAreaElement | null>(null);
   const palette = useCommandPalette(composerRef);
+
+  // OpenUI reads `data-openui-theme`; mirror whatever HeroUI applied to `<html>`
+  // so a surface is never drawn in the other theme's palette.
+  useOpenUIThemeMirror();
 
   const onSubmit = React.useCallback(
     (text: string, images: ImageAttachment[]) => {
       quartz.prompt(text, images);
+    },
+    [quartz],
+  );
+
+  // An OpenUI form submit (`@ToAssistant`) is just the next user turn: it goes
+  // through the same prompt frame, so the model continues this session.
+  const onPrompt = React.useCallback(
+    (text: string) => {
+      quartz.prompt(text, []);
     },
     [quartz],
   );
@@ -25,9 +46,17 @@ export function App(): React.ReactElement {
       <HeaderBar
         session={quartz.state.session}
         status={quartz.status}
+        richUiMode={richUi.mode}
+        onRichUiModeChange={richUi.setMode}
         onNewSession={quartz.newSession}
       />
-      <Transcript rows={quartz.state.rows} turnRunning={quartz.state.turnRunning} />
+      <Transcript
+        rows={quartz.state.rows}
+        turnRunning={quartz.state.turnRunning}
+        richUi={wantsRichUi(richUi.mode)}
+        onPrompt={onPrompt}
+        onFormState={quartz.setFormState}
+      />
       <StatusLine
         label={quartz.state.status}
         status={quartz.status}

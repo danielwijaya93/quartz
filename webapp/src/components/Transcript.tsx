@@ -13,12 +13,34 @@ import { ErrorRowView } from "./rows/ErrorRowView";
 import { TurnEndRowView } from "./rows/TurnEndRowView";
 import { CommandRowView } from "./rows/CommandRowView";
 
-function RowView({ row, streaming }: { row: Row; streaming: boolean }): React.ReactElement {
+interface RowProps {
+  row: Row;
+  streaming: boolean;
+  richUi: boolean;
+  onPrompt: (text: string) => void;
+  onFormState: (id: string, state: Record<string, unknown>) => void;
+}
+
+function RowView({
+  row,
+  streaming,
+  richUi,
+  onPrompt,
+  onFormState,
+}: RowProps): React.ReactElement {
   switch (row.kind) {
     case "user":
       return <UserRowView row={row} />;
     case "assistant":
-      return <AssistantRowView row={row} streaming={streaming} />;
+      return (
+        <AssistantRowView
+          row={row}
+          streaming={streaming}
+          richUi={richUi}
+          onPrompt={onPrompt}
+          onFormState={onFormState}
+        />
+      );
     case "thinking":
       return <ThinkingRowView row={row} />;
     case "tool":
@@ -54,9 +76,18 @@ function RowView({ row, streaming }: { row: Row; streaming: boolean }): React.Re
 export function Transcript({
   rows,
   turnRunning,
+  richUi,
+  onPrompt,
+  onFormState,
 }: {
   rows: readonly Row[];
   turnRunning: boolean;
+  /** Draw openui-lang replies as a live surface rather than prose. */
+  richUi: boolean;
+  /** Send a message into the session; an OpenUI form submit goes through here. */
+  onPrompt: (text: string) => void;
+  /** Persist surface form state onto its row so a re-render cannot reset it. */
+  onFormState: (id: string, state: Record<string, unknown>) => void;
 }): React.ReactElement {
   const endRef = React.useRef<HTMLDivElement | null>(null);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
@@ -136,6 +167,9 @@ export function Transcript({
               key={row.id}
               row={row}
               streaming={turnRunning && index === rows.length - 1}
+              richUi={richUi}
+              onPrompt={onPrompt}
+              onFormState={onFormState}
             />
           ))}
           <div ref={endRef} aria-hidden="true" className="h-px" />

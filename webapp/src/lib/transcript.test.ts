@@ -6,6 +6,7 @@ import {
   lineCount,
   reduceAll,
   resetIdCounter,
+  setRowFormState,
   type TranscriptState,
 } from "./transcript";
 import type { ServerMessage } from "../protocol";
@@ -634,5 +635,56 @@ describe("the local prompt echo", () => {
     const texts = state.rows.filter((row) => row.kind === "user").map((row) => row.text);
     expect(texts).toContain("just asked");
     expect(texts).toContain("an older question");
+  });
+});
+
+describe("OpenUI form state on a row", () => {
+  const streamed = (): TranscriptState =>
+    fold([
+      { type: "turn_start", turnId: "t1" },
+      { type: "text_delta", text: "root = Stack([])" },
+      { type: "turn_end", status: "ok", tokens: 1, elapsedMs: 1 },
+    ]);
+
+  it("starts null, so markdown mode never sees form state", () => {
+    const row = streamed().rows.find((entry) => entry.kind === "assistant");
+    expect(row).toMatchObject({ formState: null });
+  });
+
+  const assistantOf = (state: TranscriptState): { id: string; text: string } => {
+    const row = state.rows.find((entry) => entry.kind === "assistant");
+    if (row === undefined || row.kind !== "assistant") throw new Error("no assistant row");
+    return row;
+  };
+
+  it("attaches state to the row that rendered it", () => {
+    const before = streamed();
+    const { id } = assistantOf(before);
+    const after = setRowFormState(before, id, { mock_config_form: { notes: "hi" } });
+
+    expect(assistantOf(after)).toMatchObject({
+      formState: { mock_config_form: { notes: "hi" } },
+    });
+    // The text is untouched: this is not encoded back into the message.
+    expect(assistantOf(after).text).toBe("root = Stack([])");
+  });
+
+  it("ignores an unknown id or a non-assistant row", () => {
+    const state = fold([{ type: "turn_start", turnId: "t1" }, { type: "text_delta", text: "x" }]);
+    expect(setRowFormState(state, "nope", { a: 1 })).toBe(state);
+
+    const toolRow = state.rows.find((entry) => entry.kind === "turn_end")?.id ?? "";
+    expect(setRowFormState(state, toolRow, { a: 1 })).toBe(state);
+  });
+
+  it("survives later deltas to other rows", () => {
+    const before = streamed();
+    const { id } = assistantOf(before);
+    const withState = setRowFormState(before, id, { f: 1 });
+    const more = reduceAll(withState, [
+      { type: "turn_start", turnId: "t2" },
+      { type: "text_delta", text: "second" },
+    ]);
+    expect(assistantOf(more)).toMatchObject({ formState: { f: 1 } });
   });
 });

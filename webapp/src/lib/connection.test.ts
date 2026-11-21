@@ -52,6 +52,51 @@ describe("Connection", () => {
     expect(JSON.parse(sockets[0]?.sent[0] ?? "{}")).toEqual({ type: "hello", clientVersion: 1 });
   });
 
+  it("carries the system-prompt append on hello, and only when it is set", () => {
+    const { connection, sockets } = makeConnection();
+    connection.setSystemPromptAppend("ROOT IS STACK");
+    connection.connect();
+    sockets[0]?.open();
+
+    expect(JSON.parse(sockets[0]?.sent[0] ?? "{}")).toEqual({
+      type: "hello",
+      clientVersion: 1,
+      systemPromptAppend: "ROOT IS STACK",
+    });
+  });
+
+  it("re-sends hello when the append changes, so the toggle reaches the server", () => {
+    const { connection, sockets } = makeConnection();
+    connection.connect();
+    sockets[0]?.open();
+    const before = sockets[0]?.sent.length ?? 0;
+
+    connection.setSystemPromptAppend("APPEND");
+    const after = sockets[0]?.sent ?? [];
+    expect(after.length).toBe(before + 1);
+    expect(JSON.parse(after[after.length - 1] ?? "{}")).toMatchObject({
+      type: "hello",
+      systemPromptAppend: "APPEND",
+    });
+
+    // Withdrawing it sends a hello with no append at all: "no append" must mean
+    // absent, not an empty field, so the server's stock prompt applies.
+    connection.setSystemPromptAppend("");
+    expect(JSON.parse(after[after.length - 1] ?? "{}")).toEqual({ type: "hello", clientVersion: 1 });
+  });
+
+  it("remembers the append for the next socket, without sending into a closed one", () => {
+    const { connection, sockets } = makeConnection();
+    connection.setSystemPromptAppend("APPEND");
+    expect(sockets).toHaveLength(0);
+
+    connection.connect();
+    sockets[0]?.open();
+    expect(JSON.parse(sockets[0]?.sent[0] ?? "{}")).toMatchObject({
+      systemPromptAppend: "APPEND",
+    });
+  });
+
   it("reports status transitions", () => {
     const { connection, sockets } = makeConnection();
     const seen: string[] = [];

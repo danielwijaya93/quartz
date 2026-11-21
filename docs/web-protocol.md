@@ -42,7 +42,7 @@ Every message is a flat object with a `type` string discriminator.
 
 | `type` | Fields | Meaning |
 | --- | --- | --- |
-| `hello` | `clientVersion: int` | First message. Server replies `session_state`. |
+| `hello` | `clientVersion: int`, `systemPromptAppend?: str` | First message. Server replies `session_state`. Also sets the system-prompt append (see *System prompt append*). Re-sending it is how a client changes that append mid-session. |
 | `prompt` | `text: str`, `images?: [{mimeType, data}]` | Start a turn. Rejected with `error` if a turn is running. |
 | `steer` | `text: str` | Inject a steering message into the running turn. |
 | `cancel` | — | Abort the running turn. |
@@ -72,6 +72,33 @@ Turn lifecycle:
 
 `Message` is the same shape the session log already stores
 (`{role, content, tool_calls?, tool_call_id?}`). The SPA renders history from it.
+
+### System prompt append
+
+`hello.systemPromptAppend` is a client-supplied string the server appends to the
+Quartz system prompt for this session. It is the web twin of the ACP vendor
+extension (`_meta.quartz.systemPrompt.append`) and exists for the same reason: a
+client that owns a rendering surface also owns the instructions that make the
+model produce output for it.
+
+Rules:
+
+1. **The client owns the text.** Nothing in `src/quartz/` contains the OpenUI
+   Lang prompt; the browser builds it from the component-library spec it ships.
+2. **Per session, and idempotent.** The prompt is applied to the live runtime on
+   every `hello`, always as `base + "\n\n" + append`. Setting it twice cannot
+   stack two copies, and `""` withdraws it, so toggling Rich UI off puts the next
+   turn back on the stock system prompt -- no session rebuild, no stale prompt.
+3. **Optional and forgiving.** Absent, empty or non-string means "no append": the
+   session runs on the stock prompt. A bad value never produces an `error` frame.
+4. **It survives a session swap.** `new_session` / `load_session` re-apply the
+   current append to the new runtime, because it is a client preference rather
+   than a property of one session.
+5. **It does not change the wire between `session_state` messages.** Only the
+   system prompt changes, so no frames are added or reordered.
+
+`quartz web`'s client sends it when Rich UI is on (`Markdown | Rich UI` in the
+header) and sends `""` when it is off.
 
 ### Ordering guarantees
 
@@ -159,6 +186,7 @@ Local single-user tool. Explicit non-goals: multi-user, auth, remote exposure.
 
 - ACP v2 upgrade (`configOptions`, `availableCommands`) — separate, later.
 - Multi-session in one browser tab.
-- GenUI/A2UI rendering — Phase 3, layered on top of `text_delta` (it parses
-  assistant markdown for UI payloads; it does not change the wire protocol).
+- Rich-UI surfaces as a wire concept. The client renders OpenUI Lang itself
+  (`webapp/src/components/OpenUISurface.tsx`); the only protocol support it needs
+  is `hello.systemPromptAppend`.
 - Auth, TLS, remote hosting.

@@ -34,6 +34,14 @@ export interface AssistantRow {
   kind: "assistant";
   id: string;
   text: string;
+  /**
+   * OpenUI form state for this reply, when one has been rendered.
+   *
+   * Held on the row because the row *is* the transcript's source of truth: a
+   * re-render, a theme flip or a rich-UI toggle must not reset a half-filled
+   * form. Null for an ordinary text reply, so markdown mode never sees it.
+   */
+  formState: Record<string, unknown> | null;
 }
 
 export interface ThinkingRow {
@@ -202,6 +210,28 @@ export function addUserPrompt(
   return appendRow(state, row);
 }
 
+/**
+ * Persist an OpenUI surface's form state onto its row.
+ *
+ * OpenUI reports state on every keystroke; without storing it, any re-render that
+ * remounts the renderer (toggling Rich UI off and back on, for instance) would
+ * silently reset a half-filled form. It lives on the row rather than being encoded
+ * into the message text, because the text is what markdown mode renders -- form
+ * state must never leak into it.
+ */
+export function setRowFormState(
+  state: TranscriptState,
+  id: string,
+  formState: Record<string, unknown>,
+): TranscriptState {
+  const index = state.rows.findIndex((row) => row.id === id);
+  const current = index === -1 ? undefined : state.rows[index];
+  if (!current || current.kind !== "assistant") return state;
+  const rows = state.rows.slice();
+  rows[index] = { ...current, formState };
+  return { ...state, rows, seen: state.seen };
+}
+
 /** Test seam: reset the id counter so assertions stay stable. */
 export function resetIdCounter(): void {
   idCounter = 0;
@@ -287,7 +317,12 @@ function rowsFromMessage(message: Message, index: number): Row[] {
     case "assistant": {
       const rows: Row[] = [];
       if (text.trim()) {
-        rows.push({ kind: "assistant", id: `history-assistant-${index}`, text });
+        rows.push({
+          kind: "assistant",
+          id: `history-assistant-${index}`,
+          text,
+          formState: null,
+        });
       }
       for (const [callIndex, call] of (message.tool_calls ?? []).entries()) {
         if (!call.id) continue;
@@ -393,7 +428,7 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
       return appendToTrailing(
         state,
         "assistant",
-        () => ({ kind: "assistant", id: makeId("assistant"), text: "" }),
+        () => ({ kind: "assistant", id: makeId("assistant"), text: "", formState: null }),
         (row, chunk) => ({ ...row, text: row.text + chunk }),
         message.text,
       );
