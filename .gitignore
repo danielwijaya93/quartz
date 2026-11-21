@@ -18,3 +18,10 @@ webapp/node_modules/
 webapp/dist/
 webapp/*.tsbuildinfo
 webapp/coverage/
+
+# Parallel worker worktrees and their briefs (scratch, never committed)
+.worktrees/
+
+# Editor swap files
+*.swp
+*.swo
