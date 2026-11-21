@@ -39,6 +39,7 @@ from quartz.tui.render import (
     set_active_dock,
 )
 from quartz.tui.replay import _replay_session
+from quartz.tui.terminal import install_sync_output, supports_sync_output, wrap_sync
 
 if TYPE_CHECKING:
     from quartz.core.runtime import AgentRuntime
@@ -234,6 +235,9 @@ class InteractiveDock:
             input=input_device,
             output=output_device,
         )
+        self._sync_output = supports_sync_output()
+        if self._sync_output:
+            install_sync_output(self.app.output)
 
     # ------------------------------------------------------------------
     # State helpers & loop marshaling
@@ -365,6 +369,8 @@ class InteractiveDock:
         if leading_newline:
             raw = "\n" + raw
         if raw:
+            if self._sync_output:
+                raw = wrap_sync(raw)
             with self._stdout_lock:
                 sys.stdout.write(raw)
                 sys.stdout.flush()
