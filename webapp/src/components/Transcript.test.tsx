@@ -97,9 +97,14 @@ describe("Transcript", () => {
     expect(screen.getByText("hi").tagName).toBe("STRONG");
   });
 
-  it("collapses thinking by default and expands on click", async () => {
+  it("folds thinking into the tray and keeps it collapsed when the tray opens", async () => {
     const user = userEvent.setup();
     renderRows([thinkingRow]);
+
+    // Nothing the turn did is on the page until the tray is opened.
+    expect(screen.queryByRole("button", { name: /Thinking, 3 lines/ })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /1 step/ }));
     const trigger = screen.getByRole("button", { name: /Thinking, 3 lines/ });
     const body = (): Element | null => document.querySelector("pre");
     expect(body()).not.toBeVisible();
@@ -108,25 +113,43 @@ describe("Transcript", () => {
     expect(body()?.textContent).toBe("a\nb\nc");
   });
 
-  it("renders a tool row with its status and duration", () => {
+  it("renders a tool row, folded, with its status and duration", async () => {
+    const user = userEvent.setup();
     renderRows([toolRow]);
+
+    // The run, not the call, is the tray's row: one line for one kind of work.
+    expect(screen.queryByText("Succeeded")).toBeNull();
+    await user.click(screen.getByRole("button", { name: /1 step/ }));
+    await user.click(screen.getByRole("button", { name: /Used 1 tool/ }));
+
     expect(screen.getByText("Succeeded")).toBeInTheDocument();
     expect(screen.getByText("12ms")).toBeInTheDocument();
   });
 
-  it("renders a failed tool row with the error output visible", () => {
+  it("renders a failed tool row with the error output visible", async () => {
+    const user = userEvent.setup();
     renderRows([{ ...toolRow, status: "failed", output: "NameError: x" } as Row]);
+
+    // The failure is visible before anything is opened: the header counts it.
+    expect(screen.getByText("1 failed")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /1 step/ }));
+    await user.click(screen.getByRole("button", { name: /Used 1 tool/ }));
     expect(screen.getByText("Failed")).toBeInTheDocument();
     expect(screen.getByText("NameError: x")).toBeVisible();
   });
 
-  it("expands a tool row that carries an image, since the image is the output", () => {
+  it("expands a tool row that carries an image, since the image is the output", async () => {
+    const user = userEvent.setup();
     renderRows([
       {
         ...toolRow,
         images: [{ mimeType: "image/png", data: "abc" }],
       } as Row,
     ]);
+    await user.click(screen.getByRole("button", { name: /1 step/ }));
+    await user.click(screen.getByRole("button", { name: /Used 1 tool/ }));
+
     expect(screen.getByAltText("Tool output image 1")).toHaveAttribute(
       "src",
       "data:image/png;base64,abc",
@@ -136,7 +159,10 @@ describe("Transcript", () => {
   it("renders action chips as text, not colour", async () => {
     const user = userEvent.setup();
     renderRows([{ ...toolRow, actions: { wrote: "plot.png", cells: 4 } } as Row]);
+    await user.click(screen.getByRole("button", { name: /1 step/ }));
+    await user.click(screen.getByRole("button", { name: /Used 1 tool/ }));
     await user.click(screen.getByRole("button", { name: /Tool call, Succeeded/ }));
+
     expect(screen.getByRole("list", { name: "Side effects" })).toBeInTheDocument();
     expect(screen.getByText("wrote: plot.png")).toBeInTheDocument();
     expect(screen.getByText("cells: 4")).toBeInTheDocument();
@@ -189,8 +215,59 @@ describe("Transcript", () => {
       commandRow,
     ]);
     const log = screen.getByRole("log");
-    // One element per row, plus the scroll sentinel.
-    expect(log.children).toHaveLength(11);
+    // One node per standalone row, one per turn (which holds its tray and its
+    // answer), plus the scroll sentinel: ten rows become eight.
+    expect(log.children).toHaveLength(9);
+  });
+
+  it("folds a turn's work into one closed tray above the answer", () => {
+    renderRows([
+      userRow,
+      { kind: "thinking", id: "k1", text: "look" } as Row,
+      toolRow,
+      { ...toolRow, id: "t2" } as Row,
+      { ...toolRow, id: "t3" } as Row,
+      assistantRow,
+      turnEndRow,
+    ]);
+
+    // The old shape was one card per thinking block and per tool call.
+    expect(screen.queryByText("Succeeded")).toBeNull();
+
+    // Thinking plus one folded run of three calls: two steps, not four cards.
+    const tray = screen.getByRole("button", { name: /2 steps/ });
+    expect(tray).toHaveAttribute("aria-expanded", "false");
+    // The answer is on the page, at full width, in the reading column.
+    expect(screen.getByText("hi").tagName).toBe("STRONG");
+    // One speaker label per turn, not one per assistant row.
+    expect(screen.getAllByText("Quartz")).toHaveLength(1);
+  });
+
+  it("renders a turn with no answer as just its tray", () => {
+    renderRows([{ kind: "thinking", id: "k1", text: "thinking only" } as Row]);
+    expect(screen.getByRole("button", { name: /1 step/ })).toBeInTheDocument();
+    expect(screen.queryByText("Quartz")).toBeNull();
+  });
+
+  it("keeps standalone rows between two turns in their original position", () => {
+    renderRows([
+      { kind: "assistant", id: "a1", text: "first", formState: null } as Row,
+      noticeRow,
+      { kind: "assistant", id: "a2", text: "second", formState: null } as Row,
+    ]);
+
+    const log = screen.getByRole("log");
+    const texts = Array.from(log.children)
+      .map((node) => node.textContent ?? "")
+      .slice(0, 3);
+
+    // Three rows in, three nodes out - the notice keeps its place between the
+    // turns instead of being absorbed by one of them.
+    expect(texts[0]).toContain("first");
+    expect(texts[1]).toContain("job 3 finished");
+    expect(texts[2]).toContain("second");
+    // An answer-only turn has no machinery, so it gets no tray.
+    expect(screen.queryAllByRole("button", { name: /step/ })).toHaveLength(0);
   });
 });
 
@@ -226,14 +303,19 @@ describe("TranscriptAnnouncer", () => {
     expect(announcer).toHaveTextContent("Turn finished in 0.3 seconds.");
   });
 
-  it("announces a tool call finishing once, not while it runs", () => {
+  it("leaves tool progress to the turn tray instead of announcing every call", () => {
     const running: Row = { ...toolRow, status: "running" } as Row;
     const { rerender } = render(transcript([running], true));
     const announcer = screen.getByTestId("transcript-announcer");
     expect(announcer.textContent).toBe("");
 
+    // A finished call is not an interruption; the tray header is the live line
+    // that carries "Running print(1)" and then the next step.
     rerender(transcript([toolRow], true));
-    expect(announcer).toHaveTextContent("A tool call finished.");
+    expect(announcer.textContent).toBe("");
+    expect(screen.getAllByRole("status").map((node) => node.textContent)).toContain(
+      "Used 1 tool",
+    );
   });
 });
 

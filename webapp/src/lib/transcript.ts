@@ -558,6 +558,246 @@ export function reduceAll(
   return messages.reduce(reduce, state);
 }
 
+/* ------------------------------------------------------------ turn grouping */
+
+/**
+ * The tray's atom: a run of one kind of row, in the order it happened.
+ *
+ * A turn is folded into a handful of steps rather than one row per event. The
+ * tray is a summary of what the turn *did*; a list that repeats every tool call
+ * as its own line is just the old stacked cards with an extra click.
+ */
+export type TurnStep =
+  /**
+   * Consecutive thinking rows. The tray draws them as one line: the stream split
+   * the thought at a boundary, the model did not split it into two thoughts.
+   */
+  | { kind: "thinking"; id: string; rows: ThinkingRow[] }
+  /** Interim narration - the model talking between tool calls. */
+  | { kind: "text"; id: string; row: AssistantRow }
+  /** Consecutive tool calls. Folded, because "used 3 tools" is the fact worth reading. */
+  | { kind: "tool_run"; id: string; rows: ToolRow[] };
+
+/**
+ * One turn of the conversation: its machinery (the steps) and its answer.
+ *
+ * The answer is lifted out of the steps on purpose. Everything else in a turn is
+ * something the user did not ask to read; the answer is the only part that
+ * belongs in the reading column.
+ */
+export interface Turn {
+  kind: "turn";
+  id: string;
+  steps: TurnStep[];
+  answer: AssistantRow | null;
+  /** The turn is running: the tray header shows the current step instead of a count. */
+  live: boolean;
+}
+
+/** A transcript renders as a mix of turns and rows that stand on their own. */
+export type TranscriptItem = Turn | Row;
+
+export function isTurn(item: TranscriptItem): item is Turn {
+  return item.kind === "turn";
+}
+
+export interface GroupOptions {
+  /** True between `turn_start` and `turn_end`; only the trailing turn can be live. */
+  running?: boolean;
+}
+
+/** Rows that belong to a turn, as opposed to markers *between* turns. */
+function belongsToTurn(row: Row): row is AssistantRow | ThinkingRow | ToolRow {
+  return row.kind === "assistant" || row.kind === "thinking" || row.kind === "tool";
+}
+
+/** Collapse to a single line and clip it, for a header that must stay one row tall. */
+function clipOneLine(text: string, max: number): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  return collapsed.length <= max ? collapsed : `${collapsed.slice(0, Math.max(max - 1, 0))}…`;
+}
+
+/** A tool's first non-blank line: as close to a name as a kernel cell gets. */
+export function firstLine(code: string): string {
+  const line = code.split("\n").find((candidate) => candidate.trim() !== "");
+  return line ? line.trim() : "";
+}
+
+/**
+ * A tool call's nearest thing to a name.
+ *
+ * The wire carries code, not a tool name, so the header borrows the function the
+ * cell calls: `open(...)` reads as "open", `df = pd.read_csv(...)` as "read_csv".
+ * When a cell is not a call at all (`import pandas as pd`) the line itself is the
+ * most honest label available.
+ */
+export function toolName(code: string): string {
+  const line = firstLine(code);
+  if (line === "") return "";
+  const call = /^(?:[\w.]+\s*=\s*)?([A-Za-z_][\w.]*)\s*\(/.exec(line);
+  const callee = call?.[1];
+  if (callee !== undefined) {
+    const parts = callee.split(".");
+    return parts[parts.length - 1] ?? callee;
+  }
+  return clipOneLine(line, 40);
+}
+
+/** "Used 3 tools": the one fact a folded run needs, in or out of the header. */
+export function toolRunLabel(rows: readonly ToolRow[]): string {
+  return `Used ${rows.length} ${rows.length === 1 ? "tool" : "tools"}`;
+}
+
+/**
+ * How one step reads as a single line: the tray header while the turn runs, and
+ * a tool run's own trigger once the tray is open.
+ *
+ * A running tool leads with what it is doing, not with a count: on a live turn
+ * the header *is* the progress indicator, so it has to name the current step.
+ */
+export function stepLabel(step: TurnStep): string {
+  switch (step.kind) {
+    case "thinking":
+      return "Thinking";
+    case "text":
+      return clipOneLine(step.row.text, 80) || "Reply";
+    case "tool_run": {
+      const running = step.rows.find((row) => row.status === "running");
+      if (running) {
+        const name = toolName(running.code);
+        return name === "" ? "Running a tool" : `Running ${name}`;
+      }
+      return toolRunLabel(step.rows);
+    }
+  }
+}
+
+/**
+ * Failed tool calls anywhere in the turn.
+ *
+ * The collapsed header is the only place a failure can be seen without clicking,
+ * so this count is the design's one non-negotiable: silent failure is worse than
+ * any amount of noise.
+ */
+export function failedToolCount(turn: Turn): number {
+  let failed = 0;
+  for (const step of turn.steps) {
+    if (step.kind !== "tool_run") continue;
+    for (const row of step.rows) {
+      if (row.status === "failed") failed += 1;
+    }
+  }
+  return failed;
+}
+
+/** Fold a turn's rows into steps, leaving out the row promoted to the answer. */
+function foldSteps(
+  rows: readonly (AssistantRow | ThinkingRow | ToolRow)[],
+  answerIndex: number,
+): TurnStep[] {
+  const steps: TurnStep[] = [];
+  let index = 0;
+  while (index < rows.length) {
+    if (index === answerIndex) {
+      index += 1;
+      continue;
+    }
+    const row = rows[index]!;
+    if (row.kind === "thinking") {
+      const run: ThinkingRow[] = [];
+      // A run is consecutive rows of one kind, so an intervening text or tool row
+      // legitimately splits it in two.
+      while (index < rows.length) {
+        const candidate = rows[index]!;
+        if (candidate.kind !== "thinking") break;
+        run.push(candidate);
+        index += 1;
+      }
+      steps.push({ kind: "thinking", id: `thinking-${run[0]!.id}`, rows: run });
+      continue;
+    }
+    if (row.kind === "tool") {
+      const run: ToolRow[] = [];
+      while (index < rows.length) {
+        const candidate = rows[index]!;
+        if (candidate.kind !== "tool") break;
+        run.push(candidate);
+        index += 1;
+      }
+      steps.push({ kind: "tool_run", id: `tool-run-${run[0]!.id}`, rows: run });
+      continue;
+    }
+    steps.push({ kind: "text", id: `text-${row.id}`, row });
+    index += 1;
+  }
+  return steps;
+}
+
+/**
+ * One turn's rows -> its steps plus its answer.
+ *
+ * The answer is the *last* assistant row with text. A model narrates, calls a
+ * tool, narrates again, and only the final block is the reply; promoting the
+ * first one would bury the answer above the work that produced it. An assistant
+ * row with no text is a tool-only segment, so it stays in the steps.
+ */
+function buildTurn(rows: readonly (AssistantRow | ThinkingRow | ToolRow)[]): Turn {
+  let answerIndex = -1;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index]!;
+    if (row.kind === "assistant" && row.text.trim() !== "") {
+      answerIndex = index;
+      break;
+    }
+  }
+  return {
+    kind: "turn",
+    // Derived from the first row's id, never from a position: a disclosure keyed
+    // by index would remount - and collapse - every time an earlier turn grew.
+    id: `turn-${rows[0]!.id}`,
+    steps: foldSteps(rows, answerIndex),
+    answer: answerIndex === -1 ? null : (rows[answerIndex] as AssistantRow),
+    live: false,
+  };
+}
+
+/**
+ * Fold the flat row list into turns.
+ *
+ * Only rows a turn can produce - assistant, thinking, tool - are folded. Every
+ * other kind (`user`, `bash_notice`, `steering`, `compaction`, `error`,
+ * `command`, `turn_end`) is a marker *between* turns: it closes the open turn
+ * and is returned in place, so those keep rendering exactly as before.
+ */
+export function groupTurns(rows: readonly Row[], options: GroupOptions = {}): TranscriptItem[] {
+  const items: TranscriptItem[] = [];
+  let open: (AssistantRow | ThinkingRow | ToolRow)[] = [];
+
+  const closeTurn = (): void => {
+    if (open.length === 0) return;
+    items.push(buildTurn(open));
+    open = [];
+  };
+
+  for (const row of rows) {
+    if (belongsToTurn(row)) {
+      open.push(row);
+      continue;
+    }
+    closeTurn();
+    items.push(row);
+  }
+  closeTurn();
+
+  // Only the trailing turn can be live: anything after a turn closes it, which
+  // is also why an error mid-turn settles the work that preceded it.
+  const last = items[items.length - 1];
+  if (options.running === true && last !== undefined && isTurn(last)) {
+    items[items.length - 1] = { ...last, live: true };
+  }
+  return items;
+}
+
 /** Count lines in a thinking blob, for the disclosure's summary. */
 export function lineCount(text: string): number {
   if (!text) return 0;
