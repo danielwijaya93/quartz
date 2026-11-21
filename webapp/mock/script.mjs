@@ -5,9 +5,69 @@
  * `docs/web-protocol.md` is the contract these frames obey.
  */
 
-/* A 1x1 PNG, so the image path renders without shipping a binary fixture. */
-export const TINY_PNG =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
+/**
+ * A 320x200 PNG that reads as a real matplotlib figure — titled "SIGNAL", axes,
+ * ticks, and a decaying oscillation. It is inlined so the fixture needs no binary
+ * file and no network at runtime.
+ *
+ * It replaces the original 1x1 transparent pixel: that proved the image path
+ * worked but rendered at ~3x3 CSS px, so image output was effectively invisible
+ * during review. This size also exercises the row's `max-h-56` clamp, which a
+ * pixel could never do.
+ *
+ * Generated once with a throwaway zlib-based writer and a 5x7 bitmap font; the
+ * committed artifact is only this string.
+ */
+export const PLOT_PNG =
+  "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";
 
 export const COMMANDS = [
   { name: "model", description: "Choose provider, model, and reasoning effort", usage: "[prov]" },
@@ -142,7 +202,7 @@ export function scriptedTurn() {
     ok: true,
     durationMs: 128,
     output: "Figure(640x480)",
-    images: [{ mimeType: "image/png", data: TINY_PNG }],
+    images: [{ mimeType: "image/png", data: PLOT_PNG }],
     actions: { wrote: "plot.png", cells: 4 },
   });
 
