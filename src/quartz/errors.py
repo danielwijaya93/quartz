@@ -89,6 +89,21 @@ class EndpointConfigError(AgentError):
     """The configured provider endpoint is unknown or contradictory."""
 
 
+class SessionNotFoundError(FileNotFoundError):
+    """A resume/continue request had no session to resume.
+
+    Subclasses `FileNotFoundError` because that is what it is: a named file was
+    asked for and is absent. It carries `cwd` so each transport can phrase the
+    message itself -- the terminal collapses the home directory, a web server
+    reports whatever its client sent. `str()` is the unformatted fallback so a
+    caller that does not special-case it still gets a usable line.
+    """
+
+    def __init__(self, cwd: Any) -> None:
+        super().__init__(f"No previous session found for {cwd}.")
+        self.cwd = cwd
+
+
 # Phrases providers use when a request is rejected for being too long.
 # Matched against the lower-cased error body, only for 400/413 responses.
 _OVERFLOW_MARKERS: tuple[str, ...] = (
