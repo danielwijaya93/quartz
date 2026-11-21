@@ -159,6 +159,7 @@ class ACPServer:
         max_context_tokens: int | None = None,
         compact_reserve_tokens: int = 16_384,
         keep_recent_tokens: int = DEFAULT_KEEP_RECENT_TOKENS,
+        progress_every: int = 0,
     ) -> None:
         self._client_factory = client_factory
         self._in = in_stream or sys.stdin
@@ -169,6 +170,7 @@ class ACPServer:
         self._max_context_tokens = max_context_tokens
         self._compact_reserve_tokens = compact_reserve_tokens
         self._keep_recent_tokens = keep_recent_tokens
+        self._progress_every = progress_every
         self._client: Any = None
         self._client_lock = threading.Lock()
         self._model = ""
@@ -363,6 +365,7 @@ class ACPServer:
                     initial_prompt_tokens=state.usage.prompt_tokens,
                     effort=effort,
                     abort_event=state.abort_event,
+                    progress_every=self._progress_every,
                 )
                 state.messages = updated_msgs
                 state.session.save_messages(state.messages)

@@ -17,6 +17,7 @@ from quartz.core.compact import (
     estimate_context_tokens,
 )
 from quartz.core.events import NO_OBSERVER, TurnObserver
+from quartz.core.progress import ProgressCheckpointer, announced_to_user
 from quartz.errors import ContextOverflowError
 from quartz.kernel.client import CellResult, KernelClient
 from quartz.providers.base import (
@@ -383,6 +384,7 @@ def agent_loop(
     effort: str | None = None,
     abort_event: threading.Event | None = None,
     steering_queue: queue.Queue[str] | None = None,
+    progress_every: int = 0,
 ) -> tuple[str, list[dict[str, Any]], int]:
     """Run one turn of the agent loop until the model stops calling tools.
 
@@ -390,7 +392,13 @@ def agent_loop(
     background bash notices, steering) is reported to ``observer``; the default
     observer ignores all of them. Returns (final_text, updated_messages,
     last_prompt_tokens).
+
+    ``progress_every`` schedules user updates: every that many executed ipython
+    calls, a ``[progress]`` notice asks the model to tell the user where things
+    stand before carrying on in the same response. ``0`` (the default) never asks,
+    which is what a headless run wants.
     """
+    progress = ProgressCheckpointer(progress_every)
     last_prompt_tokens = initial_prompt_tokens
     # Number of leading messages already covered by `last_prompt_tokens`.
     measured_message_count = max(0, len(messages) - 1) if initial_prompt_tokens > 0 else 0
@@ -429,6 +437,13 @@ def agent_loop(
 
         if projected_prompt_tokens() >= compact_threshold and len(messages) > 1:
             run_compaction(budget=compact_threshold, keep_tokens=keep_recent_tokens)
+
+        # Scheduled user update: the harness owns the timing, the model the words.
+        # Injected after compaction so the request the model sees is never the one
+        # copy that got summarised away.
+        update_request = progress.take(user_was_told=announced_to_user(messages))
+        if update_request is not None:
+            messages.append(update_request)
 
         full_messages = [{"role": "system", "content": system_prompt}, *messages]
         try:
@@ -545,6 +560,7 @@ def agent_loop(
                     "content": cell_res.format_for_model(),
                 }
             )
+        progress.record(len(ipython_indices))
 
         if step_images:
             messages.append(

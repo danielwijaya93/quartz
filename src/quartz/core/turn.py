@@ -111,6 +111,7 @@ def run_turn(
             effort=rt.effort,
             abort_event=abort_event,
             steering_queue=steering_queue,
+            progress_every=rt.progress_every,
         )
     finally:
         view.finish()

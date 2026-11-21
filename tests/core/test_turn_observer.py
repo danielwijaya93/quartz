@@ -227,8 +227,11 @@ def _params(node: ast.FunctionDef) -> list[ast.arg]:
 
 
 def test_agent_loop_takes_an_observer_and_no_callback_parameters() -> None:
+    # The budgets are a tripwire on turn configuration accumulating, not a target.
+    # They count plain knob parameters too (`progress_every` was the last raise),
+    # which is the point: adding one is a decision to make deliberately.
     tree = _loop_ast()
-    for name, limit in (("agent_loop", 15), ("_call_model", 8)):
+    for name, limit in (("agent_loop", 16), ("_call_model", 8)):
         params = _params(_function(tree, name))
         assert len(params) <= limit, [p.arg for p in params]
         for param in params:

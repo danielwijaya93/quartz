@@ -80,6 +80,7 @@ that reads each variable.
 | `QUARTZ_SYNC_OUTPUT` | auto-detect | `1`/`0` forces CSI 2026 synchronized output on/off (flicker-free dock repaints). |
 | `QUARTZ_IMAGE_PROTOCOL` | auto-detect | `kitty`, `iterm2` or `none`: inline preview for `/image` and `/paste` (Kitty needs PNG; disabled under tmux). |
 | (compaction) | `16384` / `32000` | `reserve_tokens` / `keep_recent_tokens` via `/settings` (stored in `~/.quartz/config.json`). |
+| (updates) | `5` | `progress_every` via `/settings progress <n>` (stored in `~/.quartz/config.json`; `0` disables, `-p` is off). |
 | `QUARTZ_CLOUDCODE_ENDPOINT` | `antigravity` | Google Cloud Code host alias (`antigravity`, `gemini-cli`) or an `http(s)` URL. |
 | `QUARTZ_HTTP_TIMEOUT` | `300` | Provider read timeout, in seconds. |
 | `QUARTZ_GOOGLE_CLIENT_ID` | bundled | Optional override for the Google OAuth application. |
@@ -110,6 +111,23 @@ thinking trace and `Ctrl+O` toggles full tool-call details.
 | `Ctrl+D` | Exit when the input is empty |
 | `Ctrl+T` | Toggle the thinking trace |
 | `Ctrl+O` | Toggle full tool-call details |
+
+### Staying updated
+
+Quartz does not leave you watching a spinner in silence. Every `progress_every`
+`ipython` calls (default `5`) the harness injects a short `[progress]` notice
+asking the model to say, in a sentence or two, what it found and what happens
+next — then carry on in the same response, so the checkpoint costs no extra round
+trip. If the model already narrated on its own, the notice is skipped and the
+count restarts, so you never read the same update twice.
+
+The trigger is the harness's, so it cannot be forgotten; only the wording is the
+model's.
+
+- Turn it off, or change the cadence, with `/settings progress <n>`
+  (`/settings progress 0` disables it).
+- `-p` runs stay quiet by default, where stdout is the answer and nothing else;
+  pass `--progress-every N` to opt a long headless run in.
 
 ### Slash commands
 
@@ -151,6 +169,7 @@ thinking trace and `Ctrl+O` toggles full tool-call details.
 | `--verbose` | Show full `ipython` code and output panels instead of compact summaries. |
 | `--show-thinking` | Show the reasoning trace (same as `Ctrl+T`). |
 | `--show-details` | Show full tool-call details (same as `Ctrl+O`). |
+| `--progress-every N` | Ask the model to update you every N `ipython` calls (`0` disables). Default: on interactively, off for `-p`. |
 
 ### Subcommands
 
