@@ -200,6 +200,10 @@ def app_client(
     """A client over an app whose runtime and turn are both injected."""
     monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
     monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "config.json"))
+    # The sidebar lives in the real `~/.quartz/web` by default. A test that forgot
+    # this would edit the developer's own sidebar, which is exactly the kind of
+    # shared mutable state that makes a suite order-dependent.
+    monkeypatch.setenv("QUARTZ_WEB_SIDEBAR", str(tmp_path / "web-sidebar.json"))
     runner = ScriptedTurn()
 
     def build(session_id: str | None) -> tuple[AgentRuntime, bool]:

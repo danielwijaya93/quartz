@@ -21,12 +21,15 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from quartz.web.session import BuildRuntime, TurnBusyError, TurnRunner, WebSession
+from quartz.core.session import Session
 from quartz.core.turn import run_interactive_turn
+from quartz.web.files import create_directory, list_directories, resolve_directory
+from quartz.web.session import BuildRuntime, TurnBusyError, TurnRunner, WebSession
+from quartz.web.sidebar import SidebarStore, default_sidebar_path, sidebar_payload
 
 __all__ = ["create_app", "resolve_static_dir"]
 
@@ -133,6 +136,44 @@ def create_app(
     app.state.session = session
     app.state.cwd = cwd
 
+    store_ref: SidebarStore | None = None
+
+    def store() -> SidebarStore:
+        """The sidebar state, loaded on first use.
+
+        Loaded per request rather than at construction so the file location is read
+        when a request arrives: `QUARTZ_WEB_SIDEBAR` and `$HOME` are environment
+        facts, and reading them once at import time is how a test ends up writing
+        into the developer's real sidebar.
+        """
+        nonlocal store_ref
+        if store_ref is None:
+            store_ref = SidebarStore.load(default_sidebar_path())
+        return store_ref
+
+    def sidebar_snapshot() -> dict[str, Any]:
+        """Every known session across every cwd, plus the whole sidebar state.
+
+        One response, because one call has to be enough to draw the sidebar: two
+        calls would let the page render a session list that belongs to a different
+        sidebar state, which is exactly the flicker the feature is meant to avoid.
+        """
+        rows, _cursor = Session.list_all(limit=None)
+        return sidebar_payload(rows, store().state)
+
+    async def mutate(action: Callable[[SidebarStore], None]) -> JSONResponse:
+        """Run one sidebar mutation off the loop, then return the fresh snapshot.
+
+        Returning the whole snapshot rather than a 204 is what keeps the client
+        honest: what it draws next came from the server, so a reload cannot
+        disagree with the screen.
+        """
+
+        def run() -> dict[str, Any]:
+            action(store())
+            return sidebar_snapshot()
+
+        return JSONResponse(await asyncio.to_thread(run))
 
     @app.get("/api/health")
     async def health() -> JSONResponse:
@@ -145,10 +186,71 @@ def create_app(
             }
         )
 
+    # -- the sidebar -------------------------------------------------------
+
     @app.get("/api/sessions")
     async def sessions() -> JSONResponse:
-        rows = await asyncio.to_thread(session.sessions)
-        return JSONResponse({"sessions": rows})
+        return JSONResponse(await asyncio.to_thread(sidebar_snapshot))
+
+    @app.post("/api/sessions/hide")
+    async def hide_session(request: Request) -> JSONResponse:
+        """Archive: stop listing a session. No file on disk is touched but ours."""
+        session_id = _session_id(await _json_body(request))
+        if session_id is None:
+            return _bad_request("sessionId is required")
+        return await mutate(lambda sidebar: sidebar.hide(session_id))
+
+    @app.post("/api/sessions/restore")
+    async def restore_session(request: Request) -> JSONResponse:
+        session_id = _session_id(await _json_body(request))
+        if session_id is None:
+            return _bad_request("sessionId is required")
+        return await mutate(lambda sidebar: sidebar.restore(session_id))
+
+    @app.post("/api/sessions/import")
+    async def import_session(request: Request) -> JSONResponse:
+        """List a session the user picked out of the archive."""
+        session_id = _session_id(await _json_body(request))
+        if session_id is None:
+            return _bad_request("sessionId is required")
+        return await mutate(lambda sidebar: sidebar.import_session(session_id))
+
+    @app.post("/api/sessions/rename")
+    async def rename_session(request: Request) -> JSONResponse:
+        body = await _json_body(request)
+        session_id = _session_id(body)
+        if session_id is None:
+            return _bad_request("sessionId is required")
+        title = body.get("title")
+        if not isinstance(title, str):
+            return _bad_request("title must be a string")
+        return await mutate(lambda sidebar: sidebar.rename(session_id, title))
+
+    @app.post("/api/workspaces")
+    async def add_workspace(request: Request) -> JSONResponse:
+        """Add a folder by hand, so an empty folder can be shown and used."""
+        body = await _json_body(request)
+        resolved, error = await asyncio.to_thread(resolve_directory, body.get("cwd"), cwd)
+        if resolved is None or error is not None:
+            return _bad_request(error or "cwd must be a directory")
+        return await mutate(lambda sidebar: sidebar.add_workspace(str(resolved)))
+
+    # -- the folder picker -------------------------------------------------
+
+    @app.get("/api/fs/list")
+    async def fs_list(path: str | None = None) -> JSONResponse:
+        """Directories inside `path`. A bad path is `error` in the body, not a 500."""
+        listing = await asyncio.to_thread(list_directories, path, cwd)
+        return JSONResponse(listing.to_dict())
+
+    @app.post("/api/fs/mkdir")
+    async def fs_mkdir(request: Request) -> JSONResponse:
+        """Create one folder inside `path`. The only mutation the picker has."""
+        body = await _json_body(request)
+        listing = await asyncio.to_thread(
+            create_directory, body.get("path"), body.get("name"), cwd
+        )
+        return JSONResponse(listing.to_dict())
 
     @app.websocket("/ws")
     async def websocket(socket: WebSocket) -> None:
@@ -312,6 +414,26 @@ async def _ensure(session: WebSession, push: Callable[[dict[str, Any]], None]) -
 
 class _AlreadyReported(Exception):
     """The failure has been sent to the client; the dispatcher should just stop."""
+
+
+async def _json_body(request: Request) -> dict[str, Any]:
+    """A JSON object body, or an empty mapping. Junk is not worth a 500."""
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001 - an unparseable body is the client's problem
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _session_id(body: dict[str, Any]) -> str | None:
+    value = body.get("sessionId")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()
+
+
+def _bad_request(message: str) -> JSONResponse:
+    return JSONResponse({"error": message}, status_code=400)
 
 
 def _system_prompt_append(message: dict[str, Any]) -> str:

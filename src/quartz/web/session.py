@@ -25,7 +25,6 @@ from typing import TYPE_CHECKING, Any
 
 from quartz.core.commands import COMMAND_REGISTRY, CommandResult, SlashCommand
 from quartz.core.images import ImageAttachment, build_user_content
-from quartz.core.session import Session
 from quartz.core.turn import TurnOutcome, TurnStatus, run_interactive_turn
 from quartz.web.bridge import Frame, Push, WebObserver
 
@@ -329,12 +328,6 @@ class WebSession:
             "turnRunning": self.turn_running,
             "commands": self.commands(),
         }
-
-    def sessions(self) -> list[dict[str, Any]]:
-        """Known sessions for this working directory, newest first."""
-        rows, _cursor = Session.list_all(self._cwd)
-        return rows
-
 
 def _turn_end_frame(outcome: TurnOutcome) -> Frame:
     frame: Frame = {
