@@ -95,51 +95,6 @@ if (typeof turnEnd.tokens !== "number" || typeof turnEnd.elapsedMs !== "number")
   fail("turn_end must carry tokens and elapsedMs");
 }
 
-/* A dashboard turn: one `a2ui` frame, inside the bracket, ordered intact. */
-const nextFrame = (type) =>
-  new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`timeout waiting for ${type}`)), 15000);
-    const check = (raw) => {
-      const frame = JSON.parse(String(raw));
-      if (frame.type !== type) return;
-      clearTimeout(timer);
-      socket.off("message", check);
-      resolve(frame);
-    };
-    socket.on("message", check);
-  });
-
-for (const [richUi, expected] of [
-  [true, 1],
-  [false, 0],
-]) {
-  const before = frames.length;
-  socket.send(JSON.stringify({ type: "prompt", text: "smoke", richUi }));
-  await nextFrame("turn_end");
-
-  const turn = frames.slice(before);
-  const kinds = turn.map((frame) => frame.type);
-  const surfaces = turn.filter((frame) => frame.type === "a2ui");
-  if (surfaces.length !== expected) {
-    fail(`richUi=${richUi} produced ${surfaces.length} a2ui frames, expected ${expected}`);
-  }
-  if (expected === 1) {
-    const surface = surfaces[0];
-    if (kinds.indexOf("a2ui") < kinds.indexOf("turn_start")) fail("a2ui precedes turn_start");
-    if (kinds.indexOf("a2ui") > kinds.indexOf("turn_end")) fail("a2ui follows turn_end");
-    if (!surface.surfaceId) fail("a2ui frame has no surfaceId");
-    if (!Array.isArray(surface.messages) || surface.messages.length === 0) {
-      fail("a2ui frame has no messages");
-    }
-    const envelopes = surface.messages.map((message) =>
-      Object.keys(message).filter((key) => key !== "version")[0],
-    );
-    if (envelopes.indexOf("createSurface") > envelopes.indexOf("updateComponents")) {
-      fail("createSurface must precede updateComponents");
-    }
-  }
-}
-
 /* Ordering: turn_start first, turn_end last. */
 if (frames.findIndex((f) => f.type === "turn_start") > frames.findIndex((f) => f.type === "text_delta")) {
   fail("turn_start must precede the first delta");

@@ -61,28 +61,11 @@ export interface CommandResult {
 
 export type TurnEndStatus = "ok" | "aborted" | "interrupted" | "error";
 
-/**
- * One A2UI wire envelope, protocol v1.0.
- *
- * Deliberately opaque: envelope shapes belong to the A2UI spec and the renderer
- * validates them, so the app never half-models them here. `messages` is ordered.
- */
-export type A2uiEnvelope = Record<string, unknown>;
-
 /* ------------------------------------------------------- client -> server */
 
 export type ClientMessage =
   | { type: "hello"; clientVersion: number }
-  | {
-      type: "prompt";
-      text: string;
-      images?: ImageAttachment[];
-      /**
-       * Ask this turn to also produce a UI surface (`a2ui` frame). Absent means
-       * "no surface"; the server treats anything but `true` as off.
-       */
-      richUi?: boolean;
-    }
+  | { type: "prompt"; text: string; images?: ImageAttachment[] }
   | { type: "steer"; text: string }
   | { type: "cancel" }
   | { type: "command"; name: string; arg?: string }
@@ -135,13 +118,6 @@ export type ServerMessage =
       elapsedMs: number;
       error?: string;
     }
-  | {
-      type: "a2ui";
-      turnId: string;
-      surfaceId: string;
-      /** Ordered A2UI v1.0 envelopes; `createSurface` precedes `updateComponents`. */
-      messages: A2uiEnvelope[];
-    }
   | { type: "error"; message: string; fatal: boolean }
   | { type: "command_result"; name: string; ok: boolean; result: CommandResult };
 
@@ -161,7 +137,6 @@ const SERVER_MESSAGE_TYPES: ReadonlySet<string> = new Set<ServerMessageType>([
   "steering",
   "compaction",
   "turn_end",
-  "a2ui",
   "error",
   "command_result",
 ]);

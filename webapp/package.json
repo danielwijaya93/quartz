@@ -10,15 +10,11 @@
     "preview": "vite preview",
     "mock": "node mock/server.mjs",
     "smoke": "node mock/smoke.mjs",
-    "check:a2ui": "node mock/check-a2ui.mjs",
-    "shoot": "node scripts/shoot.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "verify": "npm run typecheck && npm run test && npm run smoke && npm run build"
   },
   "dependencies": {
-    "@a2ui/react": "0.15.0",
-    "@a2ui/web_core": "0.15.0",
     "@heroui/react": "^3.2.7",
     "@heroui/styles": "^3.2.7",
     "highlight.js": "^11.11.1",
@@ -27,8 +23,7 @@
     "react-dom": "^19.2.0",
     "react-markdown": "^10.1.0",
     "rehype-highlight": "^7.0.2",
-    "remark-gfm": "^4.0.1",
-    "zod": "3.25.76"
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.17",

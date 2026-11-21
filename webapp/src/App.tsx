@@ -6,23 +6,18 @@ import { Composer } from "./components/Composer";
 import { CommandPalette } from "./components/CommandPalette";
 import { useQuartz } from "./useQuartz";
 import { useCommandPalette } from "./lib/useCommandPalette";
-import { useRichUiMode } from "./lib/richUi";
 import type { ImageAttachment } from "./protocol";
 
 export function App(): React.ReactElement {
   const quartz = useQuartz();
-  const richUi = useRichUiMode();
   const composerRef = React.useRef<HTMLTextAreaElement | null>(null);
   const palette = useCommandPalette(composerRef);
 
-  // Read at send time, not at mount: flipping the toggle changes the *next*
-  // prompt, which is exactly what the control promises.
-  const dashboard = richUi.dashboard;
   const onSubmit = React.useCallback(
     (text: string, images: ImageAttachment[]) => {
-      quartz.prompt(text, images, dashboard);
+      quartz.prompt(text, images);
     },
-    [quartz, dashboard],
+    [quartz],
   );
 
   return (
@@ -30,8 +25,6 @@ export function App(): React.ReactElement {
       <HeaderBar
         session={quartz.state.session}
         status={quartz.status}
-        richUiMode={richUi.mode}
-        onRichUiModeChange={richUi.setMode}
         onNewSession={quartz.newSession}
       />
       <Transcript rows={quartz.state.rows} turnRunning={quartz.state.turnRunning} />
