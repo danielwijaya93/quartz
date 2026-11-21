@@ -28,6 +28,19 @@ from rich.text import Text
 
 from quartz.tui.banner import BannerState, format_banner_lines
 from quartz.tui.completer import AgentCompleter
+from quartz.tui.input_actions import (
+    CtrlCAction,
+    CtrlDAction,
+    EnterAction,
+    EscapeAction,
+    InputContext,
+    SubmitAction,
+    decide_ctrl_c,
+    decide_ctrl_d,
+    decide_enter,
+    decide_escape,
+    decide_submit,
+)
 from quartz.tui.modals import InlineModalState, build_modal_container, build_modal_key_bindings
 from quartz.tui.render import (
     DOCK_STYLE,
@@ -597,22 +610,25 @@ class InteractiveDock:
         @kb.add("enter", filter=not_modal)
         def _(event: Any) -> None:
             buf = self.input_buffer
-            if buf.complete_state and buf.complete_state.current_completion:
-                buf.apply_completion(buf.complete_state.current_completion)
-                return
-            if buf.document.text_before_cursor.endswith("\\"):
+            action = decide_enter(self._input_context(), buf.document.text_before_cursor)
+            if action is EnterAction.APPLY_COMPLETION and buf.complete_state is not None:
+                completion = buf.complete_state.current_completion
+                if completion is not None:
+                    buf.apply_completion(completion)
+                    return
+                self.submit_input()
+            elif action is EnterAction.INSERT_NEWLINE:
                 buf.delete_before_cursor(1)
                 buf.insert_text("\n")
-                return
-            self.submit_input()
+            else:
+                self.submit_input()
 
-        @kb.add("escape", filter=not_modal & has_completions)
+        @kb.add("escape", filter=not_modal)
         def _(event: Any) -> None:
-            self.input_buffer.cancel_completion()
-
-        @kb.add("escape", filter=not_modal & ~has_completions)
-        def _(event: Any) -> None:
-            if self.is_turn_running:
+            escape_action = decide_escape(self._input_context())
+            if escape_action is EscapeAction.CANCEL_COMPLETION:
+                self.input_buffer.cancel_completion()
+            elif escape_action is EscapeAction.ABORT_TURN:
                 self.abort_turn()
 
         @kb.add("c-c", filter=not_modal)
@@ -621,7 +637,7 @@ class InteractiveDock:
 
         @kb.add("c-d", filter=not_modal)
         def _(event: Any) -> None:
-            if not self.input_buffer.text and not self.is_turn_running:
+            if decide_ctrl_d(self._input_context()) is CtrlDAction.EXIT:
                 self.exit()
 
         @kb.add("c-t", filter=not_modal)
@@ -646,15 +662,25 @@ class InteractiveDock:
             pass
         self._invalidate()
 
+    def _input_context(self) -> InputContext:
+        buf = self.input_buffer
+        state = buf.complete_state
+        return InputContext(
+            turn_running=self.is_turn_running,
+            has_completions=bool(state and state.completions),
+            has_selected_completion=bool(state and state.current_completion),
+            draft=buf.text,
+        )
+
     def handle_ctrl_c(self) -> None:
-        if self.is_turn_running:
+        action = decide_ctrl_c(self._input_context())
+        if action is CtrlCAction.ABORT_TURN:
             self.abort_turn()
-            return
-        if self.input_buffer.text:
+        elif action is CtrlCAction.CLEAR_DRAFT:
             self.input_buffer.reset()
             self._invalidate()
-            return
-        self.exit()
+        else:
+            self.exit()
 
     def exit(self) -> None:
         def _do() -> None:
@@ -675,24 +701,18 @@ class InteractiveDock:
         else:
             text = override_text.strip()
 
-        if not text:
+        action = decide_submit(text, turn_running=self.is_turn_running)
+        if action is SubmitAction.IGNORE:
             self._invalidate()
-            return
-
-        if self.is_turn_running:
-            # Slash commands are local inspection (e.g. /jobs, /help) and must
-            # not be steered into the running turn as a model message.
-            if text.startswith("/"):
-                self._launch_worker(lambda: self._handle_submitted_idle(text))
-                return
+        elif action is SubmitAction.STEER:
             self._steering_queue.put(text)
             with self._lock:
                 tracker = self._active_tracker
             if tracker is not None:
                 tracker.add_steering_message(text)
-            return
-
-        self._launch_worker(lambda: self._handle_submitted_idle(text))
+        else:
+            # RUN, or RUN_LOCAL_COMMAND (a slash command while a turn runs).
+            self._launch_worker(lambda: self._handle_submitted_idle(text))
 
     def _launch_worker(self, fn: Callable[[], None]) -> None:
         def _runner() -> None:
