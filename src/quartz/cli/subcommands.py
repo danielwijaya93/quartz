@@ -10,7 +10,13 @@ lazy so a user who never runs `quartz web` never loads them.
 from __future__ import annotations
 
 import argparse
+import errno
+import os
+import re
+import socket
+import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -194,6 +200,191 @@ def _is_loopback(host: str) -> bool:
     return host.strip().lower() in _LOOPBACK or host.strip().startswith("127.")
 
 
+_PORT_SUGGEST_SPAN = 20
+"""How many ports past the requested one to probe before giving up on a suggestion."""
+
+
+def _can_bind(host: str, port: int) -> bool:
+    """Whether a TCP listener could take ``host:port`` right now.
+
+    Two probes, strict first. The plain bind is what catches a held port on every
+    platform -- ``SO_REUSEADDR`` can let that bind through on some of them, which
+    would turn a conflict into a false all-clear. The second probe then clears a
+    port that is merely lingering in ``TIME_WAIT`` after a restart: uvicorn sets
+    the option itself in its own ``bind_socket``, so it would bind there and
+    refusing would be a false alarm.
+    """
+    if _bind_once(host, port, reuse=False):
+        return True
+    return _bind_once(host, port, reuse=True)
+
+
+def _bind_once(host: str, port: int, *, reuse: bool) -> bool:
+    """Bind, then close at once: the probe never lingers as a listener."""
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        if reuse:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+@dataclass(frozen=True)
+class _PortOwner:
+    """The process holding a port, as far as this machine lets us look."""
+
+    pid: int
+    command: str
+
+
+def _port_owner(port: int) -> _PortOwner | None:
+    """The process listening on ``port``, or ``None`` when it cannot be known.
+
+    Best effort and Linux-only: `ss` first, then `/proc` for the boxes where it is
+    not installed. Nothing here may raise -- this runs while Quartz is already
+    explaining a failure, and a traceback from the diagnostics would bury it.
+    """
+    try:
+        found = _owner_via_ss(port) or _owner_via_proc(port)
+    except Exception:  # noqa: BLE001 - diagnostics must never mask the real error
+        return None
+    if found is None:
+        return None
+    pid, name = found
+    return _PortOwner(pid=pid, command=_command_line(pid) or name)
+
+
+def _owner_via_ss(port: int) -> tuple[int, str] | None:
+    """Read the owner out of ``ss -tlnp`` (``users:(("python3",pid=1,fd=3))``)."""
+    try:
+        done = subprocess.run(
+            ["ss", "-tlnp"], capture_output=True, text=True, timeout=5, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    for line in done.stdout.splitlines():
+        match = re.search(r'\("(?P<name>[^"]*)",pid=(?P<pid>\d+)', line)
+        if match is None:
+            continue
+        # The local column is "address:port"; the peer column is never this port.
+        local = line.split()[3] if len(line.split()) > 3 else ""
+        if local.rpartition(":")[2] == str(port):
+            return int(match.group("pid")), match.group("name")
+    return None
+
+
+def _owner_via_proc(port: int) -> tuple[int, str] | None:
+    """Read the owner out of ``/proc/net/tcp*`` and the socket's owning ``/proc/<pid>``."""
+    inode = _listening_inode(port)
+    if inode is None:
+        return None
+    target = f"socket:[{inode}]"
+    try:
+        entries = list(os.scandir("/proc"))
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            fds = os.scandir(f"/proc/{entry.name}/fd")
+        except OSError:
+            continue  # another user's process, or one that just exited
+        with fds:
+            for fd in fds:
+                try:
+                    if os.readlink(fd.path) == target:
+                        return int(entry.name), ""
+                except OSError:
+                    continue
+    return None
+
+
+def _listening_inode(port: int) -> str | None:
+    """The socket inode listening on ``port``, or ``None``; needs no privileges."""
+    wanted = f"{port:04X}"
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            rows = Path(table).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            fields = row.split()
+            if len(fields) < 10 or fields[3] != "0A":  # 0A is TCP_LISTEN
+                continue
+            if fields[1].rpartition(":")[2] == wanted:
+                return fields[9]
+    return None
+
+
+def _command_line(pid: int) -> str:
+    """A process's command line, or ``""`` when it is unreadable."""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return " ".join(part for part in raw.decode("utf-8", "replace").split("\0") if part)
+
+
+def _suggest_free_port(host: str, port: int, span: int = _PORT_SUGGEST_SPAN) -> int | None:
+    """The first port after ``port`` that binds, or ``None`` when the range is full."""
+    for candidate in range(port + 1, min(port + span, 65535) + 1):
+        if _can_bind(host, candidate):
+            return candidate
+    return None
+
+
+def _report_port_in_use(host: str, port: int) -> None:
+    """Explain a taken port: what holds it, and the command that would work.
+
+    One message path for both the pre-flight check and the `uvicorn.run` backstop,
+    so the two can never drift apart. Never raises.
+    """
+    console.print(
+        f"[red]Error: {escape(host)}:{port} is already in use, so the web client cannot start.[/red]"
+    )
+    owner = _port_owner(port)
+    if owner is None:
+        console.print("  Held by: another process on this machine (could not be identified).")
+    elif owner.command:
+        console.print(f"  Held by: pid {owner.pid} [cyan]{escape(owner.command)}[/cyan]")
+    else:
+        console.print(f"  Held by: pid {owner.pid}")
+    suggestion = _suggest_free_port(host, port)
+    if suggestion is not None:
+        console.print(f"  Free port: try [cyan]quartz web --port {suggestion}[/cyan]")
+    else:
+        last = min(port + _PORT_SUGGEST_SPAN, 65535)
+        console.print(
+            f"  No free port in {port + 1}-{last} either: stop the process above, "
+            "or pass [cyan]--port[/cyan] with a port you know is free."
+        )
+
+
+def _is_addr_in_use(exc: BaseException) -> bool:
+    """Whether ``exc``, or whatever it was raised from, is a failed bind (`Errno 98`).
+
+    uvicorn logs the bind error and then exits with plain ``SystemExit(1)``; the
+    errno survives only in the chained ``__context__``, so walk the chain instead
+    of trusting the exit code.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OSError) and current.errno == errno.EADDRINUSE:
+            return True
+        if "address already in use" in str(current).lower():
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _handle_web_cli(argv: list[str]) -> None:
     """Run `quartz web`: the browser transport over the same core as the terminal."""
     parser = argparse.ArgumentParser(
@@ -215,6 +406,13 @@ def _handle_web_cli(argv: list[str]) -> None:
     if not cwd.is_dir():
         console.print(f"[red]Error: --cwd is not a directory: {escape(str(cwd))}[/red]")
         sys.exit(2)
+
+    # Probe the bind before anything is built or served: a doomed server that
+    # prints a URL and then dies reads as "Quartz started" for as long as it takes
+    # uvicorn to fail, which is exactly the confusion this avoids.
+    if not _can_bind(args.host, args.port):
+        _report_port_in_use(args.host, args.port)
+        sys.exit(1)
 
     # There is no auth by design (a local single-user tool), so a reachable bind
     # address is a real exposure. Say so before starting rather than after.
@@ -255,6 +453,14 @@ def _handle_web_cli(argv: list[str]) -> None:
         uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     except KeyboardInterrupt:
         pass
+    except (OSError, SystemExit) as exc:
+        # The probe passed and the bind failed anyway -- a genuine race with another
+        # process, or a platform where the probe is optimistic. Same message, same
+        # exit, so a race reads exactly like a conflict found up front.
+        if not _is_addr_in_use(exc):
+            raise
+        _report_port_in_use(args.host, args.port)
+        sys.exit(1)
 
 
 def _open_browser_when_ready(host: str, port: int, timeout: float = 15.0) -> None:
