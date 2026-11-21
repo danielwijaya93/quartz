@@ -22,3 +22,29 @@ jobs:
 
       - name: Run tests
         run: uv run pytest
+
+  webapp:
+    name: Webapp
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webapp
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      # `verify` is typecheck + unit tests + the headless mock-server smoke test
+      # + the production build. The smoke test needs no API key and no Python, so
+      # the whole SPA is verifiable on a clean runner.
+      - name: Typecheck, test, smoke and build
+        run: npm run verify
