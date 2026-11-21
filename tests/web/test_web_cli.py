@@ -132,6 +132,43 @@ def test_the_web_build_path_resolves_a_resumed_session(
     assert runtime.active_session.id == session.id
 
 
+def _first_message_written(runtime: Any) -> dict[str, Any]:
+    """Persist the session and read back its `meta` record: what is on disk wins."""
+    import json
+
+    runtime.active_session.save_messages([{"role": "user", "content": "hi"}])
+    line = runtime.active_session.jsonl_path.read_text(encoding="utf-8").splitlines()[0]
+    record: dict[str, Any] = json.loads(line)
+    return record
+
+
+def test_the_web_build_path_stamps_its_sessions_as_web(
+    web_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`origin` is what lets the browser's sidebar tell its own sessions apart."""
+    build = _capture_web_build(monkeypatch, web_env)
+
+    runtime, _resumed = build(None)
+
+    assert runtime.active_session.origin == "web"
+    assert _first_message_written(runtime)["origin"] == "web"
+
+
+def test_the_web_build_path_honours_a_folder_picked_in_the_browser(
+    web_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Picking a folder must move the kernel and the session's own `cwd`, not just a flag."""
+    picked = web_env.parent / "picked-project"
+    picked.mkdir()
+    build = _capture_web_build(monkeypatch, web_env)
+
+    runtime, _resumed = build(None, picked)
+
+    assert runtime.cwd == picked.resolve()
+    assert runtime.kernel.cwd == picked.resolve()
+    assert _first_message_written(runtime)["cwd"] == str(picked.resolve())
+
+
 # -- a taken port -------------------------------------------------------
 #
 # The reported failure was a raw uvicorn traceback -- `ERROR: [Errno 98] error

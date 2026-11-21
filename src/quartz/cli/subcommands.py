@@ -488,18 +488,24 @@ def _handle_web_cli(argv: list[str]) -> None:
 
     from quartz.bootstrap import BootstrapOptions, build_runtime
 
-    def build(session_id: str | None) -> Any:
+    def build(session_id: str | None, session_cwd: Path | None = None) -> Any:
         """Build the runtime for a new session (``None``) or an existing one.
 
         A browser tab resuming history goes through the same bootstrap the terminal
-        uses, so a web session is indistinguishable on disk from a terminal session.
+        uses, so a web session is indistinguishable on disk from a terminal session
+        -- apart from `origin`, which is what lets the browser's sidebar tell its
+        own sessions apart from ones started at a prompt.
+
+        `session_cwd` is the folder picked in the browser for a *new* session. It is
+        ignored when resuming: a resumed session's directory is in its own log.
         """
         return build_runtime(
             BootstrapOptions(
-                cwd=cwd,
+                cwd=session_cwd or cwd,
                 resume_id=session_id,
                 headless=False,
                 plain_output=False,
+                origin="web",
             )
         )
 

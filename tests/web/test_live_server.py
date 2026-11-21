@@ -84,7 +84,7 @@ def live_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     runtime = _runtime(tmp_path)
     app = create_app(
-        build=lambda session_id: (runtime, False),
+        build=lambda session_id, cwd=None: (runtime, False),
         cwd=tmp_path,
         static_dir=tmp_path / "missing",
         runner=runner,

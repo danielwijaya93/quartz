@@ -28,7 +28,13 @@ from fastapi.staticfiles import StaticFiles
 from quartz.core.session import Session
 from quartz.core.turn import run_interactive_turn
 from quartz.web.files import create_directory, list_directories, resolve_directory
-from quartz.web.session import BuildRuntime, TurnBusyError, TurnRunner, WebSession
+from quartz.web.session import (
+    BuildRuntime,
+    TurnBusyError,
+    TurnRunner,
+    WebSession,
+    resolve_cwd,
+)
 from quartz.web.sidebar import SidebarStore, default_sidebar_path, sidebar_payload
 
 __all__ = ["create_app", "resolve_static_dir"]
@@ -285,7 +291,7 @@ def create_app(
                 if not isinstance(message, dict):
                     push({"type": "error", "message": "Frame must be an object.", "fatal": False})
                     continue
-                await _dispatch(session, socket, message, push)
+                await _dispatch(session, socket, message, push, store)
         except WebSocketDisconnect:
             pass
         finally:
@@ -315,12 +321,14 @@ async def _dispatch(
     socket: WebSocket,
     message: dict[str, Any],
     push: Callable[[dict[str, Any]], None],
+    sidebar: Callable[[], SidebarStore],
 ) -> None:
     """Route one client frame. Every failure becomes an `error` frame, never a 500."""
     kind = message.get("type")
     try:
         if kind == "hello":
-            await _ensure(session, push)
+            await _ensure(session, push, resolve_cwd(message.get("cwd"), session.cwd))
+            await asyncio.to_thread(_remember_workspace, sidebar, session)
             # A client-supplied system-prompt append, the web twin of ACP's
             # `_meta.quartz.systemPrompt.append`. Applied after the runtime exists,
             # and re-applied whenever the client re-sends `hello`, so the Rich UI
@@ -373,8 +381,13 @@ async def _dispatch(
             )
 
         elif kind == "new_session":
+            # A folder picked in the browser. `None` means "the server's directory",
+            # and an unusable value falls back to it rather than failing the frame.
+            target = message.get("cwd")
+            resolved_cwd = None if target is None else resolve_cwd(target, session.cwd)
             await _ensure(session, push)
-            await asyncio.to_thread(session.new_session)
+            await asyncio.to_thread(session.new_session, resolved_cwd)
+            await asyncio.to_thread(_remember_workspace, sidebar, session)
             push(session.snapshot())
 
         elif kind == "load_session":
@@ -401,15 +414,37 @@ async def _dispatch(
         push({"type": "error", "message": f"{exc.__class__.__name__}: {exc}", "fatal": False})
 
 
-async def _ensure(session: WebSession, push: Callable[[dict[str, Any]], None]) -> None:
+async def _ensure(
+    session: WebSession,
+    push: Callable[[dict[str, Any]], None],
+    cwd: Path | None = None,
+) -> None:
     """Build the runtime if needed; report a build failure as a fatal frame."""
     if session.built:
         return
     try:
-        await asyncio.to_thread(session.ensure_runtime)
+        await asyncio.to_thread(session.ensure_runtime, cwd)
     except Exception as exc:  # noqa: BLE001 - surfaced to the browser, on purpose
         push({"type": "error", "message": f"{exc.__class__.__name__}: {exc}", "fatal": True})
         raise _AlreadyReported from exc
+
+
+def _remember_workspace(sidebar: Callable[[], SidebarStore], session: WebSession) -> None:
+    """Make sure the folder of the session just built is in the sidebar.
+
+    A workspace normally appears because it has sessions. A session with no messages
+    yet has no log, so without this the folder just picked would be invisible until
+    the first prompt -- which reads as "the picker did nothing".
+
+    Failures are swallowed: a sidebar that cannot be written (read-only home, full
+    disk) must never stop a session from starting.
+    """
+    if not session.built:
+        return
+    try:
+        sidebar().add_workspace(str(session.runtime.cwd))
+    except OSError:
+        return
 
 
 class _AlreadyReported(Exception):

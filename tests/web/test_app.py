@@ -9,6 +9,7 @@ renders seven turn events, and this transport must lose none of them.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -212,7 +213,7 @@ def test_cancel_aborts_the_running_turn(
         raise AssertionError("the turn was never cancelled")
 
     app = create_app(
-        build=lambda session_id: (runtime, False),
+        build=lambda session_id, cwd=None: (runtime, False),
         cwd=tmp_path,
         static_dir=tmp_path / "missing",
         runner=abortable_runner,
@@ -308,7 +309,8 @@ def test_a_failed_build_is_reported_as_fatal(tmp_path: Any, monkeypatch: pytest.
     """A server that cannot build a runtime says why in the browser, not a traceback."""
     monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
 
-    def boom(session_id: str | None):
+    def boom(session_id: str | None, cwd: Path | None = None):
+        del cwd
         raise RuntimeError("no credentials")
 
     app = create_app(build=boom, cwd=tmp_path, static_dir=tmp_path / "missing")
@@ -345,7 +347,7 @@ def test_a_closed_socket_leaves_no_turn_running(tmp_path: Any, monkeypatch: pyte
         raise AssertionError("the turn was never cancelled")
 
     app = create_app(
-        build=lambda session_id: (runtime, False),
+        build=lambda session_id, cwd=None: (runtime, False),
         cwd=tmp_path,
         static_dir=tmp_path / "missing",
         runner=abortable_runner,
@@ -383,7 +385,7 @@ def test_static_client_is_served_when_present(
     dist.mkdir()
     (dist / "index.html").write_text("<html><body>quartz</body></html>", encoding="utf-8")
 
-    app = create_app(build=lambda session_id: (runtime, False), cwd=tmp_path, static_dir=dist)
+    app = create_app(build=lambda session_id, cwd=None: (runtime, False), cwd=tmp_path, static_dir=dist)
     with TestClient(app) as client:
         response = client.get("/")
     assert response.status_code == 200
