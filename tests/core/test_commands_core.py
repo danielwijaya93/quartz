@@ -155,6 +155,23 @@ def test_only_the_terminal_commands_ask_for_a_terminal(
     assert asking == NEEDS_TERMINAL
 
 
+#: Commands that must answer while a turn is running. They either touch only local
+#: state or read a value the kernel already pushed; none of them waits on the worker.
+#: `/jobs` belongs here because its whole purpose is showing the background work that a
+#: running turn kicked off -- queueing it behind that turn made it answer the wrong
+#: question, which is the bug this set exists to keep fixed.
+IMMEDIATE = {"/jobs", "/settings", "/help"}
+
+
+def test_the_immediate_commands_are_exactly_the_ones_that_never_wait() -> None:
+    """The dock runs these beside a live turn, so the set must not drift silently."""
+    immediate = {cmd.name for cmd in COMMAND_REGISTRY.list_commands() if cmd.immediate}
+    assert immediate == IMMEDIATE
+    for name in ("/vars", "/helpers"):
+        cmd = COMMAND_REGISTRY.get(name)
+        assert cmd is not None and cmd.immediate is False, f"{name} asks the kernel; it must queue"
+
+
 def test_the_needs_terminal_flag_agrees_with_the_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

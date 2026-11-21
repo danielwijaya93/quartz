@@ -97,11 +97,16 @@ CommandHandler = Callable[["AgentRuntime", str], "CommandResult | None"]
 class SlashCommand:
     """A registered slash command with metadata and its transport-neutral handler.
 
-    ``immediate`` means the command only touches local state -- a config file, an
-    in-memory value -- and never the model, the kernel, or the conversation, so it
-    is safe to run while a turn is in flight. Commands that read the kernel
-    (``/vars``, ``/jobs``) are not immediate: running them alongside a turn would
-    block on a busy kernel, so they queue behind it instead.
+    ``immediate`` means the command never waits on the kernel, so it is safe to run
+    while a turn is in flight. That covers commands that only touch local state (a
+    config file, an in-memory value) *and* commands that read a value the kernel
+    already pushed to the client: ``/jobs`` answers from the cached ``bg_jobs``
+    snapshot, so it is immediate too -- waiting behind the turn to show background
+    work that is happening during that very turn is the opposite of useful.
+
+    Commands that ask the kernel a question (``/vars``, ``/helpers``) are not
+    immediate: the request would block on a busy kernel, so they queue behind the
+    turn instead.
 
     ``exits`` is separate from the handler's result because leaving is a transport
     action, not something a command has to say.
@@ -650,6 +655,7 @@ def _cmd_reset(rt: AgentRuntime, arg: str) -> CommandResult | None:
 @COMMAND_REGISTRY.register(
     "/jobs",
     "List running background bash() jobs with elapsed time and output tail",
+    immediate=True,
 )
 def _cmd_jobs(rt: AgentRuntime, arg: str) -> CommandResult | None:
     del arg
