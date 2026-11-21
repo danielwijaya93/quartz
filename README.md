@@ -198,10 +198,50 @@ quartz mcp remove NAME         # Remove an MCP server
 quartz mcp enable NAME         # Enable one or more MCP servers
 quartz mcp disable NAME        # Disable one or more MCP servers
 quartz acp                     # ACP server over stdio (same as --acp)
+quartz web                     # Browser client (see "Quartz web" below)
 ```
 
 MCP configuration lives in `~/.quartz/mcp.json` by default; provider logins
 live in `~/.quartz/auth.json`.
+
+## Quartz web
+
+A browser transport for the same core, for when a terminal cannot show what the
+answer means. The terminal renders seven turn events; `quartz web` renders the same
+seven in a page — streamed markdown, the reasoning trace, collapsible tool cells
+with inline images, compaction boundaries, and background-job notices.
+
+It is **not** an ACP client. ACP exists so one client can drive many agents;
+this drives exactly one. `quartz --acp` is untouched and remains the editor
+transport. The wire format is specified in
+[`docs/web-protocol.md`](docs/web-protocol.md).
+
+```bash
+cd webapp && npm ci && npm run build   # once, and after pulling webapp changes
+quartz web                             # http://127.0.0.1:8765
+quartz web --port 9000 --open          # custom port, open the browser
+quartz web --cwd ~/some/project        # work in a different directory
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--host` | Bind address (default `127.0.0.1`). A non-loopback host warns on startup. |
+| `--port` | Bind port (default `8765`). |
+| `--cwd` | Working directory for the agent. |
+| `--open` | Open the default browser once the server is listening. |
+| `--dev` | Serve the API only; run `npm run dev` in `webapp/` next to it. |
+
+Sessions started from the browser are ordinary Quartz sessions: they live in the
+same JSONL log with the same kernel snapshots, so `quartz -c` resumes one and the
+web client can load a terminal session.
+
+**There is no authentication.** The server is a local, single-user tool. Keep
+`--host` on loopback unless you know what is in front of it.
+
+Commands run from the browser palette use the same implementation as the terminal
+(`core/commands.py`), so they cannot drift. Commands that need a terminal modal
+today — `/login`, `/model`, `/session` and friends — report that plainly instead of
+failing; run them in the terminal, or use the terminal for that one step.
 
 ## Providers and models
 
@@ -226,8 +266,15 @@ provider exposes.
 src/quartz/
   cli/       app.py  subcommands.py  acp.py
              Composition root: `app.py` is the `quartz` entry point (interactive REPL,
-             `-p` headless mode, flags), `subcommands.py` parses the `mcp` / `auth`
-             arguments and nothing else, `acp.py` is the ACP JSON-RPC 2.0 stdio server.
+             `-p` headless mode, flags), `subcommands.py` parses the `mcp` / `auth` /
+             `web` arguments and nothing else, `acp.py` is the ACP JSON-RPC 2.0 stdio
+             server.
+  web/       app.py  session.py  bridge.py
+             The browser transport. `app.py` is the FastAPI app (routes, the one
+             WebSocket, static SPA serving), `session.py` owns the runtime and the turn
+             on its own thread, and `bridge.py` is the `TurnObserver` that turns all
+             seven turn events into wire frames.
+webapp/      Vite + React client for `quartz web` (static build, served by the server).
   core/      loop.py  turn.py  events.py  runtime.py  session.py  compact.py
              prompt.py  images.py
              Front-end-free agent internals: the single-tool `ipython` loop (`loop.py`);
