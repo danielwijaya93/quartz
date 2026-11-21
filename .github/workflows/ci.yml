@@ -48,3 +48,63 @@ jobs:
       # the whole SPA is verifiable on a clean runner.
       - name: Typecheck, test, smoke and build
         run: npm run verify
+
+  # `uv run pytest` uses the repo venv. The `quartz` command users run uses a uv
+  # *tool* environment built at install time by `uv tool install --editable .`,
+  # which does not pick up dependencies added to `pyproject.toml` afterwards. That
+  # is how fastapi/uvicorn/websockets could be missing from the installed tool
+  # while every test was green: `quartz web` died with ModuleNotFoundError.
+  # This job installs and exercises the real entry point, nothing else, so it
+  # stays cheap.
+  install:
+    name: Install
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv and Python 3.14
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      # The exact command the README and AGENTS.md tell users to run. Not
+      # `uv run`, which would test the venv instead of the tool environment.
+      - name: Install the tool, editable
+        run: uv tool install --editable .
+
+      - name: The entry point exists and runs
+        run: |
+          command -v quartz
+          quartz --help
+
+      # Assert the dependencies through the tool's own interpreter: this is the
+      # environment `quartz` runs in, and the one a stale install leaves behind.
+      - name: Web dependencies import through the installed tool
+        run: |
+          toolpy="$(uv tool dir)/quartz-agent/bin/python"
+          if [ ! -x "$toolpy" ]; then
+            echo "::error::No tool environment at $toolpy."
+            echo "Fix: uv tool install --editable . --force"
+            exit 1
+          fi
+          if ! "$toolpy" -c "import fastapi, uvicorn, websockets"; then
+            echo "::error::The installed quartz tool environment is missing the web dependencies."
+            echo "The repository venv and the tool environment are separate: tests can be green while the installed 'quartz' command is stale."
+            echo "Fix: uv tool install --editable . --force"
+            exit 1
+          fi
+
+      # `import quartz.web.app` is the regression itself. `quartz web --help`
+      # cannot see it: the subcommand parses arguments and exits before the lazy
+      # import of the FastAPI app, so it passes on a stale install too.
+      - name: The web module imports and the subcommand runs
+        run: |
+          toolpy="$(uv tool dir)/quartz-agent/bin/python"
+          if ! "$toolpy" -c "import quartz.web.app"; then
+            echo "::error::'import quartz.web.app' failed in the installed tool environment."
+            echo "Fix: uv tool install --editable . --force"
+            exit 1
+          fi
+          quartz web --help

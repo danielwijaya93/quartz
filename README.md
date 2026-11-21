@@ -34,6 +34,16 @@ keeping the checkout editable. The `quartz-agent` distribution is not yet
 published to PyPI, so there is no `pip install quartz-agent` yet — `uv tool
 install --editable .` from a checkout is the supported path.
 
+> **After pulling a dependency change, reinstall.** `uv tool install --editable .`
+> fixes the tool environment at install time, and that environment is separate from
+> the repo venv — so a commit that changes `pyproject.toml` or `uv.lock` can leave
+> `uv run` and every test green while the installed `quartz` command is stale
+> (`quartz web` failed this way with `ModuleNotFoundError: No module named 'fastapi'`).
+> Re-run `uv tool install --editable . --force` after such a pull.
+
+CI enforces this: the `install` job installs the tool the same way and imports the
+web dependencies through the tool's interpreter.
+
 ## Quickstart
 
 ```bash
@@ -222,6 +232,12 @@ quartz web                             # http://127.0.0.1:8765
 quartz web --port 9000 --open          # custom port, open the browser
 quartz web --cwd ~/some/project        # work in a different directory
 ```
+
+The client is not bundled today. `quartz web` serves `webapp/dist` from a checkout,
+a `_static` build shipped inside an installed package, or `QUARTZ_WEB_STATIC`
+(`resolve_static_dir` in `src/quartz/web/app.py`); with none of those present it
+answers `/` with a 503 "client not built" page rather than pretending, so run
+`cd webapp && npm run build` before the first `quartz web`.
 
 | Flag | Meaning |
 | --- | --- |
