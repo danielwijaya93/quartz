@@ -76,10 +76,26 @@ class AgentRuntime:
 
                 def _save_kernel_bg() -> None:
                     try:
-                        session.save_kernel(kernel)
+                        manifest = session.save_kernel(kernel)
                     except Exception as exc:
                         warnings.warn(
                             f"Background kernel snapshot failed: {exc}",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
+                        return
+                    # A snapshot that silently drops state is worse than one that says
+                    # so: the user resumes, finds a variable missing, and has no thread
+                    # to pull. `skipped` carries a reason per entry. The warning belongs
+                    # here rather than in the worker: the snapshot is taken in a
+                    # subprocess whose stderr the user never sees.
+                    skipped = manifest.get("skipped") or []
+                    if skipped:
+                        warnings.warn(
+                            "Kernel snapshot skipped "
+                            f"{len(skipped)} value{'s' if len(skipped) != 1 else ''}: "
+                            + "; ".join(skipped[:5])
+                            + (" ..." if len(skipped) > 5 else ""),
                             RuntimeWarning,
                             stacklevel=2,
                         )

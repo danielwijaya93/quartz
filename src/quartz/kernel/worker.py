@@ -86,6 +86,34 @@ _LAZY_STDLIB_SYMBOLS: dict[str, tuple[str, str]] = {
 _CELL_MODULES: tuple[str | None, ...] = ("__main__", "<cell>", None)
 
 
+class _UnpickleFailed:
+    """Sentinel cached for a snapshot file that would not unpickle.
+
+    Two names can share one file now, so a failure has to be remembered rather
+    than retried: otherwise the "unpickle error" line is recorded once per alias.
+    """
+
+
+def _skip_reason(pickle_err: BaseException, dill_err: BaseException) -> str:
+    """One short clause explaining why a value was left out of a snapshot.
+
+    Both serializers ran, so the useful fact is what the *fallback* said: `TypeError`
+    on a lambda is normal, but dill failing on a plain dict means the value holds
+    something genuinely unserializable (an open socket, a C extension handle). Report
+    the exception class plus a trimmed message -- enough to act on, short enough that
+    the resume notice stays readable.
+    """
+    detail = str(dill_err).strip().splitlines()[0] if str(dill_err).strip() else ""
+    if not detail:
+        detail = str(pickle_err).strip().splitlines()[0] if str(pickle_err).strip() else ""
+    if len(detail) > 80:
+        # `_truncate` keeps head and tail with a marker in between; a one-line reason
+        # wants a simple tail cut so the message stays a single readable clause.
+        detail = detail[:77] + "..."
+    name = type(dill_err).__name__
+    return f"{name}: {detail}" if detail else name
+
+
 def _is_reimportable(mod: types.ModuleType) -> bool:
     """True for named modules that can be re-imported by name after a restart."""
     name = getattr(mod, "__name__", "")
@@ -643,6 +671,11 @@ class KernelWorker:
         skipped: list[str] = []
         module_hints: dict[str, str] = {}
         total_bytes = 0
+        # One file per *object*, not per name: `rows2 = rows` is one payload that
+        # two names point at. Keyed by `id()` while `self._namespace` keeps every
+        # value alive, so an id cannot be recycled mid-loop.
+        files: dict[str, str] = {}
+        written: dict[int, str] = {}
 
         try:
             for name, val in list(self._namespace.items()):
@@ -659,13 +692,26 @@ class KernelWorker:
                     if _is_reimportable(val):
                         module_hints[name] = val.__name__
                     continue
+
+                key = id(val)
+                if key in written:
+                    files[name] = written[key]
+                    saved.append(name)
+                    continue
+
                 try:
                     blob = pickle.dumps(val, protocol=pickle.HIGHEST_PROTOCOL)
-                except Exception:
+                except Exception as pickle_err:
                     try:
                         blob = dill.dumps(val, recurse=True)
-                    except Exception:
-                        skipped.append(f"{name} ({type(val).__name__})")
+                    except Exception as dill_err:
+                        # Both serializers failed, so this value genuinely cannot ride
+                        # along. Name the reason from the *fallback* failure: pickle
+                        # rejecting a lambda or a live socket is expected and boring,
+                        # while dill failing on plain data is the surprising case.
+                        skipped.append(
+                            f"{name} ({type(val).__name__}: {_skip_reason(pickle_err, dill_err)})"
+                        )
                         continue
 
                 if len(blob) > MAX_VAR_BYTES:
@@ -675,11 +721,20 @@ class KernelWorker:
                     skipped.append(f"{name} (snapshot >256 MiB)")
                     continue
 
-                (tmp_dir / f"{name}.dill").write_bytes(blob)
+                fname = f"obj{len(written):05d}.dill"
+                (tmp_dir / fname).write_bytes(blob)
+                written[key] = fname
+                files[name] = fname
                 total_bytes += len(blob)
                 saved.append(name)
 
-            manifest = {"saved": saved, "skipped": skipped, "modules": module_hints, "cwd": os.getcwd()}
+            manifest = {
+                "saved": saved,
+                "skipped": skipped,
+                "modules": module_hints,
+                "files": files,
+                "cwd": os.getcwd(),
+            }
             (tmp_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
             backup_dir: Path | None = None
             if target.exists():
@@ -733,10 +788,26 @@ class KernelWorker:
         skipped: list[str] = list(manifest.get("skipped", []))
         self._reimport_modules(manifest.get("modules", {}), restored, skipped)
 
+        # Snapshot files are keyed by object (`obj00000.dill`) since dedup landed;
+        # older snapshots keyed them by variable name. Unpickling through a cache
+        # keyed on the file keeps aliasing intact on the way back in, so a snapshot
+        # where `rows2 is rows` restores as `rows2 is rows` rather than two copies.
+        files: dict[str, str] = manifest.get("files") or {}
+        loaded_by_file: dict[str, Any] = {}
+
         for name in manifest.get("saved", []):
-            var_file = target / f"{name}.dill"
+            fname = files.get(name) or f"{name}.dill"
+            var_file = target / fname
             if not var_file.is_file():
                 skipped.append(f"{name} (missing)")
+                continue
+            if fname in loaded_by_file:
+                loaded = loaded_by_file[fname]
+                if isinstance(loaded, _UnpickleFailed):
+                    skipped.append(f"{name} (unpickle error)")
+                    continue
+                self._namespace[name] = loaded
+                restored.append(name)
                 continue
             try:
                 raw = var_file.read_bytes()
@@ -756,9 +827,11 @@ class KernelWorker:
                     rebuilt.__doc__ = loaded.__doc__
                     rebuilt.__annotations__ = loaded.__annotations__
                     loaded = rebuilt
+                loaded_by_file[fname] = loaded
                 self._namespace[name] = loaded
                 restored.append(name)
             except Exception:
+                loaded_by_file[fname] = _UnpickleFailed
                 skipped.append(f"{name} (unpickle error)")
 
         for name, val in self._default_bindings.items():

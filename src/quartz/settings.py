@@ -14,7 +14,8 @@ JSON shape (flat -- matches the existing flat config.json)::
       "effort": "max",
       "compact_reserve_tokens": 16384,
       "keep_recent_tokens": 32000,
-      "progress_every": 5
+      "progress_every": 5,
+      "snapshot_retention_days": 7
     }
 
 Future preferences (e.g. show_thinking, show_details defaults) belong in
@@ -34,10 +35,15 @@ DEFAULT_COMPACT_RESERVE_TOKENS = 16_384
 DEFAULT_KEEP_RECENT_TOKENS = 32_000
 #: Ask the model to update the user every this many ipython calls (0 disables).
 DEFAULT_PROGRESS_EVERY = 5
+#: Days a kernel snapshot survives after its session was last touched. Transcripts
+#: are never pruned; only the pickled namespace goes, since resuming a session whose
+#: snapshot has aged out still replays its conversation.
+DEFAULT_SNAPSHOT_RETENTION_DAYS = 7
 
 _MIN_TOKENS = 256
 _MAX_TOKENS = 10_000_000
 _MAX_PROGRESS_EVERY = 1_000
+_MAX_RETENTION_DAYS = 3_650
 
 
 @dataclasses.dataclass(frozen=True)
@@ -47,6 +53,7 @@ class Settings:
     compact_reserve_tokens: int = DEFAULT_COMPACT_RESERVE_TOKENS
     keep_recent_tokens: int = DEFAULT_KEEP_RECENT_TOKENS
     progress_every: int = DEFAULT_PROGRESS_EVERY
+    snapshot_retention_days: int = DEFAULT_SNAPSHOT_RETENTION_DAYS
 
 
 def _config_path(path: Path | None = None) -> Path:
@@ -82,6 +89,20 @@ def _coerce_tokens(value: Any, default: int) -> int:
     return default
 
 
+def _coerce_retention(value: Any, default: int) -> int:
+    """Coerce a stored retention window. ``0`` disables pruning; negatives are junk."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, str) and value.strip():
+        try:
+            value = int(value.strip())
+        except ValueError:
+            return default
+    if isinstance(value, int) and 0 <= value <= _MAX_RETENTION_DAYS:
+        return value
+    return default
+
+
 def _coerce_progress(value: Any, default: int) -> int:
     """Coerce a stored checkpoint cadence; ``0`` is meaningful (off), so it passes."""
     if isinstance(value, bool):
@@ -107,6 +128,9 @@ def load_settings(path: Path | None = None) -> Settings:
             raw.get("keep_recent_tokens"), DEFAULT_KEEP_RECENT_TOKENS
         ),
         progress_every=_coerce_progress(raw.get("progress_every"), DEFAULT_PROGRESS_EVERY),
+        snapshot_retention_days=_coerce_retention(
+            raw.get("snapshot_retention_days"), DEFAULT_SNAPSHOT_RETENTION_DAYS
+        ),
     )
 
 

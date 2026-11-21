@@ -1,11 +1,13 @@
-"""JSONL session persistence and dill kernel snapshot management."""
+"""JSONL session persistence, dill kernel snapshots, and snapshot pruning."""
 
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import os
 import shutil
+import time
 import uuid
 import warnings
 from datetime import datetime, timezone
@@ -28,16 +30,115 @@ def _new_session_id() -> str:
     return f"{stamp}-{uuid.uuid4().hex[:6]}"
 
 
+#: Long variable lists make the resume notice unreadable and burn context, so a
+#: snapshot with hundreds of variables is summarised rather than enumerated.
+_NOTICE_NAME_LIMIT = 40
+
+
+def _summarise_names(names: list[str], limit: int = _NOTICE_NAME_LIMIT) -> str:
+    if len(names) <= limit:
+        return ", ".join(names)
+    shown = ", ".join(names[:limit])
+    return f"{shown} ... and {len(names) - limit} more"
+
+
 def format_python_state_restored(restored: list[str], skipped: list[str]) -> str | None:
-    """Format Unharnessed-style [python-state-restored] notice for resumed sessions."""
+    """Format Unharnessed-style [python-state-restored] notice for resumed sessions.
+
+    Every skipped value carries the reason it was skipped (see
+    `worker._skip_reason`), because "Skipped: f (function)" leaves the user with
+    nothing to act on. The notice names at most `_NOTICE_NAME_LIMIT` entries: a big
+    session can hold hundreds of variables, and a wall of names is context spent on
+    bookkeeping.
+    """
     if not restored and not skipped:
         return None
     parts = ["[python-state-restored]\n"]
     if restored:
-        parts.append(f"Restored Python variables/functions from previous session: {', '.join(restored)}.")
+        parts.append(
+            f"Restored {len(restored)} Python variable"
+            f"{'s' if len(restored) != 1 else ''}/function"
+            f"{'s' if len(restored) != 1 else ''} from the previous session: "
+            f"{_summarise_names(restored)}."
+        )
     if skipped:
-        parts.append(f"Skipped (not serializable or over size limit): {', '.join(skipped)}.")
+        parts.append(
+            f"Skipped {len(skipped)} with a reason (not serializable, or over the size limit): "
+            f"{_summarise_names(skipped)}."
+        )
+    else:
+        parts.append("Nothing was skipped.")
     return "\n".join(parts)
+
+
+@dataclasses.dataclass(frozen=True)
+class PruneResult:
+    """What a prune pass removed, and what it left behind."""
+
+    snapshots_removed: int = 0
+    bytes_freed: int = 0
+    errors: int = 0
+
+    @property
+    def freed_mb(self) -> float:
+        return round(self.bytes_freed / (1024 * 1024), 1)
+
+
+def prune_snapshots(
+    sessions_dir: Path,
+    older_than_days: int = 7,
+    *,
+    dry_run: bool = False,
+    now: float | None = None,
+) -> PruneResult:
+    """Delete kernel snapshots whose session has not been touched in `older_than_days`.
+
+    A snapshot is a pickled copy of a session's whole Python namespace, so it is by
+    far the largest thing Quartz writes and the least often read: on this machine 89%
+    of snapshot bytes belonged to sessions that were never resumed. Transcripts are
+    the part people come back to, so they are never removed here -- resuming a session
+    whose snapshot has aged out still replays the conversation, it just starts with a
+    clean kernel and says so.
+
+    ``older_than_days=0`` disables pruning entirely. Failures are counted and
+    swallowed: one unreadable directory must not stop a user from starting work.
+    """
+    root = sessions_dir.resolve()
+    if older_than_days <= 0 or not root.is_dir():
+        return PruneResult()
+
+    cutoff = (now if now is not None else time.time()) - older_than_days * 86400
+    removed = 0
+    freed = 0
+    errors = 0
+
+    for snap in sorted(root.glob("*.snapshot")):
+        if not snap.is_dir() or snap.is_symlink():
+            continue
+        # The session's own mtime, not the snapshot's: a session resumed yesterday
+        # rewrites its snapshot but its `.jsonl` is what a user would call "recent".
+        transcript = root / f"{snap.stem}.jsonl"
+        try:
+            last_used = transcript.stat().st_mtime if transcript.exists() else snap.stat().st_mtime
+        except OSError:
+            errors += 1
+            continue
+        if last_used >= cutoff:
+            continue
+        try:
+            size = sum(f.stat().st_size for f in snap.rglob("*") if f.is_file())
+        except OSError:
+            size = 0
+        if not dry_run:
+            try:
+                shutil.rmtree(snap)
+            except OSError:
+                errors += 1
+                continue
+        removed += 1
+        freed += size
+
+    return PruneResult(snapshots_removed=removed, bytes_freed=freed, errors=errors)
 
 
 class Session:
