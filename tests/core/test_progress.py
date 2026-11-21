@@ -8,14 +8,22 @@ import pytest
 
 from quartz.core.loop import agent_loop
 from quartz.core.progress import (
+    MAX_REFUSALS,
     PROGRESS_NOTICE,
+    REFUSAL,
     ProgressCheckpointer,
     announced_to_user,
     progress_notice,
     resolve_every,
 )
 from quartz.kernel.client import CellResult
-from quartz.providers.base import TextDelta, ToolCallDelta, Usage, UsageEvent
+from quartz.providers.base import (
+    TextDelta,
+    ThinkingDelta,
+    ToolCallDelta,
+    Usage,
+    UsageEvent,
+)
 from quartz.settings import (
     DEFAULT_PROGRESS_EVERY,
     Settings,
@@ -46,13 +54,31 @@ class _ToolLoopClient:
     """Streams ``calls`` ipython calls in a row, then a final answer.
 
     ``narrate`` makes each tool-calling turn also emit text, which is how a model
-    that updates the user on its own looks.
+    that updates the user on its own looks. ``comply`` makes it write the update
+    only when the harness asks for one -- the model that needs the reminder but
+    obeys it. ``comply=False`` is the observed failure: the notice (and later the
+    refusal) is answered with another tool call and no words.
     """
 
-    def __init__(self, calls: int, *, narrate: bool = False) -> None:
+    def __init__(self, calls: int, *, narrate: bool = False, comply: bool = True) -> None:
         self._calls = calls
         self._narrate = narrate
+        self._comply = comply
         self.seen_messages: list[list[dict[str, Any]]] = []
+
+    @staticmethod
+    def _update_owed(messages: list[dict[str, Any]]) -> bool:
+        """True when the last thing the model read asks it to update the user."""
+        for message in reversed(messages):
+            content = str(message.get("content") or "")
+            role = message.get("role")
+            if role == "tool":
+                return content == REFUSAL
+            if role == "user":
+                return content.startswith("[progress]")
+            if role == "assistant":
+                return False
+        return False
 
     def stream(self, model, messages, tools=None, *, effort=None):
         del model, tools, effort
@@ -61,7 +87,8 @@ class _ToolLoopClient:
         index = len(self.seen_messages) - 1
         if index < self._calls:
             events: list[Any] = []
-            if self._narrate:
+            speaks = self._narrate or (self._comply and self._update_owed(messages))
+            if speaks:
                 events.append(TextDelta(text="Reading the logs now."))
             events.append(
                 ToolCallDelta(
@@ -91,17 +118,21 @@ class _StubKernel:
         pass
 
 
-def _run(calls: int, *, progress_every: int, narrate: bool = False) -> tuple[Any, list[dict[str, Any]]]:
-    client = _ToolLoopClient(calls, narrate=narrate)
+def _run(
+    calls: int, *, progress_every: int, narrate: bool = False, comply: bool = True
+) -> tuple[Any, list[dict[str, Any]]]:
+    client = _ToolLoopClient(calls, narrate=narrate, comply=comply)
     messages: list[dict[str, Any]] = [{"role": "user", "content": "find it"}]
+    kernel = _StubKernel()
     _, updated, _ = agent_loop(
         client,  # type: ignore[arg-type]
         "fake-model",
         "sys",
         messages,
-        _StubKernel(),  # type: ignore[arg-type]
+        kernel,  # type: ignore[arg-type]
         progress_every=progress_every,
     )
+    client.kernel = kernel  # type: ignore[attr-defined]
     return client, updated
 
 
@@ -200,13 +231,157 @@ def test_unprompted_narration_restarts_the_count() -> None:
 # --- the notice itself ------------------------------------------------------
 
 
-def test_notice_names_the_cadence_and_asks_for_a_same_response_continuation() -> None:
+def test_notice_names_the_cadence_and_demands_the_update_first() -> None:
     text = progress_notice(7)["content"]
     assert text.startswith("[progress]")
     assert "7 ipython calls" in text
-    assert "same response" in text
-    assert "finished or need the user to decide" in text
+    assert "Update the user now on the progress." in text
+    assert "Only continue working if you have updated the user." in text
     assert text == PROGRESS_NOTICE.format(n=7)
+
+
+# --- the gate: no work until the user has been updated ----------------------
+
+
+def test_tool_calls_are_refused_while_the_update_is_owed() -> None:
+    # The observed failure: the notice is answered with another tool call, no words.
+    client, messages = _run(12, progress_every=5, comply=False)
+    refusals = [
+        m for m in messages if m.get("role") == "tool" and m.get("content") == REFUSAL
+    ]
+    assert refusals, "the gate never fired"
+    assert client.kernel.executed  # the run still finished its cells
+    # Every refusal replaces a result that would otherwise have run.
+    for i, m in enumerate(messages):
+        if m.get("role") == "tool" and m.get("content") == REFUSAL:
+            assert messages[i - 1]["role"] == "assistant"
+            assert messages[i - 1].get("content") is None
+
+
+def test_the_gate_stops_the_cell_the_checkpoint_was_raised_for() -> None:
+    # 5 cells run, the notice goes out, and the 6th call is refused rather than run.
+    _, messages = _run(6, progress_every=5, comply=False)
+    notice_idx = next(
+        i for i, m in enumerate(messages) if str(m.get("content", "")).startswith("[progress]")
+    )
+    assert messages[notice_idx + 1]["role"] == "assistant"
+    assert messages[notice_idx + 1].get("content") is None
+    assert messages[notice_idx + 2] == {
+        "role": "tool",
+        "tool_call_id": messages[notice_idx + 1]["tool_calls"][0]["id"],
+        "content": REFUSAL,
+    }
+
+
+def test_writing_the_update_releases_the_gate_and_work_continues() -> None:
+    client, messages = _run(8, progress_every=5, comply=True)
+    # The model that obeys loses no cells to the gate: nothing was refused.
+    assert not [m for m in messages if m.get("content") == REFUSAL]
+    assert len(client.kernel.executed) == 8
+
+
+def test_reasoning_is_not_an_update() -> None:
+    class _ThinkingClient(_ToolLoopClient):
+        def stream(self, model, messages, tools=None, *, effort=None):
+            del model, tools, effort
+            self.seen_messages.append([dict(m) for m in messages])
+            usage = Usage(input_tokens=100, output_tokens=20)
+            index = len(self.seen_messages) - 1
+            if index < self._calls:
+                return _ScriptedStream(
+                    [
+                        ThinkingDelta(text="I should tell the user..."),
+                        ToolCallDelta(
+                            index=0,
+                            id=f"tc-{index}",
+                            name="ipython",
+                            arguments_delta='{"code": "1 + 1"}',
+                        ),
+                        UsageEvent(usage=usage),
+                    ]
+                )
+            return _ScriptedStream([TextDelta(text="All done."), UsageEvent(usage=usage)])
+
+    kernel = _StubKernel()
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "find it"}]
+    agent_loop(
+        _ThinkingClient(6),  # type: ignore[arg-type]
+        "fake-model",
+        "sys",
+        messages,
+        kernel,  # type: ignore[arg-type]
+        progress_every=5,
+    )
+    # Thinking is invisible to the user, so the 6th cell was refused, not run.
+    assert len(kernel.executed) == 5
+    assert any(m.get("content") == REFUSAL for m in messages)
+
+
+def test_the_gate_gives_up_after_max_refusals_so_a_turn_cannot_wedge() -> None:
+    client, messages = _run(20, progress_every=5, comply=False)
+    refusals = [m for m in messages if m.get("content") == REFUSAL]
+    # The cap is per checkpoint: two thresholds, three attempts each.
+    assert len(_progress_messages(messages)) == 2
+    assert len(refusals) == MAX_REFUSALS * 2
+    # It failed open: after the caps the remaining calls ran, and the turn reached
+    # its final answer instead of looping on the gate forever.
+    assert len(client.kernel.executed) == 20 - len(refusals)
+    assert messages[-1]["role"] == "assistant"
+    assert messages[-1]["content"] == "All done."
+
+
+def test_a_silent_response_with_no_tool_call_is_also_refused() -> None:
+    class _MuteClient(_ToolLoopClient):
+        """Answers the first checkpoint with nothing -- no text and no call."""
+
+        def stream(self, model, messages, tools=None, *, effort=None):
+            del model, tools, effort
+            self.seen_messages.append([dict(m) for m in messages])
+            usage = Usage(input_tokens=100, output_tokens=0)
+            index = len(self.seen_messages) - 1
+            if index < self._calls:
+                if index == 5:
+                    return _ScriptedStream([UsageEvent(usage=usage)])
+                # After being told off, it does what it was asked.
+                said = [TextDelta(text="Reading the logs now.")] if index > 5 else []
+                return _ScriptedStream(
+                    [
+                        *said,
+                        ToolCallDelta(
+                            index=0,
+                            id=f"tc-{index}",
+                            name="ipython",
+                            arguments_delta='{"code": "1 + 1"}',
+                        ),
+                        UsageEvent(usage=usage),
+                    ]
+                )
+            return _ScriptedStream([TextDelta(text="All done."), UsageEvent(usage=usage)])
+
+    kernel = _StubKernel()
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "find it"}]
+    agent_loop(
+        _MuteClient(7),  # type: ignore[arg-type]
+        "fake-model",
+        "sys",
+        messages,
+        kernel,  # type: ignore[arg-type]
+        progress_every=5,
+    )
+    # An empty response would have ended the turn; the gate turned it into a prompt,
+    # and the turn went on to run the remaining cell instead of stopping there.
+    assert {"role": "user", "content": REFUSAL} in messages
+    assert len(kernel.executed) == 6
+    assert messages[-1]["content"] == "All done."
+
+
+def test_the_notice_is_not_repeated_while_the_update_is_owed() -> None:
+    _, messages = _run(12, progress_every=2, comply=False)
+    # One notice per threshold, however many calls the gate has to refuse.
+    assert len(_progress_messages(messages)) >= 1
+    for i, m in enumerate(messages):
+        if str(m.get("content", "")).startswith("[progress]"):
+            assert not str(messages[i - 1].get("content", "")).startswith("[progress]")
 
 
 # --- defaults ---------------------------------------------------------------
