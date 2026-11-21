@@ -9,7 +9,6 @@ renders seven turn events, and this transport must lose none of them.
 from __future__ import annotations
 
 import json
-import time
 from typing import Any
 
 import pytest
@@ -153,19 +152,45 @@ def test_the_user_message_is_recorded_before_the_turn_runs(app_client: AppClient
 
 
 def test_a_second_prompt_while_running_is_rejected(app_client: AppClient, wire: Any) -> None:
-    """The protocol rejects rather than queues: a queued prompt is stale context."""
-    with app_client.client.websocket_connect("/ws") as socket:
-        wire.hello(socket)
-        socket.send_json({"type": "prompt", "text": "first"})
-        # Do not wait for turn_end: send again while the turn is in flight.
-        socket.send_json({"type": "prompt", "text": "second"})
-        frames = wire.drain(socket, until="turn_end")
+    """The protocol rejects rather than queues: a queued prompt is stale context.
 
+    The first turn is held open by a gate, so "while running" is a fact rather than
+    a hope. Sending the second prompt used to be a race: the scripted turn returned
+    immediately, so the turn often ended before the server read the second frame and
+    the second prompt legitimately started a *new* turn.
+    """
+    runner = app_client.runner
+    runner.hold()
+    with app_client.client.websocket_connect("/ws") as socket:
+        try:
+            wire.hello(socket)
+            socket.send_json({"type": "prompt", "text": "first"})
+            # `turn_start` is emitted before the runner is called, and the runner
+            # cannot return while the gate is closed: the turn is in flight now.
+            frames = wire.drain(socket, until="turn_start")
+            assert runner.started.wait(timeout=10), "the first turn never started"
+
+            socket.send_json({"type": "prompt", "text": "second"})
+            frames += wire.drain(socket, until="error")
+            # Rejected while still the session's turn: not queued, not restarted.
+            assert app_client.server.state.session.turn_running is True
+            assert runner.calls == 1
+        finally:
+            # Never leave the turn thread blocked, whatever the assertions above did.
+            runner.release()
+        # The gate is open only now, so the first turn ends after the second prompt.
+        frames += wire.drain(socket, until="turn_end")
+
+    kinds = [f["type"] for f in frames]
+    assert kinds.count("turn_start") == 1, "the second prompt started a turn"
+    assert kinds.count("turn_end") == 1
     errors = [f for f in frames if f["type"] == "error"]
-    assert errors, "the second prompt was not rejected"
+    assert len(errors) == 1, f"the second prompt was not rejected: {errors}"
     assert "already running" in errors[0]["message"].lower()
     assert errors[0]["fatal"] is False
-    assert [f["type"] for f in frames].count("turn_start") == 1
+    assert kinds.index("turn_start") < kinds.index("error") < kinds.index("turn_end")
+    assert runner.calls == 1, "the second prompt ran a second turn"
+    assert app_client.server.state.session.turn_running is False  # drained on turn_end
 
 
 def test_cancel_aborts_the_running_turn(
@@ -177,21 +202,20 @@ def test_cancel_aborts_the_running_turn(
 
     seen: list[Any] = []
 
-    def slow_runner(rt: Any, observer: Any, *, abort_event: Any = None, steering_queue: Any = None, **_: Any):
+    def abortable_runner(rt: Any, observer: Any, *, abort_event: Any = None, steering_queue: Any = None, **_: Any):
+        """Runs until aborted -- a wait, not a sleep, so the turn cannot end early."""
         from quartz.core.turn import TurnOutcome
 
         seen.append(abort_event)
-        for _ in range(300):
-            if abort_event is not None and abort_event.is_set():
-                return TurnOutcome(TurnStatus.ABORTED, elapsed_s=0.01)
-            time.sleep(0.01)
-        return TurnOutcome(TurnStatus.OK, elapsed_s=5.0)
+        if abort_event is not None and abort_event.wait(timeout=10):
+            return TurnOutcome(TurnStatus.ABORTED, elapsed_s=0.01)
+        raise AssertionError("the turn was never cancelled")
 
     app = create_app(
         build=lambda session_id: (runtime, False),
         cwd=tmp_path,
         static_dir=tmp_path / "missing",
-        runner=slow_runner,
+        runner=abortable_runner,
     )
     with TestClient(app) as client, client.websocket_connect("/ws") as socket:
         wire.hello(socket)
@@ -312,20 +336,19 @@ def test_a_closed_socket_leaves_no_turn_running(tmp_path: Any, monkeypatch: pyte
     monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
     monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "config.json"))
 
-    def slow_runner(rt: Any, observer: Any, *, abort_event: Any = None, steering_queue: Any = None, **_: Any):
+    def abortable_runner(rt: Any, observer: Any, *, abort_event: Any = None, steering_queue: Any = None, **_: Any):
+        """Held open until the abort event, so `turn_running` is a fact, not a race."""
         from quartz.core.turn import TurnOutcome
 
-        for _ in range(30):
-            if abort_event is not None and abort_event.is_set():
-                return TurnOutcome(TurnStatus.ABORTED, elapsed_s=0.01)
-            time.sleep(0.01)
-        return TurnOutcome(TurnStatus.OK, elapsed_s=0.3)
+        if abort_event is not None and abort_event.wait(timeout=10):
+            return TurnOutcome(TurnStatus.ABORTED, elapsed_s=0.01)
+        raise AssertionError("the turn was never cancelled")
 
     app = create_app(
         build=lambda session_id: (runtime, False),
         cwd=tmp_path,
         static_dir=tmp_path / "missing",
-        runner=slow_runner,
+        runner=abortable_runner,
     )
     with TestClient(app) as client, client.websocket_connect("/ws") as socket:
         wire.hello(socket)
