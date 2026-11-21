@@ -145,6 +145,32 @@ async def _run(host: str, port: int, cwd: Path) -> int:
                 if kind == "turn_end":
                     break
 
+            # A dashboard turn: the `a2ui` frame is opt-in, so it gets its own
+            # prompt. It must arrive inside the turn bracket, after `turn_start`.
+            order: list[str] = []
+            await socket.send(
+                json.dumps({"type": "prompt", "text": "dashboard?", "richUi": True})
+            )
+            while True:
+                frame = json.loads(await asyncio.wait_for(socket.recv(), timeout=20))
+                kind = frame.get("type", "?")
+                order.append(kind)
+                seen.append(kind)
+                print(f"  <- {kind}")
+                if kind == "a2ui":
+                    print(
+                        f"     surface={frame['surfaceId']} "
+                        f"messages={len(frame['messages'])}"
+                    )
+                if kind == "turn_end":
+                    break
+            if "a2ui" not in order:
+                print("FAIL: a richUi prompt produced no a2ui frame")
+                return 1
+            if order.index("a2ui") < order.index("turn_start"):
+                print("FAIL: a2ui preceded turn_start")
+                return 1
+
             # A command round-trip over the same socket proves command_result too.
             await socket.send(json.dumps({"type": "command", "name": "help"}))
             while True:

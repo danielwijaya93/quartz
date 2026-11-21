@@ -26,6 +26,7 @@ from quartz.core.commands import COMMAND_REGISTRY, CommandResult, SlashCommand
 from quartz.core.images import ImageAttachment, build_user_content
 from quartz.core.session import Session
 from quartz.core.turn import TurnOutcome, TurnStatus, run_interactive_turn
+from quartz.web.a2ui_fixture import SURFACE_ID, canned_surface
 from quartz.web.bridge import Frame, Push, WebObserver
 
 if TYPE_CHECKING:
@@ -61,6 +62,8 @@ class _Turn:
     """The mutable state of the turn in flight."""
 
     id: str
+    rich_ui: bool = False
+    """True when the client asked this turn for a UI surface (see `richUi`)."""
     abort: threading.Event = dataclasses.field(default_factory=threading.Event)
     steering: queue.Queue[str] = dataclasses.field(default_factory=queue.Queue)
     thread: threading.Thread | None = None
@@ -147,18 +150,29 @@ class WebSession:
         with self._lock:
             return self._turn is not None
 
-    def start_turn(self, text: str, images: list[ImageAttachment], push: Push) -> str:
+    def start_turn(
+        self,
+        text: str,
+        images: list[ImageAttachment],
+        push: Push,
+        *,
+        rich_ui: bool = False,
+    ) -> str:
         """Record the user message and run one turn on its own thread.
 
         Returns the turn id. Raises `TurnBusyError` if a turn is already running:
         the protocol says reject, not queue, because a queued prompt would arrive
         with context the user has already changed.
+
+        `rich_ui` is per turn, not per session: it is the client's answer to "does
+        *this* prompt want a UI surface". The surface itself is canned today -- see
+        `a2ui_fixture` -- so this is the wire and the renderer, not generation.
         """
         runtime = self.runtime
         with self._lock:
             if self._turn is not None:
                 raise TurnBusyError("A turn is already running.")
-            turn = _Turn(id=f"turn-{uuid.uuid4().hex[:12]}")
+            turn = _Turn(id=f"turn-{uuid.uuid4().hex[:12]}", rich_ui=rich_ui)
             self._turn = turn
             runtime.messages.append(
                 {"role": "user", "content": build_user_content(text, images)}
@@ -179,6 +193,19 @@ class WebSession:
         outcome: TurnOutcome
         try:
             push({"type": "turn_start", "turnId": turn.id})
+            # The surface goes *inside* the turn bracket, immediately after
+            # `turn_start`: the protocol forbids an `a2ui` frame outside a turn, and
+            # emitting it before the model runs means a slow (or failing) turn still
+            # paints the UI it was asked for.
+            if turn.rich_ui:
+                push(
+                    {
+                        "type": "a2ui",
+                        "turnId": turn.id,
+                        "surfaceId": SURFACE_ID,
+                        "messages": canned_surface(),
+                    }
+                )
             outcome = self._runner(
                 self.runtime,
                 observer,

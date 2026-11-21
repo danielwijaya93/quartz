@@ -57,6 +57,23 @@ describe("the mock's scripted turn", () => {
     expect(withActions.length).toBeGreaterThan(0);
   });
 
+  it("emits a dashboard surface only when the prompt asked for one", () => {
+    resetIdCounter();
+    const withSurface = reduceAll(
+      initialState,
+      scriptedTurn({ richUi: true }) as ServerMessage[],
+    );
+    const rows = withSurface.rows.filter((row) => row.kind === "a2ui");
+    expect(rows).toHaveLength(1);
+    // Between the bracket, where the protocol says it belongs.
+    const kinds = withSurface.rows.map((row) => row.kind);
+    expect(kinds.indexOf("a2ui")).toBe(0);
+
+    resetIdCounter();
+    const without = reduceAll(initialState, scriptedTurn() as ServerMessage[]);
+    expect(without.rows.filter((row) => row.kind === "a2ui")).toHaveLength(0);
+  });
+
   it("reduces identically when the same turn replays", () => {
     resetIdCounter();
     const once = reduceAll(initialState, frames);

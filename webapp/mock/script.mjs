@@ -5,6 +5,8 @@
  * `docs/web-protocol.md` is the contract these frames obey.
  */
 
+import { a2uiFrame } from "./a2ui-fixture.mjs";
+
 /**
  * A 320x200 PNG that reads as a real matplotlib figure — titled "SIGNAL", axes,
  * ticks, and a decaying oscillation. It is inlined so the fixture needs no binary
@@ -114,11 +116,22 @@ export const sessionState = () => ({
 
 /* ------------------------------------------------------------------ script */
 
-export function scriptedTurn() {
+/**
+ * One scripted turn.
+ *
+ * `richUi` mirrors the `prompt` frame field: when the client asked for a
+ * dashboard, the turn also emits one `a2ui` frame, right after `turn_start` and
+ * inside the turn bracket, exactly as `docs/web-protocol.md` requires.
+ */
+/**
+ * @param {{ richUi?: boolean }} [options]
+ */
+export function scriptedTurn({ richUi = false } = {}) {
   const frames = [];
   const push = (frame) => frames.push(frame);
 
   push({ type: "turn_start", turnId: "turn-mock-1" });
+  if (richUi) push(a2uiFrame("turn-mock-1"));
   push({ type: "status", label: "Thinking..." });
 
   // Thinking first: the model reasons, then narrates, then acts.

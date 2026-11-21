@@ -43,7 +43,7 @@ Every message is a flat object with a `type` string discriminator.
 | `type` | Fields | Meaning |
 | --- | --- | --- |
 | `hello` | `clientVersion: int` | First message. Server replies `session_state`. |
-| `prompt` | `text: str`, `images?: [{mimeType, data}]` | Start a turn. Rejected with `error` if a turn is running. |
+| `prompt` | `text: str`, `images?: [{mimeType, data}]`, `richUi?: bool` | Start a turn. Rejected with `error` if a turn is running. `richUi` asks this turn to also emit an `a2ui` surface; absent or `false` means none. |
 | `steer` | `text: str` | Inject a steering message into the running turn. |
 | `cancel` | — | Abort the running turn. |
 | `command` | `name: str`, `arg?: str` | Run a slash command (see *Commands*). Name has no leading `/`. |
@@ -66,6 +66,7 @@ Turn lifecycle:
 | `bash_notice` | `text: str` |
 | `steering` | `text: str` |
 | `compaction` | `summary: str`, `messagesBefore: int`, `messagesAfter: int`, `tokensBefore: int`, `tokensAfter: int` |
+| `a2ui` | `turnId: str`, `surfaceId: str`, `messages: object[]` |
 | `turn_end` | `status: "ok" \| "aborted" \| "interrupted" \| "error"`, `tokens: int`, `elapsedMs: int`, `error?: str` |
 | `error` | `message: str`, `fatal: bool` |
 | `command_result` | `name: str`, `ok: bool`, `result: CommandResult` |
@@ -73,13 +74,43 @@ Turn lifecycle:
 `Message` is the same shape the session log already stores
 (`{role, content, tool_calls?, tool_call_id?}`). The SPA renders history from it.
 
+#### `a2ui` — a generated UI surface
+
+`messages` is an **ordered** array of A2UI wire envelopes, protocol **v1.0**, and
+the order is part of the payload: `createSurface` must precede the
+`updateComponents` that fills it, or the surface is only half-built. The server
+must not sort, merge or coalesce them; the client must not reorder them. Each
+envelope is passed to the renderer untouched — the wire protocol does not model
+A2UI's shapes, it only carries them.
+
+It is a separate frame rather than a field on `text_delta` because a surface is
+atomic: a consumer that drops or reorders one envelope, or that has to bolt
+components onto whichever text row happens to be open, is left with a broken UI.
+A dedicated frame keeps the sequence identifiable, lets a client that has no A2UI
+renderer ignore it wholesale, and lets the reducer place the surface in the
+transcript where the turn produced it.
+
+```json
+{ "type": "a2ui", "turnId": "t1", "surfaceId": "quartz-dashboard",
+  "messages": [ { "version": "1.0", "createSurface": { "surfaceId": "quartz-dashboard" } },
+                { "version": "1.0", "updateComponents": { "surfaceId": "quartz-dashboard",
+                                                          "components": [] } } ] }
+```
+
+Whether an agent produces one, several, or no surfaces is the agent's business;
+this frame is additive and changes no existing frame. A surface is *render* state,
+not session state: it is not persisted, and a reconnect does not replay it.
+
 ### Ordering guarantees
 
 1. `turn_start` precedes every other message of that turn.
 2. Exactly one `turn_end` per `turn_start`.
 3. `tool_result` for an id always follows its `tool_call`.
 4. Deltas of a turn are never interleaved with another turn's deltas.
-5. After `turn_end`, the session has been persisted to disk.
+5. An `a2ui` frame belongs to one turn: it is emitted after that turn's
+   `turn_start` and before its `turn_end`, and it never interleaves with another
+   turn's frames. Its `turnId` names the turn it belongs to.
+6. After `turn_end`, the session has been persisted to disk.
 
 ## Event mapping — the whole point
 
@@ -159,6 +190,7 @@ Local single-user tool. Explicit non-goals: multi-user, auth, remote exposure.
 
 - ACP v2 upgrade (`configOptions`, `availableCommands`) — separate, later.
 - Multi-session in one browser tab.
-- GenUI/A2UI rendering — Phase 3, layered on top of `text_delta` (it parses
-  assistant markdown for UI payloads; it does not change the wire protocol).
+- A2UI *generation*. The wire carries a generated surface today (`a2ui`), but the
+  server builds the first one from a fixed fixture; making a model choose the
+  components is a separate change that does not alter this protocol.
 - Auth, TLS, remote hosting.
