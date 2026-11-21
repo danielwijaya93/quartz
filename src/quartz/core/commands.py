@@ -648,7 +648,9 @@ def _cmd_reset(rt: AgentRuntime, arg: str) -> CommandResult | None:
     rt.turn_count = 0
     rt.wait_snapshot()
     rt.kernel.restart()
-    rt.active_session = Session.create(rt.cwd)
+    # Same origin as the session being replaced: `/reset` in the browser must not
+    # hand the user a session the browser's own sidebar then refuses to list.
+    rt.active_session = Session.create(rt.cwd, origin=rt.active_session.origin)
     return CommandResult.text("Conversation cleared, kernel restarted.")
 
 

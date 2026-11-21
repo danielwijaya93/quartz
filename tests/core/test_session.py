@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -333,3 +334,91 @@ def test_prune_uses_transcript_mtime_over_snapshot_mtime(tmp_path: Path) -> None
 
 def test_prune_missing_dir_is_not_an_error(tmp_path: Path) -> None:
     assert prune_snapshots(tmp_path / "nope", older_than_days=7).snapshots_removed == 0
+
+
+# -- origin -------------------------------------------------------------
+
+
+def test_created_session_records_its_origin(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    web = Session.create(tmp_path, sessions_dir=sessions_dir, origin="web")
+    cli = Session.create(tmp_path, sessions_dir=sessions_dir)
+    for session in (web, cli):
+        session.save_messages([{"role": "user", "content": "hi"}])
+
+    meta = json.loads((sessions_dir / f"{web.id}.jsonl").read_text().splitlines()[0])
+    assert meta["origin"] == "web"
+    # The terminal path is the default, and it is written explicitly so a reader
+    # never has to know which fields were optional when the file was created.
+    assert json.loads((sessions_dir / f"{cli.id}.jsonl").read_text().splitlines()[0])["origin"] == "cli"
+
+    loaded_web, _ = Session.load(web.id, sessions_dir=sessions_dir)
+    assert loaded_web.origin == "web"
+
+
+def test_unknown_origin_is_stamped_as_cli(tmp_path: Path) -> None:
+    """A typo must not create a third origin the sidebar cannot reason about."""
+    sessions_dir = tmp_path / "sessions"
+    session = Session.create(tmp_path, sessions_dir=sessions_dir, origin="browser")
+    assert session.origin == "cli"
+
+
+def test_session_without_origin_reads_as_cli(tmp_path: Path) -> None:
+    """Sessions written before `origin` existed must not crash or look like web."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    legacy = sessions_dir / "20200101-000000-legacy.jsonl"
+    legacy.write_text(
+        json.dumps({"type": "meta", "id": "legacy", "cwd": str(tmp_path)}) + "\n"
+        + json.dumps({"type": "message", "message": {"role": "user", "content": "old"}}) + "\n",
+        encoding="utf-8",
+    )
+
+    rows, _ = Session.list_all(sessions_dir=sessions_dir)
+    assert [row["origin"] for row in rows] == ["cli"]
+
+    loaded, _ = Session.load("20200101-000000-legacy", sessions_dir=sessions_dir)
+    assert loaded.origin == "cli"
+
+
+def test_list_all_surfaces_origin_and_whether_the_cwd_still_exists(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    here = tmp_path / "here"
+    here.mkdir()
+    gone = tmp_path / "gone"
+    gone.mkdir()
+
+    present = Session.create(here, sessions_dir=sessions_dir, origin="web")
+    present.save_messages([{"role": "user", "content": "in here"}])
+    vanished = Session.create(gone, sessions_dir=sessions_dir)
+    vanished.save_messages([{"role": "user", "content": "in a removed worktree"}])
+    # A worktree removal, which is exactly how a workspace goes missing.
+    gone.rmdir()
+
+    rows, _ = Session.list_all(sessions_dir=sessions_dir)
+    by_id = {row["sessionId"]: row for row in rows}
+    assert by_id[present.id]["origin"] == "web"
+    assert by_id[present.id]["cwdExists"] is True
+    assert by_id[vanished.id]["origin"] == "cli"
+    assert by_id[vanished.id]["cwdExists"] is False
+
+
+def test_list_all_without_a_limit_returns_every_session(tmp_path: Path) -> None:
+    """The web sidebar draws folders, not pages: it asks for all of them."""
+    sessions_dir = tmp_path / "sessions"
+    for index in range(3):
+        session = Session.create(tmp_path, sessions_dir=sessions_dir)
+        session.save_messages([{"role": "user", "content": f"msg {index}"}])
+
+    rows, cursor = Session.list_all(sessions_dir=sessions_dir, limit=None)
+    assert len(rows) == 3
+    assert cursor is None
+
+
+def test_fork_keeps_the_origin_of_its_source(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    source = Session.create(tmp_path, sessions_dir=sessions_dir, origin="web")
+    source.save_messages([{"role": "user", "content": "one"}])
+
+    forked, _ = Session.fork(source.id, tmp_path, sessions_dir=sessions_dir)
+    assert forked.origin == "web"

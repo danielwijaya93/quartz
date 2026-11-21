@@ -71,6 +71,10 @@ class BootstrapOptions:
     show_thinking: bool = False
     show_details: bool = False
     progress_every: int | None = None
+    # Which transport is asking. Recorded in the session's `meta` record so the
+    # web sidebar can list browser sessions and leave terminal ones alone until
+    # they are imported. `core.session.ORIGIN_CLI` for every terminal path.
+    origin: str = "cli"
 
 
 def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
@@ -146,7 +150,7 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
             if restored_notice:
                 messages.append({"role": "user", "content": restored_notice})
         else:
-            active_session = Session.create(cwd)
+            active_session = Session.create(cwd, origin=options.origin)
 
         runtime = AgentRuntime(
             cwd=cwd,

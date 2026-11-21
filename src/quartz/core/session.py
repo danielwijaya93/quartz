@@ -34,6 +34,15 @@ def _new_session_id() -> str:
 #: snapshot with hundreds of variables is summarised rather than enumerated.
 _NOTICE_NAME_LIMIT = 40
 
+#: Which transport created a session. Only the web transport cares: its sidebar
+#: lists sessions the browser started, and hides everything else until the user
+#: imports it. Sessions written before this field existed have no `origin`, and
+#: those are terminal sessions by definition -- so a missing value reads as
+#: `ORIGIN_CLI` everywhere, and no old file has to be rewritten.
+ORIGIN_WEB = "web"
+ORIGIN_CLI = "cli"
+_ORIGINS = frozenset({ORIGIN_WEB, ORIGIN_CLI})
+
 
 def _summarise_names(names: list[str], limit: int = _NOTICE_NAME_LIMIT) -> str:
     if len(names) <= limit:
@@ -141,6 +150,27 @@ def prune_snapshots(
     return PruneResult(snapshots_removed=removed, bytes_freed=freed, errors=errors)
 
 
+def _is_dir(path: str) -> bool:
+    """Whether a recorded cwd still exists. A vanished worktree is not an error."""
+    try:
+        return Path(path).is_dir()
+    except OSError:
+        return False
+
+
+@dataclasses.dataclass(frozen=True)
+class _SessionFacts:
+    """The three things a session list needs, without loading the transcript.
+
+    `origin` is `"cli"` when the record has none, which is what every session
+    written before the field existed is: a terminal session.
+    """
+
+    has_messages: bool
+    cwd: str | None
+    origin: str
+
+
 class Session:
     """Append-only JSONL conversation log paired with a dill kernel snapshot."""
 
@@ -149,6 +179,10 @@ class Session:
         self.sessions_dir = (sessions_dir or default_sessions_dir()).resolve()
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.jsonl_path = self.sessions_dir / f"{self.id}.jsonl"
+        # Which transport created this log; see `ORIGIN_CLI`. Set from the meta
+        # record by `create`/`load`, and read by a fresh session created in the
+        # same seat (`/new` must not turn a browser session into a terminal one).
+        self.origin = ORIGIN_CLI
         self.snapshot_dir = self.sessions_dir / f"{self.id}.snapshot"
         self._persisted_count = 0
         self._persisted_refs: list[dict[str, Any]] = []
@@ -159,21 +193,33 @@ class Session:
         self._persisted_ui_meta: tuple[dict[str, dict[str, Any]], tuple[int, ...]] = ({}, ())
 
     @classmethod
-    def create(cls, cwd: Path, sessions_dir: Path | None = None) -> Session:
+    def create(
+        cls, cwd: Path, sessions_dir: Path | None = None, *, origin: str = ORIGIN_CLI
+    ) -> Session:
+        """Start a session log, stamping which transport created it.
+
+        ``origin`` is recorded in the `meta` record because it is a property of the
+        session, not of the sidebar: the web sidebar can be deleted and rebuilt from
+        the logs, and an unknown origin still reads as a terminal session.
+        """
         session = cls(_new_session_id(), sessions_dir=sessions_dir)
+        session.origin = origin if origin in _ORIGINS else ORIGIN_CLI
         session._pending_meta = {
             "type": "meta",
             "id": session.id,
             "cwd": str(cwd.resolve()),
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "origin": session.origin,
         }
         return session
 
     @classmethod
-    def _inspect_session(cls, jsonl_path: Path) -> tuple[bool, str | None]:
-        """Return (has_messages, cwd) from a session JSONL file."""
+    def _inspect_session(cls, jsonl_path: Path) -> _SessionFacts:
+        """Read what a listing needs from a session JSONL file, cheaply."""
         has_msgs = False
         session_cwd: str | None = None
+        origin = ORIGIN_CLI
+        seen_meta = False
         try:
             with jsonl_path.open("r", encoding="utf-8") as fh:
                 for raw_line in fh:
@@ -182,15 +228,18 @@ class Session:
                         continue
                     rec = json.loads(line)
                     rec_type = rec.get("type")
-                    if rec_type == "meta" and session_cwd is None:
+                    if rec_type == "meta" and not seen_meta:
+                        seen_meta = True
                         session_cwd = rec.get("cwd")
+                        raw_origin = rec.get("origin")
+                        origin = raw_origin if raw_origin in _ORIGINS else ORIGIN_CLI
                     elif rec_type in ("message", "compaction"):
                         has_msgs = True
                     if session_cwd is not None and has_msgs:
                         break
         except (OSError, json.JSONDecodeError):
-            return False, None
-        return has_msgs, session_cwd
+            return _SessionFacts(False, None, ORIGIN_CLI)
+        return _SessionFacts(has_msgs, session_cwd, origin)
 
     @classmethod
     def latest_id(
@@ -202,10 +251,10 @@ class Session:
         target_cwd = str(cwd.resolve()) if cwd is not None else None
         files = sorted(root.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
         for f in files:
-            has_msgs, session_cwd = cls._inspect_session(f)
-            if not has_msgs:
+            facts = cls._inspect_session(f)
+            if not facts.has_messages:
                 continue
-            if target_cwd is not None and session_cwd != target_cwd:
+            if target_cwd is not None and facts.cwd != target_cwd:
                 continue
             return f.stem
         return None
@@ -272,7 +321,7 @@ class Session:
         cwd: Path | None = None,
         *,
         cursor: str | None = None,
-        limit: int = 50,
+        limit: int | None = 50,
         sessions_dir: Path | None = None,
     ) -> tuple[list[dict[str, Any]], str | None]:
         """List non-empty sessions, newest-first, as ACP ``SessionInfo`` dicts.
@@ -280,9 +329,16 @@ class Session:
         ``cwd`` filters to a single working directory (absolute path); when
         ``None`` all sessions are returned. ``cursor`` is the opaque token
         returned by a previous call (the ``sessionId`` of the last entry of the
-        previous page); the next page resumes strictly after it. Returns
-        ``(sessions, next_cursor)`` where ``next_cursor`` is ``None`` when no
-        further page exists.
+        previous page); the next page resumes strictly after it. ``limit=None``
+        returns everything, which is what the web sidebar wants: it draws folders
+        rather than pages, and paging a sidebar would hide sessions behind a
+        control nobody would find. Returns ``(sessions, next_cursor)`` where
+        ``next_cursor`` is ``None`` when no further page exists.
+
+        Each entry carries ``origin`` and ``cwdExists`` besides the ACP fields.
+        ``cwdExists`` is computed here, not in the browser: the sidebar dims a
+        folder whose directory has been deleted (worktrees get removed), and a
+        browser has no way to check a path on this machine.
         """
         root = (sessions_dir or default_sessions_dir()).resolve()
         if not root.is_dir():
@@ -297,21 +353,23 @@ class Session:
                 if f.stem == cursor:
                     seen_cursor = True
                 continue
-            has_msgs, session_cwd = cls._inspect_session(f)
-            if not has_msgs or session_cwd is None:
+            facts = cls._inspect_session(f)
+            if not facts.has_messages or facts.cwd is None:
                 continue
-            if target_cwd is not None and session_cwd != target_cwd:
+            if target_cwd is not None and facts.cwd != target_cwd:
                 continue
             preview = cls._session_preview(f)
             mtime = f.stat().st_mtime
             entry: dict[str, Any] = {
                 "sessionId": f.stem,
-                "cwd": session_cwd,
+                "cwd": facts.cwd,
                 "updatedAt": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                "origin": facts.origin,
+                "cwdExists": _is_dir(facts.cwd),
             }
             if preview:
                 entry["title"] = preview
-            if len(results) < limit:
+            if limit is None or len(results) < limit:
                 results.append(entry)
             else:
                 next_cursor = results[-1]["sessionId"] if results else None
@@ -362,7 +420,10 @@ class Session:
             if not isinstance(record, dict):
                 continue
             rec_type = record.get("type")
-            if rec_type == "message" and isinstance(record.get("message"), dict):
+            if rec_type == "meta":
+                raw_origin = record.get("origin")
+                session.origin = raw_origin if raw_origin in _ORIGINS else ORIGIN_CLI
+            elif rec_type == "message" and isinstance(record.get("message"), dict):
                 messages.append(record["message"])
                 ui_meta = record.get("ui_meta")
                 if isinstance(ui_meta, dict) and ui_meta.get("is_steering"):
@@ -396,7 +457,7 @@ class Session:
         cls, source_id: str, cwd: Path, sessions_dir: Path | None = None
     ) -> tuple[Session, list[dict[str, Any]]]:
         src, messages = cls.load(source_id, sessions_dir=sessions_dir)
-        forked = cls.create(cwd, sessions_dir=src.sessions_dir)
+        forked = cls.create(cwd, sessions_dir=src.sessions_dir, origin=src.origin)
         if messages:
             forked._ensure_meta_written()
             rec: dict[str, Any] = {"type": "compaction", "messages": messages}
