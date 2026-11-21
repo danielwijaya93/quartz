@@ -294,7 +294,13 @@ def test_dock_progress_shows_bg_jobs_when_idle() -> None:
 
 
 def test_slash_command_not_steered_while_turn_running(tmp_path: Path) -> None:
-    """submit_input must route /... to slash handling even mid-turn."""
+    """submit_input must route /... to slash handling even mid-turn.
+
+    The example is `/vars` deliberately: it asks the kernel a question, so it is one of
+    the commands that really does queue behind the turn. (A command that never waits,
+    such as `/jobs`, answers immediately instead -- see
+    `test_jobs_answers_while_a_turn_is_running`.)
+    """
     from quartz.tui.dock import InteractiveDock
 
     dock = InteractiveDock.__new__(InteractiveDock)
@@ -309,14 +315,14 @@ def test_slash_command_not_steered_while_turn_running(tmp_path: Path) -> None:
     dock._active_tracker = None
     dock._lock = threading.RLock()
     dock.input_buffer = __import__("types").SimpleNamespace(
-        text="/jobs", append_to_history=lambda: None, reset=lambda: None
+        text="/vars", append_to_history=lambda: None, reset=lambda: None
     )
     launched: list = []
     dock._launch_worker = lambda fn: fn()  # type: ignore[assignment]
     dock._handle_submitted_idle = lambda text: launched.append(text)  # type: ignore[assignment]
     dock.submit_input()
     assert dock._steering_queue.empty(), "slash input must not become a steering message"
-    assert launched == ["/jobs"]
+    assert launched == ["/vars"]
     # Non-slash input while running DOES steer.
     dock.input_buffer.reset = lambda: None
     dock.submit_input(override_text="keep going")
@@ -392,6 +398,55 @@ def test_immediate_command_runs_while_a_turn_is_running(tmp_path: Path, monkeypa
     assert queued == [], "it must not go through the worker lock"
 
 
+def test_jobs_answers_while_a_turn_is_running(tmp_path: Path, monkeypatch) -> None:
+    """`/jobs` reports background jobs mid-turn instead of queueing behind the turn.
+
+    The bug: `/jobs` was registered as non-immediate on the grounds that it reads the
+    kernel, so typing it during a turn only printed "queued -- runs when this turn
+    finishes" and showed nothing until the turn ended. That made it useless for the one
+    thing it is for: seeing the work happening *now*. The handler reads the cached
+    `bg_jobs` snapshot the worker pushes, so it never blocks.
+    """
+    import threading as _t
+
+    import quartz.tui.commands as commands
+
+    dock = _bare_dock(turn_running=True)
+    dock.rt = SimpleNamespace(
+        kernel=SimpleNamespace(
+            running_bash_jobs=lambda: [
+                {"pid": 4242, "command": "uv run pytest -q", "elapsed_s": 12.0}
+            ]
+        )
+    )  # type: ignore[assignment]
+
+    printed: list[str] = []
+    monkeypatch.setattr(
+        commands,
+        "_active_printer",
+        lambda: SimpleNamespace(block=lambda r: printed.append(r.plain)),
+    )
+
+    queued: list[Any] = []
+    dock._launch_worker = lambda fn: queued.append(fn)  # type: ignore[assignment]
+
+    started = _t.Event()
+    original_run = dock._run_slash_command
+
+    def _run(text: str) -> None:
+        original_run(text)
+        started.set()
+
+    dock._run_slash_command = _run  # type: ignore[assignment]
+    dock._handle_local_command("/jobs")
+
+    assert started.wait(timeout=2.0), "/jobs must not wait for the turn to finish"
+    assert queued == [], "it must not go through the worker lock"
+    shown = "\n".join(printed)
+    assert "4242" in shown, "the pid must be shown while the turn is still running"
+    assert "Run pytest" in shown, "the job is labelled, not dumped as a raw command"
+
+
 def test_non_immediate_command_queues_and_says_so(tmp_path: Path, monkeypatch) -> None:
     """A kernel-reading command waits for the turn, and no longer waits silently."""
     import quartz.tui.commands as commands
@@ -419,6 +474,7 @@ def test_non_immediate_command_queues_and_says_so(tmp_path: Path, monkeypatch) -
     assert commands.COMMAND_REGISTRY.get("/vars").immediate is False  # type: ignore[union-attr]
     assert commands.COMMAND_REGISTRY.get("/settings").immediate is True  # type: ignore[union-attr]
     assert commands.COMMAND_REGISTRY.get("/help").immediate is True  # type: ignore[union-attr]
+    assert commands.COMMAND_REGISTRY.get("/jobs").immediate is True  # type: ignore[union-attr]
 
 
 def test_launch_worker_uses_bash_tracking(tmp_path: Path) -> None:
