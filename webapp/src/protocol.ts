@@ -64,7 +64,15 @@ export type TurnEndStatus = "ok" | "aborted" | "interrupted" | "error";
 /* ------------------------------------------------------- client -> server */
 
 export type ClientMessage =
-  | { type: "hello"; clientVersion: number }
+  /**
+   * `systemPromptAppend` is the client's vendor extension, mirroring the ACP
+   * `_meta.quartz.systemPrompt.append` field: text the server appends to the
+   * Quartz system prompt for this session. The web client sends the OpenUI Lang
+   * prompt here when Rich UI is on and omits it when Rich UI is off, so the model
+   * is only ever told to emit openui-lang when the renderer is available.
+   * Set once for the session; re-sent when the preference changes.
+   */
+  | { type: "hello"; clientVersion: number; systemPromptAppend?: string }
   | { type: "prompt"; text: string; images?: ImageAttachment[] }
   | { type: "steer"; text: string }
   | { type: "cancel" }

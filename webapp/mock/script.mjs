@@ -112,6 +112,52 @@ export const sessionState = () => ({
   ],
 });
 
+/**
+ * A canned openui-lang reply: a KPI row, a bar chart and a table, plus an
+ * interactive form whose submit fires `@ToAssistant`.
+ *
+ * The mock replays this instead of the markdown script when the client's `hello`
+ * carried a `systemPromptAppend`, which is exactly the condition under which the
+ * real model is told to emit openui-lang. So the Rich UI toggle exercises the
+ * whole path -- prompting decision, renderer, form round-trip -- with no API key.
+ */
+export const OPENUI_TURN_LANG = [
+  "root = Stack([header, kpis, chartCard, tableCard, formCard])",
+  'header = CardHeader("Kernel activity, last 7 days", "Replayed by the Quartz mock")',
+  "kpis = SnippetCardBlock([kpiCells, kpiJobs])",
+  'kpiCells = SnippetCardItem("cells", cellsLabel, cellsValue)',
+  'cellsIcon = Icon("cpu", "development")',
+  'cellsLabel = IconText(cellsIcon, "neutral", "m", "Cells run", "Across 12 sessions", false, "horizontal")',
+  'cellsValue = BoldText("number", "1,284", "+18% vs last week")',
+  'kpiJobs = SnippetCardItem("jobs", jobsLabel, jobsValue)',
+  'jobsIcon = Icon("terminal", "development")',
+  'jobsLabel = IconText(jobsIcon, "neutral", "m", "Bash jobs", "pytest, ruff, uv", false, "horizontal")',
+  'jobsValue = BoldText("number", "37", "all exits 0")',
+  'chartCard = Card([chartHeader, runsChart], "card")',
+  'chartHeader = CardHeader("Cells per day", "Bar height is the number of cells")',
+  'runsChart = BarChart(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], [runsSeries], "grouped", "Day", "Cells")',
+  'runsSeries = Series("Cells", [142, 219, 168, 265, 301, 89, 100])',
+  'tableCard = Card([tableHeader, runsTable], "card")',
+  'tableHeader = CardHeader("Slowest cells", "Wall-clock duration, milliseconds")',
+  "runsTable = Table([cellCol, msCol])",
+  'cellCol = Col("Cell", ["fig.savefig(plot.png)", "print(x * 2)", "kernel.run_cell(y)"], "string")',
+  'msCol = Col("Duration", [128, 341, 902], "number")',
+  'formCard = Card([formHeader, configForm], "card")',
+  'formHeader = CardHeader("Tune the next turn", "Submit to send your choices back to Quartz")',
+  'effortSelect = Select("effort", [effortLow, effortMed, effortHigh], "Choose effort", null, $effort)',
+  'effortLow = SelectItem("low", "Low")',
+  'effortMed = SelectItem("medium", "Medium")',
+  'effortHigh = SelectItem("high", "High")',
+  'effortField = FormControl("Reasoning effort", effortSelect, "How long Quartz may think")',
+  'cellSlider = Slider("cells", "discrete", 1, 20, 1, [5], "Cells to run")',
+  'cellField = FormControl("Cells to run", cellSlider)',
+  'notesArea = TextArea("notes", "Anything else Quartz should know?", 2)',
+  'notesField = FormControl("Notes", notesArea, "Optional")',
+  'submitBtn = Button("Apply and run", @ToAssistant("Apply these settings"), "primary")',
+  "formButtons = Buttons([submitBtn])",
+  'configForm = Form("mock_config_form", formButtons, [effortField, cellField, notesField])',
+].join("\n");
+
 /* ------------------------------------------------------------------ script */
 
 export function scriptedTurn() {
@@ -231,6 +277,37 @@ export function scriptedTurn() {
 }
 
 /**
+ * The openui-lang variant of `scriptedTurn`: same turn bracket and the same
+ * tool activity, but the reply is a surface instead of prose.
+ */
+export function scriptedOpenUITurn() {
+  const frames = [];
+  const push = (frame) => frames.push(frame);
+
+  push({ type: "turn_start", turnId: "turn-mock-openui" });
+  push({ type: "status", label: "Reading kernel history..." });
+  push({ type: "tool_call", id: "call-openui-1", code: "kernel.list_history()[-7:]" });
+  push({
+    type: "tool_result",
+    id: "call-openui-1",
+    ok: true,
+    durationMs: 41,
+    output: "7 days, 1,284 cells",
+    images: [],
+    actions: null,
+  });
+
+  // Delivered in two chunks so the client renders a *partial* tree first: that is
+  // the streaming path, and it is the one most likely to break silently.
+  const half = Math.floor(OPENUI_TURN_LANG.length / 2);
+  push({ type: "text_delta", text: OPENUI_TURN_LANG.slice(0, half) + "\n" });
+  push({ type: "text_delta", text: OPENUI_TURN_LANG.slice(half) });
+
+  push({ type: "turn_end", status: "ok", tokens: 2_140, elapsedMs: 9_120 });
+  return frames;
+}
+
+/**
  * Verbose help, exactly as `CommandRegistry.format_help()` pads it: two columns,
  * then a keybinding block. It is `kind: "text"`, and it is why the client has to
  * recognise columnar text - markdown would flatten it into one paragraph.
@@ -321,4 +398,3 @@ export function commandResultFrame(name) {
       };
   }
 }
-

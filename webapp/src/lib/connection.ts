@@ -77,6 +77,15 @@ export class Connection {
     open: new Set(),
   };
 
+  /**
+   * System-prompt append for this session, carried on every `hello`.
+   *
+   * Stored on the connection rather than passed to `connect()` because the value
+   * can change after the socket is open (the Rich UI toggle); `setSystemPromptAppend`
+   * re-sends `hello`, which is the protocol's idempotent "here is my config" frame.
+   */
+  private systemPromptAppend = "";
+
   private attempt = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private currentStatus: ConnectionStatus = "disconnected";
@@ -205,7 +214,25 @@ export class Connection {
   }
 
   sendHello(): boolean {
-    return this.send({ type: "hello", clientVersion: CLIENT_VERSION });
+    const append = this.systemPromptAppend;
+    return this.send(
+      append === ""
+        ? { type: "hello", clientVersion: CLIENT_VERSION }
+        : { type: "hello", clientVersion: CLIENT_VERSION, systemPromptAppend: append },
+    );
+  }
+
+  /**
+   * Set this session's system-prompt append and tell the server.
+   *
+   * A value change while connected re-sends `hello`; the server applies it to the
+   * live runtime, so toggling Rich UI mid-session takes effect on the next turn
+   * without rebuilding the session.
+   */
+  setSystemPromptAppend(append: string): boolean {
+    this.systemPromptAppend = append;
+    if (this.currentStatus !== "connected") return false;
+    return this.sendHello();
   }
 
   sendPrompt(text: string, images: ImageAttachment[] = []): boolean {

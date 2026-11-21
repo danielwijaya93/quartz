@@ -219,6 +219,11 @@ async def _dispatch(
     try:
         if kind == "hello":
             await _ensure(session, push)
+            # A client-supplied system-prompt append, the web twin of ACP's
+            # `_meta.quartz.systemPrompt.append`. Applied after the runtime exists,
+            # and re-applied whenever the client re-sends `hello`, so the Rich UI
+            # toggle takes effect on the next turn of the same session.
+            session.set_system_prompt_append(_system_prompt_append(message))
             push(session.snapshot())
 
         elif kind == "prompt":
@@ -309,6 +314,16 @@ class _AlreadyReported(Exception):
     """The failure has been sent to the client; the dispatcher should just stop."""
 
 
+def _system_prompt_append(message: dict[str, Any]) -> str:
+    """Read `hello.systemPromptAppend`, tolerating anything malformed.
+
+    A bad value is not worth an `error` frame: the session simply runs on the
+    stock system prompt, which is the same thing that happens when Rich UI is off.
+    """
+    value = message.get("systemPromptAppend")
+    return value.strip() if isinstance(value, str) else ""
+
+
 def _attachments(raw: Any) -> list[Any]:
     """Wire images as `ImageAttachment`s, ignoring anything malformed."""
     from quartz.core.images import ImageAttachment
@@ -364,4 +379,3 @@ def _list_item(item: dict[str, Any]) -> dict[str, str]:
         if isinstance(value, (str, int, float, bool)) and str(value) != ""
     ]
     return {"label": label, "detail": " · ".join(parts)}
-

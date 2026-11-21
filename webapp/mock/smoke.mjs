@@ -116,7 +116,44 @@ for (const [name, kind] of [
   if (reply.result.kind !== kind) fail(`/${name} returned ${reply.result.kind}, expected ${kind}`);
 }
 
-console.log(`SMOKE OK — ${frames.length} frames, ${calls.length} tool calls, all four command kinds`);
+/*
+ * The Rich UI path: a `hello` carrying a system-prompt append (the OpenUI Lang
+ * prompt) makes the mock replay an openui-lang turn instead of prose. This is the
+ * wire-level half of the toggle -- the real server applies that same field to the
+ * session's system prompt.
+ */
+const richFrames = [];
+const richSocket = new WebSocket(`ws://127.0.0.1:${PORT}/`);
+const richDone = new Promise((resolve) => {
+  richSocket.on("message", (raw) => {
+    const frame = JSON.parse(String(raw));
+    richFrames.push(frame);
+    if (frame.type === "turn_end") resolve();
+  });
+});
+richSocket.on("open", () => {
+  richSocket.send(
+    JSON.stringify({ type: "hello", clientVersion: 1, systemPromptAppend: "YOU ARE QUARTZ" }),
+  );
+  setTimeout(() => richSocket.send(JSON.stringify({ type: "prompt", text: "show me a dashboard" })), 20);
+});
+await Promise.race([
+  richDone,
+  new Promise((_, reject) => setTimeout(() => reject(new Error("rich-UI timeout")), 15000)),
+]).catch((error) => fail(String(error)));
+
+const richText = richFrames
+  .filter((frame) => frame.type === "text_delta")
+  .map((frame) => frame.text)
+  .join("");
+if (!richText.startsWith("root = Stack(")) fail("rich-UI turn did not stream an openui-lang program");
+if (!/^root\s*=/m.test(richText)) fail("rich-UI reply has no root assignment");
+richSocket.close();
+
+console.log(
+  `SMOKE OK — ${frames.length} frames, ${calls.length} tool calls, all four command kinds, ` +
+    `${richText.split("\n").length}-statement openui-lang reply`,
+);
 socket.close();
 child.kill();
 process.exit(0);

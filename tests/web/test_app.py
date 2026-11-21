@@ -388,3 +388,76 @@ def test_static_client_is_served_when_present(
         response = client.get("/")
     assert response.status_code == 200
     assert "quartz" in response.text
+
+# -- client-supplied system prompt -------------------------------------
+
+
+def test_hello_applies_the_client_system_prompt_append(
+    app_client: AppClient, wire: Any
+) -> None:
+    """The Rich UI prompt reaches the live runtime, not a copy of it."""
+    with app_client.client.websocket_connect("/ws") as socket:
+        socket.send_json({"type": "hello", "clientVersion": 1, "systemPromptAppend": "ROOT IS STACK"})
+        wire.drain(socket, until="session_state")
+
+    assert app_client.runtime.system_prompt == "sys\n\nROOT IS STACK"
+
+
+def test_system_prompt_append_is_idempotent_across_reconnects(
+    app_client: AppClient, wire: Any
+) -> None:
+    """A re-sent `hello` (which is what a reconnect is) must not stack the append.
+
+    The browser re-sends `hello` on every reconnect and whenever the Rich UI
+    preference changes, so applying the append twice in one session is the normal
+    case rather than an edge one.
+    """
+    with app_client.client.websocket_connect("/ws") as socket:
+        socket.send_json({"type": "hello", "clientVersion": 1, "systemPromptAppend": "APPEND"})
+        wire.drain(socket, until="session_state")
+        socket.send_json({"type": "hello", "clientVersion": 1, "systemPromptAppend": "APPEND"})
+        wire.drain(socket, until="session_state")
+
+    assert app_client.runtime.system_prompt == "sys\n\nAPPEND"
+
+
+def test_empty_system_prompt_append_withdraws_it(
+    app_client: AppClient, wire: Any
+) -> None:
+    """Turning Rich UI off must remove the append, not leave a stale copy behind.
+
+    This is what makes the toggle a prompting decision and not just a rendering
+    one: the next turn runs on the stock system prompt.
+    """
+    with app_client.client.websocket_connect("/ws") as socket:
+        socket.send_json({"type": "hello", "clientVersion": 1, "systemPromptAppend": "APPEND"})
+        wire.drain(socket, until="session_state")
+        socket.send_json({"type": "hello", "clientVersion": 1})
+        wire.drain(socket, until="session_state")
+
+    assert app_client.runtime.system_prompt == "sys"
+
+
+def test_malformed_system_prompt_append_is_ignored(
+    app_client: AppClient, wire: Any
+) -> None:
+    """A non-string append costs the client nothing: the stock prompt is used."""
+    with app_client.client.websocket_connect("/ws") as socket:
+        socket.send_json({"type": "hello", "clientVersion": 1, "systemPromptAppend": {"nope": 1}})
+        state = wire.drain(socket, until="session_state")[-1]
+
+    assert state["type"] == "session_state"
+    assert app_client.runtime.system_prompt == "sys"
+
+
+def test_new_session_reapplies_the_append(app_client: AppClient, wire: Any) -> None:
+    """The preference survives a session swap: a new session is still Rich UI."""
+    with app_client.client.websocket_connect("/ws") as socket:
+        socket.send_json({"type": "hello", "clientVersion": 1, "systemPromptAppend": "APPEND"})
+        wire.drain(socket, until="session_state")
+        socket.send_json({"type": "new_session"})
+        wire.drain(socket, until="session_state")
+
+    # The fixture hands back the same runtime object for every build, so its
+    # system prompt carries the append onto the "new" session.
+    assert app_client.runtime.system_prompt == "sys\n\nAPPEND"

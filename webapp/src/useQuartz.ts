@@ -4,7 +4,13 @@ import {
   resolveSocketUrl,
   type ConnectionStatus,
 } from "./lib/connection";
-import { addUserPrompt, initialState, reduce, type TranscriptState } from "./lib/transcript";
+import {
+  addUserPrompt,
+  initialState,
+  reduce,
+  setRowFormState,
+  type TranscriptState,
+} from "./lib/transcript";
 import type { ImageAttachment } from "./protocol";
 
 export interface QuartzApi {
@@ -15,6 +21,8 @@ export interface QuartzApi {
   cancel: () => void;
   runCommand: (name: string, arg?: string) => void;
   newSession: () => void;
+  /** Persist an OpenUI surface's form state onto the row that rendered it. */
+  setFormState: (id: string, formState: Record<string, unknown>) => void;
 }
 
 /**
@@ -24,15 +32,19 @@ export interface QuartzApi {
  * into transcript state, and exposes intent-level actions. Components never see a
  * socket or a protocol message.
  */
-export function useQuartz(url?: string): QuartzApi {
+export function useQuartz(url?: string, systemPromptAppend = ""): QuartzApi {
   const [state, setState] = React.useState<TranscriptState>(initialState);
   const [status, setStatus] = React.useState<ConnectionStatus>("disconnected");
 
   const connectionRef = React.useRef<Connection | null>(null);
+  // Read by the connection effect so a re-created connection (url change, remount)
+  // inherits the current append instead of starting from an empty one.
+  const appendRef = React.useRef(systemPromptAppend);
 
   React.useEffect(() => {
     const target = url ?? resolveSocketUrl(window.location);
     const connection = new Connection(target);
+    connection.setSystemPromptAppend(appendRef.current);
     connectionRef.current = connection;
 
     const offMessage = connection.on("message", (message) => {
@@ -49,6 +61,19 @@ export function useQuartz(url?: string): QuartzApi {
       connectionRef.current = null;
     };
   }, [url]);
+
+  /**
+   * Hand the session's system-prompt append to the connection.
+   *
+   * The value is stored on the connection even when the socket is not open yet, so
+   * the very first `hello` -- the one that builds the runtime -- already carries
+   * it. A later change re-sends `hello`, which the server applies to the live
+   * session, so toggling Rich UI takes effect on the next turn.
+   */
+  React.useEffect(() => {
+    appendRef.current = systemPromptAppend;
+    connectionRef.current?.setSystemPromptAppend(systemPromptAppend);
+  }, [systemPromptAppend]);
 
   const prompt = React.useCallback((text: string, images: ImageAttachment[]) => {
     // Echo first: the wire has no `user_message` frame, so the transcript would
@@ -74,5 +99,12 @@ export function useQuartz(url?: string): QuartzApi {
     connectionRef.current?.sendNewSession();
   }, []);
 
-  return { state, status, prompt, steer, cancel, runCommand, newSession };
+  const setFormState = React.useCallback(
+    (id: string, formState: Record<string, unknown>) => {
+      setState((prev) => setRowFormState(prev, id, formState));
+    },
+    [],
+  );
+
+  return { state, status, prompt, steer, cancel, runCommand, newSession, setFormState };
 }

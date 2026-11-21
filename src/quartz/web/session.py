@@ -18,6 +18,7 @@ import dataclasses
 import queue
 import threading
 import uuid
+import weakref
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -88,6 +89,16 @@ class WebSession:
         self._runtime: AgentRuntime | None = None
         self._turn: _Turn | None = None
         self._lock = threading.Lock()
+        # The system prompt as `build_runtime` produced it. Kept so a client's
+        # append can be applied, replaced and withdrawn without ever stacking two
+        # copies of it on the live runtime.
+        self._system_prompt_base: str | None = None
+        # Which runtime that base belongs to. A weak reference, so a retired
+        # runtime is not kept alive by the bookkeeping; identity is the only
+        # reliable way to tell "a fresh runtime" from "the same one again", and a
+        # fresh one is the only case where the prompt is worth re-capturing.
+        self._system_prompt_base_owner: weakref.ref[AgentRuntime] | None = None
+        self._system_prompt_append = ""
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -123,6 +134,37 @@ class WebSession:
     def _swap(self, runtime: AgentRuntime, resumed: bool) -> None:
         del resumed  # the browser learns everything from `session_state`
         self._runtime = runtime
+        owner = self._system_prompt_base_owner
+        if owner is None or owner() is not runtime:
+            self._system_prompt_base = runtime.system_prompt
+            self._system_prompt_base_owner = weakref.ref(runtime)
+        self._apply_system_prompt_append()
+
+    # -- system prompt -----------------------------------------------------
+
+    def set_system_prompt_append(self, append: str) -> None:
+        """Set the client's system-prompt append for this session.
+
+        The web client owns the OpenUI component library, so it -- not the server
+        -- is the natural owner of the prompt that describes it. The browser sends
+        it on `hello`, exactly like ACP's ``_meta.quartz.systemPrompt.append``, and
+        this applies it to the live runtime.
+
+        Idempotent and reversible by construction: the base prompt is captured once
+        per runtime, so setting the append twice cannot stack it, and setting an
+        empty append withdraws it (turning Rich UI off stops the model emitting
+        openui-lang on the next turn without rebuilding the session).
+        """
+        self._system_prompt_append = append.strip()
+        self._apply_system_prompt_append()
+
+    def _apply_system_prompt_append(self) -> None:
+        runtime = self._runtime
+        base = self._system_prompt_base
+        if runtime is None or base is None:
+            return
+        append = self._system_prompt_append
+        runtime.system_prompt = f"{base}\n\n{append}" if append else base
 
     def _retire(self) -> None:
         """Abort and drain the turn in flight, then close the current kernel."""

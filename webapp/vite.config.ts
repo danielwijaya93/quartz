@@ -30,16 +30,37 @@ export default defineConfig({
          * Three chunks instead of one 680 kB bundle: the highlight.js language
          * pack is by far the heaviest dependency and changes least often, so
          * splitting it keeps the app chunk small and cacheable.
+         *
+         * There is no `markdown` chunk either, though one existed. Splitting the
+         * markdown pipeline out created a `markdown <-> vendor` cycle, which was
+         * harmless until the OpenUI renderer -- itself a `react-markdown` consumer
+         * -- joined the graph, at which point the production bundle threw
+         * `Cannot access '<sym>' before initialization` on load: a chunk needed
+         * bindings from a chunk that had not finished initialising. One fewer
+         * hand-cut boundary is worth more than the cache granularity it bought.
+         *
+         * The OpenUI renderer is likewise left out of `vendor`, so Rollup places it
+         * in the lazy chunk that imports it rather than in the eager one.
+         *
+         * What is deferred, concretely: the renderer module (`React.lazy`), its
+         * 356 kB stylesheet (imported by that module rather than by `index.css`),
+         * its chart/table dependencies, and the generated spec + prompt (86 kB,
+         * imported only when Rich UI is on).
          */
         manualChunks: (id: string) => {
+          if (
+            id.includes("node_modules/@openuidev") ||
+            id.includes("node_modules/recharts") ||
+            id.includes("node_modules/d3-") ||
+            id.includes("node_modules/lodash-es") ||
+            id.includes("node_modules/goober") ||
+            id.includes("node_modules/@radix-ui") ||
+            id.includes("node_modules/@tanstack")
+          ) {
+            return undefined;
+          }
           if (id.includes("node_modules/highlight.js") || id.includes("node_modules/lowlight")) {
             return "highlight";
-          }
-          if (id.includes("node_modules/react-markdown") || id.includes("node_modules/remark") ||
-              id.includes("node_modules/rehype") || id.includes("node_modules/micromark") ||
-              id.includes("node_modules/mdast") || id.includes("node_modules/hast") ||
-              id.includes("node_modules/unified")) {
-            return "markdown";
           }
           if (id.includes("node_modules")) return "vendor";
           return undefined;

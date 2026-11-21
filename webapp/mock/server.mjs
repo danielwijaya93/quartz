@@ -16,7 +16,13 @@
  */
 
 import { WebSocketServer } from "ws";
-import { COMMANDS, commandResultFrame, scriptedTurn, sessionState } from "./script.mjs";
+import {
+  COMMANDS,
+  commandResultFrame,
+  scriptedOpenUITurn,
+  scriptedTurn,
+  sessionState,
+} from "./script.mjs";
 
 const args = process.argv.slice(2);
 const portArg = args.indexOf("--port");
@@ -34,6 +40,7 @@ server.on("connection", (socket) => {
   log(`client connected (${sockets} open)`);
 
   let timers = [];
+  let richUi = false;
   const send = (frame) => {
     if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(frame));
   };
@@ -52,6 +59,11 @@ server.on("connection", (socket) => {
 
     switch (message.type) {
       case "hello":
+        // The real server applies this to the session's system prompt. The mock
+        // only needs to know *whether* Rich UI is on, because that is the only
+        // thing that decides whether a real model would emit openui-lang.
+        richUi = typeof message.systemPromptAppend === "string" && message.systemPromptAppend !== "";
+        log(`hello (rich UI ${richUi ? "on" : "off"})`);
         send(sessionState());
         break;
 
@@ -60,7 +72,7 @@ server.on("connection", (socket) => {
         // server does before any deltas arrive.
         log(`prompt: ${String(message.text).slice(0, 60)}…`);
         clearTimers();
-        const frames = scriptedTurn();
+        const frames = richUi ? scriptedOpenUITurn() : scriptedTurn();
         frames.forEach((frame, index) => {
           const timer = setTimeout(() => send(frame), index * DELAY);
           timers.push(timer);

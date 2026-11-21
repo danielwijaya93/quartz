@@ -5,7 +5,12 @@ import { Transcript } from "./Transcript";
 import type { Row } from "@/lib/transcript";
 
 const userRow: Row = { kind: "user", id: "u1", text: "hello", images: [] };
-const assistantRow: Row = { kind: "assistant", id: "a1", text: "**hi** there" };
+const assistantRow: Row = {
+  kind: "assistant",
+  id: "a1",
+  text: "**hi** there",
+  formState: null,
+};
 const thinkingRow: Row = { kind: "thinking", id: "k1", text: "a\nb\nc" };
 const toolRow: Row = {
   kind: "tool",
@@ -38,8 +43,21 @@ const commandRow: Row = {
   result: { kind: "needs_terminal", message: "needs a terminal" },
 };
 
-function renderRows(rows: Row[]): void {
-  render(<Transcript rows={rows} turnRunning={false} />);
+/**
+ * Transcript needs the Rich UI preference and the two callbacks a surface uses.
+ * Markdown mode plus no-op callbacks is the default shape; the tests that care
+ * about OpenUI pass their own.
+ */
+function renderRows(rows: Row[], richUi = false): void {
+  render(
+    <Transcript
+      rows={rows}
+      turnRunning={false}
+      richUi={richUi}
+      onPrompt={() => {}}
+      onFormState={() => {}}
+    />,
+  );
 }
 
 describe("Transcript", () => {
@@ -176,32 +194,45 @@ describe("Transcript", () => {
   });
 });
 
+/** The same props every time; only the rows change in these tests. */
+function transcript(rows: Row[], turnRunning: boolean): React.ReactElement {
+  return (
+    <Transcript
+      rows={rows}
+      turnRunning={turnRunning}
+      richUi={false}
+      onPrompt={() => {}}
+      onFormState={() => {}}
+    />
+  );
+}
+
 describe("TranscriptAnnouncer", () => {
   it("announces a turn starting and finishing, not each delta", () => {
-    const { rerender } = render(<Transcript rows={[]} turnRunning={false} />);
+    const { rerender } = render(transcript([], false));
     const announcer = screen.getByTestId("transcript-announcer");
 
-    rerender(<Transcript rows={[]} turnRunning />);
+    rerender(transcript([], true));
     expect(announcer).toHaveTextContent("Turn started.");
 
     // A streamed delta grows the assistant row but must not re-announce.
-    const streaming: Row = { kind: "assistant", id: "a1", text: "hel" };
-    rerender(<Transcript rows={[streaming]} turnRunning />);
+    const streaming: Row = { kind: "assistant", id: "a1", text: "hel", formState: null };
+    rerender(transcript([streaming], true));
     expect(announcer).toHaveTextContent("Turn started.");
-    rerender(<Transcript rows={[{ ...streaming, text: "hello world" } as Row]} turnRunning />);
+    rerender(transcript([{ ...streaming, text: "hello world" } as Row], true));
     expect(announcer.textContent).not.toContain("hello world");
 
-    rerender(<Transcript rows={[streaming, turnEndRow]} turnRunning={false} />);
+    rerender(transcript([streaming, turnEndRow], false));
     expect(announcer).toHaveTextContent("Turn finished in 0.3 seconds.");
   });
 
   it("announces a tool call finishing once, not while it runs", () => {
     const running: Row = { ...toolRow, status: "running" } as Row;
-    const { rerender } = render(<Transcript rows={[running]} turnRunning />);
+    const { rerender } = render(transcript([running], true));
     const announcer = screen.getByTestId("transcript-announcer");
     expect(announcer.textContent).toBe("");
 
-    rerender(<Transcript rows={[toolRow]} turnRunning />);
+    rerender(transcript([toolRow], true));
     expect(announcer).toHaveTextContent("A tool call finished.");
   });
 });
@@ -357,7 +388,7 @@ describe("Transcript tail following", () => {
   it("stops observing the content column on unmount", () => {
     const records = stubResizeObserver();
 
-    const { unmount } = render(<Transcript rows={[userRow]} turnRunning={false} />);
+    const { unmount } = render(<Transcript rows={[userRow]} turnRunning={false} richUi={false} onPrompt={() => {}} onFormState={() => {}} />);
     const observer = contentObserver(records);
     expect(observer.disconnected).toBe(false);
     unmount();

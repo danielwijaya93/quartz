@@ -18,4 +18,9 @@ export declare function sessionState(): {
 
 export declare function scriptedTurn(): unknown[];
 
+/** A canned openui-lang reply, replayed when the client asked for Rich UI. */
+export declare const OPENUI_TURN_LANG: string;
+
+export declare function scriptedOpenUITurn(): unknown[];
+
 export declare function commandResultFrame(name: string): unknown;

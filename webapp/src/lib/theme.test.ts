@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import indexHtml from "../../index.html?raw";
-import { resolveThemeMode, THEME_MODES, THEME_STORAGE_KEY, isThemeMode } from "./theme";
+import {
+  applyOpenUITheme,
+  observeOpenUITheme,
+  OPENUI_THEME_ATTRIBUTE,
+  resolveThemeMode,
+  THEME_MODES,
+  THEME_STORAGE_KEY,
+  isThemeMode,
+} from "./theme";
 
 describe("resolveThemeMode", () => {
   it("honours an explicit light or dark choice regardless of the OS", () => {
@@ -104,5 +112,58 @@ describe("theme bootstrap in index.html", () => {
 
   it("still paints a theme when storage is blocked", () => {
     expect(runBootstrap({ stored: null, prefersDark: true, storageThrows: true }).theme).toBe("dark");
+  });
+});
+
+/**
+ * OpenUI has its own theme attribute, and it must follow whatever HeroUI applied.
+ * These tests drive the mirror the way the theme control does: by changing the
+ * attributes on the document element.
+ */
+describe("OpenUI theme mirror", () => {
+  function root(): HTMLElement {
+    const element = document.createElement("div");
+    element.className = "light";
+    element.setAttribute("data-theme", "light");
+    return element;
+  }
+
+  it("reads the theme HeroUI applied and copies it", () => {
+    const element = root();
+    expect(applyOpenUITheme(element)).toBe("light");
+    expect(element.getAttribute(OPENUI_THEME_ATTRIBUTE)).toBe("light");
+
+    element.classList.remove("light");
+    element.classList.add("dark");
+    element.setAttribute("data-theme", "dark");
+    expect(applyOpenUITheme(element)).toBe("dark");
+    expect(element.getAttribute(OPENUI_THEME_ATTRIBUTE)).toBe("dark");
+    expect(element.style.colorScheme).toBe("dark");
+  });
+
+  it("follows a change made after it started observing", async () => {
+    const element = root();
+    const disconnect = observeOpenUITheme(element);
+    expect(element.getAttribute(OPENUI_THEME_ATTRIBUTE)).toBe("light");
+
+    element.classList.replace("light", "dark");
+    element.setAttribute("data-theme", "dark");
+
+    // MutationObserver callbacks are delivered on a microtask.
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(element.getAttribute(OPENUI_THEME_ATTRIBUTE)).toBe("dark");
+    disconnect();
+  });
+
+  it("stops following once disconnected", async () => {
+    const element = root();
+    const disconnect = observeOpenUITheme(element);
+    disconnect();
+
+    element.classList.replace("light", "dark");
+    element.setAttribute("data-theme", "dark");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(element.getAttribute(OPENUI_THEME_ATTRIBUTE)).toBe("light");
   });
 });
