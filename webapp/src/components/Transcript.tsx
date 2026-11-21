@@ -1,7 +1,8 @@
 import * as React from "react";
 import { ScrollShadow } from "@heroui/react";
-import type { Row } from "@/lib/transcript";
+import { groupTurns, isTurn, type Row, type Turn } from "@/lib/transcript";
 import { TranscriptAnnouncer } from "./TranscriptAnnouncer";
+import { TurnTray } from "./TurnTray";
 import { UserRowView } from "./rows/UserRowView";
 import { AssistantRowView } from "./rows/AssistantRowView";
 import { ThinkingRowView } from "./rows/ThinkingRowView";
@@ -63,6 +64,45 @@ function RowView({
 }
 
 /**
+ * One turn: its machinery folded into a tray, then the answer at full width.
+ *
+ * The order is the whole point. The work a turn did is something the reader may
+ * want to audit and never has to read, so it goes above the answer, one line
+ * tall, closed.
+ */
+function TurnView({
+  turn,
+  streaming,
+  richUi,
+  onPrompt,
+  onFormState,
+}: {
+  turn: Turn;
+  /** The answer row is the one deltas are still landing in. */
+  streaming: boolean;
+  richUi: boolean;
+  onPrompt: (text: string) => void;
+  onFormState: (id: string, state: Record<string, unknown>) => void;
+}): React.ReactElement {
+  return (
+    <div className="flex flex-col gap-2.5">
+      {turn.steps.length > 0 ? (
+        <TurnTray turn={turn} richUi={richUi} onPrompt={onPrompt} onFormState={onFormState} />
+      ) : null}
+      {turn.answer !== null ? (
+        <AssistantRowView
+          row={turn.answer}
+          streaming={streaming}
+          richUi={richUi}
+          onPrompt={onPrompt}
+          onFormState={onFormState}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * The conversation.
  *
  * A single vertical stream of turns and cells, in a comfortable reading column.
@@ -70,8 +110,13 @@ function RowView({
  * following the moment they scroll up to read - the classic streaming-UI bug is
  * yanking the viewport away from a reader.
  *
+ * Rows are not rendered one card per event. `groupTurns` folds each turn's
+ * thinking and tool calls into a collapsed tray and lifts the answer out of it,
+ * so a three-tool turn is two things on screen instead of seven.
+ *
  * Note what is *not* here: `aria-live`. The log is a structure, not an
- * announcement; `TranscriptAnnouncer` owns the live region.
+ * announcement; `TranscriptAnnouncer` owns the coarse live region, and a live
+ * turn's tray header owns "what is happening now".
  */
 export function Transcript({
   rows,
@@ -89,6 +134,9 @@ export function Transcript({
   /** Persist surface form state onto its row so a re-render cannot reset it. */
   onFormState: (id: string, state: Record<string, unknown>) => void;
 }): React.ReactElement {
+  const items = React.useMemo(() => groupTurns(rows, { running: turnRunning }), [rows, turnRunning]);
+  const lastRowId = rows[rows.length - 1]?.id;
+
   const endRef = React.useRef<HTMLDivElement | null>(null);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const contentRef = React.useRef<HTMLDivElement | null>(null);
@@ -162,16 +210,31 @@ export function Transcript({
           className="mx-auto flex w-full max-w-3xl flex-col gap-4"
         >
           {rows.length === 0 ? <EmptyTranscript /> : null}
-          {rows.map((row, index) => (
-            <RowView
-              key={row.id}
-              row={row}
-              streaming={turnRunning && index === rows.length - 1}
-              richUi={richUi}
-              onPrompt={onPrompt}
-              onFormState={onFormState}
-            />
-          ))}
+          {items.map((item) =>
+            isTurn(item) ? (
+              <TurnView
+                key={item.id}
+                turn={item}
+                // Deltas are landing in this row iff it is the last row and the
+                // turn still runs; anything else is settled text.
+                streaming={item.live && item.answer !== null && item.answer.id === lastRowId}
+                richUi={richUi}
+                onPrompt={onPrompt}
+                onFormState={onFormState}
+              />
+            ) : (
+              <RowView
+                key={item.id}
+                row={item}
+                // Assistant rows never reach here - every one of them belongs to a
+                // turn - so the streaming flag is moot for the rows that do.
+                streaming={false}
+                richUi={richUi}
+                onPrompt={onPrompt}
+                onFormState={onFormState}
+              />
+            ),
+          )}
           <div ref={endRef} aria-hidden="true" className="h-px" />
         </div>
       </ScrollShadow>

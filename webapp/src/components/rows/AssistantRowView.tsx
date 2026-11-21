@@ -40,6 +40,14 @@ export interface AssistantRowViewProps {
   onPrompt: (text: string) => void;
   /** Persist a surface's form state onto the row. */
   onFormState: (id: string, state: Record<string, unknown>) => void;
+  /**
+   * Draw the `Quartz` speaker label above the text.
+   *
+   * Off inside a turn's tray: the answer carries the one label a turn gets, and a
+   * label on every interim narration line would reintroduce the clutter the tray
+   * exists to remove.
+   */
+  showSpeaker?: boolean;
 }
 
 /**
@@ -56,6 +64,7 @@ export function AssistantRowView({
   richUi,
   onPrompt,
   onFormState,
+  showSpeaker = true,
 }: AssistantRowViewProps): React.ReactElement {
   const cleaned = React.useMemo(
     () => stripOpenUIFences(row.text, streaming),
@@ -87,10 +96,12 @@ export function AssistantRowView({
 
   return (
     <article className="flex flex-col gap-1.5">
-      <p className="flex items-center gap-1.5 text-xs font-medium text-muted">
-        <span aria-hidden="true" className="size-1.5 rounded-full bg-accent" />
-        Quartz
-      </p>
+      {showSpeaker ? (
+        <p className="flex items-center gap-1.5 text-xs font-medium text-muted">
+          <span aria-hidden="true" className="size-1.5 rounded-full bg-accent" />
+          Quartz
+        </p>
+      ) : null}
       {isOpenUILang ? (
         <SurfaceBoundary fallback={markdown}>
           <React.Suspense fallback={<SurfacePending />}>

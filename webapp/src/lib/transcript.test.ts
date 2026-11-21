@@ -2,12 +2,22 @@ import { describe, expect, it, beforeEach } from "vitest";
 import {
   addUserPrompt,
   approxTokens,
+  failedToolCount,
+  groupTurns,
   initialState,
+  isTurn,
   lineCount,
   reduceAll,
   resetIdCounter,
   setRowFormState,
+  stepLabel,
+  type AssistantRow,
+  type Row,
+  type ThinkingRow,
+  type ToolRow,
+  type TranscriptItem,
   type TranscriptState,
+  type Turn,
 } from "./transcript";
 import type { ServerMessage } from "../protocol";
 
@@ -686,5 +696,218 @@ describe("OpenUI form state on a row", () => {
       { type: "text_delta", text: "second" },
     ]);
     expect(assistantOf(more)).toMatchObject({ formState: { f: 1 } });
+  });
+});
+/* -------------------------------------------------------------- turn grouping */
+
+const assistant = (id: string, text: string): AssistantRow => ({
+  kind: "assistant",
+  id,
+  text,
+  formState: null,
+});
+
+const thinking = (id: string, text: string): ThinkingRow => ({ kind: "thinking", id, text });
+
+const tool = (id: string, status: ToolRow["status"] = "ok", code = `run_${id}()`): ToolRow => ({
+  kind: "tool",
+  id,
+  code,
+  status,
+  output: "",
+  durationMs: null,
+  images: [],
+  actions: null,
+});
+
+const user = (id: string, text: string): Row => ({ kind: "user", id, text, images: [] });
+
+const turnEnd = (id: string): Row => ({ kind: "turn_end", id, status: "ok", tokens: 1, elapsedMs: 10 });
+
+/** The turns among the grouped items, in order. */
+const turnsOf = (items: TranscriptItem[]): Turn[] => items.filter(isTurn);
+
+const stepKinds = (turn: Turn): string[] => turn.steps.map((step) => step.kind);
+
+describe("groupTurns", () => {
+  it("promotes the last narrated assistant row to the answer", () => {
+    const [turn] = turnsOf(
+      groupTurns([
+        thinking("k1", "consider"),
+        assistant("a1", "Let me check the data."),
+        tool("t1"),
+        assistant("a2", "The mean is 4."),
+      ]),
+    );
+
+    // The reply is the final block, not the narration that introduced the tool.
+    expect(turn?.answer).toMatchObject({ id: "a2", text: "The mean is 4." });
+    expect(stepKinds(turn!)).toEqual(["thinking", "text", "tool_run"]);
+    expect(turn?.steps.some((step) => step.kind === "text" && step.row.id === "a2")).toBe(false);
+  });
+
+  it("never promotes an assistant row with no text", () => {
+    const [turn] = turnsOf(
+      groupTurns([assistant("a1", "the answer"), assistant("a2", "   "), tool("t1")]),
+    );
+
+    expect(turn?.answer).toMatchObject({ id: "a1" });
+    // An empty assistant row is a tool-only segment; it stays in the steps.
+    expect(stepKinds(turn!)).toEqual(["text", "tool_run"]);
+  });
+
+  it("has no answer when a turn never produced text", () => {
+    const [turn] = turnsOf(groupTurns([thinking("k1", "hmm"), tool("t1")]));
+    expect(turn?.answer).toBeNull();
+  });
+
+  it("folds consecutive tool rows into one run and keeps the run order", () => {
+    const [turn] = turnsOf(
+      groupTurns([tool("t1"), tool("t2"), tool("t3"), assistant("a1", "done")]),
+    );
+
+    const steps = turn!.steps;
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({ kind: "tool_run", id: "tool-run-t1" });
+    expect(steps[0]?.kind === "tool_run" ? steps[0].rows.map((row) => row.id) : []).toEqual([
+      "t1",
+      "t2",
+      "t3",
+    ]);
+  });
+
+  it("splits tool runs around the narration between them", () => {
+    const [turn] = turnsOf(
+      groupTurns([tool("t1"), assistant("a1", "one down"), tool("t2"), assistant("a2", "both done")]),
+    );
+    expect(stepKinds(turn!)).toEqual(["tool_run", "text", "tool_run"]);
+    expect(turn?.answer).toMatchObject({ id: "a2" });
+  });
+
+  it("aggregates consecutive thinking rows into one step", () => {
+    const [turn] = turnsOf(
+      groupTurns([thinking("k1", "a"), thinking("k2", "b"), tool("t1")]),
+    );
+    const [first] = turn!.steps;
+    expect(first).toMatchObject({ kind: "thinking", id: "thinking-k1" });
+    expect(first?.kind === "thinking" ? first.rows.map((row) => row.id) : []).toEqual(["k1", "k2"]);
+  });
+
+  it("keeps step ids stable as later rows stream in", () => {
+    const before = turnsOf(groupTurns([thinking("k1", "a"), tool("t1")]))[0];
+    const after = turnsOf(groupTurns([thinking("k1", "a"), tool("t1"), tool("t2")]))[0];
+
+    // Ids come from the first row of a run, so the second tool call extends the
+    // same disclosure instead of remounting - and collapsing - it.
+    expect(after!.steps.map((step) => step.id)).toEqual(before!.steps.map((step) => step.id));
+  });
+
+  it("returns every other row kind standalone and in its original position", () => {
+    const rows: Row[] = [
+      user("u1", "hi"),
+      assistant("a1", "first answer"),
+      turnEnd("te1"),
+      user("u2", "again"),
+      thinking("k1", "hmm"),
+    ];
+    const items = groupTurns(rows, { running: true });
+
+    expect(items.map((item) => (isTurn(item) ? `turn ${item.id}` : item.id))).toEqual([
+      "u1",
+      "turn turn-a1",
+      "te1",
+      "u2",
+      "turn turn-k1",
+    ]);
+  });
+
+  it("marks only the trailing turn live, and only while turnRunning", () => {
+    const rows: Row[] = [assistant("a1", "one"), turnEnd("te1"), assistant("a2", "two")];
+
+    expect(turnsOf(groupTurns(rows, { running: true })).map((turn) => turn.live)).toEqual([
+      false,
+      true,
+    ]);
+    // Settled: the caller says nothing is running.
+    expect(turnsOf(groupTurns(rows, { running: false })).map((turn) => turn.live)).toEqual([
+      false,
+      false,
+    ]);
+  });
+
+  it("does not call a trailing turn live when a later marker closed it", () => {
+    const items = groupTurns([assistant("a1", "one"), turnEnd("te1")], { running: true });
+    expect(turnsOf(items).map((turn) => turn.live)).toEqual([false]);
+  });
+
+  it("keeps a standalone row between turns from merging two turns into one", () => {
+    const items = groupTurns([
+      assistant("a1", "one"),
+      { kind: "error", id: "e1", message: "boom", fatal: false } as Row,
+      assistant("a2", "two"),
+    ]);
+    expect(turnsOf(items)).toHaveLength(2);
+  });
+});
+
+describe("turn summaries", () => {
+  const fold = (...rows: Row[]): Turn => turnsOf(groupTurns(rows))[0]!;
+
+  it("counts failures across every tool run in the turn", () => {
+    const turn = fold(
+      tool("t1"),
+      tool("t2", "failed"),
+      assistant("a1", "narration"),
+      tool("t3", "failed"),
+      assistant("a2", "answer"),
+    );
+    expect(failedToolCount(turn)).toBe(2);
+  });
+
+  it("reports zero failures for a clean turn", () => {
+    expect(failedToolCount(fold(tool("t1"), tool("t2")))).toBe(0);
+  });
+
+  it("labels a step by what it is doing, not by how many it is", () => {
+    expect(stepLabel({ kind: "thinking", id: "thinking-k1", rows: [thinking("k1", "a")] })).toBe(
+      "Thinking",
+    );
+    expect(stepLabel({ kind: "text", id: "text-a1", row: assistant("a1", "Looking at it") })).toBe(
+      "Looking at it",
+    );
+    expect(stepLabel({ kind: "text", id: "text-a1", row: assistant("a1", "\n  ") })).toBe("Reply");
+  });
+
+  it("leads with the running tool's code while the run is live", () => {
+    const turn = fold(tool("t1", "running", "read_csv('data.csv')"), assistant("a1", "done"));
+    expect(stepLabel(turn.steps[0]!)).toBe("Running read_csv");
+  });
+
+  it("falls back to a count once nothing in the run is running", () => {
+    const turn = fold(tool("t1"), tool("t2"), tool("t3"), assistant("a1", "done"));
+    expect(stepLabel(turn.steps[0]!)).toBe("Used 3 tools");
+  });
+
+  it("names a non-call cell by its line, clipped to one", () => {
+    const long = "import pandas as pd, numpy as np, and a great many other things besides";
+    const turn = fold(tool("t1", "running", long), assistant("a1", "done"));
+    const label = stepLabel(turn.steps[0]!);
+
+    expect(label.startsWith("Running import pandas as pd")).toBe(true);
+    expect(label).toContain("…");
+    expect(label).not.toContain("\n");
+  });
+
+  it("names a call by the function, not the assignment or the module", () => {
+    const turn = fold(
+      tool("t1", "running", "df = pd.read_csv('x')\ndf.head()"),
+      assistant("a1", "done"),
+    );
+    expect(stepLabel(turn.steps[0]!)).toBe("Running read_csv");
+  });
+
+  it("says 'a tool' when a running call has no code yet", () => {
+    const turn = fold(tool("t1", "running", ""), assistant("a1", "done"));
+    expect(stepLabel(turn.steps[0]!)).toBe("Running a tool");
   });
 });

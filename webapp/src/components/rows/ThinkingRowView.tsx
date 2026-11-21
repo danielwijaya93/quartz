@@ -3,16 +3,38 @@ import { Disclosure } from "@heroui/react";
 import { Brain } from "lucide-react";
 import { approxTokens, lineCount, type ThinkingRow } from "@/lib/transcript";
 
+export interface ThinkingRowViewProps {
+  row: ThinkingRow;
+  /**
+   * Expansion, when the caller owns it.
+   *
+   * The turn tray opens one step at a time, so it has to drive this rather than
+   * let the disclosure keep its own state. Left out, the row stays self-managed
+   * and collapsed, which is what a thinking block in the reading column wants.
+   */
+  isExpanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
+}
+
 /**
  * Thinking is present but quiet: one collapsed line that says how much there is,
  * expandable on demand. It never competes with the answer for attention.
  */
-export function ThinkingRowView({ row }: { row: ThinkingRow }): React.ReactElement {
+export function ThinkingRowView({
+  row,
+  isExpanded,
+  onExpandedChange,
+}: ThinkingRowViewProps): React.ReactElement {
   const lines = lineCount(row.text);
   const tokens = approxTokens(row.text);
 
   return (
-    <Disclosure className="rounded-lg border border-border bg-surface-secondary/60">
+    <Disclosure
+      // Passing `undefined` keeps the disclosure uncontrolled.
+      isExpanded={isExpanded}
+      onExpandedChange={onExpandedChange}
+      className="rounded-lg border border-border bg-surface-secondary/60"
+    >
       <Disclosure.Heading>
         <Disclosure.Trigger
           className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-xs text-muted"

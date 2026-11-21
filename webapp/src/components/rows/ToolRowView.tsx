@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Card, Chip, Disclosure, Spinner } from "@heroui/react";
 import { Check, X } from "lucide-react";
-import type { ToolRow } from "@/lib/transcript";
+import { firstLine, type ToolRow } from "@/lib/transcript";
 
 const STATUS_COPY: Record<
   ToolRow["status"],
@@ -37,11 +37,6 @@ function actionChips(actions: Record<string, unknown> | null): string[] {
     }
   }
   return chips;
-}
-
-function firstLine(code: string): string {
-  const line = code.split("\n").find((candidate) => candidate.trim() !== "");
-  return line ? line.trim() : "";
 }
 
 /**
