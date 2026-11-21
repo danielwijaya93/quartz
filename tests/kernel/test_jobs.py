@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -319,6 +321,104 @@ def test_slash_command_not_steered_while_turn_running(tmp_path: Path) -> None:
     dock.input_buffer.reset = lambda: None
     dock.submit_input(override_text="keep going")
     assert not dock._steering_queue.empty()
+
+
+def _bare_dock(turn_running: bool) -> Any:
+    """A dock with just the state `submit_input` touches, no prompt_toolkit app."""
+    import queue
+    import threading
+    import types
+
+    from quartz.tui.dock import InteractiveDock
+
+    dock = InteractiveDock.__new__(InteractiveDock)
+    dock._turn_running = turn_running
+    dock._show_thinking = False
+    dock._show_details = False
+    dock._bg_count = 0
+    dock._bg_jobs = []
+    dock._steering_queue = queue.Queue()
+    dock._active_tracker = None
+    dock._lock = threading.RLock()
+    dock.input_buffer = types.SimpleNamespace(
+        text="", append_to_history=lambda: None, reset=lambda: None
+    )
+    dock._refresh_bg_count = lambda: None  # type: ignore[assignment]
+    dock._invalidate = lambda: None  # type: ignore[assignment]
+    dock.exit = lambda: None  # type: ignore[assignment]
+    return dock
+
+
+def test_immediate_command_runs_while_a_turn_is_running(tmp_path: Path, monkeypatch) -> None:
+    """`/settings` answers mid-turn instead of waiting behind the worker lock.
+
+    The bug: a slash command typed during a turn went through `_launch_worker`,
+    which blocks on `_worker_lock` -- held for the whole turn -- so the command and
+    its output both arrived only after the turn ended.
+    """
+    import quartz.tui.commands as commands
+
+    monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "config.json"))
+    dock = _bare_dock(turn_running=True)
+    dock.rt = SimpleNamespace(progress_every=5)  # type: ignore[assignment]
+
+    calls: list[str] = []
+    real = commands.COMMAND_REGISTRY.get("/settings").handler  # type: ignore[union-attr]
+
+    def _record(rt: Any, arg: str) -> bool | None:
+        calls.append(arg)
+        return False
+
+    monkeypatch.setattr(commands.COMMAND_REGISTRY.get("/settings"), "handler", _record)  # type: ignore[arg-type]
+    assert real is not None
+
+    queued: list[Any] = []
+    dock._launch_worker = lambda fn: queued.append(fn)  # type: ignore[assignment]
+
+    import threading as _t
+
+    started = _t.Event()
+    original_run = dock._run_slash_command
+
+    def _run(text: str) -> None:
+        original_run(text)
+        started.set()
+
+    dock._run_slash_command = _run  # type: ignore[assignment]
+    dock._handle_local_command("/settings progress 20")
+
+    assert started.wait(timeout=2.0), "an immediate command must not wait for the turn"
+    assert calls == ["progress 20"]
+    assert queued == [], "it must not go through the worker lock"
+
+
+def test_non_immediate_command_queues_and_says_so(tmp_path: Path, monkeypatch) -> None:
+    """A kernel-reading command waits for the turn, and no longer waits silently."""
+    import quartz.tui.commands as commands
+    import quartz.tui.dock as dock_mod
+
+    dock = _bare_dock(turn_running=True)
+    dock.rt = SimpleNamespace()  # type: ignore[assignment]
+    monkeypatch.setattr(commands, "_handle_slash_command", lambda rt, text: False)
+
+    printed: list[str] = []
+    monkeypatch.setattr(
+        dock_mod,
+        "_active_printer",
+        lambda: SimpleNamespace(block=lambda r: printed.append(r.plain)),
+    )
+
+    queued: list[Any] = []
+    dock._launch_worker = lambda fn: queued.append(fn)  # type: ignore[assignment]
+
+    dock._handle_local_command("/vars")
+
+    assert len(queued) == 1, "/vars needs the kernel, so it queues behind the turn"
+    assert len(printed) == 1
+    assert "queued" in printed[0] and "/vars" in printed[0]
+    assert commands.COMMAND_REGISTRY.get("/vars").immediate is False  # type: ignore[union-attr]
+    assert commands.COMMAND_REGISTRY.get("/settings").immediate is True  # type: ignore[union-attr]
+    assert commands.COMMAND_REGISTRY.get("/help").immediate is True  # type: ignore[union-attr]
 
 
 def test_launch_worker_uses_bash_tracking(tmp_path: Path) -> None:

@@ -58,13 +58,21 @@ from quartz.tui.replay import _replay_session
 
 @dataclasses.dataclass
 class SlashCommand:
-    """A registered slash command with metadata and execution handler."""
+    """A registered slash command with metadata and execution handler.
+
+    ``immediate`` means the command only touches local state -- a config file, an
+    in-memory value -- and never the model, the kernel, or the conversation, so it
+    is safe to run while a turn is in flight. Commands that read the kernel
+    (``/vars``, ``/jobs``) are not immediate: running them alongside a turn would
+    block on a busy kernel, so they queue behind it instead.
+    """
 
     name: str
     description: str
     handler: Callable[[AgentRuntime, str], bool | None]
     usage: str = ""
     aliases: list[str] = dataclasses.field(default_factory=list)
+    immediate: bool = False
 
 
 class CommandRegistry:
@@ -80,6 +88,7 @@ class CommandRegistry:
         description: str,
         usage: str = "",
         aliases: list[str] | None = None,
+        immediate: bool = False,
     ) -> Callable[[Callable[[AgentRuntime, str], bool | None]], Callable[[AgentRuntime, str], bool | None]]:
         def decorator(fn: Callable[[AgentRuntime, str], bool | None]) -> Callable[[AgentRuntime, str], bool | None]:
             cmd = SlashCommand(
@@ -88,6 +97,7 @@ class CommandRegistry:
                 handler=fn,
                 usage=usage,
                 aliases=aliases or [],
+                immediate=immediate,
             )
             self._commands[name] = cmd
             for alias in cmd.aliases:
@@ -99,6 +109,17 @@ class CommandRegistry:
     def get(self, name: str) -> SlashCommand | None:
         canonical = self._aliases.get(name, name)
         return self._commands.get(canonical)
+
+    def lookup(self, user_input: str) -> SlashCommand | None:
+        """Resolve the command a line invokes without running it.
+
+        The dock asks this before dispatching so it knows whether the input can run
+        beside a live turn.
+        """
+        trimmed = user_input.strip()
+        if not trimmed.startswith("/"):
+            return None
+        return self.get(trimmed.split(maxsplit=1)[0].lower())
 
     def list_commands(self) -> list[SlashCommand]:
         return list(self._commands.values())
@@ -134,10 +155,9 @@ class CommandRegistry:
         if not trimmed.startswith("/"):
             return None
         parts = trimmed.split(maxsplit=1)
-        cmd_name = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
 
-        cmd = self.get(cmd_name)
+        cmd = self.lookup(trimmed)
         if cmd is None:
             return None
         return cmd.handler(rt, arg)
@@ -539,10 +559,26 @@ def _cmd_compact(rt: AgentRuntime, arg: str) -> bool | None:
     return False
 
 
+#: Accepted spellings per setting. The config file's exact key works, because that
+#: is what someone who opened `~/.quartz/config.json` will type, and so does the
+#: short form `/settings` prints.
+_SETTING_ALIASES: dict[str, str] = {
+    "reserve": "reserve",
+    "reserve_tokens": "reserve",
+    "compact_reserve_tokens": "reserve",
+    "keep": "keep",
+    "keep_recent": "keep",
+    "keep_recent_tokens": "keep",
+    "progress": "progress",
+    "progress_every": "progress",
+}
+
+
 @COMMAND_REGISTRY.register(
     "/settings",
     "Show or update user preferences (stored in ~/.quartz/config.json)",
     usage="[reserve|keep <tokens>|progress <n>|reset|list]",
+    immediate=True,
 )
 def _cmd_settings(rt: AgentRuntime, arg: str) -> bool | None:
     import json
@@ -553,6 +589,8 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> bool | None:
         progress_every=rt.progress_every,
     )
     parts = (arg or "").split()
+    if parts:
+        parts[0] = _SETTING_ALIASES.get(parts[0], parts[0])
 
     if not parts:
         console_print(
@@ -620,7 +658,10 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> bool | None:
         )
         rt.progress_every = every
         state = "off" if every == 0 else f"every {every} ipython calls"
-        console_print(f"[green]Saved. progress_every = {every} ({state}).[/green]")
+        console_print(
+            f"[green]Saved. progress_every = {every} ({state}).[/green] "
+            "[dim]Applies from your next message.[/dim]"
+        )
         return False
 
     if parts[0] in ("reserve", "keep") and len(parts) == 2:
@@ -655,7 +696,10 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> bool | None:
             rt.keep_recent_tokens = value
             label = "keep_recent_tokens"
         save_settings(updated)
-        console_print(f"[green]Saved. {label} = {value:,}[/green]")
+        console_print(
+            f"[green]Saved. {label} = {value:,}.[/green] "
+            "[dim]Applies from your next message.[/dim]"
+        )
         return False
 
     console_print(
@@ -726,6 +770,7 @@ def _cmd_jobs(rt: AgentRuntime, arg: str) -> bool | None:
 @COMMAND_REGISTRY.register(
     "/help",
     "Show available slash commands",
+    immediate=True,
 )
 def _cmd_help(rt: AgentRuntime, arg: str) -> bool | None:
     del rt, arg
