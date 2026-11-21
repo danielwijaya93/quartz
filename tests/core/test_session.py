@@ -69,6 +69,74 @@ def test_session_dill_snapshot_and_restore(tmp_path: Path) -> None:
         k2.close()
 
 
+def test_snapshot_stores_aliased_objects_once(tmp_path: Path) -> None:
+    """`rows2 = rows` is one payload; it must not be written twice."""
+    sessions_dir = tmp_path / "sessions"
+    s = Session.create(tmp_path, sessions_dir=sessions_dir)
+
+    k1 = KernelClient(cwd=tmp_path)
+    k1.start()
+    try:
+        r = k1.exec_cell(
+            "rows = [{'id': i, 'v': 'x' * 200} for i in range(500)]\n"
+            "rows2 = rows\n"
+            "rows3 = rows\n"
+        )
+        assert r.ok
+        manifest = s.save_kernel(k1)
+    finally:
+        k1.close()
+
+    files = manifest["files"]
+    assert files["rows"] == files["rows2"] == files["rows3"]
+    dill_files = [p.name for p in s.snapshot_dir.glob("*.dill")]
+    assert len([n for n in dill_files if n.startswith("obj")]) == 1
+
+    k2 = KernelClient(cwd=tmp_path)
+    k2.start()
+    try:
+        s.restore_kernel(k2)
+        r2 = k2.exec_cell("(len(rows), rows2 is rows, rows3 is rows)")
+        assert r2.ok
+        assert r2.result == "(500, True, True)"
+    finally:
+        k2.close()
+
+
+def test_restore_reads_legacy_name_keyed_snapshot(tmp_path: Path) -> None:
+    """Snapshots written before dedup used `<name>.dill`; resume must still work."""
+    import json
+
+    sessions_dir = tmp_path / "sessions"
+    s = Session.create(tmp_path, sessions_dir=sessions_dir)
+
+    k1 = KernelClient(cwd=tmp_path)
+    k1.start()
+    try:
+        assert k1.exec_cell("legacy_value = 41").ok
+        s.save_kernel(k1)
+    finally:
+        k1.close()
+
+    # Rewrite the snapshot in the old on-disk shape.
+    for f in list(s.snapshot_dir.glob("*.dill")):
+        f.rename(s.snapshot_dir / "legacy_value.dill")
+    manifest = json.loads((s.snapshot_dir / "manifest.json").read_text())
+    manifest.pop("files")
+    manifest["saved"] = ["legacy_value"]
+    (s.snapshot_dir / "manifest.json").write_text(json.dumps(manifest))
+
+    k2 = KernelClient(cwd=tmp_path)
+    k2.start()
+    try:
+        notice = s.restore_kernel(k2)
+        assert notice is not None and "legacy_value" in notice
+        r2 = k2.exec_cell("legacy_value + 1")
+        assert r2.ok and r2.result == "42"
+    finally:
+        k2.close()
+
+
 def test_session_fork_and_latest(tmp_path: Path) -> None:
     sessions_dir = tmp_path / "sessions"
     s1 = Session.create(tmp_path, sessions_dir=sessions_dir)
