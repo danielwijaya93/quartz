@@ -94,6 +94,26 @@ class _UnpickleFailed:
     """
 
 
+def _skip_reason(pickle_err: BaseException, dill_err: BaseException) -> str:
+    """One short clause explaining why a value was left out of a snapshot.
+
+    Both serializers ran, so the useful fact is what the *fallback* said: `TypeError`
+    on a lambda is normal, but dill failing on a plain dict means the value holds
+    something genuinely unserializable (an open socket, a C extension handle). Report
+    the exception class plus a trimmed message -- enough to act on, short enough that
+    the resume notice stays readable.
+    """
+    detail = str(dill_err).strip().splitlines()[0] if str(dill_err).strip() else ""
+    if not detail:
+        detail = str(pickle_err).strip().splitlines()[0] if str(pickle_err).strip() else ""
+    if len(detail) > 80:
+        # `_truncate` keeps head and tail with a marker in between; a one-line reason
+        # wants a simple tail cut so the message stays a single readable clause.
+        detail = detail[:77] + "..."
+    name = type(dill_err).__name__
+    return f"{name}: {detail}" if detail else name
+
+
 def _is_reimportable(mod: types.ModuleType) -> bool:
     """True for named modules that can be re-imported by name after a restart."""
     name = getattr(mod, "__name__", "")
@@ -681,11 +701,17 @@ class KernelWorker:
 
                 try:
                     blob = pickle.dumps(val, protocol=pickle.HIGHEST_PROTOCOL)
-                except Exception:
+                except Exception as pickle_err:
                     try:
                         blob = dill.dumps(val, recurse=True)
-                    except Exception:
-                        skipped.append(f"{name} ({type(val).__name__})")
+                    except Exception as dill_err:
+                        # Both serializers failed, so this value genuinely cannot ride
+                        # along. Name the reason from the *fallback* failure: pickle
+                        # rejecting a lambda or a live socket is expected and boring,
+                        # while dill failing on plain data is the surprising case.
+                        skipped.append(
+                            f"{name} ({type(val).__name__}: {_skip_reason(pickle_err, dill_err)})"
+                        )
                         continue
 
                 if len(blob) > MAX_VAR_BYTES:

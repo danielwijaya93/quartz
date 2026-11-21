@@ -221,3 +221,64 @@ def test_turn_records_cell_metadata_for_the_tool_calls_it_produced(
     run_interactive_turn(rt, _View())
 
     assert rt.active_session.cell_meta == {"tc_1": {"ok": True, "duration_s": 0.25}}
+
+
+def _snapshot_runtime(tmp_path: Path, manifest: dict[str, Any]) -> AgentRuntime:
+    """A non-headless runtime whose kernel reports a given snapshot manifest."""
+
+    class _Kernel:
+        dirty = True
+
+        def snapshot(self, _path: Path) -> dict[str, Any]:
+            return manifest
+
+    class _SnapSession(_Session):
+        def save_kernel(self, _kernel: Any) -> dict[str, Any]:
+            return manifest
+
+    return AgentRuntime(
+        cwd=tmp_path,
+        kernel=_Kernel(),  # type: ignore[arg-type]
+        client=object(),  # type: ignore[arg-type]
+        provider_name="test",
+        model="test-model",
+        effort="",
+        system_prompt="sys",
+        active_session=_SnapSession(),  # type: ignore[arg-type]
+        messages=[{"role": "user", "content": "hi"}],
+        usage_stats=TurnUsage(),
+        max_context_tokens=1000,
+        compact_reserve_tokens=100,
+        keep_recent_tokens=100,
+        verbose=False,
+        plain_output=True,
+        headless=False,
+    )
+
+
+def test_snapshot_skip_surfaces_as_a_warning(tmp_path: Path) -> None:
+    """A snapshot that drops state has to say so; silently losing a variable is worse."""
+    rt = _snapshot_runtime(
+        tmp_path,
+        {"saved": ["data"], "skipped": ["conn (socket: TypeError: cannot pickle 'socket' object)"]},
+    )
+
+    with pytest.warns(RuntimeWarning) as caught:
+        rt.persist()
+        rt.wait_snapshot()
+
+    assert "Kernel snapshot skipped 1 value" in str(caught[0].message)
+    assert "conn (socket" in str(caught[0].message)
+
+
+def test_snapshot_without_skips_is_silent(tmp_path: Path) -> None:
+    import warnings as warnings_mod
+
+    rt = _snapshot_runtime(tmp_path, {"saved": ["data"], "skipped": []})
+
+    with warnings_mod.catch_warnings(record=True) as caught:
+        warnings_mod.simplefilter("always")
+        rt.persist()
+        rt.wait_snapshot()
+
+    assert caught == []

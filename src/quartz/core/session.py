@@ -30,15 +30,44 @@ def _new_session_id() -> str:
     return f"{stamp}-{uuid.uuid4().hex[:6]}"
 
 
+#: Long variable lists make the resume notice unreadable and burn context, so a
+#: snapshot with hundreds of variables is summarised rather than enumerated.
+_NOTICE_NAME_LIMIT = 40
+
+
+def _summarise_names(names: list[str], limit: int = _NOTICE_NAME_LIMIT) -> str:
+    if len(names) <= limit:
+        return ", ".join(names)
+    shown = ", ".join(names[:limit])
+    return f"{shown} ... and {len(names) - limit} more"
+
+
 def format_python_state_restored(restored: list[str], skipped: list[str]) -> str | None:
-    """Format Unharnessed-style [python-state-restored] notice for resumed sessions."""
+    """Format Unharnessed-style [python-state-restored] notice for resumed sessions.
+
+    Every skipped value carries the reason it was skipped (see
+    `worker._skip_reason`), because "Skipped: f (function)" leaves the user with
+    nothing to act on. The notice names at most `_NOTICE_NAME_LIMIT` entries: a big
+    session can hold hundreds of variables, and a wall of names is context spent on
+    bookkeeping.
+    """
     if not restored and not skipped:
         return None
     parts = ["[python-state-restored]\n"]
     if restored:
-        parts.append(f"Restored Python variables/functions from previous session: {', '.join(restored)}.")
+        parts.append(
+            f"Restored {len(restored)} Python variable"
+            f"{'s' if len(restored) != 1 else ''}/function"
+            f"{'s' if len(restored) != 1 else ''} from the previous session: "
+            f"{_summarise_names(restored)}."
+        )
     if skipped:
-        parts.append(f"Skipped (not serializable or over size limit): {', '.join(skipped)}.")
+        parts.append(
+            f"Skipped {len(skipped)} with a reason (not serializable, or over the size limit): "
+            f"{_summarise_names(skipped)}."
+        )
+    else:
+        parts.append("Nothing was skipped.")
     return "\n".join(parts)
 
 
