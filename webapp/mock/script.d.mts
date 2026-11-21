@@ -16,6 +16,6 @@ export declare function sessionState(): {
   messages: Message[];
 };
 
-export declare function scriptedTurn(options?: { richUi?: boolean }): unknown[];
+export declare function scriptedTurn(): unknown[];
 
 export declare function commandResultFrame(name: string): unknown;

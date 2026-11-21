@@ -10,7 +10,7 @@ import type { ImageAttachment } from "./protocol";
 export interface QuartzApi {
   state: TranscriptState;
   status: ConnectionStatus;
-  prompt: (text: string, images: ImageAttachment[], richUi?: boolean) => void;
+  prompt: (text: string, images: ImageAttachment[]) => void;
   steer: (text: string) => void;
   cancel: () => void;
   runCommand: (name: string, arg?: string) => void;
@@ -50,15 +50,12 @@ export function useQuartz(url?: string): QuartzApi {
     };
   }, [url]);
 
-  const prompt = React.useCallback(
-    (text: string, images: ImageAttachment[], richUi = false) => {
-      // Echo first: the wire has no `user_message` frame, so the transcript would
-      // otherwise not show what was asked until the page reloaded.
-      setState((prev) => addUserPrompt(prev, text, images));
-      connectionRef.current?.sendPrompt(text, images, richUi);
-    },
-    [],
-  );
+  const prompt = React.useCallback((text: string, images: ImageAttachment[]) => {
+    // Echo first: the wire has no `user_message` frame, so the transcript would
+    // otherwise not show what was asked until the page reloaded.
+    setState((prev) => addUserPrompt(prev, text, images));
+    connectionRef.current?.sendPrompt(text, images);
+  }, []);
 
   const steer = React.useCallback((text: string) => {
     connectionRef.current?.sendSteer(text);

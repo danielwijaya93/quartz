@@ -208,18 +208,10 @@ export class Connection {
     return this.send({ type: "hello", clientVersion: CLIENT_VERSION });
   }
 
-  /**
-   * Send a prompt.
-   *
-   * `richUi` is only included when true, so a Markdown-mode client sends exactly
-   * the frame it always did -- the field is additive on the wire, not a second
-   * code path.
-   */
-  sendPrompt(text: string, images: ImageAttachment[] = [], richUi = false): boolean {
-    const message: ClientMessage = { type: "prompt", text };
-    if (images.length > 0) message.images = images;
-    if (richUi) message.richUi = true;
-    return this.send(message);
+  sendPrompt(text: string, images: ImageAttachment[] = []): boolean {
+    return this.send(
+      images.length > 0 ? { type: "prompt", text, images } : { type: "prompt", text },
+    );
   }
 
   sendSteer(text: string): boolean {
