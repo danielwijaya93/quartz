@@ -13,7 +13,8 @@ JSON shape (flat -- matches the existing flat config.json)::
       "model": "meta/muse-ember",
       "effort": "max",
       "compact_reserve_tokens": 16384,
-      "keep_recent_tokens": 32000
+      "keep_recent_tokens": 32000,
+      "progress_every": 5
     }
 
 Future preferences (e.g. show_thinking, show_details defaults) belong in
@@ -31,17 +32,21 @@ from typing import Any
 
 DEFAULT_COMPACT_RESERVE_TOKENS = 16_384
 DEFAULT_KEEP_RECENT_TOKENS = 32_000
+#: Ask the model to update the user every this many ipython calls (0 disables).
+DEFAULT_PROGRESS_EVERY = 5
 
 _MIN_TOKENS = 256
 _MAX_TOKENS = 10_000_000
+_MAX_PROGRESS_EVERY = 1_000
 
 
 @dataclasses.dataclass(frozen=True)
 class Settings:
-    """User-tunable compaction preferences."""
+    """User-tunable compaction and progress preferences."""
 
     compact_reserve_tokens: int = DEFAULT_COMPACT_RESERVE_TOKENS
     keep_recent_tokens: int = DEFAULT_KEEP_RECENT_TOKENS
+    progress_every: int = DEFAULT_PROGRESS_EVERY
 
 
 def _config_path(path: Path | None = None) -> Path:
@@ -77,6 +82,20 @@ def _coerce_tokens(value: Any, default: int) -> int:
     return default
 
 
+def _coerce_progress(value: Any, default: int) -> int:
+    """Coerce a stored checkpoint cadence; ``0`` is meaningful (off), so it passes."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, str) and value.strip():
+        try:
+            value = int(value.strip())
+        except ValueError:
+            return default
+    if isinstance(value, int) and 0 <= value <= _MAX_PROGRESS_EVERY:
+        return value
+    return default
+
+
 def load_settings(path: Path | None = None) -> Settings:
     """Load settings from config.json, falling back to defaults (never raises)."""
     raw = _read_raw(path)
@@ -87,12 +106,22 @@ def load_settings(path: Path | None = None) -> Settings:
         keep_recent_tokens=_coerce_tokens(
             raw.get("keep_recent_tokens"), DEFAULT_KEEP_RECENT_TOKENS
         ),
+        progress_every=_coerce_progress(raw.get("progress_every"), DEFAULT_PROGRESS_EVERY),
     )
 
 
 def validate_tokens(value: int) -> bool:
     """Return True when ``value`` is a sane token count."""
     return isinstance(value, int) and not isinstance(value, bool) and _MIN_TOKENS <= value <= _MAX_TOKENS
+
+
+def validate_progress_every(value: int) -> bool:
+    """Return True when ``value`` is a sane checkpoint cadence (``0`` disables)."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= _MAX_PROGRESS_EVERY
+    )
 
 
 def save_settings(settings: Settings, path: Path | None = None) -> Path:
@@ -102,6 +131,7 @@ def save_settings(settings: Settings, path: Path | None = None) -> Path:
     data = _read_raw(path)
     data["compact_reserve_tokens"] = settings.compact_reserve_tokens
     data["keep_recent_tokens"] = settings.keep_recent_tokens
+    data["progress_every"] = settings.progress_every
     cfg.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return cfg
 
@@ -111,4 +141,5 @@ def settings_as_dict(settings: Settings) -> dict[str, int]:
     return {
         "compact_reserve_tokens": settings.compact_reserve_tokens,
         "keep_recent_tokens": settings.keep_recent_tokens,
+        "progress_every": settings.progress_every,
     }

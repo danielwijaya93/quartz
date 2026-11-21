@@ -79,9 +79,12 @@ def test_save_preserves_provider_model_effort(tmp_path: Path) -> None:
 
 
 def test_settings_as_dict() -> None:
-    assert settings_as_dict(Settings(compact_reserve_tokens=1_000, keep_recent_tokens=2_000)) == {
+    assert settings_as_dict(
+        Settings(compact_reserve_tokens=1_000, keep_recent_tokens=2_000, progress_every=7)
+    ) == {
         "compact_reserve_tokens": 1_000,
         "keep_recent_tokens": 2_000,
+        "progress_every": 7,
     }
 
 

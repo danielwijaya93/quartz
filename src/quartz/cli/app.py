@@ -26,6 +26,7 @@ from quartz.tui.dock import InteractiveDock
 from quartz.kernel.client import KernelClient
 from quartz.core.loop import TurnUsage, drain_bash_events, format_bash_done_events
 from quartz.providers.registry import PROVIDERS, resolve_context_tokens
+from quartz.core.progress import resolve_every
 from quartz.core.prompt import build_system_prompt
 from quartz.core.runtime import AgentRuntime
 from quartz.core.session import Session
@@ -234,6 +235,11 @@ def _build_runtime(args: argparse.Namespace) -> tuple[AgentRuntime, bool]:
         headless=bool(args.prompt),
         show_thinking=args.show_thinking,
         show_details=args.show_details,
+        progress_every=resolve_every(
+            args.progress_every,
+            headless=bool(args.prompt),
+            default=_settings.progress_every,
+        ),
     )
     return rt, resumed
 
@@ -324,6 +330,16 @@ def main() -> None:
         help="Always show full ipython code and output panels instead of compact summaries.",
     )
     parser.add_argument(
+        "--progress-every",
+        type=int,
+        metavar="N",
+        default=None,
+        help=(
+            "Ask the model to update the user every N ipython calls (0 disables). "
+            "Default: on for interactive sessions, off for -p."
+        ),
+    )
+    parser.add_argument(
         "--show-thinking",
         action="store_true",
         help="Show reasoning trace (Ctrl+T).",
@@ -356,6 +372,7 @@ def main() -> None:
             _provider_with_resolved_context,
             compact_reserve_tokens=compact_reserve_tokens,
             keep_recent_tokens=keep_recent_tokens,
+            progress_every=_settings.progress_every,
         )
         server.serve()
         return

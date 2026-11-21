@@ -29,10 +29,12 @@ from quartz.providers.selection import (
 from quartz.settings import (
     DEFAULT_COMPACT_RESERVE_TOKENS,
     DEFAULT_KEEP_RECENT_TOKENS,
+    DEFAULT_PROGRESS_EVERY,
     Settings,
     load_settings,
     save_settings,
     settings_as_dict,
+    validate_progress_every,
     validate_tokens,
 )
 from quartz.core.runtime import AgentRuntime
@@ -540,7 +542,7 @@ def _cmd_compact(rt: AgentRuntime, arg: str) -> bool | None:
 @COMMAND_REGISTRY.register(
     "/settings",
     "Show or update user preferences (stored in ~/.quartz/config.json)",
-    usage="[reserve|keep <tokens>|reset|list]",
+    usage="[reserve|keep <tokens>|progress <n>|reset|list]",
 )
 def _cmd_settings(rt: AgentRuntime, arg: str) -> bool | None:
     import json
@@ -548,6 +550,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> bool | None:
     current = Settings(
         compact_reserve_tokens=rt.compact_reserve_tokens,
         keep_recent_tokens=rt.keep_recent_tokens,
+        progress_every=rt.progress_every,
     )
     parts = (arg or "").split()
 
@@ -558,10 +561,12 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> bool | None:
                     f"reserve_tokens: {current.compact_reserve_tokens:,} "
                     f"(default {DEFAULT_COMPACT_RESERVE_TOKENS:,})\n"
                     f"keep_recent_tokens: {current.keep_recent_tokens:,} "
-                    f"(default {DEFAULT_KEEP_RECENT_TOKENS:,})\n\n"
+                    f"(default {DEFAULT_KEEP_RECENT_TOKENS:,})\n"
+                    f"progress_every: {current.progress_every} "
+                    f"(default {DEFAULT_PROGRESS_EVERY}, 0 disables; off in -p)\n\n"
                     f"Stored in {config_file_path()}\n\n"
                     "Usage: /settings reserve <tokens> | /settings keep <tokens> | "
-                    "/settings reset | /settings list"
+                    "/settings progress <n> | /settings reset | /settings list"
                 ),
                 title="Settings",
                 border_style="dim",
@@ -582,11 +587,40 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> bool | None:
         save_settings(defaults)
         rt.compact_reserve_tokens = defaults.compact_reserve_tokens
         rt.keep_recent_tokens = defaults.keep_recent_tokens
+        rt.progress_every = defaults.progress_every
         console_print(
             f"[green]Reset settings to defaults. "
             f"reserve_tokens = {defaults.compact_reserve_tokens:,}, "
-            f"keep_recent_tokens = {defaults.keep_recent_tokens:,}.[/green]"
+            f"keep_recent_tokens = {defaults.keep_recent_tokens:,}, "
+            f"progress_every = {defaults.progress_every}.[/green]"
         )
+        return False
+
+    if parts[0] == "progress" and len(parts) == 2:
+        try:
+            every = int(parts[1])
+        except ValueError:
+            console_print(
+                f"[red]Invalid value {escape(parts[1])!r}: expected an integer call count.[/red]\n"
+                "[dim]Usage: /settings progress <n> (0 disables updates)[/dim]"
+            )
+            return False
+        if not validate_progress_every(every):
+            console_print(
+                f"[red]Invalid value {every}: must be between 0 and 1,000 calls.[/red]\n"
+                "[dim]Usage: /settings progress <n> (0 disables updates)[/dim]"
+            )
+            return False
+        save_settings(
+            Settings(
+                compact_reserve_tokens=current.compact_reserve_tokens,
+                keep_recent_tokens=current.keep_recent_tokens,
+                progress_every=every,
+            )
+        )
+        rt.progress_every = every
+        state = "off" if every == 0 else f"every {every} ipython calls"
+        console_print(f"[green]Saved. progress_every = {every} ({state}).[/green]")
         return False
 
     if parts[0] in ("reserve", "keep") and len(parts) == 2:
@@ -605,11 +639,19 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> bool | None:
             )
             return False
         if parts[0] == "reserve":
-            updated = Settings(compact_reserve_tokens=value, keep_recent_tokens=current.keep_recent_tokens)
+            updated = Settings(
+                compact_reserve_tokens=value,
+                keep_recent_tokens=current.keep_recent_tokens,
+                progress_every=current.progress_every,
+            )
             rt.compact_reserve_tokens = value
             label = "reserve_tokens"
         else:
-            updated = Settings(compact_reserve_tokens=current.compact_reserve_tokens, keep_recent_tokens=value)
+            updated = Settings(
+                compact_reserve_tokens=current.compact_reserve_tokens,
+                keep_recent_tokens=value,
+                progress_every=current.progress_every,
+            )
             rt.keep_recent_tokens = value
             label = "keep_recent_tokens"
         save_settings(updated)
@@ -619,7 +661,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> bool | None:
     console_print(
         f"[red]Unknown settings argument {escape(arg)!r}.[/red]\n"
         "[dim]Usage: /settings reserve <tokens> | /settings keep <tokens> | "
-        "/settings reset | /settings list[/dim]"
+        "/settings progress <n> | /settings reset | /settings list[/dim]"
     )
     return False
 

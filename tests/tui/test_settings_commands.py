@@ -14,6 +14,7 @@ from quartz.tui.commands import _handle_slash_command
 from quartz.core.loop import TurnUsage
 from quartz.core.runtime import AgentRuntime
 from quartz.core.session import Session
+from quartz.settings import DEFAULT_PROGRESS_EVERY
 
 
 def _make_rt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AgentRuntime:
@@ -70,15 +71,58 @@ def test_settings_keep_valid_updates_rt_and_file(
     assert data["compact_reserve_tokens"] == 16_384
 
 
+def test_settings_progress_updates_rt_and_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rt = _make_rt(tmp_path, monkeypatch)
+    assert _handle_slash_command(rt, "/settings progress 10") is False
+    assert rt.progress_every == 10
+    data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert data["progress_every"] == 10
+    # 0 is meaningful (off), not a rejection.
+    assert _handle_slash_command(rt, "/settings progress 0") is False
+    assert rt.progress_every == 0
+    data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert data["progress_every"] == 0
+
+
+def test_settings_progress_rejects_invalid_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rt = _make_rt(tmp_path, monkeypatch)
+    assert _handle_slash_command(rt, "/settings progress abc") is False
+    assert _handle_slash_command(rt, "/settings progress -1") is False
+    assert _handle_slash_command(rt, "/settings progress 5000") is False
+    assert rt.progress_every == 0  # the _make_rt default, untouched
+    assert not (tmp_path / "config.json").exists()
+
+
+def test_settings_progress_edit_preserves_compaction_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rt = _make_rt(tmp_path, monkeypatch)
+    assert _handle_slash_command(rt, "/settings reserve 32768") is False
+    assert _handle_slash_command(rt, "/settings progress 7") is False
+    data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert data == {
+        "compact_reserve_tokens": 32768,
+        "keep_recent_tokens": 32_000,
+        "progress_every": 7,
+    }
+
+
 def test_settings_reset_restores_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rt = _make_rt(tmp_path, monkeypatch)
     assert _handle_slash_command(rt, "/settings reserve 32768") is False
+    assert _handle_slash_command(rt, "/settings progress 0") is False
     assert _handle_slash_command(rt, "/settings reset") is False
     assert rt.compact_reserve_tokens == 16_384
     assert rt.keep_recent_tokens == 32_000
+    assert rt.progress_every == DEFAULT_PROGRESS_EVERY
     data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
     assert data["compact_reserve_tokens"] == 16_384
     assert data["keep_recent_tokens"] == 32_000
+    assert data["progress_every"] == DEFAULT_PROGRESS_EVERY
 
 
 def test_settings_rejects_invalid_values_without_saving(
