@@ -14,7 +14,9 @@ from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl, 
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.processors import BeforeInput, DynamicProcessor, PasswordProcessor
 
+from quartz.tui.list_select import clamp_index, filter_options, move_index, page_index, visible_window
 from quartz.tui.render import DOCK_STYLE, get_active_dock
+
 
 @dataclasses.dataclass
 class InlineModalState:
@@ -34,15 +36,7 @@ class InlineModalState:
     def filtered_options(self) -> list[tuple[str, str]]:
         if self.kind != "searchable":
             return self.options
-        q = self.buffer.text.strip().lower()
-        if not q:
-            return self.options
-        tokens = q.split()
-        return [
-            (val, lbl)
-            for val, lbl in self.options
-            if all(tok in val.lower() or tok in lbl.lower() for tok in tokens)
-        ]
+        return filter_options(self.options, self.buffer.text)
 
 
 def _clamp_line(text: str, max_width: int) -> str:
@@ -83,7 +77,7 @@ class _ModalListControl(UIControl):
 
         if modal is not None and modal.kind in ("option", "searchable"):
             if modal.kind == "option":
-                header = _clamp_line(f" {modal.title} (↑/↓, Enter, Esc)", w)
+                header = _clamp_line(f" {modal.title} (↑/↓, PgUp/PgDn, Enter, Esc)", w)
                 lines.append([("class:modal.title", header)])
                 matches = modal.options
             else:
@@ -98,11 +92,8 @@ class _ModalListControl(UIControl):
                     lines.append([("class:modal.dim", _clamp_line("   No matching options.", w))])
             else:
                 total = len(matches)
-                idx = max(0, min(modal.selected_idx, total - 1))
-                max_vis = max(1, modal.max_visible) if modal.kind == "searchable" else total
-                half = max_vis // 2
-                start = max(0, min(idx - half, total - max_vis))
-                end = min(total, start + max_vis)
+                idx = clamp_index(modal.selected_idx, total)
+                start, end = visible_window(total, idx, modal.max_visible)
                 if start > 0:
                     lines.append([("class:modal.dim", _clamp_line(f"   ↑ {start} more above", w))])
                 for i in range(start, end):
@@ -210,7 +201,39 @@ def build_modal_key_bindings(
             return
         matches = modal.filtered_options()
         if matches:
-            modal.selected_idx = (modal.selected_idx + delta) % len(matches)
+            modal.selected_idx = move_index(modal.selected_idx, delta, len(matches))
+
+    def _page(direction: int) -> None:
+        modal = get_modal()
+        if modal is None or modal.kind == "input":
+            return
+        matches = modal.filtered_options()
+        if matches:
+            modal.selected_idx = page_index(modal.selected_idx, direction, len(matches), modal.max_visible)
+
+    def _jump(to_end: bool) -> None:
+        modal = get_modal()
+        if modal is None or modal.kind == "input":
+            return
+        matches = modal.filtered_options()
+        if matches:
+            modal.selected_idx = len(matches) - 1 if to_end else 0
+
+    @kb.add("pageup", filter=active_filter)
+    def _(event: Any) -> None:
+        _page(-1)
+
+    @kb.add("pagedown", filter=active_filter)
+    def _(event: Any) -> None:
+        _page(1)
+
+    @kb.add("home", filter=active_filter & is_option)
+    def _(event: Any) -> None:
+        _jump(False)
+
+    @kb.add("end", filter=active_filter & is_option)
+    def _(event: Any) -> None:
+        _jump(True)
 
     @kb.add("up", filter=active_filter)
     @kb.add("c-p", filter=active_filter)

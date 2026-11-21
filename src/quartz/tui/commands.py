@@ -283,7 +283,12 @@ def _cmd_continue(rt: AgentRuntime, arg: str) -> bool | None:
             )
             for item in sessions_list
         ]
-        chosen_id = _pick_option("Select a session", session_opts, current=rt.active_session.id)
+        chosen_id = _pick_searchable_option(
+            "Select a session",
+            session_opts,
+            current=rt.active_session.id,
+            allow_custom=False,
+        )
         if not chosen_id:
             console.print("[dim]Cancelled.[/dim]")
             return False
