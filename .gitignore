@@ -12,3 +12,9 @@ wheels/
 # Secrets and local caches
 .env
 .pytest_cache/
+
+# Quartz web client (Node project; dist/ is bundled into the wheel later)
+webapp/node_modules/
+webapp/dist/
+webapp/*.tsbuildinfo
+webapp/coverage/

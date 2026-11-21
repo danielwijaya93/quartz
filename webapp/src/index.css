@@ -1,0 +1,297 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens.
+ *
+ * Dark-first, quiet, technical: a terminal that grew up. Everything here is a CSS
+ * custom property so a theme is a variable swap, not a refactor. Exactly one
+ * accent colour, reserved for state (running, focused, selected) — never decoration.
+ */
+@theme {
+  /* Surfaces, darkest to lightest. */
+  --color-base: oklch(17% 0.006 265);
+  --color-surface: oklch(20.5% 0.007 265);
+  --color-elevated: oklch(24% 0.008 265);
+  --color-line: oklch(30% 0.009 265);
+  --color-line-strong: oklch(38% 0.011 265);
+
+  /* Text, brightest to dimmest. */
+  --color-ink: oklch(93% 0.004 265);
+  --color-ink-muted: oklch(72% 0.007 265);
+  --color-ink-dim: oklch(56% 0.008 265);
+
+  /* The one accent. State only. */
+  --color-accent: oklch(72% 0.13 196);
+  --color-accent-ink: oklch(17% 0.006 265);
+
+  /* Semantic state. Paired with an icon so state is never colour-only. */
+  --color-ok: oklch(72% 0.12 152);
+  --color-warn: oklch(78% 0.12 78);
+  --color-danger: oklch(68% 0.16 22);
+
+  /* Type. */
+  --font-sans:
+    "Inter var", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", sans-serif;
+  --font-mono:
+    ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Mono", "Roboto Mono",
+    Menlo, Consolas, monospace;
+
+  /* Type scale. Dense by intent: transcript body is 13px. */
+  --text-2xs: 0.6875rem;  /* 11px — metrics, chips */
+  --text-xs: 0.75rem;     /* 12px — labels, notices */
+  --text-sm: 0.8125rem;   /* 13px — transcript body */
+  --text-base: 0.875rem;  /* 14px — composer */
+  --text-lg: 1rem;        /* 16px — section headings */
+
+  /* Rhythm. Compact: 4/8/12/16. */
+  --spacing-row: 0.5rem;
+  --radius-cell: 0.25rem;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    /* Motion budget: interactive feedback only, never longer than 150ms. */
+    --duration-feedback: 120ms;
+    --ease-feedback: cubic-bezier(0.2, 0, 0.2, 1);
+  }
+
+  * {
+    border-color: var(--color-line);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-base);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Visible focus, everywhere. Never removed, only styled. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+
+  ::selection {
+    background-color: color-mix(in oklch, var(--color-accent) 30%, transparent);
+  }
+
+  /* Quiet scrollbars: this is a log, the scrollbar is furniture. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/*
+ * Markdown inside the transcript.
+ *
+ * Assistant prose is sans; anything code-shaped is mono. Prose is deliberately
+ * tight — paragraph spacing matches the log rhythm, not a blog post.
+ */
+@layer components {
+  .prose-quartz {
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    line-height: 1.6;
+    color: var(--color-ink);
+  }
+
+  .prose-quartz > * + * {
+    margin-top: 0.5rem;
+  }
+
+  .prose-quartz p {
+    margin: 0;
+  }
+
+  .prose-quartz strong {
+    font-weight: 600;
+    color: var(--color-ink);
+  }
+
+  .prose-quartz em {
+    font-style: italic;
+    color: var(--color-ink-muted);
+  }
+
+  .prose-quartz a {
+    color: var(--color-accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-thickness: 1px;
+  }
+
+  .prose-quartz ul,
+  .prose-quartz ol {
+    margin: 0;
+    padding-left: 1.25rem;
+  }
+
+  .prose-quartz ul {
+    list-style: disc;
+  }
+
+  .prose-quartz ol {
+    list-style: decimal;
+  }
+
+  .prose-quartz li + li {
+    margin-top: 0.125rem;
+  }
+
+  .prose-quartz li::marker {
+    color: var(--color-ink-dim);
+  }
+
+  .prose-quartz h1,
+  .prose-quartz h2,
+  .prose-quartz h3,
+  .prose-quartz h4 {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0.75rem 0 0;
+    color: var(--color-ink);
+  }
+
+  .prose-quartz h1 {
+    font-size: var(--text-lg);
+  }
+
+  .prose-quartz h2 {
+    font-size: var(--text-base);
+  }
+
+  /* Inline code and fenced code are mono; inline gets a hairline chip. */
+  .prose-quartz code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    background-color: var(--color-elevated);
+    border: 1px solid var(--color-line);
+    border-radius: 3px;
+    padding: 0.05em 0.3em;
+  }
+
+  .prose-quartz pre {
+    margin: 0;
+    overflow-x: auto;
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-left: 2px solid var(--color-line-strong);
+    border-radius: var(--radius-cell);
+    padding: 0.625rem 0.75rem;
+    font-size: var(--text-xs);
+    line-height: 1.55;
+  }
+
+  .prose-quartz pre code {
+    background: none;
+    border: 0;
+    padding: 0;
+    font-size: inherit;
+  }
+
+  .prose-quartz blockquote {
+    margin: 0;
+    padding-left: 0.75rem;
+    border-left: 2px solid var(--color-line-strong);
+    color: var(--color-ink-muted);
+  }
+
+  .prose-quartz table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-xs);
+    font-family: var(--font-mono);
+  }
+
+  .prose-quartz th,
+  .prose-quartz td {
+    border: 1px solid var(--color-line);
+    padding: 0.25rem 0.5rem;
+    text-align: left;
+  }
+
+  .prose-quartz th {
+    background-color: var(--color-surface);
+    font-weight: 600;
+    color: var(--color-ink-muted);
+  }
+
+  .prose-quartz hr {
+    border: 0;
+    border-top: 1px solid var(--color-line);
+    margin: 0.75rem 0;
+  }
+
+  /* Syntax highlighting: muted, terminal-like, no rainbow. */
+  .hljs-comment,
+  .hljs-quote {
+    color: var(--color-ink-dim);
+    font-style: italic;
+  }
+
+  .hljs-keyword,
+  .hljs-selector-tag,
+  .hljs-literal,
+  .hljs-section,
+  .hljs-link {
+    color: oklch(75% 0.1 300);
+  }
+
+  .hljs-function .hljs-title,
+  .hljs-title.function_,
+  .hljs-title {
+    color: var(--color-accent);
+  }
+
+  .hljs-string,
+  .hljs-attr,
+  .hljs-template-variable,
+  .hljs-addition {
+    color: oklch(76% 0.1 140);
+  }
+
+  .hljs-number,
+  .hljs-symbol,
+  .hljs-bullet,
+  .hljs-variable,
+  .hljs-template-tag {
+    color: oklch(78% 0.11 60);
+  }
+
+  .hljs-built_in,
+  .hljs-type,
+  .hljs-class .hljs-title {
+    color: oklch(74% 0.09 240);
+  }
+
+  .hljs-meta,
+  .hljs-deletion {
+    color: var(--color-danger);
+  }
+}

@@ -1,0 +1,70 @@
+import { describe, expect, it } from "vitest";
+import { initialState, reduceAll, resetIdCounter } from "./transcript";
+import type { ServerMessage } from "../protocol";
+// The mock is the reference recording of a turn, so the reducer is tested against
+// the same frames a developer sees in the browser.
+import { scriptedTurn } from "../../mock/script.mjs";
+
+const frames = scriptedTurn() as ServerMessage[];
+
+describe("the mock's scripted turn", () => {
+  it("folds into a complete, well-formed transcript", () => {
+    resetIdCounter();
+    const state = reduceAll(initialState, frames);
+
+    expect(state.turnRunning).toBe(false);
+    expect(state.turnId).toBeNull();
+    expect(state.status).toBeNull();
+
+    const kinds = state.rows.map((row) => row.kind);
+    expect(kinds).toContain("thinking");
+    expect(kinds).toContain("assistant");
+    expect(kinds).toContain("tool");
+    expect(kinds).toContain("bash_notice");
+    expect(kinds).toContain("steering");
+    expect(kinds).toContain("compaction");
+    expect(kinds.at(-1)).toBe("turn_end");
+  });
+
+  it("collapses the whole delta stream into a handful of rows", () => {
+    resetIdCounter();
+    const state = reduceAll(initialState, frames);
+    const textDeltas = frames.filter((frame) => frame.type === "text_delta").length;
+    const assistantRows = state.rows.filter((row) => row.kind === "assistant").length;
+    expect(textDeltas).toBeGreaterThan(10);
+    expect(assistantRows).toBeLessThan(textDeltas);
+  });
+
+  it("pairs every tool result with its call and marks the failing one", () => {
+    resetIdCounter();
+    const state = reduceAll(initialState, frames);
+    const tools = state.rows.filter((row) => row.kind === "tool");
+    expect(tools).toHaveLength(4);
+    expect(tools.every((row) => row.kind === "tool" && row.status !== "running")).toBe(true);
+    expect(tools.filter((row) => row.kind === "tool" && row.status === "failed")).toHaveLength(1);
+  });
+
+  it("carries the image and the action chips through to the row", () => {
+    resetIdCounter();
+    const state = reduceAll(initialState, frames);
+    const withImage = state.rows.filter(
+      (row) => row.kind === "tool" && row.images.length > 0,
+    );
+    expect(withImage).toHaveLength(1);
+    const withActions = state.rows.filter(
+      (row) => row.kind === "tool" && row.actions !== null,
+    );
+    expect(withActions.length).toBeGreaterThan(0);
+  });
+
+  it("reduces identically when the same turn replays", () => {
+    resetIdCounter();
+    const once = reduceAll(initialState, frames);
+    const twice = reduceAll(once, frames);
+    expect(twice.rows.length).toBeGreaterThan(once.rows.length);
+    // A second live turn appends; it must never rewrite the first.
+    expect(twice.rows.slice(0, once.rows.length).map((row) => row.id)).toEqual(
+      once.rows.map((row) => row.id),
+    );
+  });
+});
