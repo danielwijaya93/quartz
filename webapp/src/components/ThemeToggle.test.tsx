@@ -27,54 +27,40 @@ describe("ThemeToggle", () => {
     document.documentElement.removeAttribute("data-theme");
   });
 
-  it("offers all three modes as labelled options, not one cycling button", () => {
+  it("renders a compact cycling button showing current theme", () => {
     installMatchMedia(true);
     render(<ThemeToggle />);
-    // A single-select group: HeroUI renders it as a radiogroup, which is exactly
-    // the "choose one of three" semantics this control has.
-    expect(screen.getByRole("radiogroup", { name: "Colour theme" })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "Light theme" })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "Dark theme" })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "System theme" })).toBeInTheDocument();
+    const button = screen.getByRole("button", { name: /Theme: System/i });
+    expect(button).toBeInTheDocument();
   });
 
-  it("marks the active mode as checked", () => {
-    installMatchMedia(true);
-    render(<ThemeToggle />);
-    expect(screen.getByRole("radio", { name: "System theme" })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
-    expect(screen.getByRole("radio", { name: "Light theme" })).toHaveAttribute(
-      "aria-checked",
-      "false",
-    );
-  });
-
-  it("switches the document theme and stores the choice", async () => {
+  it("cycles through System -> Light -> Dark -> System", async () => {
     const user = userEvent.setup();
     installMatchMedia(true);
     render(<ThemeToggle />);
 
-    await user.click(screen.getByRole("radio", { name: "Light theme" }));
+    // Initial state is system
+    const button = screen.getByRole("button", { name: /Theme: System/i });
+    expect(button).toBeInTheDocument();
+
+    // Click 1: System -> Light
+    await user.click(button);
     expect(document.documentElement.classList.contains("light")).toBe(true);
     expect(document.documentElement.getAttribute("data-theme")).toBe("light");
     expect(window.localStorage.getItem("heroui-theme")).toBe("light");
+    expect(screen.getByRole("button", { name: /Theme: Light/i })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("radio", { name: "Dark theme" }));
+    // Click 2: Light -> Dark
+    await user.click(screen.getByRole("button", { name: /Theme: Light/i }));
     expect(document.documentElement.classList.contains("dark")).toBe(true);
     expect(window.localStorage.getItem("heroui-theme")).toBe("dark");
-  });
+    expect(screen.getByRole("button", { name: /Theme: Dark/i })).toBeInTheDocument();
 
-  it("returns to system and resolves against the OS", async () => {
-    const user = userEvent.setup();
-    installMatchMedia(true);
-    render(<ThemeToggle />);
-
-    await user.click(screen.getByRole("radio", { name: "Light theme" }));
-    await user.click(screen.getByRole("radio", { name: "System theme" }));
+    // Click 3: Dark -> System
+    await user.click(screen.getByRole("button", { name: /Theme: Dark/i }));
     act(() => {});
     expect(window.localStorage.getItem("heroui-theme")).toBe("system");
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+    expect(screen.getByRole("button", { name: /Theme: System/i })).toBeInTheDocument();
   });
 });

@@ -319,10 +319,10 @@ export function Composer({
       : "Blocked after an error — start a new session to continue"
     : turnRunning
       ? "Steer the running turn…"
-      : "Ask Quartz anything — press / for commands";
+      : "Ask Quartz anything, or press / for commands";
 
   return (
-    <div className="shrink-0 bg-background px-4 pt-2 pb-4">
+    <div className="shrink-0 bg-background px-4 pt-2 pb-5">
       <div className="relative mx-auto w-full max-w-3xl space-y-2">
         {slashOpen ? (
           <div
@@ -418,7 +418,7 @@ export function Composer({
           </Alert>
         ) : null}
 
-        <div className="rounded-2xl border border-border bg-surface/70 px-3 pt-2 pb-2 shadow-sm transition-colors focus-within:border-focus focus-within:ring-2 focus-within:ring-focus/20">
+        <div className="rounded-2xl border border-border/80 bg-surface/70 px-3.5 pt-2.5 pb-2 shadow-xs transition-all duration-150 focus-within:border-accent/40 focus-within:ring-2 focus-within:ring-accent/15">
           {images.length > 0 ? (
             <ul className="mb-2 flex flex-wrap gap-2" aria-label="Pending attachments">
               {images.map((image, index) => (
@@ -487,6 +487,7 @@ export function Composer({
               isDisabled={disabled}
               onPress={() => fileRef.current?.click()}
               aria-label="Attach an image"
+              className="size-7 rounded-lg text-muted hover:text-foreground hover:bg-surface-secondary"
             >
               <ImagePlus aria-hidden="true" className="size-4" />
             </Button>
@@ -506,45 +507,48 @@ export function Composer({
                 }
               }}
               aria-label="Slash commands"
+              className="size-7 rounded-lg text-muted hover:text-foreground hover:bg-surface-secondary"
             >
               <Slash aria-hidden="true" className="size-3.5" />
             </Button>
 
-            <p className="ml-1 hidden text-xs text-muted sm:block">
-              <kbd className="font-mono">Enter</kbd> {turnRunning ? "to steer" : "to send"}
-              <span aria-hidden="true"> · </span>
-              <kbd className="font-mono">Shift+Enter</kbd> new line
+            <p className="ml-1.5 hidden text-xs text-muted/70 sm:block">
+              <kbd className="font-mono text-muted">Enter</kbd> {turnRunning ? "to steer" : "to send"}
+              <span aria-hidden="true" className="mx-1 text-muted/30">·</span>
+              <kbd className="font-mono text-muted">Shift+Enter</kbd> new line
             </p>
 
-            <div className="ml-auto flex items-center gap-2">
+            <div className="ml-auto flex items-center gap-1.5">
               {turnRunning ? (
                 <Button
                   size="sm"
                   variant="outline"
                   onPress={onCancel}
                   aria-label="Cancel the running turn"
+                  className="h-8 gap-1 rounded-full px-2.5 text-xs font-medium"
                 >
-                  <Square aria-hidden="true" className="size-3.5" />
+                  <Square aria-hidden="true" className="size-3" />
                   Stop
                 </Button>
               ) : null}
               <Button
                 size="sm"
-                variant={canSend ? "primary" : "outline"}
+                isIconOnly
+                variant={canSend ? "primary" : "ghost"}
                 isDisabled={!canSend}
                 onPress={submit}
                 aria-label={turnRunning ? "Steer the running turn" : "Send prompt"}
+                className={cn(
+                  "size-8 rounded-full transition-all duration-150",
+                  canSend
+                    ? "bg-accent text-accent-foreground shadow-xs hover:bg-accent/90"
+                    : "border border-border/50 bg-surface-secondary/40 text-muted opacity-40",
+                )}
               >
                 {turnRunning ? (
-                  <>
-                    <CornerDownRight aria-hidden="true" className="size-3.5" />
-                    Steer
-                  </>
+                  <CornerDownRight aria-hidden="true" className="size-4" />
                 ) : (
-                  <>
-                    <ArrowUp aria-hidden="true" className="size-3.5" />
-                    Send
-                  </>
+                  <ArrowUp aria-hidden="true" className="size-4" />
                 )}
               </Button>
             </div>

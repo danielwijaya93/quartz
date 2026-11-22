@@ -148,8 +148,8 @@ export function HeaderBar({
           </Button>
 
           <div className="flex shrink-0 items-center gap-2">
-            <span aria-hidden="true" className="size-2.5 rounded-full bg-accent" />
-            <span className="text-sm font-semibold tracking-tight text-foreground">Quartz</span>
+            <span aria-hidden="true" className="size-2 rounded-full bg-accent ring-2 ring-accent/25" />
+            <span className="text-sm font-bold tracking-tight text-foreground">Quartz</span>
           </div>
 
           {/* One unit that moves to its own line when it does not fit, rather than
@@ -157,7 +157,7 @@ export function HeaderBar({
               harder to scan than two tidy rows. */}
           <div className="ml-auto flex shrink-0 items-center justify-end gap-2">
             <span role="status" aria-label={`Connection ${copy.label}`}>
-              <Chip size="sm" variant="soft" color={copy.color}>
+              <Chip size="sm" variant="soft" color={copy.color} className="h-7 text-xs font-medium">
                 <span className="flex items-center gap-1.5">
                   <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
                   <span className="hidden md:inline">{copy.label}</span>
@@ -168,9 +168,10 @@ export function HeaderBar({
             <ThemeToggle />
             <Button
               size="sm"
-              variant="primary"
+              variant="outline"
               onPress={onNewSession}
               aria-label="Start a new session"
+              className="h-7 gap-1 border-border/80 bg-surface-secondary/40 font-medium hover:bg-surface-secondary hover:text-foreground"
             >
               <Plus aria-hidden="true" className="size-3.5" />
               <span className="hidden md:inline">New</span>

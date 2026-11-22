@@ -1,6 +1,6 @@
 import * as React from "react";
 import { ScrollShadow } from "@heroui/react";
-import { ArrowDown } from "lucide-react";
+import { ArrowDown, FileCode, GitBranch, Sparkles, Terminal } from "lucide-react";
 import { directoryLabel } from "@/lib/sidebar";
 import {
   groupTurns,
@@ -407,9 +407,21 @@ function JumpToNewest({
  * name here the screen would look exactly as it did before the tap.
  */
 const STARTER_PROMPTS = [
-  "Summarize this repository and its key files",
-  "Show recent git commits and current status",
-  "What tests or checks can I run here?",
+  {
+    title: "Summarize repository",
+    prompt: "Summarize this repository and its key files",
+    icon: FileCode,
+  },
+  {
+    title: "Git status & commits",
+    prompt: "Show recent git commits and current status",
+    icon: GitBranch,
+  },
+  {
+    title: "Tests & checks",
+    prompt: "What tests or checks can I run here?",
+    icon: Terminal,
+  },
 ];
 
 function EmptyTranscript({
@@ -421,28 +433,34 @@ function EmptyTranscript({
 }): React.ReactElement {
   const folder = cwd ? directoryLabel(cwd) : "";
   return (
-    <div className="flex flex-col items-center gap-4 py-20 text-center">
-      <div className="flex size-10 items-center justify-center rounded-2xl border border-border bg-surface-secondary/70 shadow-xs">
-        <span aria-hidden="true" className="size-3 rounded-full bg-accent" />
+    <div className="flex flex-col items-center gap-4 py-16 text-center">
+      <div className="relative flex size-12 items-center justify-center rounded-2xl border border-border/80 bg-surface-secondary/60 shadow-xs ring-1 ring-border/40">
+        <Sparkles aria-hidden="true" className="size-5 text-accent" />
       </div>
       <div className="space-y-1.5">
-        <p className="text-base font-semibold tracking-tight text-foreground" title={cwd || undefined}>
+        <p className="text-lg font-semibold tracking-tight text-foreground" title={cwd || undefined}>
           {folder ? `New session in ${folder}` : "No turns yet"}
         </p>
         <p className="text-sm text-muted">
-          Send a prompt to start, or press <kbd className="rounded border border-border bg-surface-secondary px-1.5 py-0.5 font-mono text-xs">/</kbd> for commands.
+          Send a prompt to start, or press <kbd className="rounded-md border border-border bg-surface-secondary/80 px-1.5 py-0.5 font-mono text-xs text-foreground shadow-2xs">/</kbd> for commands.
         </p>
       </div>
       {folder ? (
-        <div className="mt-2 flex flex-wrap justify-center gap-2">
-          {STARTER_PROMPTS.map((suggestion) => (
+        <div className="mt-3 grid w-full max-w-xl grid-cols-1 gap-2.5 sm:grid-cols-3">
+          {STARTER_PROMPTS.map((item) => (
             <button
-              key={suggestion}
+              key={item.title}
               type="button"
-              onClick={() => onPrompt(suggestion)}
-              className="cursor-pointer rounded-full border border-border bg-surface/80 px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/40 hover:bg-surface-secondary hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none"
+              onClick={() => onPrompt(item.prompt)}
+              className="group flex cursor-pointer flex-col items-start gap-1 rounded-xl border border-border/70 bg-surface/50 p-3 text-left transition-all duration-150 hover:border-accent/40 hover:bg-surface-secondary hover:shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
             >
-              {suggestion}
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground group-hover:text-accent">
+                <item.icon aria-hidden="true" className="size-3.5 shrink-0 text-muted group-hover:text-accent" />
+                <span>{item.title}</span>
+              </div>
+              <p className="text-[11px] leading-snug text-muted line-clamp-2">
+                {item.prompt}
+              </p>
             </button>
           ))}
         </div>
