@@ -34,18 +34,18 @@ export function ThemeToggle(): React.ReactElement {
     <ToggleButtonGroup
       aria-label="Colour theme"
       size="sm"
-      isDetached
       disallowEmptySelection
       selectionMode="single"
       selectedKeys={[mode]}
       onSelectionChange={onSelectionChange}
+      className="rounded-lg border border-separator bg-surface-secondary/60 p-0.5"
     >
       {THEME_MODES.map((entry) => (
         <ToggleButton
           key={entry}
           id={entry}
           aria-label={`${MODE_COPY[entry].label} theme`}
-          className="cursor-pointer gap-1.5 px-2.5 text-xs font-medium"
+          className="h-7 cursor-pointer gap-1.5 rounded-md px-2 text-xs font-medium"
         >
           {MODE_COPY[entry].icon}
           <span className="hidden xl:inline">{MODE_COPY[entry].label}</span>

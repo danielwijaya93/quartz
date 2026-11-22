@@ -215,27 +215,29 @@ export function CommandPalette({
               <Modal.Heading className="text-base font-semibold">Commands</Modal.Heading>
             </Modal.Header>
 
-            <div className="flex items-center gap-2 px-4 py-3">
-              <Search aria-hidden="true" className="size-4 shrink-0 text-muted" />
-              <Input
-                ref={inputRef}
-                value={query}
-                onChange={(event) => onFilterChange(event.target.value)}
-                onKeyDown={onKeyDown}
-                placeholder="Search commands…"
-                aria-label="Filter commands"
-                role="combobox"
-                aria-expanded="true"
-                aria-controls="command-list"
-                aria-autocomplete="list"
-                aria-activedescendant={
-                  filtered[active] ? `command-option-${filtered[active].name}` : undefined
-                }
-                spellCheck={false}
-                autoComplete="off"
-                autoFocus
-                className="border-0 bg-transparent px-0 shadow-none"
-              />
+            <div className="px-4 py-3">
+              <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-secondary/50 px-3 py-1.5 focus-within:border-focus focus-within:ring-2 focus-within:ring-focus/25">
+                <Search aria-hidden="true" className="size-4 shrink-0 text-muted" />
+                <Input
+                  ref={inputRef}
+                  value={query}
+                  onChange={(event) => onFilterChange(event.target.value)}
+                  onKeyDown={onKeyDown}
+                  placeholder="Search commands…"
+                  aria-label="Filter commands"
+                  role="combobox"
+                  aria-expanded="true"
+                  aria-controls="command-list"
+                  aria-autocomplete="list"
+                  aria-activedescendant={
+                    filtered[active] ? `command-option-${filtered[active].name}` : undefined
+                  }
+                  spellCheck={false}
+                  autoComplete="off"
+                  autoFocus
+                  className="w-full border-0 bg-transparent px-0 shadow-none outline-none! ring-0! focus-visible:outline-none!"
+                />
+              </div>
             </div>
 
             <Modal.Body className="max-h-[50vh] overflow-y-auto px-2 pb-2">

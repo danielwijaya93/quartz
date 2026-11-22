@@ -178,9 +178,11 @@ export function App(): React.ReactElement {
           connection={quartz.status}
           turnRunning={quartz.state.turnRunning}
           fatalError={quartz.state.fatalError}
+          commands={quartz.state.session.commands}
           onSubmit={onSubmit}
           onSteer={quartz.steer}
           onCancel={quartz.cancel}
+          onRunCommand={quartz.runCommand}
           onOpenPalette={palette.openPalette}
           textareaRef={composerRef}
         />

@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Button, Input, Modal, Spinner, useOverlayState } from "@heroui/react";
-import { ArchiveRestore, FolderOpen, Import, RefreshCw } from "lucide-react";
+import { ArchiveRestore, FolderOpen, Import, RefreshCw, Search } from "lucide-react";
 import {
   ARCHIVE_REASONS,
   archiveEntries,
@@ -158,18 +158,21 @@ export function SessionArchiveDialog({
                 {/* Same interaction as the folder picker's: one text field over the
                     list, focused on open, and a way back to the full list. */}
                 <div className="flex items-center gap-2 px-4 py-2">
-                  <Input
-                    value={filter.query}
-                    onChange={(event) =>
-                      setFilter((previous) => ({ ...previous, query: event.target.value }))
-                    }
-                    placeholder="Filter sessions…"
-                    aria-label="Filter sessions"
-                    spellCheck={false}
-                    autoComplete="off"
-                    autoFocus
-                    className="border-0 bg-transparent px-0 shadow-none"
-                  />
+                  <div className="flex flex-1 items-center gap-2 rounded-lg border border-border bg-surface-secondary/50 px-3 py-1.5 focus-within:border-focus focus-within:ring-2 focus-within:ring-focus/25">
+                    <Search aria-hidden="true" className="size-4 shrink-0 text-muted" />
+                    <Input
+                      value={filter.query}
+                      onChange={(event) =>
+                        setFilter((previous) => ({ ...previous, query: event.target.value }))
+                      }
+                      placeholder="Filter sessions…"
+                      aria-label="Filter sessions"
+                      spellCheck={false}
+                      autoComplete="off"
+                      autoFocus
+                      className="w-full border-0 bg-transparent px-0 shadow-none outline-none! ring-0! focus-visible:outline-none!"
+                    />
+                  </div>
                   {isArchiveFilterActive(filter) ? (
                     <Button size="sm" variant="ghost" onPress={() => setFilter(NO_ARCHIVE_FILTER)}>
                       Clear

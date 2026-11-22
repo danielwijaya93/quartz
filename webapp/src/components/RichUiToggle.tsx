@@ -52,18 +52,18 @@ export function RichUiToggle({
     <ToggleButtonGroup
       aria-label="Assistant reply format"
       size="sm"
-      isDetached
       disallowEmptySelection
       selectionMode="single"
       selectedKeys={[mode]}
       onSelectionChange={onSelectionChange}
+      className="rounded-lg border border-separator bg-surface-secondary/60 p-0.5"
     >
       {RICH_UI_MODES.map((entry) => (
         <ToggleButton
           key={entry}
           id={entry}
           aria-label={`${MODE_COPY[entry].label} replies: ${MODE_COPY[entry].title}`}
-          className="cursor-pointer gap-1.5 px-2.5 text-xs font-medium"
+          className="h-7 cursor-pointer gap-1.5 rounded-md px-2.5 text-xs font-medium"
         >
           {MODE_COPY[entry].icon}
           <span className="hidden sm:inline">{MODE_COPY[entry].label}</span>

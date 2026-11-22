@@ -49,14 +49,19 @@ describe("AssistantRowView", () => {
     expect(screen.getByTestId("openui-surface")).toBeInTheDocument();
   });
 
-  it("draws the same reply as plain markdown when Rich UI is off", async () => {
-    const { container } = renderRow({ text: OPENUI_TURN_LANG, richUi: false });
+  it("keeps completed openui-lang replies rendered as a surface even when Rich UI is switched off", async () => {
+    renderRow({ text: OPENUI_TURN_LANG, richUi: false });
 
-    // No surface, and the program's own text is on screen: honest degradation
-    // rather than an empty box.
+    await waitFor(
+      () => expect(screen.getByText("Kernel activity, last 7 days")).toBeInTheDocument(),
+      { timeout: 10_000 },
+    );
+    expect(screen.getByTestId("openui-surface")).toBeInTheDocument();
+
+    // Per-row toggle lets the user inspect raw OpenUI Lang without affecting other turns.
+    fireEvent.click(screen.getByRole("button", { name: "View source" }));
     expect(screen.queryByTestId("openui-surface")).toBeNull();
-    expect(container.textContent).toContain("root = Stack(");
-    await waitFor(() => expect(container.querySelector(".transcript-prose")).not.toBeNull());
+    expect(screen.getByRole("button", { name: "View UI" })).toBeInTheDocument();
   });
 
   it("keeps prose as markdown even with Rich UI on", async () => {

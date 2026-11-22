@@ -34,22 +34,18 @@ function MetaChip({
 }): React.ReactElement {
   return (
     <li className={className}>
-      <Chip size="sm" variant="soft" color="default" title={title}>
-        <span className="block max-w-[15rem] truncate">{label}</span>
-      </Chip>
+      <span
+        title={title}
+        className="block max-w-[15rem] truncate rounded-md px-1.5 py-0.5 font-mono text-[11px] text-meta"
+      >
+        {label}
+      </span>
     </li>
   );
 }
 
 /**
  * Where the session is running: the folder's own name, never a stub.
- *
- * This is the one chip that has to survive a phone. It used to collapse a long path
- * to its last two segments -- two letters, on a real worktree -- and the whole meta
- * row was hidden below `sm`, so a phone could not answer "which folder is this?"
- * anywhere at all. `title` and the visually hidden path keep the full path on hover
- * and in the accessible name; the visible text truncates from the left, because the
- * tail of a folder name is the part that tells two of them apart.
  */
 function CwdChip({ cwd }: { cwd: string }): React.ReactElement {
   return (
@@ -59,10 +55,10 @@ function CwdChip({ cwd }: { cwd: string }): React.ReactElement {
         variant="soft"
         color="default"
         title={cwd || undefined}
-        className="max-w-full min-w-0 overflow-hidden"
+        className="max-w-full min-w-0 overflow-hidden bg-surface-secondary/70"
       >
         <span className="sr-only">{cwd ? `Working directory ${cwd}` : "Working directory not set"}</span>
-        <span aria-hidden="true" dir="rtl" className="block truncate text-left">
+        <span aria-hidden="true" dir="rtl" className="block truncate text-left font-medium">
           {cwd ? directoryLabel(cwd) : "—"}
         </span>
       </Chip>
@@ -138,7 +134,7 @@ export function HeaderBar({
             <ThemeToggle />
             <Button
               size="sm"
-              variant="outline"
+              variant="primary"
               onPress={onNewSession}
               aria-label="Start a new session"
             >
