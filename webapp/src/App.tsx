@@ -91,11 +91,12 @@ export function App(): React.ReactElement {
     if (sessionId) sidebar.reload();
   }, [sessionId, sidebar.reload]);
 
-  // A session becomes listable once it has a message, so the turn's end is the
-  // moment a folder's count can change.
+  // A session becomes listable as soon as the first prompt is persisted on
+  // turn start, and its title/updatedAt may settle at turn end, so reload on
+  // both transitions.
   const wasRunning = React.useRef(false);
   React.useEffect(() => {
-    if (wasRunning.current && !quartz.state.turnRunning) sidebar.reload();
+    if (wasRunning.current !== quartz.state.turnRunning) sidebar.reload();
     wasRunning.current = quartz.state.turnRunning;
   }, [quartz.state.turnRunning, sidebar.reload]);
 
