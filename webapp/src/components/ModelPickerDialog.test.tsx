@@ -26,6 +26,9 @@ const mockPayload: ModelsPayload = {
       status: "logged in",
       models: ["gemini-3.8-flash-high", "gemini-2.5-pro", "gemini-2.5-flash"],
       efforts: ["low", "medium", "high"],
+      modelEfforts: {
+        "gemini-2.5-pro": ["low", "medium", "high", "xhigh"],
+      },
       defaultModel: "gemini-3.8-flash-high",
       defaultEffort: "medium",
     },
@@ -121,5 +124,27 @@ describe("ModelPickerDialog", () => {
       expect(onSuccess).toHaveBeenCalledWith("google", "gemini-2.5-pro", "low");
       expect(onOpenChange).toHaveBeenCalledWith(false);
     });
+  });
+
+  it("updates reasoning effort options when selecting a model with per-model efforts", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelPickerDialog
+        open={true}
+        onOpenChange={vi.fn()}
+        currentModel="gemini-3.8-flash-high"
+        currentEffort="high"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("gemini-2.5-pro")).toBeInTheDocument();
+    });
+
+    expect(screen.queryByRole("radio", { name: "xhigh" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByText("gemini-2.5-pro"));
+
+    expect(screen.getByRole("radio", { name: "xhigh" })).toBeInTheDocument();
   });
 });

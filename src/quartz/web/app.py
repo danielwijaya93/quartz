@@ -287,7 +287,12 @@ def create_app(
     @app.get("/api/models")
     async def get_models() -> JSONResponse:
         """List current model, configured providers, and available models."""
-        from quartz.providers.registry import PROVIDERS, discover_models, policy_efforts
+        from quartz.providers.registry import (
+            PROVIDERS,
+            discover_models,
+            discovered_efforts,
+            policy_efforts,
+        )
         from quartz.providers.selection import _provider_ready, _provider_status_label
 
         if not session.built:
@@ -299,24 +304,33 @@ def create_app(
             "effort": session.runtime.effort,
         }
 
-        providers_data: list[dict[str, Any]] = []
-        for pname, spec in PROVIDERS.items():
+        def _load_provider(pname: str, spec: Any) -> dict[str, Any]:
             ready = _provider_ready(pname)
             status = _provider_status_label(pname)
-            models, _ = await asyncio.to_thread(discover_models, pname)
+            models, _ = discover_models(pname)
             efforts = list(policy_efforts(pname, spec.default_model) or spec.efforts)
-            providers_data.append(
-                {
-                    "id": pname,
-                    "label": spec.label,
-                    "ready": ready,
-                    "status": status,
-                    "models": models,
-                    "efforts": efforts,
-                    "defaultModel": spec.default_model,
-                    "defaultEffort": spec.default_effort,
-                }
-            )
+            model_efforts: dict[str, list[str]] = {}
+            if spec.backend == "openai":
+                for model_id in models:
+                    levels = discovered_efforts(pname, model_id)
+                    if levels and list(levels) != efforts:
+                        model_efforts[model_id] = list(levels)
+            return {
+                "id": pname,
+                "label": spec.label,
+                "ready": ready,
+                "status": status,
+                "models": models,
+                "efforts": efforts,
+                "modelEfforts": model_efforts,
+                "defaultModel": spec.default_model,
+                "defaultEffort": spec.default_effort,
+            }
+
+        providers_data: list[dict[str, Any]] = [
+            await asyncio.to_thread(_load_provider, pname, spec)
+            for pname, spec in PROVIDERS.items()
+        ]
 
         return JSONResponse(
             {

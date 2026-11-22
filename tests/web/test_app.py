@@ -337,6 +337,35 @@ def test_api_models_lists_providers_and_current(app_client: AppClient) -> None:
     assert any(p["id"] == "google" for p in data["providers"])
 
 
+def test_api_models_includes_per_model_efforts(app_client: AppClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "quartz.providers.registry.discover_models",
+        lambda pname: (
+            ["anthropic/claude-sonnet-4", "anthropic/claude-opus-5.5"] if pname == "openrouter" else ["m1"],
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        "quartz.providers.registry.policy_efforts",
+        lambda pname, model: ["low", "medium", "high"],
+    )
+    monkeypatch.setattr(
+        "quartz.providers.registry.discovered_efforts",
+        lambda pname, model: (
+            ["max", "xhigh", "high", "medium", "low"]
+            if pname == "openrouter" and model == "anthropic/claude-opus-5.5"
+            else ["low", "medium", "high"]
+        ),
+    )
+    resp = app_client.client.get("/api/models")
+    assert resp.status_code == 200
+    openrouter = next(p for p in resp.json()["providers"] if p["id"] == "openrouter")
+    assert openrouter["efforts"] == ["low", "medium", "high"]
+    assert openrouter["modelEfforts"] == {
+        "anthropic/claude-opus-5.5": ["max", "xhigh", "high", "medium", "low"]
+    }
+
+
 def test_api_models_select_switches_model(app_client: AppClient, monkeypatch: pytest.MonkeyPatch) -> None:
     from types import SimpleNamespace
     monkeypatch.setattr(
