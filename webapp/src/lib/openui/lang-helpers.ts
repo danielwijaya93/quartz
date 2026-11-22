@@ -38,14 +38,40 @@ export function stripOpenUIFences(raw: string, isStreaming = false): string {
 }
 
 /**
- * True when the text is an openui-lang program rather than prose.
+ * True when the text is an openui-lang program rather than prose or a code block.
  *
- * The signal is a `root = ...` assignment at the start of a line: every valid
- * program defines one (`root = Stack(...)`), and prose that happens to mention
- * `root` does not put it at the start of a line.
+ * Rejects outer fences with a non-OpenUI language tag (e.g. ```python), ignores
+ * any `root = ...` inside nested markdown fences, requires a PascalCase
+ * component call (`root = Stack(...)`), and rejects prose lines before `root`.
  */
 export function hasOpenUILangSyntax(raw: string | null | undefined): boolean {
   if (!raw) return false;
+  const trimmed = raw.trimStart();
+  const openFenceMatch = /^```([a-zA-Z0-9_-]*)\r?\n/.exec(trimmed);
+  if (openFenceMatch) {
+    const lang = openFenceMatch[1] ?? "";
+    if (lang !== "" && !/^openui(?:[-_]?lang)?$/i.test(lang)) {
+      return false;
+    }
+  }
+
   const cleaned = stripOpenUIFences(raw, false);
-  return /(^|\n)\s*root\s*=/.test(cleaned);
+  let inFence = false;
+  for (const line of cleaned.split(/\r?\n/)) {
+    const stripped = line.trim();
+    if (stripped.startsWith("```")) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence || stripped === "" || stripped.startsWith("#")) {
+      continue;
+    }
+    if (/^root\s*=\s*[A-Z][A-Za-z0-9_]*\s*\(/.test(stripped)) {
+      return true;
+    }
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*\s*=/.test(stripped)) {
+      return false;
+    }
+  }
+  return false;
 }

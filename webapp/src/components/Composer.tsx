@@ -163,8 +163,11 @@ export function Composer({
         return;
       }
       const parsed = parseCommandInput(value);
-      if (parsed.name !== "") {
-        runInlineCommand(parsed.name, parsed.arg === "" ? undefined : parsed.arg);
+      const exact = commands.find(
+        (command) => command.name.toLowerCase() === parsed.name.toLowerCase(),
+      );
+      if (exact) {
+        runInlineCommand(exact.name, parsed.arg === "" ? undefined : parsed.arg);
         return;
       }
     }
@@ -180,6 +183,7 @@ export function Composer({
     setHistoryIndex(null);
   }, [
     activeCmd,
+    commands,
     images,
     inlineCommands,
     onRunCommand,

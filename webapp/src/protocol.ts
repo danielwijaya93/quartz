@@ -12,10 +12,15 @@ export const CLIENT_VERSION = 1;
 
 /* ------------------------------------------------------------------ messages */
 
+export type MessageContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url?: { url?: string } }
+  | { type: string; [key: string]: unknown };
+
 /** Same shape the session log already stores. History is rendered from these. */
 export interface Message {
   role: "user" | "assistant" | "system" | "tool";
-  content: string;
+  content: string | MessageContentPart[] | null;
   tool_calls?: ToolCallRecord[];
   tool_call_id?: string;
 }

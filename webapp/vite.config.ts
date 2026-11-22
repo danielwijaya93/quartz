@@ -59,7 +59,10 @@ export default defineConfig({
           ) {
             return undefined;
           }
-          if (id.includes("node_modules/highlight.js") || id.includes("node_modules/lowlight")) {
+          if (id.includes("commonjsHelpers")) {
+            return "commonjs";
+          }
+          if (id.includes("node_modules/highlight.js")) {
             return "highlight";
           }
           if (id.includes("node_modules")) return "vendor";

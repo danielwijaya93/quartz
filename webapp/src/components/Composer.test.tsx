@@ -232,4 +232,71 @@ describe("Composer", () => {
     expect(screen.getByRole("listbox", { name: "Available commands" })).toBeInTheDocument();
     expect(screen.getByText("/usage")).toBeInTheDocument();
   });
+
+  it("runs /reset via onRunCommand", async () => {
+    const user = userEvent.setup();
+    const onRunCommand = vi.fn();
+    const { onSubmit } = setup({
+      commands: [
+        { name: "help", description: "Show available commands" },
+        { name: "reset", description: "Reset the kernel to a clean namespace" },
+      ],
+      onRunCommand,
+    });
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+    await user.click(textarea);
+    await user.keyboard("/reset{Enter}");
+    expect(onRunCommand).toHaveBeenCalledWith("reset", undefined);
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("");
+  });
+
+  it("runs a known command with arguments via onRunCommand", async () => {
+    const user = userEvent.setup();
+    const onRunCommand = vi.fn();
+    const { onSubmit } = setup({
+      commands: [{ name: "compact", description: "Compact the conversation now", usage: "[tokens]" }],
+      onRunCommand,
+    });
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+    await user.click(textarea);
+    await user.keyboard("/compact 4000{Enter}");
+    expect(onRunCommand).toHaveBeenCalledWith("compact", "4000");
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("");
+  });
+
+  it("sends unknown /command prompts as text instead of misrouting to onRunCommand", async () => {
+    const user = userEvent.setup();
+    const onRunCommand = vi.fn();
+    const { onSubmit } = setup({
+      commands: [
+        { name: "help", description: "Show available commands" },
+        { name: "reset", description: "Reset the kernel" },
+      ],
+      onRunCommand,
+    });
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+    await user.click(textarea);
+    await user.keyboard("/unknownword{Enter}");
+    expect(onRunCommand).not.toHaveBeenCalled();
+    expect(onSubmit).toHaveBeenCalledWith("/unknownword", []);
+    expect(textarea).toHaveValue("");
+  });
+
+  it("steers unknown /command prompts when a turn is running", async () => {
+    const user = userEvent.setup();
+    const onRunCommand = vi.fn();
+    const { onSteer } = setup({
+      turnRunning: true,
+      commands: [{ name: "help", description: "Show available commands" }],
+      onRunCommand,
+    });
+    const textarea = screen.getByRole("textbox", { name: "Steer the running turn" });
+    await user.click(textarea);
+    await user.keyboard("/unknownword{Enter}");
+    expect(onRunCommand).not.toHaveBeenCalled();
+    expect(onSteer).toHaveBeenCalledWith("/unknownword");
+    expect(textarea).toHaveValue("");
+  });
 });

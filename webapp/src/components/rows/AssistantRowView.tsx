@@ -70,7 +70,7 @@ export function AssistantRowView({
     () => stripOpenUIFences(row.text, streaming),
     [row.text, streaming],
   );
-  const hasOpenUI = hasOpenUILangSyntax(cleaned);
+  const hasOpenUI = hasOpenUILangSyntax(row.text);
   const [showSource, setShowSource] = React.useState(false);
   const isOpenUILang = hasOpenUI && !showSource;
 

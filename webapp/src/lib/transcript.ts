@@ -225,7 +225,7 @@ export function addUserPrompt(
   images: ImageAttachment[] = [],
 ): TranscriptState {
   const trimmed = text.trim();
-  if (!trimmed) return state;
+  if (!trimmed && images.length === 0) return state;
   const row: UserRow = { kind: "user", id: `${LOCAL_PREFIX}user-${makeId("u")}`, text: trimmed, images };
   return appendRow(state, row);
 }
@@ -365,9 +365,50 @@ export function parseHarnessNotice(text: string): HarnessNotice | null {
   return { tag, text: text.slice(match[0].length).trim() };
 }
 
+/** Extract plain text and inline base64 images from string or multimodal content. */
+function extractMessageContent(content: Message["content"]): {
+  text: string;
+  images: ImageAttachment[];
+} {
+  if (typeof content === "string") return { text: content, images: [] };
+  if (!Array.isArray(content)) return { text: "", images: [] };
+  const texts: string[] = [];
+  const images: ImageAttachment[] = [];
+  for (const part of content) {
+    if (typeof part !== "object" || part === null) continue;
+    if (part.type === "text" && typeof part.text === "string") {
+      texts.push(part.text);
+    } else if (part.type === "image_url") {
+      const url = (part.image_url as { url?: unknown } | undefined)?.url;
+      if (typeof url === "string") {
+        const match = /^data:([^;]+);base64,(.+)$/s.exec(url);
+        if (match?.[1] && match[2]) {
+          images.push({ mimeType: match[1], data: match[2] });
+        }
+      }
+    }
+  }
+  return { text: texts.join("\n"), images };
+}
+
+/** Unwrap JSON `{"code": "..."}` tool arguments, falling back to raw strings. */
+function extractToolCode(rawArgs: string | undefined): string {
+  if (!rawArgs) return "";
+  try {
+    const parsed = JSON.parse(rawArgs) as unknown;
+    if (typeof parsed === "object" && parsed !== null && "code" in parsed) {
+      const code = (parsed as { code?: unknown }).code;
+      if (typeof code === "string") return code;
+    }
+  } catch {
+    // Raw non-JSON arguments (e.g. "print(1)") fall back as-is.
+  }
+  return rawArgs;
+}
+
 /** Flatten a stored message into the rows it represents. */
 function rowsFromMessage(message: Message, index: number): Row[] {
-  const text = typeof message.content === "string" ? message.content : "";
+  const { text, images } = extractMessageContent(message.content);
   switch (message.role) {
     case "user": {
       // History carries harness notices as user messages; classifying them here is
@@ -389,7 +430,7 @@ function rowsFromMessage(message: Message, index: number): Row[] {
           kind: "user",
           id: `history-user-${index}`,
           text,
-          images: [],
+          images,
         },
       ];
     }
@@ -408,7 +449,7 @@ function rowsFromMessage(message: Message, index: number): Row[] {
         rows.push({
           kind: "tool",
           id: call.id,
-          code: call.function?.arguments ?? "",
+          code: extractToolCode(call.function?.arguments),
           status: "ok",
           output: "",
           durationMs: null,
@@ -431,6 +472,39 @@ function rowsFromMessage(message: Message, index: number): Row[] {
   }
 }
 
+/** Build history rows and attach `role: "tool"` outputs onto their matching ToolRows. */
+function buildHistoryRows(messages: Message[]): Row[] {
+  const rows: Row[] = [];
+  const toolRowIndex = new Map<string, number>();
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]!;
+    if (message.role === "tool") {
+      if (message.tool_call_id) {
+        const targetIdx = toolRowIndex.get(message.tool_call_id);
+        if (targetIdx !== undefined) {
+          const existing = rows[targetIdx];
+          if (existing && existing.kind === "tool") {
+            const { text, images } = extractMessageContent(message.content);
+            rows[targetIdx] = {
+              ...existing,
+              output: text,
+              images: images.length > 0 ? images : existing.images,
+            };
+          }
+        }
+      }
+      continue;
+    }
+    for (const row of rowsFromMessage(message, index)) {
+      if (row.kind === "tool") {
+        toolRowIndex.set(row.id, rows.length);
+      }
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
 /**
  * Load history into the transcript without disturbing rows already on screen.
  *
@@ -439,35 +513,66 @@ function rowsFromMessage(message: Message, index: number): Row[] {
  * adds only rows that were never rendered.
  */
 function mergeHistory(state: TranscriptState, messages: Message[]): TranscriptState {
-  const incoming = messages.flatMap(rowsFromMessage);
+  const incoming = buildHistoryRows(messages);
   const fresh = incoming.filter((row) => !state.seen.has(row.id));
 
   // A prompt is echoed locally the moment it is sent (the wire has no
   // `user_message` frame), so history will eventually contain the same prompt
   // under a positional id. Retire the local copy by text, one for one, or a
-  // reconnect shows every prompt twice.
-  const pending = new Map<string, number>();
-  for (const row of incoming) {
-    if (row.kind === "user") pending.set(row.text, (pending.get(row.text) ?? 0) + 1);
-  }
-  const retired = new Set<string>();
-  for (const row of state.rows) {
-    if (row.kind !== "user" || !isLocalRow(row.id)) continue;
-    const left = pending.get(row.text) ?? 0;
-    if (left > 0) {
-      pending.set(row.text, left - 1);
-      retired.add(row.id);
+  // reconnect shows every prompt twice. Similarly, retire live assistant rows
+  // once history catches up with them (e.g. `session_state` on Rich UI toggle).
+  const pendingUsers = new Map<string, number>();
+  const pendingAssistants = new Map<string, number>();
+  for (const row of fresh) {
+    if (row.kind === "user") {
+      pendingUsers.set(row.text, (pendingUsers.get(row.text) ?? 0) + 1);
+    } else if (row.kind === "assistant") {
+      const key = row.text.trim();
+      pendingAssistants.set(key, (pendingAssistants.get(key) ?? 0) + 1);
     }
   }
 
-  const before = state.rows.filter((row) => !retired.has(row.id));
+  const retired = new Set<string>();
+  const inheritedFormState = new Map<string, Record<string, unknown>>();
+  for (const row of state.rows) {
+    if (row.kind === "user" && isLocalRow(row.id)) {
+      const left = pendingUsers.get(row.text) ?? 0;
+      if (left > 0) {
+        pendingUsers.set(row.text, left - 1);
+        retired.add(row.id);
+      }
+    } else if (row.kind === "assistant" && !row.id.startsWith("history-")) {
+      const key = row.text.trim();
+      const left = pendingAssistants.get(key) ?? 0;
+      if (left > 0) {
+        pendingAssistants.set(key, left - 1);
+        retired.add(row.id);
+        if (row.formState !== null) {
+          inheritedFormState.set(key, row.formState);
+        }
+      }
+    }
+  }
+
   if (fresh.length === 0 && retired.size === 0) return state;
 
   // History belongs above live rows: it is everything that happened before.
+  const existingById = new Map(state.rows.map((row) => [row.id, row]));
   const historyIds = new Set(incoming.map((row) => row.id));
-  const liveRows = before.filter((row) => !historyIds.has(row.id));
-  const ordered = [...before.filter((row) => historyIds.has(row.id)), ...fresh, ...liveRows];
-  return withRows(state, ordered);
+  const reconciledHistory = incoming.map((row) => {
+    const existing = existingById.get(row.id);
+    if (existing !== undefined) return existing;
+    if (row.kind === "assistant" && row.formState === null) {
+      const formState = inheritedFormState.get(row.text.trim());
+      if (formState !== undefined) {
+        inheritedFormState.delete(row.text.trim());
+        return { ...row, formState };
+      }
+    }
+    return row;
+  });
+  const liveRows = state.rows.filter((row) => !retired.has(row.id) && !historyIds.has(row.id));
+  return withRows(state, [...reconciledHistory, ...liveRows]);
 }
 
 /**
@@ -485,18 +590,25 @@ function mergeHistory(state: TranscriptState, messages: Message[]): TranscriptSt
  * history already carries.
  */
 function withLiveText(state: TranscriptState, streamingText: string | undefined): TranscriptState {
-  const text = (streamingText ?? "").trim();
-  if (text === "") return state;
+  const raw = streamingText ?? "";
+  if (raw.trim() === "") return state;
 
   const last = state.rows[state.rows.length - 1];
-  if (last !== undefined && last.kind === "assistant" && last.text.trim().endsWith(text)) {
-    // The loop committed this text as a message a moment ago; history has it.
-    return { ...state, openRowId: last.id };
+  if (last !== undefined && last.kind === "assistant") {
+    if (last.text.trim().endsWith(raw.trim())) {
+      // The loop committed this text as a message a moment ago; history has it.
+      return { ...state, openRowId: last.id };
+    }
+    if (raw.startsWith(last.text)) {
+      const rows = state.rows.slice(0, -1);
+      rows.push({ ...last, text: raw });
+      return { ...state, rows, openRowId: last.id };
+    }
   }
   const row: AssistantRow = {
     kind: "assistant",
     id: makeId("assistant"),
-    text,
+    text: raw,
     formState: null,
   };
   return { ...withRows(state, [...state.rows, row]), openRowId: row.id };
@@ -529,15 +641,20 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
       };
     }
 
-    case "turn_start":
+    case "turn_start": {
+      // A mid-turn reconnect (`session_state` with `turnRunning: true` followed by
+      // `turn_start`) attaches to the live row opened by `withLiveText` instead of
+      // splitting the answer into two assistant rows.
+      const reattaching = state.turnRunning && state.turnId === null;
       return {
         ...state,
         turnId: message.turnId,
         turnRunning: true,
         status: null,
-        openRowId: null,
+        openRowId: reattaching ? state.openRowId : null,
         // A new turn starts clean; only a fatal error latches across turns.
       };
+    }
 
     case "status":
       return { ...state, status: message.label };
