@@ -1,14 +1,26 @@
 import { describe, expect, it } from "vitest";
 import {
+  ARCHIVE_REASONS,
   archiveEntries,
+  archiveReasonCounts,
+  archiveReasonLabel,
+  currentWorkspaceCwd,
   directoryLabel,
   displayTitle,
   EMPTY_SIDEBAR,
+  filterArchiveEntries,
+  folderBadge,
   formatAge,
+  groupArchive,
   groupSessions,
+  isArchiveFilterActive,
   isVisible,
+  NO_ARCHIVE_FILTER,
   parseSidebarPayload,
   sameFolder,
+  type ArchiveEntry,
+  type ArchiveReason,
+  type LiveSession,
   type SidebarPayload,
   type SidebarSession,
 } from "./sidebar";
@@ -171,6 +183,78 @@ describe("sameFolder", () => {
   });
 });
 
+describe("currentWorkspaceCwd", () => {
+  function groupsFor(sessions: SidebarSession[], workspaces: SidebarPayload["sidebar"]["workspaces"] = []) {
+    return groupSessions(payload({ sessions, sidebar: { ...EMPTY_SIDEBAR, workspaces } }));
+  }
+
+  it("names the live session's folder, even when the reported cwd disagrees", () => {
+    // The reported bug: with a session in `alpha-research` selected, the server's
+    // start folder and the session's own folder were both tinted. The session's row
+    // is the stronger fact -- it arrived with the folder -- so it wins outright.
+    const groups = groupsFor([
+      session({ sessionId: "live", cwd: "/home/x/alpha-research" }),
+      session({ sessionId: "other", cwd: "/home/x/start-folder" }),
+    ]);
+    const live: LiveSession = { sessionId: "live", cwd: "/home/x/start-folder" };
+
+    expect(currentWorkspaceCwd(groups, live)).toBe("/home/x/alpha-research");
+  });
+
+  it("falls back to the reported folder only before the session has a row", () => {
+    const groups = groupsFor([], [{ cwd: "/home/x/fresh", label: "fresh", cwdExists: true }]);
+
+    expect(currentWorkspaceCwd(groups, { sessionId: "brand-new", cwd: "/home/x/fresh/" })).toBe(
+      "/home/x/fresh",
+    );
+  });
+
+  it("answers with a group's own cwd, so at most one group can match it", () => {
+    // Two hand-added folders that differ only by a trailing slash must not both
+    // compare equal to the answer: the return value is one of them, verbatim.
+    const groups = [
+      { cwd: "/home/x/project", label: "project", sessions: [] },
+      { cwd: "/home/x/project/", label: "project", sessions: [] },
+    ];
+    const current = currentWorkspaceCwd(groups, { sessionId: "", cwd: "/home/x/project" });
+
+    expect(groups.filter((group) => group.cwd === current)).toHaveLength(1);
+  });
+
+  it("says nothing when neither fact names a folder on screen", () => {
+    const groups = groupsFor([session({ sessionId: "s1", cwd: "/home/x/project" })]);
+
+    expect(currentWorkspaceCwd(groups, { sessionId: "", cwd: "" })).toBeNull();
+    expect(currentWorkspaceCwd(groups, { sessionId: "", cwd: "/home/x/elsewhere" })).toBeNull();
+    expect(currentWorkspaceCwd([], { sessionId: "s1", cwd: "/home/x/project" })).toBeNull();
+  });
+});
+
+describe("folderBadge", () => {
+  const fresh = { cwd: "/home/x/fresh", label: "fresh", sessions: [] };
+
+  it("says new only for the live folder whose session has no row yet", () => {
+    expect(folderBadge(fresh, { sessionId: "live", cwd: "/home/x/fresh" }, [])).toBe("new");
+  });
+
+  it("stops saying new once that session has a message", () => {
+    // A log on disk is what "has a message" means here: it is the payload's own row.
+    const sessions = [session({ sessionId: "live", cwd: "/home/x/elsewhere" })];
+    expect(folderBadge(fresh, { sessionId: "live", cwd: "/home/x/fresh" }, sessions)).toBe("empty");
+  });
+
+  it("says empty for any other folder, so an unused one stops reading as onboarding", () => {
+    const old = { cwd: "/home/x/old", label: "old", sessions: [] };
+    expect(folderBadge(old, { sessionId: "live", cwd: "/home/x/fresh" }, [])).toBe("empty");
+    expect(folderBadge(old, { sessionId: "", cwd: "" }, [])).toBe("empty");
+  });
+
+  it("says nothing at all for a folder that has sessions", () => {
+    const used = { cwd: "/home/x/project", label: "project", sessions: [session()] };
+    expect(folderBadge(used, { sessionId: "s1", cwd: "/home/x/project" }, [session()])).toBeNull();
+  });
+});
+
 describe("archiveEntries", () => {
   it("lists what the sidebar is not showing, with what it would take", () => {
     const entries = archiveEntries(
@@ -211,6 +295,148 @@ describe("archiveEntries", () => {
       }),
     );
     expect(entries[0]).toMatchObject({ hidden: true, needsImport: true });
+  });
+});
+
+describe("archive reasoning, filtering and grouping", () => {
+  /** The rows a dialog would draw, from the same payload the sidebar gets. */
+  function entriesFrom(
+    sessions: SidebarSession[],
+    sidebar: Partial<SidebarPayload["sidebar"]> = {},
+  ): ArchiveEntry[] {
+    return archiveEntries(payload({ sessions, sidebar: { ...EMPTY_SIDEBAR, ...sidebar } }));
+  }
+
+  const HIDDEN = session({ sessionId: "hidden-one", cwd: "/home/x/alpha", title: "deploy notes" });
+  const TERMINAL = session({
+    sessionId: "terminal-one",
+    cwd: "/home/x/beta",
+    title: "script run",
+    origin: "cli",
+    updatedAt: "2026-01-02T05:00:00Z",
+  });
+  const ORPHAN = session({
+    sessionId: "orphan",
+    cwd: "/home/x/gone-worktree",
+    title: "old branch work",
+    cwdExists: false,
+    updatedAt: "2026-01-02T04:00:00Z",
+  });
+  const ALL = entriesFrom([HIDDEN, TERMINAL, ORPHAN], {
+    hiddenSessions: ["hidden-one"],
+  });
+
+  it("gives every row a reason, and the reason is what a filter chip asks about", () => {
+    expect(ALL.map((entry) => entry.reasons)).toEqual([
+      ["hidden"],
+      ["terminal"],
+      ["missing-folder"],
+    ]);
+  });
+
+  it("collects several reasons on one row without inventing an order", () => {
+    const [both] = entriesFrom(
+      [session({ sessionId: "both", origin: "cli", cwdExists: false, title: "both" })],
+      { hiddenSessions: ["both"] },
+    );
+    // The same order the chips are drawn in, so "why is this here" reads left to right.
+    expect(both?.reasons).toEqual([...ARCHIVE_REASONS]);
+  });
+
+  it("counts each reason once per row, for the chip labels", () => {
+    const counts = archiveReasonCounts(ALL);
+    expect(counts).toEqual({ hidden: 1, terminal: 1, "missing-folder": 1 });
+  });
+
+  it("filters by title and by folder, case-insensitively", () => {
+    const byTitle = filterArchiveEntries(ALL, { query: "DEPLOY", reasons: [] }, EMPTY_SIDEBAR);
+    expect(byTitle.map((entry) => entry.session.sessionId)).toEqual(["hidden-one"]);
+
+    // "where was that worktree thing" is a folder question, not a title one.
+    const byFolder = filterArchiveEntries(ALL, { query: "gone-worktree", reasons: [] }, EMPTY_SIDEBAR);
+    expect(byFolder.map((entry) => entry.session.sessionId)).toEqual(["orphan"]);
+  });
+
+  it("filters by a rename, because that is the name the person gave it", () => {
+    const entries = entriesFrom([HIDDEN], {
+      hiddenSessions: ["hidden-one"],
+      renames: { "hidden-one": "Prod rollout" },
+    });
+    const found = filterArchiveEntries(
+      entries,
+      { query: "prod", reasons: [] },
+      { ...EMPTY_SIDEBAR, renames: { "hidden-one": "Prod rollout" } },
+    );
+    expect(found).toHaveLength(1);
+  });
+
+  it("treats reasons as OR, so a row that is hidden and orphaned shows in both views", () => {
+    const both = session({ sessionId: "both", cwd: "/home/x/gone", cwdExists: false });
+    const entries = entriesFrom([both, TERMINAL], { hiddenSessions: ["both"] });
+
+    const hidden = filterArchiveEntries(entries, { query: "", reasons: ["hidden"] }, EMPTY_SIDEBAR);
+    const missing = filterArchiveEntries(
+      entries,
+      { query: "", reasons: ["missing-folder"] },
+      EMPTY_SIDEBAR,
+    );
+    expect(hidden.map((entry) => entry.session.sessionId)).toEqual(["both"]);
+    expect(missing.map((entry) => entry.session.sessionId)).toEqual(["both"]);
+  });
+
+  it("keeps everything when nothing is filtered, and nothing when both filters miss", () => {
+    expect(filterArchiveEntries(ALL, NO_ARCHIVE_FILTER, EMPTY_SIDEBAR)).toHaveLength(3);
+    expect(isArchiveFilterActive(NO_ARCHIVE_FILTER)).toBe(false);
+
+    const nothing = filterArchiveEntries(
+      ALL,
+      { query: "no such session", reasons: ["missing-folder"] },
+      EMPTY_SIDEBAR,
+    );
+    expect(nothing).toEqual([]);
+  });
+
+  it("treats a whitespace-only query as no query rather than as a filter that hides all", () => {
+    expect(isArchiveFilterActive({ query: "   ", reasons: [] })).toBe(false);
+    expect(filterArchiveEntries(ALL, { query: "   ", reasons: [] }, EMPTY_SIDEBAR)).toHaveLength(3);
+  });
+
+  it("groups rows by folder, newest folder first and rows already newest first", () => {
+    const older = session({
+      sessionId: "older-in-alpha",
+      cwd: "/home/x/alpha",
+      title: "older",
+      updatedAt: "2026-01-01T00:00:00Z",
+      origin: "cli",
+    });
+    const entries = entriesFrom([older, HIDDEN, TERMINAL], { hiddenSessions: ["hidden-one"] });
+    const groups = groupArchive(entries);
+
+    expect(groups.map((group) => group.label)).toEqual(["alpha", "beta"]);
+    expect(groups[0]?.entries.map((entry) => entry.session.sessionId)).toEqual([
+      "hidden-one",
+      "older-in-alpha",
+    ]);
+  });
+
+  it("marks a group whose folder is gone, so the section explains itself once", () => {
+    const groups = groupArchive(ALL);
+    const orphan = groups.find((group) => group.label === "gone-worktree");
+    expect(orphan?.folderMissing).toBe(true);
+    expect(groups.find((group) => group.label === "alpha")?.folderMissing).toBe(false);
+  });
+
+  it("names a reason for the chip in words a person reads", () => {
+    const labels: Record<ArchiveReason, string> = {
+      hidden: archiveReasonLabel("hidden"),
+      terminal: archiveReasonLabel("terminal"),
+      "missing-folder": archiveReasonLabel("missing-folder"),
+    };
+    expect(labels).toEqual({
+      hidden: "Hidden",
+      terminal: "Terminal",
+      "missing-folder": "Folder removed",
+    });
   });
 });
 

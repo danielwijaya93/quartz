@@ -52,6 +52,22 @@ export function App(): React.ReactElement {
   const [picker, setPicker] = React.useState<PickerMode | null>(null);
   const [archiveOpen, setArchiveOpen] = React.useState(false);
 
+  /**
+   * The control the archive dialog was opened from.
+   *
+   * Recorded here, at the click, rather than inside the dialog: by the time the
+   * overlay is mounted its focus scope has already moved the keyboard into the
+   * dialog, so `document.activeElement` there is the dialog itself. Closing gives
+   * focus back to this element, which is how the keyboard stays on the archive
+   * button instead of at the top of the page.
+   */
+  const archiveOpener = React.useRef<HTMLElement | null>(null);
+  const openArchive = React.useCallback(() => {
+    const active = document.activeElement;
+    archiveOpener.current = active instanceof HTMLElement ? active : null;
+    setArchiveOpen(true);
+  }, []);
+
   const sessionId = quartz.state.session.sessionId;
 
   /**
@@ -118,9 +134,12 @@ export function App(): React.ReactElement {
     onNewSession: newSessionIn,
     onNewFolder: () => setPicker("workspace"),
     onOpenFolder: () => setPicker("session"),
-    onRename: (id: string, title: string) => void sidebar.rename(id, title),
-    onHide: (id: string) => void sidebar.hide(id),
-    onOpenArchive: () => setArchiveOpen(true),
+    // Handed over as-is: each one resolves to whether the server did it, which is
+    // what the sidebar's undo notice reports on.
+    onRename: sidebar.rename,
+    onHide: sidebar.hide,
+    onRestore: sidebar.restore,
+    onOpenArchive: openArchive,
   };
 
   return (
@@ -199,6 +218,7 @@ export function App(): React.ReactElement {
         onReload={sidebar.reload}
         onImport={sidebar.importSession}
         onRestore={sidebar.restore}
+        returnFocusTo={archiveOpener}
       />
     </div>
   );

@@ -31,6 +31,27 @@
   /* Motion budget: interactive feedback only, never longer than 150ms. */
   --duration-feedback: 120ms;
   --ease-feedback: cubic-bezier(0.2, 0, 0.2, 1);
+
+  /*
+   * Quiet metadata: a session's age, an empty folder's state.
+   *
+   * It has to be readable and still sit behind the row's title, so it is derived
+   * from the theme's own foreground instead of being a colour of its own: 6.1:1 on
+   * the light background, 5.2:1 on the tinted current row, 7.2:1 in dark. HeroUI's
+   * `--muted` is 4.4:1 on the light background and 3.8:1 on the current row, which
+   * is under the 4.5:1 floor for text this small -- and this token inverts with the
+   * theme by construction, so there is one value to reason about rather than two.
+   */
+  --meta: color-mix(in oklab, var(--foreground) 65%, var(--background));
+}
+
+/*
+ * The Tailwind utilities for the tokens above. HeroUI's palette is exposed the same
+ * way (`--color-muted: var(--muted)`), so `text-meta` is a first-class token here
+ * rather than an arbitrary value repeated in every component.
+ */
+@theme {
+  --color-meta: var(--meta);
 }
 
 /*

@@ -181,6 +181,85 @@ export function sameFolder(a: string, b: string): boolean {
   return withoutTrailingSlash(a) === withoutTrailingSlash(b);
 }
 
+/* ----------------------------------------------------------------- notices */
+
+/**
+ * How long an undoable confirmation stays on screen.
+ *
+ * Long enough to read a sentence and reach Undo with a mouse, short enough that it
+ * is gone before it becomes furniture. It is held while the keyboard is inside it,
+ * so this is a ceiling rather than a deadline for someone already on their way.
+ */
+export const NOTICE_TIMEOUT_MS = 6000;
+
+/* --------------------------------------------------------- current workspace */
+
+/**
+ * Where the live session is, as two independent facts.
+ *
+ * They come from different places -- `session_state` for the folder, the sessions
+ * payload for the row -- and they can disagree for a moment (a resumed session may
+ * still report the server's start folder). Keeping them together here is what lets
+ * the sidebar decide which one to trust, once.
+ */
+export interface LiveSession {
+  /** Empty until the server has assigned an id. */
+  sessionId: string;
+  /** The folder the next prompt lands in, per `session_state`. */
+  cwd: string;
+}
+
+/**
+ * The one workspace the next prompt will land in, or null.
+ *
+ * The bug this exists to prevent: a live session in `alpha-research` while
+ * `session_state` still reported the server's start folder tinted *both* folders,
+ * so two rows claimed to be where you were. A person can only be in one folder, so
+ * this returns at most one answer, and it prefers the live session's own row -- that
+ * row and its folder arrived together from the server, while `cwd` is a second
+ * opinion. Only when there is no row yet (a session started but not prompted) does
+ * `cwd` decide.
+ *
+ * The returned value is always some group's own `cwd`, so callers compare with `===`
+ * and cannot end up tinting two groups that fail to compare equal because of a
+ * trailing slash.
+ */
+export function currentWorkspaceCwd(groups: readonly WorkspaceGroup[], live: LiveSession): string | null {
+  if (live.sessionId !== "") {
+    const owner = groups.find((group) =>
+      group.sessions.some((session) => session.sessionId === live.sessionId),
+    );
+    if (owner) return owner.cwd;
+  }
+  if (!live.cwd) return null;
+  return groups.find((group) => sameFolder(group.cwd, live.cwd))?.cwd ?? null;
+}
+
+/* ------------------------------------------------------------- folder state */
+
+/** What an empty folder's badge may say. A folder with sessions says neither. */
+export type FolderBadge = "new" | "empty";
+
+/**
+ * Whether an empty folder is genuinely new, or just empty.
+ *
+ * "NEW" is a promise: this folder is where the thing you just started is about to
+ * appear. It holds only until that session has a log, and a log means a row
+ * somewhere in the payload -- which is why the whole session list is a parameter
+ * rather than just the group. Before that the folder would be labelled NEW forever,
+ * which after a week of use reads as an onboarding step that was never finished.
+ */
+export function folderBadge(
+  group: WorkspaceGroup,
+  live: LiveSession,
+  sessions: readonly SidebarSession[],
+): FolderBadge | null {
+  if (group.sessions.length > 0) return null;
+  const started =
+    live.sessionId !== "" && sessions.some((session) => session.sessionId === live.sessionId);
+  return started || !sameFolder(group.cwd, live.cwd) ? "empty" : "new";
+}
+
 function timestamp(iso: string): number {
   const value = Date.parse(iso);
   return Number.isFinite(value) ? value : 0;
@@ -251,6 +330,30 @@ export function groupSessions(payload: SidebarPayload): WorkspaceGroup[] {
 
 /* ----------------------------------------------------------------- archive */
 
+/**
+ * Why a row is in "Not in sidebar", as a small closed set.
+ *
+ * A row can be here for more than one reason -- a terminal session that was also
+ * hidden needs an import *and* a restore -- so this is a list. It is also the thing
+ * the dialog filters by: with ~150 rows, the reason a row exists is worth saying
+ * once per filter instead of 148 times per row.
+ */
+export const ARCHIVE_REASONS = ["hidden", "terminal", "missing-folder"] as const;
+
+export type ArchiveReason = (typeof ARCHIVE_REASONS)[number];
+
+/** The words on a reason chip. Short enough to sit all three in one row. */
+export function archiveReasonLabel(reason: ArchiveReason): string {
+  switch (reason) {
+    case "hidden":
+      return "Hidden";
+    case "terminal":
+      return "Terminal";
+    case "missing-folder":
+      return "Folder removed";
+  }
+}
+
 /** One row of the "Not in sidebar" dialog, and what it would take to list it. */
 export interface ArchiveEntry {
   session: SidebarSession;
@@ -260,6 +363,8 @@ export interface ArchiveEntry {
   needsImport: boolean;
   /** The folder is gone, so the sidebar cannot list this session at all. */
   missingFolder: boolean;
+  /** The same three facts as `ARCHIVE_REASONS`, in the order the chips are drawn. */
+  reasons: ArchiveReason[];
 }
 
 /**
@@ -276,14 +381,113 @@ export interface ArchiveEntry {
 export function archiveEntries(payload: SidebarPayload): ArchiveEntry[] {
   return payload.sessions
     .filter((session) => !session.cwdExists || !isVisible(session, payload.sidebar))
-    .map((session) => ({
-      session,
-      hidden: payload.sidebar.hiddenSessions.includes(session.sessionId),
-      needsImport:
-        session.origin !== "web" && !payload.sidebar.importedSessions.includes(session.sessionId),
-      missingFolder: !session.cwdExists,
-    }))
+    .map((session) => {
+      const hidden = payload.sidebar.hiddenSessions.includes(session.sessionId);
+      const needsImport =
+        session.origin !== "web" && !payload.sidebar.importedSessions.includes(session.sessionId);
+      const missingFolder = !session.cwdExists;
+      const reasons = ARCHIVE_REASONS.filter(
+        (reason) =>
+          (reason === "hidden" && hidden) ||
+          (reason === "terminal" && needsImport) ||
+          (reason === "missing-folder" && missingFolder),
+      );
+      return { session, hidden, needsImport, missingFolder, reasons };
+    })
     .sort((a, b) => timestamp(b.session.updatedAt) - timestamp(a.session.updatedAt));
+}
+
+/**
+ * What the dialog's filter says: free text, plus any reason chips that are on.
+ *
+ * Two independent controls over the same list, because the two questions are
+ * different: "where is that session about the deploy" is text, "what can I still
+ * restore" is a reason. An empty reason set means no reason filter rather than no
+ * rows -- a chip that is off must not hide everything.
+ */
+export interface ArchiveFilter {
+  query: string;
+  reasons: readonly ArchiveReason[];
+}
+
+export const NO_ARCHIVE_FILTER: ArchiveFilter = { query: "", reasons: [] };
+
+/** Whether a filter would change anything, so the dialog can offer to clear it. */
+export function isArchiveFilterActive(filter: ArchiveFilter): boolean {
+  return filter.query.trim() !== "" || filter.reasons.length > 0;
+}
+
+/**
+ * The rows the dialog should draw.
+ *
+ * The text matches the title (a rename included, since that is the name the person
+ * gave the session) and the folder, because with ~150 rows the folder is half of
+ * how anyone remembers a session. Reasons are OR-ed: a row that is hidden and whose
+ * folder is gone belongs in both views.
+ */
+export function filterArchiveEntries(
+  entries: readonly ArchiveEntry[],
+  filter: ArchiveFilter,
+  sidebar: SidebarState,
+): ArchiveEntry[] {
+  const needle = filter.query.trim().toLowerCase();
+  return entries.filter((entry) => {
+    if (
+      filter.reasons.length > 0 &&
+      !entry.reasons.some((reason) => filter.reasons.includes(reason))
+    ) {
+      return false;
+    }
+    if (needle === "") return true;
+    if (displayTitle(entry.session, sidebar).toLowerCase().includes(needle)) return true;
+    return entry.session.cwd.toLowerCase().includes(needle);
+  });
+}
+
+/** One folder's worth of archive rows. */
+export interface ArchiveGroup {
+  cwd: string;
+  label: string;
+  /** Every session in it is unreachable, so the section says why once. */
+  folderMissing: boolean;
+  entries: ArchiveEntry[];
+}
+
+/**
+ * Group the rows by folder.
+ *
+ * A flat list of 150 rows is a wall; a dozen folders with a heading each is
+ * scannable, and it is the same grouping the sidebar itself uses. Groups appear in
+ * the order their newest session does, so the thing you just hid is still at the
+ * top.
+ */
+export function groupArchive(entries: readonly ArchiveEntry[]): ArchiveGroup[] {
+  const groups = new Map<string, ArchiveGroup>();
+  for (const entry of entries) {
+    const existing = groups.get(entry.session.cwd);
+    if (existing) {
+      existing.entries.push(entry);
+      continue;
+    }
+    groups.set(entry.session.cwd, {
+      cwd: entry.session.cwd,
+      label: directoryLabel(entry.session.cwd),
+      folderMissing: entry.missingFolder,
+      entries: [entry],
+    });
+  }
+  return [...groups.values()];
+}
+
+/** How many rows each reason explains, for the chip labels. */
+export function archiveReasonCounts(
+  entries: readonly ArchiveEntry[],
+): Record<ArchiveReason, number> {
+  const counts: Record<ArchiveReason, number> = { hidden: 0, terminal: 0, "missing-folder": 0 };
+  for (const entry of entries) {
+    for (const reason of entry.reasons) counts[reason] += 1;
+  }
+  return counts;
 }
 
 /* --------------------------------------------------------------------- age */

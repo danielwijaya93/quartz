@@ -1,8 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FolderSidebar, type FolderSidebarProps } from "./FolderSidebar";
-import { EMPTY_SIDEBAR, type SidebarPayload, type SidebarSession } from "@/lib/sidebar";
+import { EMPTY_SIDEBAR, NOTICE_TIMEOUT_MS, type SidebarPayload, type SidebarSession } from "@/lib/sidebar";
 
 function session(overrides: Partial<SidebarSession> = {}): SidebarSession {
   return {
@@ -37,8 +37,9 @@ function renderSidebar(overrides: Partial<FolderSidebarProps> = {}): {
     onNewSession: vi.fn(),
     onNewFolder: vi.fn(),
     onOpenFolder: vi.fn(),
-    onRename: vi.fn(),
-    onHide: vi.fn(),
+    onRename: vi.fn(async () => true),
+    onHide: vi.fn(async () => true),
+    onRestore: vi.fn(async () => true),
     onOpenArchive: vi.fn(),
     ...overrides,
   };
@@ -136,7 +137,9 @@ describe("FolderSidebar", () => {
   });
 
   it("does not mark a folder that merely shares a prefix with the live one", () => {
-    renderSidebar({ currentCwd: "/home/x/projects" });
+    // No session id, so the only fact is the folder string: the case this pins is
+    // the prefix comparison, not which of two disagreeing facts wins.
+    renderSidebar({ currentSessionId: "", currentCwd: "/home/x/projects" });
     expect(screen.getByRole("button", { name: "project folder" })).not.toHaveAttribute(
       "aria-current",
     );
@@ -205,5 +208,265 @@ describe("FolderSidebar", () => {
     const { props } = renderSidebar();
     await user.click(screen.getByRole("button", { name: "Open the session archive" }));
     expect(props.onOpenArchive).toHaveBeenCalled();
+  });
+});
+
+describe("FolderSidebar's empty-folder badge", () => {
+  const freshOnly = payload({
+    sessions: [],
+    sidebar: { ...EMPTY_SIDEBAR, workspaces: [{ cwd: "/home/x/fresh", label: "fresh", cwdExists: true }] },
+  });
+
+  it("says new for the live folder whose session has no row yet", () => {
+    renderSidebar({ data: freshOnly, currentSessionId: "", currentCwd: "/home/x/fresh" });
+    expect(screen.getByText("new")).toBeInTheDocument();
+  });
+
+  it("says empty for a folder that is merely unused", () => {
+    // The reported bug: every empty folder said NEW forever, which after a week of
+    // use reads as an onboarding step nobody finished.
+    renderSidebar({ data: freshOnly, currentSessionId: "", currentCwd: "/home/x/elsewhere" });
+    expect(screen.getByText("empty")).toBeInTheDocument();
+    expect(screen.queryByText("new")).not.toBeInTheDocument();
+  });
+
+  it("stops saying new once the live session has a message", () => {
+    renderSidebar({
+      data: payload({
+        // A row for the live session means it has a log. Where that log says the
+        // session ran is beside the point: the folder stopped waiting for it.
+        sessions: [session({ sessionId: "s1", cwd: "/home/x/elsewhere" })],
+        sidebar: {
+          ...EMPTY_SIDEBAR,
+          workspaces: [{ cwd: "/home/x/fresh", label: "fresh", cwdExists: true }],
+        },
+      }),
+      currentSessionId: "s1",
+      currentCwd: "/home/x/fresh",
+    });
+    expect(screen.queryByText("new")).not.toBeInTheDocument();
+    expect(screen.getByText("empty")).toBeInTheDocument();
+  });
+});
+
+describe("FolderSidebar's current workspace", () => {
+  it("marks exactly one folder current when the live session's cwd disagrees", () => {
+    // The reported bug, reproduced: a session in `alpha-research` while
+    // `session_state` still reports the server's start folder. Both used to be
+    // tinted; the live session's own folder has to win.
+    renderSidebar({
+      data: payload({
+        sessions: [
+          session({ sessionId: "live", cwd: "/home/x/alpha-research", title: "live row" }),
+          session({ sessionId: "other", cwd: "/home/x/start-folder", title: "other row" }),
+        ],
+      }),
+      currentSessionId: "live",
+      currentCwd: "/home/x/start-folder",
+    });
+
+    const current = screen
+      .getAllByRole("button", { name: /folder$/ })
+      .filter((button) => button.getAttribute("aria-current") === "true");
+
+    expect(current.map((button) => button.getAttribute("aria-label"))).toEqual([
+      "alpha-research folder",
+    ]);
+  });
+
+  it("never marks a row current when its folder is not the live one", () => {
+    renderSidebar({
+      data: payload({
+        sessions: [
+          session({ sessionId: "live", cwd: "/home/x/alpha-research", title: "live row" }),
+          session({ sessionId: "elsewhere", cwd: "/home/x/other", title: "other row" }),
+        ],
+      }),
+      currentSessionId: "live",
+      currentCwd: "/home/x/other",
+    });
+
+    expect(screen.getByRole("button", { name: "live row" })).toHaveAttribute("aria-current", "true");
+    expect(screen.getByRole("button", { name: "other row" })).not.toHaveAttribute("aria-current");
+  });
+
+  it("marks nothing current when the session has no row and no folder", () => {
+    renderSidebar({ currentSessionId: "", currentCwd: "" });
+    const current = screen
+      .getAllByRole("button", { name: /folder$/ })
+      .filter((button) => button.getAttribute("aria-current") === "true");
+    expect(current).toEqual([]);
+  });
+});
+
+describe("FolderSidebar's row actions", () => {
+  it("shows the current row's actions without a hover", () => {
+    // Discoverability: on a desktop nobody hovers a row to find out that Rename
+    // exists, and on a phone there is no hover at all. The row you are working in
+    // shows its affordance, which is what teaches the pattern for the others.
+    renderSidebar();
+    const hide = screen.getByRole("button", {
+      name: "Hide session first prompt from the sidebar",
+    });
+    const actions = hide.parentElement;
+    expect(actions?.className).toContain("opacity-100");
+    expect(actions?.className).not.toContain("[@media(hover:hover)]:opacity-0");
+  });
+
+  it("still keeps another row's actions out of the way until hover or focus", () => {
+    renderSidebar({
+      data: payload({
+        sessions: [session({ sessionId: "s1" }), session({ sessionId: "s2", title: "second prompt" })],
+      }),
+      currentSessionId: "s1",
+    });
+
+    const otherHide = screen.getByRole("button", {
+      name: "Hide session second prompt from the sidebar",
+    });
+    const actions = otherHide.parentElement;
+    expect(actions?.className).toContain("[@media(hover:hover)]:opacity-0");
+    // …and the same wrapper reveals itself on focus-within, which is the contract
+    // that has to survive: a keyboard can reach it, a pointer has to ask for it.
+    expect(actions?.className).toContain("group-focus-within/session:opacity-100");
+
+    otherHide.focus();
+    expect(document.activeElement).toBe(otherHide);
+    expect(otherHide).toBeEnabled();
+  });
+});
+
+describe("FolderSidebar's undo notice", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("confirms a hide in a live region and restores the session when undone", async () => {
+    const user = userEvent.setup();
+    const { props } = renderSidebar();
+
+    await user.click(screen.getByRole("button", { name: "Hide session first prompt from the sidebar" }));
+
+    // Announced, not alerted: this is a confirmation, not a failure.
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("Hidden “first prompt”.");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Undo/ }));
+
+    expect(props.onRestore).toHaveBeenCalledWith("s1");
+    await waitFor(() => expect(screen.getByRole("status")).toBeEmptyDOMElement());
+  });
+
+  it("does not take the focus away from where the person already was", async () => {
+    // The composer is the usual place. A confirmation that moves the caret is worse
+    // than the row it replaced, so the notice only ever reacts to being focused.
+    const user = userEvent.setup();
+    renderSidebar();
+
+    const hide = screen.getByRole("button", {
+      name: "Hide session first prompt from the sidebar",
+    });
+    await user.click(hide);
+
+    expect(screen.getByRole("status")).toHaveTextContent("Hidden");
+    expect(hide).toHaveFocus();
+  });
+
+  it("dismisses itself after a few seconds", async () => {
+    // Fake timers from the start, with `fireEvent` rather than `userEvent`: the
+    // point of the test is the timer, and user-event's own waits would be frozen
+    // by them.
+    vi.useFakeTimers();
+    renderSidebar();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Hide session first prompt from the sidebar" }),
+    );
+    // The hide is a promise; let it settle before the clock moves.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("Hidden");
+
+    await act(async () => {
+      vi.advanceTimersByTime(NOTICE_TIMEOUT_MS - 1);
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("Hidden");
+
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+  });
+
+  it("can be dismissed by hand, without undoing anything", async () => {
+    const user = userEvent.setup();
+    const { props } = renderSidebar();
+
+    await user.click(screen.getByRole("button", { name: "Hide session first prompt from the sidebar" }));
+    await user.click(screen.getByRole("button", { name: "Dismiss notification" }));
+
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+    expect(props.onRestore).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed restore instead of pretending it worked", async () => {
+    const user = userEvent.setup();
+    const { props } = renderSidebar({ onRestore: vi.fn(async () => false) });
+
+    await user.click(screen.getByRole("button", { name: "Hide session first prompt from the sidebar" }));
+    await user.click(screen.getByRole("button", { name: /Undo/ }));
+
+    expect(props.onRestore).toHaveBeenCalledWith("s1");
+    // Still on screen, says what failed, and offers the request again rather than
+    // an Undo that would look like it had already worked.
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("Could not restore “first prompt”.");
+    await user.click(screen.getByRole("button", { name: /Try again/ }));
+    expect(props.onRestore).toHaveBeenCalledTimes(2);
+  });
+
+  it("says nothing when the hide itself failed", async () => {
+    // The failure is already announced above the list, with the server's message.
+    const user = userEvent.setup();
+    renderSidebar({ onHide: vi.fn(async () => false) });
+
+    await user.click(screen.getByRole("button", { name: "Hide session first prompt from the sidebar" }));
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+  });
+
+  it("confirms a rename and puts the old title back when undone", async () => {
+    const user = userEvent.setup();
+    const { props } = renderSidebar({
+      data: payload({
+        sessions: [session()],
+        sidebar: { ...EMPTY_SIDEBAR, renames: { s1: "Sidebar work" } },
+      }),
+    });
+
+    await user.click(screen.getByRole("button", { name: "Rename session Sidebar work" }));
+    const input = screen.getByRole("textbox", { name: "Session title" });
+    await user.clear(input);
+    await user.type(input, "Prompt work{Enter}");
+
+    expect(screen.getByRole("status")).toHaveTextContent("Renamed to “Prompt work”.");
+    await user.click(screen.getByRole("button", { name: /Undo/ }));
+
+    // The rename that was there before, verbatim: an empty title is what clears it.
+    expect(props.onRename).toHaveBeenLastCalledWith("s1", "Sidebar work");
+  });
+
+  it("clears the rename entirely when there was no title before", async () => {
+    const user = userEvent.setup();
+    const { props } = renderSidebar();
+
+    await user.click(screen.getByRole("button", { name: "Rename session first prompt" }));
+    const input = screen.getByRole("textbox", { name: "Session title" });
+    await user.clear(input);
+    await user.type(input, "Sidebar work{Enter}");
+    await user.click(screen.getByRole("button", { name: /Undo/ }));
+
+    expect(props.onRename).toHaveBeenLastCalledWith("s1", "");
   });
 });
