@@ -50,6 +50,8 @@ def _replay_session(
                 text.startswith("[")
                 and text.endswith("]")
                 or text.startswith("[bash-done")
+                or text.startswith("[bash-status")
+                or text.startswith("[progress]")
                 or text.startswith("[compaction-summary]")
                 or text.startswith("[python-state")
             ):

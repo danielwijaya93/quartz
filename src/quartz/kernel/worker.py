@@ -34,14 +34,15 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from quartz.core.background import STATUS_TAIL_LINES
 from quartz.kernel.helpers import (
     _IMAGES_VAR,
     _record_cell_image,
     _truncate,
     load_helpers,
 )
-from quartz.mcp.client import MCPManager
 from quartz.kernel.pycheck import unresolved_global_names
+from quartz.mcp.client import MCPManager
 
 MAX_OUTPUT_CHARS = 128_000
 MAX_REPR_CHARS = 128_000
@@ -205,11 +206,15 @@ class BashHandle:
         timeout: float | None,
         started_cell_id: str | None,
         on_done_callback: Any,
+        check_every: float | None = None,
+        on_status_callback: Any = None,
     ) -> None:
         self.command = command
         self._timeout = timeout
         self._started_cell_id = started_cell_id
         self._on_done_callback = on_done_callback
+        self._check_every = check_every
+        self._on_status_callback = on_status_callback
         self._lines: deque[str] = deque(maxlen=self.MAX_LINES)
         self.dropped_lines = 0
         self._partial = ""
@@ -231,6 +236,9 @@ class BashHandle:
         )
         self.pid = self._proc.pid
         self._task = asyncio.create_task(self._monitor())
+        self._status_task: asyncio.Task[None] | None = None
+        if check_every and check_every > 0 and on_status_callback is not None:
+            self._status_task = asyncio.create_task(self._status_loop())
 
     @property
     def running(self) -> bool:
@@ -310,6 +318,32 @@ class BashHandle:
             await asyncio.sleep(0.01)
         return code
 
+    @property
+    def elapsed_s(self) -> float:
+        """Seconds this command has been running (frozen once it finishes)."""
+        if self._result is not None:
+            return self._result.duration
+        return time.monotonic() - self._start_time
+
+    async def _status_loop(self) -> None:
+        """Ask the harness to report this job every ``check_every`` seconds.
+
+        The clock is the *harness's*, not the model's: a job that outlives the
+        period would otherwise stay silent until it finished, which is precisely
+        when a waiting user starts typing "how is it going?". A sleep-then-check
+        loop (rather than a fixed deadline) means a job that ends mid-sleep is
+        never reported as still running.
+        """
+        assert self._check_every is not None
+        while True:
+            await asyncio.sleep(self._check_every)
+            if not self.running:
+                return
+            try:
+                self._on_status_callback(self)
+            except Exception:
+                pass
+
     async def _monitor(self) -> BashResult:
         exit_code = -1
         waiter = asyncio.create_task(self._drain_output())
@@ -326,6 +360,8 @@ class BashHandle:
         finally:
             if not waiter.done():
                 waiter.cancel()
+            if self._status_task is not None and not self._status_task.done():
+                self._status_task.cancel()
             self._flush_partial()
             self._result = BashResult(
                 exit_code=exit_code,
@@ -367,6 +403,13 @@ class KernelWorker:
         self._active_cell_ids: set[str] = set()
         self._exec_lock = asyncio.Lock()
         self._handles: list[BashHandle] = []
+        #: Configurable by the client (see :meth:`configure`). ``headless`` means a
+        #: `-p` run: no user is watching, so a background job there is a job with
+        #: nobody to hand its output to -- it runs inline instead (and a `-p` worker
+        #: can never fork another `-p` worker, which is how nested waits happened).
+        self.headless = False
+        #: Status-check period for running jobs, in seconds (``0`` disables).
+        self.background_check_every = 0.0
         self.mcp = MCPManager(cwd=Path.cwd(), on_image=_record_cell_image)
 
         if not isinstance(sys.stdout, _ContextStreamProxy):
@@ -404,6 +447,13 @@ class KernelWorker:
                 for k, v in self._default_bindings.items():
                     h.func.__globals__.setdefault(k, v)
 
+    def configure(self, *, headless: bool | None = None, background_check_every: float | None = None) -> None:
+        """Apply client-side runtime options to this worker."""
+        if headless is not None:
+            self.headless = bool(headless)
+        if background_check_every is not None:
+            self.background_check_every = max(0.0, float(background_check_every))
+
     def _start_bash(self, command: str, timeout: float | None = 600) -> BashHandle:
         """Start a shell command in the background and return a BashHandle immediately."""
         handle = BashHandle(
@@ -411,6 +461,8 @@ class KernelWorker:
             timeout=timeout,
             started_cell_id=_CELL_ID_VAR.get(),
             on_done_callback=self._on_bash_done,
+            check_every=self.background_check_every,
+            on_status_callback=self._on_bash_status,
         )
         self._handles.append(handle)
         self._send_bg_count()
@@ -425,6 +477,12 @@ class KernelWorker:
         """
         import shlex as _shlex
 
+        if self.headless:
+            raise RuntimeError(
+                "launch_worker is not available in `-p` (headless) mode: a background "
+                "worker needs an interactive session to report back to. Run the command "
+                "inline with bash() instead."
+            )
         if not session_id:
             raise ValueError("launch_worker requires a session_id (pass Session.latest_id())")
         prompt_path = _shlex.quote(str(prompt_file))
@@ -452,6 +510,23 @@ class KernelWorker:
         self._send({"type": "bg_count", "count": len(jobs)})
         self._send({"type": "bg_jobs", "jobs": jobs})
 
+    def _on_bash_status(self, handle: BashHandle) -> None:
+        """Report a still-running job that crossed the status-check period."""
+        if handle._awaited:
+            return
+        if handle._started_cell_id is not None and handle._started_cell_id in self._active_cell_ids:
+            return
+        self._send(
+            {
+                "type": "event",
+                "event": "bash_status",
+                "pid": handle.pid,
+                "command": handle.command,
+                "elapsed_s": round(handle.elapsed_s, 1),
+                "tail": _truncate(handle.tail(STATUS_TAIL_LINES), 2000),
+            }
+        )
+
     def _on_bash_done(self, handle: BashHandle) -> None:
         with contextlib.suppress(ValueError):
             self._handles.remove(handle)
@@ -475,6 +550,34 @@ class KernelWorker:
                 "tail": _truncate(handle.tail(30), 4000),
             }
         )
+
+    async def _run_cell_jobs_inline(self, cell_id: str, stdout_buf: io.StringIO) -> None:
+        """Wait for the background jobs this cell started and fold their output in.
+
+        A ``-p`` run has nobody to notify when a job finishes, and a job that
+        outlives its turn takes its output with it (the worker exits). So a handle
+        left running at the end of a headless cell is awaited here, and what it
+        printed becomes part of the cell result the model reads. An explicit
+        ``await h`` inside the cell is unaffected: the job is already finished by
+        then, so there is nothing left to wait for.
+
+        The wait happens *after* the cell body, so anything the body read off the
+        handle (``h.running``, ``h.tail()``) saw the state at that moment, not after
+        the wait. The output is folded into stdout regardless, which is what a
+        headless caller actually needs.
+        """
+        mine = [h for h in self._handles if h._started_cell_id == cell_id and h.running]
+        for handle in mine:
+            handle._awaited = True
+            result = await handle
+            suffix = " · timed out" if result.timed_out else ""
+            stdout_buf.write(
+                f"[bash] {handle.command}\nexit: {result.exit_code} · {result.duration}s{suffix}\n"
+            )
+            if result.output:
+                stdout_buf.write(result.output)
+                if not result.output.endswith("\n"):
+                    stdout_buf.write("\n")
 
     def _unbound_names(self, tree: ast.AST, code: str) -> set[str]:
         """Names read in `code` that resolve to neither the cell, the namespace, nor builtins."""
@@ -602,6 +705,8 @@ class KernelWorker:
                         if val is not None:
                             self._namespace["_"] = val
                             result_repr = _spill_or_truncate(repr(val), MAX_REPR_CHARS, "result", cell_id)
+                    if self.headless:
+                        await self._run_cell_jobs_inline(cell_id, stdout_buf)
                 finally:
                     self._namespace.pop(last_expr_key, None)
                     _CELL_ID_VAR.reset(tok_cid)
@@ -949,6 +1054,12 @@ async def _main() -> None:
             task = asyncio.create_task(_run_and_send(req_id, code))
             active_cell_tasks.add(task)
             task.add_done_callback(active_cell_tasks.discard)
+        elif msg_type == "configure":
+            worker.configure(
+                headless=msg.get("headless"),
+                background_check_every=msg.get("background_check_every"),
+            )
+            worker._send({"type": "configure_result", "id": req_id})
         elif msg_type == "list_helpers":
             worker._send({"type": "helpers_result", "id": req_id, **worker.list_helpers()})
         elif msg_type == "list_vars":

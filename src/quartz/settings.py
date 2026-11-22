@@ -15,6 +15,7 @@ JSON shape (flat -- matches the existing flat config.json)::
       "compact_reserve_tokens": 16384,
       "keep_recent_tokens": 32000,
       "progress_every": 5,
+      "background_check_every": 300,
       "snapshot_retention_days": 7
     }
 
@@ -39,6 +40,11 @@ DEFAULT_COMPACT_RESERVE_TOKENS = 16_384
 DEFAULT_KEEP_RECENT_TOKENS = 32_000
 #: Ask the model to update the user every this many ipython calls (0 disables).
 DEFAULT_PROGRESS_EVERY = 5
+#: While a background job runs this long, the harness asks for a status report
+#: (0 disables). Same idea as ``progress_every``, on a clock instead of a count:
+#: a job that outlives a few minutes would otherwise leave the session silent
+#: until it finished, which is exactly when a user starts asking "how is it going".
+DEFAULT_BACKGROUND_CHECK_EVERY = 300
 #: Days a kernel snapshot survives after its session was last touched. Transcripts
 #: are never pruned; only the pickled namespace goes, since resuming a session whose
 #: snapshot has aged out still replays its conversation.
@@ -47,6 +53,7 @@ DEFAULT_SNAPSHOT_RETENTION_DAYS = 7
 _MIN_TOKENS = 256
 _MAX_TOKENS = 10_000_000
 _MAX_PROGRESS_EVERY = 1_000
+_MAX_BACKGROUND_CHECK_EVERY = 86_400
 _MAX_RETENTION_DAYS = 3_650
 
 
@@ -57,6 +64,7 @@ class Settings:
     compact_reserve_tokens: int = DEFAULT_COMPACT_RESERVE_TOKENS
     keep_recent_tokens: int = DEFAULT_KEEP_RECENT_TOKENS
     progress_every: int = DEFAULT_PROGRESS_EVERY
+    background_check_every: int = DEFAULT_BACKGROUND_CHECK_EVERY
     snapshot_retention_days: int = DEFAULT_SNAPSHOT_RETENTION_DAYS
 
 
@@ -121,6 +129,20 @@ def _coerce_progress(value: Any, default: int) -> int:
     return default
 
 
+def _coerce_interval(value: Any, default: int) -> int:
+    """Coerce a stored seconds interval; ``0`` is meaningful (off), so it passes."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, str) and value.strip():
+        try:
+            value = int(value.strip())
+        except ValueError:
+            return default
+    if isinstance(value, int) and 0 <= value <= _MAX_BACKGROUND_CHECK_EVERY:
+        return value
+    return default
+
+
 def load_settings(path: Path | None = None) -> Settings:
     """Load settings from config.json, falling back to defaults (never raises)."""
     raw = _read_raw(path)
@@ -132,6 +154,9 @@ def load_settings(path: Path | None = None) -> Settings:
             raw.get("keep_recent_tokens"), DEFAULT_KEEP_RECENT_TOKENS
         ),
         progress_every=_coerce_progress(raw.get("progress_every"), DEFAULT_PROGRESS_EVERY),
+        background_check_every=_coerce_interval(
+            raw.get("background_check_every"), DEFAULT_BACKGROUND_CHECK_EVERY
+        ),
         snapshot_retention_days=_coerce_retention(
             raw.get("snapshot_retention_days"), DEFAULT_SNAPSHOT_RETENTION_DAYS
         ),
@@ -149,6 +174,15 @@ def validate_progress_every(value: int) -> bool:
         isinstance(value, int)
         and not isinstance(value, bool)
         and 0 <= value <= _MAX_PROGRESS_EVERY
+    )
+
+
+def validate_background_check_every(value: int) -> bool:
+    """Return True when ``value`` is a sane status-check period in seconds (``0`` disables)."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= _MAX_BACKGROUND_CHECK_EVERY
     )
 
 
@@ -286,6 +320,7 @@ def save_settings(settings: Settings, path: Path | None = None) -> Path:
         data["compact_reserve_tokens"] = settings.compact_reserve_tokens
         data["keep_recent_tokens"] = settings.keep_recent_tokens
         data["progress_every"] = settings.progress_every
+        data["background_check_every"] = settings.background_check_every
 
     return update_config_json(_apply, path=path)
 
@@ -296,4 +331,5 @@ def settings_as_dict(settings: Settings) -> dict[str, int]:
         "compact_reserve_tokens": settings.compact_reserve_tokens,
         "keep_recent_tokens": settings.keep_recent_tokens,
         "progress_every": settings.progress_every,
+        "background_check_every": settings.background_check_every,
     }

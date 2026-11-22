@@ -80,7 +80,7 @@ def test_corrupt_inline_image_mention_does_not_crash_cli_or_dock(
     monkeypatch.setattr(cli_app, "console", test_console)
 
     rt = SimpleNamespace(cwd=tmp_path, messages=[], pending_images=[])
-    cli_app._run_headless(rt, "check @bad.png", [], 0.0)  # type: ignore[arg-type]
+    cli_app._run_headless(rt, "check @bad.png", [])  # type: ignore[arg-type]
     assert "Error:" in buf.getvalue()
     assert rt.messages == []
 

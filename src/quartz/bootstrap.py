@@ -26,6 +26,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from quartz.core.background import resolve_interval
 from quartz.core.loop import TurnUsage
 from quartz.core.progress import resolve_every
 from quartz.core.prompt import build_system_prompt
@@ -71,6 +72,10 @@ class BootstrapOptions:
     show_thinking: bool = False
     show_details: bool = False
     progress_every: int | None = None
+    #: Seconds between status reports for a running background job (``0`` disables).
+    #: ``None`` means "use the setting", which is on for an interactive session and
+    #: off for ``-p`` -- a headless run has no background jobs to report on.
+    background_check_every: int | None = None
     # Which transport is asking. Recorded in the session's `meta` record so the
     # web sidebar can list browser sessions and leave terminal ones alone until
     # they are imported. `core.session.ORIGIN_CLI` for every terminal path.
@@ -164,6 +169,17 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
         except Exception:  # noqa: BLE001 - housekeeping must not break startup
             pass
 
+        background_check_every = resolve_interval(
+            options.background_check_every,
+            headless=options.headless,
+            default=settings.background_check_every,
+        )
+        # The worker owns the clock, so tell it once here; a restart re-applies it.
+        kernel.configure(
+            headless=options.headless,
+            background_check_every=background_check_every,
+        )
+
         runtime = AgentRuntime(
             cwd=cwd,
             kernel=kernel,
@@ -188,6 +204,7 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
                 headless=options.headless,
                 default=settings.progress_every,
             ),
+            background_check_every=background_check_every,
             transport=options.transport,
         )
         return runtime, resumed

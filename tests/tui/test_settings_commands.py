@@ -108,6 +108,7 @@ def test_settings_progress_edit_preserves_compaction_values(
         "compact_reserve_tokens": 32768,
         "keep_recent_tokens": 32_000,
         "progress_every": 7,
+        "background_check_every": 0,
     }
 
 

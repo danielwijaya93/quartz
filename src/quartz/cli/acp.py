@@ -15,10 +15,10 @@ from typing import Any, TextIO
 from quartz.core.compact import DEFAULT_KEEP_RECENT_TOKENS
 from quartz.core.events import TurnObserver
 from quartz.core.images import content_to_text
-from quartz.kernel.client import CellResult, KernelClient
 from quartz.core.loop import TurnAborted, TurnUsage, agent_loop
 from quartz.core.prompt import build_system_prompt
 from quartz.core.session import Session
+from quartz.kernel.client import CellResult, KernelClient
 
 PROTOCOL_VERSION = 1
 
@@ -161,6 +161,7 @@ class ACPServer:
         compact_reserve_tokens: int = 16_384,
         keep_recent_tokens: int = DEFAULT_KEEP_RECENT_TOKENS,
         progress_every: int = 0,
+        background_check_every: int = 0,
     ) -> None:
         self._client_factory = client_factory
         self._in = in_stream or sys.stdin
@@ -172,6 +173,7 @@ class ACPServer:
         self._compact_reserve_tokens = compact_reserve_tokens
         self._keep_recent_tokens = keep_recent_tokens
         self._progress_every = progress_every
+        self._background_check_every = background_check_every
         self._client: Any = None
         self._client_lock = threading.Lock()
         self._model = ""
@@ -249,6 +251,7 @@ class ACPServer:
         cwd = Path(raw_cwd).expanduser().resolve() if raw_cwd else Path.cwd().resolve()
         kernel = KernelClient(cwd=cwd)
         kernel.start()
+        kernel.configure(headless=False, background_check_every=self._background_check_every)
         try:
             session = Session.create(cwd)
             system_prompt = build_system_prompt(cwd)
@@ -283,6 +286,7 @@ class ACPServer:
 
         kernel = KernelClient(cwd=cwd)
         kernel.start()
+        kernel.configure(headless=False, background_check_every=self._background_check_every)
         try:
             restored_notice = session.restore_kernel(kernel, root=cwd)
             if restored_notice:

@@ -46,6 +46,9 @@ class _FakeKernel:
     def restore(self, *args: Any, **kwargs: Any) -> dict[str, list[str]]:
         return {"restored": [], "skipped": []}
 
+    def configure(self, **kwargs: Any) -> None:
+        self.configured = dict(kwargs)
+
 
 @pytest.fixture()
 def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -324,6 +327,7 @@ def _namespace(**overrides: Any) -> argparse.Namespace:
         "show_thinking": False,
         "show_details": False,
         "progress_every": None,
+        "background_check_every": None,
     }
     base.update(overrides)
     return argparse.Namespace(**base)

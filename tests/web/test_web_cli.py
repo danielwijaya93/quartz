@@ -52,6 +52,9 @@ class _FakeKernel:
     def restore(self, *args: Any, **kwargs: Any) -> dict[str, list[str]]:
         return {"restored": [], "skipped": []}
 
+    def configure(self, **kwargs: Any) -> None:
+        self.configured = dict(kwargs)
+
 
 @pytest.fixture()
 def web_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:

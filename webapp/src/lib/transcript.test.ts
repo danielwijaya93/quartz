@@ -352,6 +352,17 @@ describe("harness notices", () => {
     });
   });
 
+  it("reads a background status notice", () => {
+    // A running job crossing the check period: same shape as a done notice, so a
+    // status must land in the transcript's notice column, not a user bubble.
+    expect(
+      parseHarnessNotice("[bash-status pid:4821 elapsed:5m02s]\ncommand: make\ntail:\nbuilding"),
+    ).toEqual({
+      tag: "bash-status pid:4821 elapsed:5m02s",
+      text: "command: make\ntail:\nbuilding",
+    });
+  });
+
   it("reads a one-line notice's sentence after its tag", () => {
     expect(parseHarnessNotice("[progress] Update the user now on the progress.")).toEqual({
       tag: "progress",

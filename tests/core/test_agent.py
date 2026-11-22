@@ -10,7 +10,8 @@ from conftest import RecordingObserver
 
 from quartz.core.compact import _find_safe_split_index, format_python_state_notice
 from quartz.kernel.client import KernelClient
-from quartz.core.loop import TurnUsage, format_bash_done_events
+from quartz.core.background import format_bash_events
+from quartz.core.loop import TurnUsage
 from quartz.core.prompt import build_system_prompt
 
 
@@ -78,7 +79,7 @@ def test_kernel_bash_background_event(tmp_path: Path) -> None:
         assert len(events) == 1
         assert events[0]["event"] == "bash_done"
         assert events[0]["exit_code"] == 0
-        notice = format_bash_done_events(events)
+        notice = format_bash_events(events)
         assert notice is not None
         assert "[bash-done" in notice
         assert "bg_ok" in notice

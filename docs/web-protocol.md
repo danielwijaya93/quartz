@@ -64,7 +64,7 @@ Turn lifecycle:
 | `thinking_delta` | `text: str` |
 | `tool_call` | `id: str`, `code: str` |
 | `tool_result` | `id: str`, `ok: bool`, `output: str`, `durationMs: int`, `images: [{mimeType, data}]`, `actions: object \| null` |
-| `bash_notice` | `text: str` |
+| `bash_notice` | `text: str` | A harness notice: a finished job (`[bash-done …]`) or one still running past the status-check period (`[bash-status pid elapsed]`). Both arrive here, unchanged. |
 | `steering` | `text: str` |
 | `compaction` | `summary: str`, `messagesBefore: int`, `messagesAfter: int`, `tokensBefore: int`, `tokensAfter: int` |
 | `turn_end` | `status: "ok" \| "aborted" \| "interrupted" \| "error"`, `tokens: int`, `elapsedMs: int`, `error?: str` |
