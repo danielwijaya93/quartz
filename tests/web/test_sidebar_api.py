@@ -345,3 +345,34 @@ def test_mutations_reject_path_traversal_session_id(
 ) -> None:
     response = app_client.client.post("/api/sessions/hide", json={"sessionId": bad_id})
     assert response.status_code == 400
+
+
+def test_new_session_appears_in_sidebar_as_soon_as_prompt_starts(
+    app_client: AppClient, tmp_path: Path, wire: Any
+) -> None:
+    """A new session must be listable immediately on prompt start, before turn_end."""
+    app_client.runtime.active_session = Session.create(
+        tmp_path, sessions_dir=tmp_path / "sessions", origin="web"
+    )
+    app_client.runner.hold()
+    with app_client.client.websocket_connect("/ws") as ws:
+        try:
+            state = wire.hello(ws)
+            session_id = state["sessionId"]
+
+            # Before any prompt, the empty session is not listable.
+            before = _payload(app_client.client.get("/api/sessions"))
+            assert session_id not in [r["sessionId"] for r in before["sessions"]]
+
+            ws.send_json({"type": "prompt", "text": "first prompt", "images": []})
+            assert app_client.runner.started.wait(timeout=10)
+
+            # While the turn is still in flight (no turn_end yet), it must appear.
+            during = _payload(app_client.client.get("/api/sessions"))
+            by_id = {r["sessionId"]: r for r in during["sessions"]}
+            assert session_id in by_id
+            assert by_id[session_id]["title"] == "first prompt"
+            assert session_id in _visible_ids(during)
+        finally:
+            app_client.runner.release()
+        wire.drain(ws, until="turn_end")

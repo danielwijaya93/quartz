@@ -416,6 +416,10 @@ class WebSession:
             runtime.messages.append(
                 {"role": "user", "content": build_user_content(text, images)}
             )
+            try:
+                runtime.active_session.save_messages(runtime.messages)
+            except OSError:
+                pass
             # The observer pushes through `self.emit`, not through the socket that
             # started the turn: that socket may be gone (a phone asleep) and another
             # may be listening by the time the next token arrives.
