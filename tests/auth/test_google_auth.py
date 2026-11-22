@@ -85,7 +85,9 @@ def test_build_cloudcode_request_and_parse_sse() -> None:
     assert envelope["model"] == "gemini-3.8-flash-medium"
     assert envelope["project"] == "proj-1"
     req = envelope["request"]
-    assert req["generationConfig"] == {"thinkingConfig": {"thinkingLevel": "XHIGH"}}
+    assert req["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "XHIGH"
+    assert req["generationConfig"]["thinkingConfig"]["thinkingBudget"] == -1
+    assert req["generationConfig"]["maxOutputTokens"] == 65536
     assert any("You are Quartz." in p["text"] for p in req["systemInstruction"]["parts"])
     assert req["tools"][0]["functionDeclarations"][0]["name"] == "ipython"
     assert req["tools"][0]["functionDeclarations"][0]["parameters"]["type"] == "OBJECT"
