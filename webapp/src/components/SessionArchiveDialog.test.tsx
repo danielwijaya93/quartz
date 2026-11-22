@@ -95,6 +95,24 @@ describe("SessionArchiveDialog", () => {
     expect(props.onRestore).toHaveBeenCalledWith("both");
   });
 
+  it("keeps a session whose folder is gone reachable, flagged, and without a no-op action", async () => {
+    renderDialog({
+      data: {
+        sessions: [
+          session({ sessionId: "orphan", title: "old worktree", cwdExists: false }),
+          session({ sessionId: "visible", title: "already listed", origin: "web" }),
+        ],
+        sidebar: { ...EMPTY_SIDEBAR },
+      },
+    });
+
+    expect(await screen.findByText("old worktree")).toBeInTheDocument();
+    expect(screen.getByText("folder missing")).toBeInTheDocument();
+    // Import would add it to a list that still cannot draw it, so there is no button.
+    expect(screen.queryByRole("button", { name: /session old worktree/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("already listed")).not.toBeInTheDocument();
+  });
+
   it("says when there is nothing to bring back", async () => {
     renderDialog({ data: { sessions: [], sidebar: { ...EMPTY_SIDEBAR } } });
     expect(await screen.findByText("Every session is already in the sidebar.")).toBeInTheDocument();

@@ -116,6 +116,7 @@ export function App(): React.ReactElement {
     onSelectSession: selectSession,
     onNewSession: newSessionIn,
     onNewFolder: () => setPicker("workspace"),
+    onOpenFolder: () => setPicker("session"),
     onRename: (id: string, title: string) => void sidebar.rename(id, title),
     onHide: (id: string) => void sidebar.hide(id),
     onOpenArchive: () => setArchiveOpen(true),

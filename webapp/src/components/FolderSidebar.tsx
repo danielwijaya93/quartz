@@ -3,6 +3,7 @@ import { Button, Chip, Disclosure, Spinner, cn } from "@heroui/react";
 import {
   ArchiveRestore,
   ChevronRight,
+  FolderOpen,
   FolderPlus,
   Pencil,
   Plus,
@@ -34,7 +35,10 @@ export interface FolderSidebarProps {
   onReload: () => void;
   onSelectSession: (sessionId: string) => void;
   onNewSession: (cwd: string) => void;
+  /** Adds a folder to the sidebar; the header's folder button. */
   onNewFolder: () => void;
+  /** Opens the folder picker to start a session in a folder picked there. */
+  onOpenFolder: () => void;
   onRename: (sessionId: string, title: string) => void;
   onHide: (sessionId: string) => void;
   onOpenArchive: () => void;
@@ -72,6 +76,7 @@ export function FolderSidebar({
   onSelectSession,
   onNewSession,
   onNewFolder,
+  onOpenFolder,
   onRename,
   onHide,
   onOpenArchive,
@@ -171,14 +176,7 @@ export function FolderSidebar({
         {error === null && data !== null
           ? groups.length === 0
             ? (
-              <div className="rounded-xl border border-dashed border-border p-3 text-center text-xs text-muted">
-                <p>No folders yet.</p>
-                <p className="mt-1">Pick one to start a session in it.</p>
-                <Button size="sm" variant="outline" className="mt-2" onPress={onNewFolder}>
-                  <FolderPlus aria-hidden="true" className="size-3.5" />
-                  Add folder
-                </Button>
-              </div>
+              <EmptySidebar onOpenFolder={onOpenFolder} onOpenArchive={onOpenArchive} />
             )
             : (
               <ul className="space-y-1">
@@ -210,6 +208,42 @@ export function FolderSidebar({
           : null}
       </div>
     </nav>
+  );
+}
+
+/**
+ * The whole-sidebar empty state.
+ *
+ * A first run has nothing to show and that is correct: every session that exists
+ * was started in a terminal, and the sidebar lists the browser's own. Saying only
+ * that would leave a person staring at an empty column, so the two ways to fill it
+ * are right here -- open a folder and start something, or bring in what the
+ * terminal already has.
+ */
+function EmptySidebar({
+  onOpenFolder,
+  onOpenArchive,
+}: {
+  onOpenFolder: () => void;
+  onOpenArchive: () => void;
+}): React.ReactElement {
+  return (
+    <div className="rounded-xl border border-dashed border-border p-3 text-center">
+      <p className="text-sm font-medium text-foreground">No sessions yet</p>
+      <p className="mt-1 text-xs text-muted">
+        Open a folder to start one, or import a session you began in the terminal.
+      </p>
+      <div className="mt-3 flex flex-col gap-1.5">
+        <Button size="sm" variant="outline" onPress={onOpenFolder}>
+          <FolderOpen aria-hidden="true" className="size-3.5" />
+          Open a folder
+        </Button>
+        <Button size="sm" variant="outline" onPress={onOpenArchive}>
+          <ArchiveRestore aria-hidden="true" className="size-3.5" />
+          Import from terminal
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -247,17 +281,9 @@ function WorkspaceRow({
                 expanded && "rotate-90",
               )}
             />
-            <span
-              className={cn("min-w-0 truncate text-sm", !group.cwdExists && "text-muted line-through")}
-              title={group.cwd}
-            >
+            <span className="min-w-0 truncate text-sm" title={group.cwd}>
               {group.label}
             </span>
-            {group.cwdExists ? null : (
-              <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-warning">
-                missing
-              </span>
-            )}
             {count > 0 ? (
               <Chip size="sm" variant="soft" color="default" className="ml-auto shrink-0">
                 {count}
@@ -273,12 +299,7 @@ function WorkspaceRow({
           isIconOnly
           size="sm"
           variant="ghost"
-          aria-label={
-            group.cwdExists
-              ? `Start a new session in ${group.label}`
-              : `${group.label} is missing, so a session cannot start there`
-          }
-          isDisabled={!group.cwdExists}
+          aria-label={`Start a new session in ${group.label}`}
           onPress={onNewSession}
           // Visible by default: a phone has no hover, so a hover-only "+" is a
           // feature nobody on a touch screen can reach.
@@ -290,9 +311,7 @@ function WorkspaceRow({
       <Disclosure.Content>
         <Disclosure.Body className="ml-3">
           {count === 0 ? (
-            <p className="py-1 pl-4 text-xs text-muted">
-              {group.cwdExists ? "No sessions in this folder yet." : "Folder no longer exists."}
-            </p>
+            <p className="py-1 pl-4 text-xs text-muted">No sessions in this folder yet.</p>
           ) : (
             <ul>{children}</ul>
           )}

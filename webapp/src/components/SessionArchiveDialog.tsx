@@ -1,8 +1,7 @@
 import * as React from "react";
 import { Button, Chip, Modal, Spinner, useOverlayState } from "@heroui/react";
 import { ArchiveRestore, Import, RefreshCw } from "lucide-react";
-import { archiveEntries, displayTitle, formatAge, type SidebarPayload } from "@/lib/sidebar";
-import { directoryLabel } from "@/lib/sidebar";
+import { archiveEntries, directoryLabel, displayTitle, formatAge, type SidebarPayload } from "@/lib/sidebar";
 
 export interface SessionArchiveDialogProps {
   open: boolean;
@@ -20,13 +19,17 @@ export interface SessionArchiveDialogProps {
 }
 
 /**
- * "Not in sidebar": the other half of archiving.
+ * "Not in sidebar": the other half of archiving, and the only view of a dead folder.
  *
  * Hiding a session is not deleting it, so there has to be somewhere the hidden ones
  * can be found again -- and the same list is where terminal sessions are imported
  * from, because "the sidebar does not show it" and "it was never imported" look
  * identical to a person. One row per session, one button that does what is needed
  * for that row: Restore for a hidden one, Import for one that was never listed.
+ *
+ * A session whose folder has been removed joins the same list. The sidebar drops
+ * those folders outright (they cannot start or hold a session), so without this
+ * place a transcript in a deleted worktree would be unreachable from the browser.
  */
 export function SessionArchiveDialog({
   open,
@@ -67,8 +70,9 @@ export function SessionArchiveDialog({
             </Modal.Header>
 
             <p className="px-4 pt-3 text-xs text-muted">
-              Hidden sessions and sessions started elsewhere. Hiding one never deletes anything: the
-              transcript stays on disk and can come back from here.
+              Hidden sessions, sessions started elsewhere, and sessions whose folder has been
+              removed. Hiding one never deletes anything: the transcript stays on disk and can come
+              back from here.
             </p>
 
             {failure !== null ? (
@@ -99,7 +103,7 @@ export function SessionArchiveDialog({
                 </p>
               ) : (
                 <ul className="space-y-1.5" aria-label="Sessions not in the sidebar">
-                  {entries.map(({ session, hidden, needsImport }) => (
+                  {entries.map(({ session, hidden, needsImport, missingFolder }) => (
                     <li
                       key={session.sessionId}
                       className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-2"
@@ -119,24 +123,34 @@ export function SessionArchiveDialog({
                             hidden
                           </Chip>
                         ) : null}
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          isDisabled={busyId !== null}
-                          onPress={() => void act(session.sessionId, hidden, needsImport)}
-                          aria-label={
-                            hidden
-                              ? `Restore session ${displayTitle(session, data.sidebar)}`
-                              : `Import session ${displayTitle(session, data.sidebar)}`
-                          }
-                        >
-                          {hidden ? (
-                            <ArchiveRestore aria-hidden="true" className="size-3.5" />
-                          ) : (
-                            <Import aria-hidden="true" className="size-3.5" />
-                          )}
-                          {hidden ? "Restore" : "Import"}
-                        </Button>
+                        {missingFolder ? (
+                          <Chip size="sm" variant="soft" color="warning">
+                            folder missing
+                          </Chip>
+                        ) : null}
+                        {/* No Import/Restore for a gone folder: both change a list
+                            that still cannot draw the session, so the button would
+                            be a click with nothing to show for it. */}
+                        {!missingFolder && (needsImport || hidden) ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            isDisabled={busyId !== null}
+                            onPress={() => void act(session.sessionId, hidden, needsImport)}
+                            aria-label={
+                              hidden
+                                ? `Restore session ${displayTitle(session, data.sidebar)}`
+                                : `Import session ${displayTitle(session, data.sidebar)}`
+                            }
+                          >
+                            {hidden ? (
+                              <ArchiveRestore aria-hidden="true" className="size-3.5" />
+                            ) : (
+                              <Import aria-hidden="true" className="size-3.5" />
+                            )}
+                            {hidden ? "Restore" : "Import"}
+                          </Button>
+                        ) : null}
                       </div>
                     </li>
                   ))}

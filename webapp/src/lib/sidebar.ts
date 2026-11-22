@@ -154,8 +154,6 @@ export function displayTitle(session: SidebarSession, sidebar: SidebarState): st
 export interface WorkspaceGroup {
   cwd: string;
   label: string;
-  /** False when the directory is gone: the row is dimmed and cannot start a session. */
-  cwdExists: boolean;
   /** Visible sessions in this folder, newest first. */
   sessions: SidebarSession[];
 }
@@ -178,21 +176,32 @@ function timestamp(iso: string): number {
  * Folders with sessions come first, then empty ones alphabetically. That ordering
  * is a product decision, not an accident: the thing you used yesterday should not
  * be pushed down by a folder you added once and never opened.
+ *
+ * A folder whose directory is gone is dropped here rather than dimmed. It cannot
+ * start a session and cannot hold a new one, so on a first run -- before anything
+ * has been started from the browser -- the list would otherwise be sixteen dead
+ * paths and no way to begin. Those folders are surfaced by `archiveEntries`
+ * instead, which is the one place acting on a missing path makes sense.
  */
 export function groupSessions(payload: SidebarPayload): WorkspaceGroup[] {
   const visible = payload.sessions.filter((session) => isVisible(session, payload.sidebar));
   const groups = new Map<string, WorkspaceGroup>();
+  const gone = new Set<string>();
 
   for (const workspace of payload.sidebar.workspaces) {
     groups.set(workspace.cwd, {
       cwd: workspace.cwd,
       label: workspace.label || directoryLabel(workspace.cwd),
-      cwdExists: workspace.cwdExists,
       sessions: [],
     });
+    if (!workspace.cwdExists) gone.add(workspace.cwd);
   }
 
   for (const session of visible) {
+    // Either side saying the folder is gone is enough: both are the server's own
+    // `is_dir` at request time, and hiding one folder too many beats showing a row
+    // that cannot be used.
+    if (!session.cwdExists) gone.add(session.cwd);
     const existing = groups.get(session.cwd);
     if (existing) {
       existing.sessions.push(session);
@@ -201,12 +210,11 @@ export function groupSessions(payload: SidebarPayload): WorkspaceGroup[] {
     groups.set(session.cwd, {
       cwd: session.cwd,
       label: directoryLabel(session.cwd),
-      cwdExists: session.cwdExists,
       sessions: [session],
     });
   }
 
-  const list = [...groups.values()];
+  const list = [...groups.values()].filter((group) => !gone.has(group.cwd));
   for (const group of list) {
     group.sessions.sort((a, b) => timestamp(b.updatedAt) - timestamp(a.updatedAt));
   }
@@ -233,23 +241,30 @@ export interface ArchiveEntry {
   hidden: boolean;
   /** Not a web session and not imported: an Import is needed. */
   needsImport: boolean;
+  /** The folder is gone, so the sidebar cannot list this session at all. */
+  missingFolder: boolean;
 }
 
 /**
  * The other half of archiving: everything the sidebar is not showing.
  *
- * A terminal session that was never imported and a web session that was hidden are
- * both "not in the sidebar", and the dialog is the only way back for either. Newest
- * first, because the one you want is almost always the one you just lost.
+ * A row is here for one of two different reasons, and the row has to say which. It
+ * may be invisible by rule -- a terminal session never imported, a web session that
+ * was hidden -- and the dialog is the only way back for either. Or its folder is
+ * gone, which the sidebar does not draw at all: those sessions are still real
+ * transcripts, so they are listed here where a person can see them and act.
+ *
+ * Newest first, because the one you want is almost always the one you just lost.
  */
 export function archiveEntries(payload: SidebarPayload): ArchiveEntry[] {
   return payload.sessions
-    .filter((session) => !isVisible(session, payload.sidebar))
+    .filter((session) => !session.cwdExists || !isVisible(session, payload.sidebar))
     .map((session) => ({
       session,
       hidden: payload.sidebar.hiddenSessions.includes(session.sessionId),
       needsImport:
         session.origin !== "web" && !payload.sidebar.importedSessions.includes(session.sessionId),
+      missingFolder: !session.cwdExists,
     }))
     .sort((a, b) => timestamp(b.session.updatedAt) - timestamp(a.session.updatedAt));
 }

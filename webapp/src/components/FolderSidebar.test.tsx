@@ -35,6 +35,7 @@ function renderSidebar(overrides: Partial<FolderSidebarProps> = {}): {
     onSelectSession: vi.fn(),
     onNewSession: vi.fn(),
     onNewFolder: vi.fn(),
+    onOpenFolder: vi.fn(),
     onRename: vi.fn(),
     onHide: vi.fn(),
     onOpenArchive: vi.fn(),
@@ -80,16 +81,23 @@ describe("FolderSidebar", () => {
     expect(screen.getByText("No sessions in this folder yet.")).toBeInTheDocument();
   });
 
-  it("marks a folder whose directory is gone and refuses to start a session there", () => {
+  it("never draws a folder whose directory is gone", () => {
+    // Not dimmed and not summarised: a row nobody can start a session in is noise,
+    // and on a first run it was sixteen of them.
     renderSidebar({
       data: payload({
-        sessions: [session({ cwd: "/home/x/gone", cwdExists: false })],
+        sessions: [session({ sessionId: "s1" }), session({ sessionId: "s2", cwd: "/home/x/gone", cwdExists: false })],
+        sidebar: {
+          ...EMPTY_SIDEBAR,
+          workspaces: [{ cwd: "/home/x/also-gone", label: "also-gone", cwdExists: false }],
+        },
       }),
     });
 
-    expect(screen.getByText("missing")).toBeInTheDocument();
-    const newSession = screen.getByRole("button", { name: /is missing, so a session cannot start/ });
-    expect(newSession).toBeDisabled();
+    expect(screen.getByText("project")).toBeInTheDocument();
+    expect(screen.queryByText("gone")).not.toBeInTheDocument();
+    expect(screen.queryByText("also-gone")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Folder no longer exists/)).not.toBeInTheDocument();
   });
 
   it("starts a session in a folder from the folder row", async () => {
@@ -136,7 +144,7 @@ describe("FolderSidebar", () => {
   it("shows loading instead of an empty sidebar", () => {
     renderSidebar({ data: null, loading: true });
     expect(screen.getByText("Loading sessions…")).toBeInTheDocument();
-    expect(screen.queryByText("No folders yet.")).not.toBeInTheDocument();
+    expect(screen.queryByText("No sessions yet")).not.toBeInTheDocument();
   });
 
   it("shows what failed and offers a retry, rather than an empty list", async () => {
@@ -145,18 +153,23 @@ describe("FolderSidebar", () => {
 
     expect(screen.getByRole("alert")).toHaveTextContent("Could not load sessions");
     expect(screen.getByRole("alert")).toHaveTextContent("The server is not reachable");
-    expect(screen.queryByText("No folders yet.")).not.toBeInTheDocument();
+    expect(screen.queryByText("No sessions yet")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Retry/ }));
     expect(props.onReload).toHaveBeenCalled();
   });
 
-  it("offers a way to add the first folder", async () => {
+  it("says there is nothing yet, and offers both ways to begin", async () => {
     const user = userEvent.setup();
     const { props } = renderSidebar({ data: payload({ sessions: [] }) });
-    expect(screen.getByText("No folders yet.")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /Add folder/ }));
-    expect(props.onNewFolder).toHaveBeenCalled();
+
+    expect(screen.getByText("No sessions yet")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Open a folder/ }));
+    expect(props.onOpenFolder).toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: /Import from terminal/ }));
+    expect(props.onOpenArchive).toHaveBeenCalled();
   });
 
   it("opens the archive", async () => {
