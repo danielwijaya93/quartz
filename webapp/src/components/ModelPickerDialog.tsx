@@ -71,6 +71,23 @@ export function ModelPickerDialog({
     }
   }, [activeProvider, selectedProviderId]);
 
+  const availableEfforts = React.useMemo(() => {
+    if (!activeProvider) return [];
+    const perModel = selectedModel ? activeProvider.modelEfforts?.[selectedModel] : undefined;
+    return (perModel && perModel.length > 0 ? perModel : activeProvider.efforts) || [];
+  }, [activeProvider, selectedModel]);
+
+  React.useEffect(() => {
+    if (availableEfforts.length === 0) return;
+    if (!availableEfforts.includes(selectedEffort)) {
+      const preferred =
+        activeProvider?.defaultEffort && availableEfforts.includes(activeProvider.defaultEffort)
+          ? activeProvider.defaultEffort
+          : availableEfforts[0];
+      setSelectedEffort(preferred || "medium");
+    }
+  }, [availableEfforts, activeProvider, selectedEffort]);
+
   const filteredModels = React.useMemo(() => {
     if (!activeProvider) return [];
     const query = search.trim().toLowerCase();
@@ -157,10 +174,6 @@ export function ModelPickerDialog({
                           if (!provider.models.includes(selectedModel)) {
                             setSelectedModel(provider.defaultModel || provider.models[0] || "");
                           }
-                          const efforts = provider.efforts || ["medium"];
-                          if (!efforts.includes(selectedEffort)) {
-                            setSelectedEffort(provider.defaultEffort || efforts[0] || "medium");
-                          }
                         }}
                         className={cn(
                           "flex cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
@@ -179,6 +192,38 @@ export function ModelPickerDialog({
                   })}
                 </div>
               </div>
+
+              {/* Reasoning Effort Selection (kept above model list so long lists never push it off-screen) */}
+              {availableEfforts.length > 0 ? (
+                <div>
+                  <div className="mb-1 flex items-center gap-1">
+                    <Sliders aria-hidden="true" className="size-3 text-muted" />
+                    <label className="text-xs font-semibold text-muted uppercase">Reasoning Effort</label>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Reasoning effort">
+                    {availableEfforts.map((effort) => {
+                      const isSelected = effort === selectedEffort;
+                      return (
+                        <button
+                          key={effort}
+                          type="button"
+                          role="radio"
+                          aria-checked={isSelected}
+                          onClick={() => setSelectedEffort(effort)}
+                          className={cn(
+                            "cursor-pointer rounded-md border px-2.5 py-1 text-xs font-medium capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
+                            isSelected
+                              ? "border-accent bg-accent/15 text-accent-foreground font-semibold"
+                              : "border-border bg-surface-secondary/50 text-muted hover:bg-surface-secondary hover:text-foreground",
+                          )}
+                        >
+                          {effort}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
 
               {/* Model Search & Selection */}
               <div className="space-y-1.5">
@@ -240,38 +285,6 @@ export function ModelPickerDialog({
                   )}
                 </div>
               </div>
-
-              {/* Reasoning Effort Selection */}
-              {activeProvider && activeProvider.efforts && activeProvider.efforts.length > 0 ? (
-                <div>
-                  <div className="mb-1 flex items-center gap-1">
-                    <Sliders aria-hidden="true" className="size-3 text-muted" />
-                    <label className="text-xs font-semibold text-muted uppercase">Reasoning Effort</label>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Reasoning effort">
-                    {activeProvider.efforts.map((effort) => {
-                      const isSelected = effort === selectedEffort;
-                      return (
-                        <button
-                          key={effort}
-                          type="button"
-                          role="radio"
-                          aria-checked={isSelected}
-                          onClick={() => setSelectedEffort(effort)}
-                          className={cn(
-                            "cursor-pointer rounded-md border px-2.5 py-1 text-xs font-medium capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
-                            isSelected
-                              ? "border-accent bg-accent/15 text-accent-foreground font-semibold"
-                              : "border-border bg-surface-secondary/50 text-muted hover:bg-surface-secondary hover:text-foreground",
-                          )}
-                        >
-                          {effort}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : null}
             </Modal.Body>
 
             <Modal.Footer className="flex items-center justify-between border-t border-separator px-4 py-3">

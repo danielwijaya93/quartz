@@ -5,6 +5,7 @@ export interface ModelProvider {
   status: string;
   models: string[];
   efforts: string[];
+  modelEfforts?: Record<string, string[]>;
   defaultModel: string;
   defaultEffort: string;
 }
