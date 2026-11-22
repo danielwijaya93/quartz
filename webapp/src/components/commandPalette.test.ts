@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { filterCommands, fuzzyScore, parseCommandInput } from "./CommandPalette";
+import {
+  filterCommands,
+  fuzzyScore,
+  isTerminalOnly,
+  orderCommands,
+  parseCommandInput,
+  usageHint,
+} from "./CommandPalette";
 import type { Command } from "@/protocol";
 
 const COMMANDS: Command[] = [
@@ -71,5 +78,74 @@ describe("parseCommandInput", () => {
 
   it("tolerates input without a leading slash", () => {
     expect(parseCommandInput("compact 4000")).toEqual({ name: "compact", arg: "4000" });
+  });
+});
+
+describe("isTerminalOnly", () => {
+  it("reads the server's flag", () => {
+    expect(isTerminalOnly({ name: "login", description: "", needsTerminal: true })).toBe(true);
+    expect(isTerminalOnly({ name: "usage", description: "", needsTerminal: false })).toBe(false);
+  });
+
+  it("treats an absent flag as a command that works here", () => {
+    // An older server does not send the field; burying every command because of
+    // it would be worse than the bug this marks.
+    expect(isTerminalOnly({ name: "usage", description: "" })).toBe(false);
+  });
+});
+
+describe("orderCommands", () => {
+  const MIXED: Command[] = [
+    { name: "login", description: "Log in to a provider", needsTerminal: true },
+    { name: "usage", description: "Show token and cost usage" },
+    { name: "model", description: "Choose provider and model", needsTerminal: true },
+    { name: "compact", description: "Compact the conversation now" },
+  ];
+
+  it("keeps the ranking inside each group and sinks the terminal-only ones", () => {
+    expect(orderCommands(MIXED).map((command) => command.name)).toEqual([
+      "usage",
+      "compact",
+      "login",
+      "model",
+    ]);
+  });
+
+  it("leaves the order alone when no command carries the flag", () => {
+    const plain = MIXED.map(({ name, description }) => ({ name, description }));
+    expect(orderCommands(plain).map((command) => command.name)).toEqual(
+      plain.map((command) => command.name),
+    );
+  });
+
+  it("does not mutate the list it was given", () => {
+    const names = MIXED.map((command) => command.name);
+    orderCommands(MIXED);
+    expect(MIXED.map((command) => command.name)).toEqual(names);
+  });
+});
+
+describe("usageHint", () => {
+  const COMMANDS: Command[] = [
+    { name: "compact", description: "Compact the conversation now", usage: "[tokens]" },
+    { name: "login", description: "Log in", usage: "[prov]", needsTerminal: true },
+  ];
+
+  it("names the command once an argument has been started", () => {
+    expect(usageHint(COMMANDS, "compact 4000")?.name).toBe("compact");
+    expect(usageHint(COMMANDS, "compact ")?.usage).toBe("[tokens]");
+  });
+
+  it("is silent while only the name is typed", () => {
+    expect(usageHint(COMMANDS, "compact")).toBeNull();
+    expect(usageHint(COMMANDS, "")).toBeNull();
+  });
+
+  it("has nothing to say about a word that is not a command", () => {
+    expect(usageHint(COMMANDS, "zzz 4000")).toBeNull();
+  });
+
+  it("carries the terminal flag through, so the hint can say so", () => {
+    expect(usageHint(COMMANDS, "login github")?.needsTerminal).toBe(true);
   });
 });

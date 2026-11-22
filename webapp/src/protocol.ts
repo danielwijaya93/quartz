@@ -36,6 +36,12 @@ export interface Command {
   name: string;
   description: string;
   usage?: string;
+  /**
+   * The command exists, but only the terminal can run it: it opens a picker,
+   * touches the clipboard or drives an OAuth flow. Optional because an older
+   * server does not send it at all, and absent means "works here".
+   */
+  needsTerminal?: boolean;
 }
 
 /** `CommandResult.kind` mirrors the Python `Literal`. */

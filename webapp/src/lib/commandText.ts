@@ -1,5 +1,7 @@
 /**
- * Command text that is really a table.
+ * Command text: the columnar output some commands return, and the rules that
+ * decide when a `/` draft has stopped being a command and gone back to being a
+ * prompt.
  *
  * Several commands return `kind: "text"` with columnar, newline-separated output
  * - `/help` is the obvious one, listing every command and then every keybinding.
@@ -134,4 +136,70 @@ export function parseCommandText(body: string): CommandTextDocument | null {
   if (populated.length === 0) return null;
 
   return { intro: intro.length > 0 ? intro.join("\n") : null, sections: populated };
+}
+
+/* ------------------------------------------------------------ slash drafts */
+
+/**
+ * Telling a command from a prompt.
+ *
+ * `/` on an empty composer opens the command palette, which is the documented
+ * affordance -- but from then on the palette's filter is what receives the
+ * keystrokes, so the composer no longer sees the draft. People ask about paths,
+ * regexes and ratios ("/etc/hosts says what?", "/^a+b$/ is greedy?"), and every
+ * one of those opens a palette that used to swallow the question and run
+ * `/etc/hosts` as a command. So the palette watches what it is being typed and
+ * decides, as early as it honestly can, that this is prose.
+ */
+
+/** What a command name can be spelled with. Nothing else can continue one. */
+const NAME_CHARACTER = /[a-z0-9_-]/i;
+
+/**
+ * True once the query cannot be a command any more.
+ *
+ * The rule is deliberately early and local: a query whose first word is still a
+ * prefix of a real command name stays open (that is a command being typed),
+ * and anything else needs a reason to keep going. A space after a word that is
+ * not a command, or a character a name cannot contain -- `/` in `/etc/hosts`
+ * cannot be beaten -- means the person is writing a sentence.
+ *
+ * Names, not the fuzzy ranking, on purpose: ranking also matches descriptions, so
+ * "background bash jobs" would keep the palette open and swallow the sentence.
+ * The cost of that choice is that searching by description with a space in it now
+ * hands the text back to the composer; the cost of the other rule was running a
+ * command nobody asked for.
+ */
+export function isProseQuery(query: string, commandNames: readonly string[]): boolean {
+  if (query === "") return false;
+  const token = query.split(/\s/)[0] ?? "";
+  // A space before any name at all: nothing to complete, and nothing to run.
+  if (token === "") return true;
+  const lower = token.toLowerCase();
+  if (commandNames.some((name) => name.toLowerCase().startsWith(lower))) return false;
+  const hasSpace = /\s/.test(query);
+  const nameLike = [...token].every((character) => NAME_CHARACTER.test(character));
+  return hasSpace || !nameLike;
+}
+
+/**
+ * The composer's draft is the composer's own state, and the palette cannot write
+ * to it: while the palette is open, *it* is what is being typed into. When the
+ * text turns out not to be a command, the palette closes and hands it back
+ * through this event, which is the one thing two sibling components share.
+ *
+ * A DOM event rather than a module-level mailbox: nothing to reset between
+ * tests or sessions, and no singleton left holding somebody's draft.
+ */
+export const PROMPT_HANDOFF_EVENT = "quartz:prompt-handoff";
+
+/** Give the palette's filter text back to the composer, leading slash and all. */
+export function handOffPrompt(query: string): void {
+  window.dispatchEvent(new CustomEvent<string>(PROMPT_HANDOFF_EVENT, { detail: `/${query}` }));
+}
+
+/** Read a handoff event, or null for anything else that reaches the listener. */
+export function readPromptHandoff(event: Event): string | null {
+  const detail = (event as CustomEvent<unknown>).detail;
+  return typeof detail === "string" ? detail : null;
 }

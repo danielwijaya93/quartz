@@ -1,18 +1,23 @@
 import * as React from "react";
-import { Button, Chip, Input, Modal, Spinner, cn, useOverlayState } from "@heroui/react";
-import { ArrowUp, ChevronRight, Folder, FolderPlus, RefreshCw } from "lucide-react";
+import { Button, Input, Modal, Spinner, cn, useOverlayState } from "@heroui/react";
+import { ArrowUp, ChevronRight, CornerDownLeft, Folder, FolderPlus, RefreshCw } from "lucide-react";
 import {
-  currentName,
+  choiceForCreated,
+  choiceForListing,
   filterDirectories,
+  highlightedEntry,
+  indexOfEntry,
   parentPath,
+  stepHighlight,
   type DirectoryListing,
+  type PickerChoice,
 } from "@/lib/folderPicker";
 import { createDirectory, listDirectories } from "@/lib/sidebarApi";
 
 export interface FolderPickerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Called with the directory on screen. The caller decides what to do with it. */
+  /** Called with the folder that was chosen. The caller decides what to do next. */
   onChoose: (path: string) => void;
   /** Heading, so the same dialog can add a folder or start a session in one. */
   title: string;
@@ -28,6 +33,12 @@ export interface FolderPickerProps {
  * was handed to it by the server. That is also why "up" is a breadcrumb and a
  * button rather than an editable prefix -- on a phone, the breadcrumb is the
  * explorer.
+ *
+ * Two things make it usable without a mouse. The filter keeps focus and the rows
+ * are a real listbox underneath it: arrows move an `aria-activedescendant`
+ * highlight, Enter opens the highlighted folder, Backspace on an empty filter goes
+ * up. And the primary button stays off until something has been chosen, so the
+ * dialog cannot start a session in whatever folder it happened to open on.
  */
 export function FolderPicker({
   open,
@@ -44,6 +55,41 @@ export function FolderPicker({
   const [creating, setCreating] = React.useState(false);
   const [folderName, setFolderName] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const [choice, setChoice] = React.useState<PickerChoice | null>(null);
+  const [active, setActive] = React.useState(-1);
+
+  const visible = React.useMemo(
+    () => (listing ? filterDirectories(listing.entries, query) : []),
+    [listing, query],
+  );
+
+  const up = listing ? parentPath(listing) : null;
+  const highlighted = highlightedEntry(visible, active);
+
+  const filterRef = React.useRef<HTMLInputElement | null>(null);
+
+  /**
+   * The control that opened the dialog, so closing it puts the keyboard back
+   * where it was. Captured while rendering, because by the time effects run the
+   * overlay has already moved focus into itself -- and the overlay does not hand
+   * focus back on its own.
+   */
+  const openerRef = React.useRef<HTMLElement | null>(null);
+  const wasOpen = React.useRef(false);
+  if (open && !wasOpen.current) {
+    const focused = document.activeElement;
+    openerRef.current =
+      focused instanceof HTMLElement && focused !== document.body ? focused : null;
+  }
+  wasOpen.current = open;
+
+  React.useEffect(() => {
+    if (open) return;
+    const opener = openerRef.current;
+    openerRef.current = null;
+    // A dialog that closes onto <body> loses a keyboard user's place in the page.
+    if (opener !== null && opener.isConnected) opener.focus();
+  }, [open]);
 
   const load = React.useCallback(async (path?: string) => {
     setLoading(true);
@@ -52,6 +98,11 @@ export function FolderPicker({
       const next = await listDirectories(path);
       setListing(next);
       setQuery("");
+      setActive(next.entries.length === 0 ? -1 : 0);
+      // Opening a folder, or walking up out of one, *is* pointing at it. The
+      // initial load is not: it is where the picker happened to land, and
+      // treating that as a choice is the accident this dialog exists to avoid.
+      setChoice(path === undefined ? null : choiceForListing(next));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not read that folder");
     } finally {
@@ -64,19 +115,64 @@ export function FolderPicker({
   // you want is usually near where you started.
   React.useEffect(() => {
     if (!open) return;
+    // Parking the keyboard in the filter is what makes the dialog usable without
+    // a mouse: opening it is followed by typing a folder's name or arrowing into
+    // the list, never by reaching for the pointer. Closing puts focus back on the
+    // control that opened the picker -- see `openerRef` above.
+    const frame = window.requestAnimationFrame(() => filterRef.current?.focus());
     setListing(null);
     setQuery("");
     setCreating(false);
     setFolderName("");
+    setChoice(null);
+    setActive(-1);
     void load();
+    return () => window.cancelAnimationFrame(frame);
   }, [open, load]);
 
-  const visible = React.useMemo(
-    () => (listing ? filterDirectories(listing.entries, query) : []),
-    [listing, query],
-  );
+  const onFilterChange = (value: string): void => {
+    setQuery(value);
+    // Typing narrows the list under the highlight, so put it on the first row:
+    // pressing Enter straight after typing a folder's name should open it.
+    setActive(filterDirectories(listing?.entries ?? [], value).length === 0 ? -1 : 0);
+  };
 
-  const up = listing ? parentPath(listing) : null;
+  const goUp = (): void => {
+    if (up !== null && !loading) void load(up);
+  };
+
+  const chooseThisFolder = (): void => {
+    if (listing !== null) setChoice(choiceForListing(listing));
+  };
+
+  const onFilterKeyDown = (event: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActive((prev) => stepHighlight(prev, visible.length, 1));
+      return;
+    }
+    if (event.key === "ArrowUp" && event.altKey) {
+      event.preventDefault();
+      goUp();
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActive((prev) => stepHighlight(prev, visible.length, -1));
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (highlighted !== null) void load(highlighted.path);
+      return;
+    }
+    if (event.key === "Backspace" && query === "") {
+      // An empty filter has nothing to delete, so Backspace means "leave this
+      // folder" -- the same gesture as walking up a tree on the way in.
+      event.preventDefault();
+      goUp();
+    }
+  };
 
   const submitNewFolder = async (event: React.FormEvent): Promise<void> => {
     event.preventDefault();
@@ -94,12 +190,18 @@ export function FolderPicker({
       setQuery("");
       setFolderName("");
       setCreating(false);
+      setActive(Math.max(0, indexOfEntry(next.entries, name)));
+      // The folder was made on purpose, so it is the destination -- not a row the
+      // person then has to find and open.
+      setChoice(choiceForCreated(next, name));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not create that folder");
     } finally {
       setBusy(false);
     }
   };
+
+  const canChoose = choice !== null && listing !== null && listing.error === null && !busy;
 
   return (
     <Modal state={state}>
@@ -117,9 +219,7 @@ export function FolderPicker({
                 variant="ghost"
                 aria-label="Go up one folder"
                 isDisabled={up === null || loading}
-                onPress={() => {
-                  if (up !== null) void load(up);
-                }}
+                onPress={goUp}
               >
                 <ArrowUp aria-hidden="true" className="size-4" />
               </Button>
@@ -153,10 +253,21 @@ export function FolderPicker({
 
             <div className="flex items-center gap-2 px-4 py-2">
               <Input
+                ref={filterRef}
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => onFilterChange(event.target.value)}
+                onKeyDown={onFilterKeyDown}
                 placeholder="Filter folders…"
                 aria-label="Filter folders"
+                // A filter that drives a listbox is a combobox: it owns focus, and
+                // `aria-activedescendant` is what makes the highlighted row audible.
+                role="combobox"
+                aria-expanded="true"
+                aria-controls="folder-options"
+                aria-autocomplete="list"
+                aria-activedescendant={
+                  highlighted === null || active < 0 ? undefined : `folder-option-${active}`
+                }
                 spellCheck={false}
                 autoComplete="off"
                 className="border-0 bg-transparent px-0 shadow-none"
@@ -191,19 +302,36 @@ export function FolderPicker({
                 </p>
               ) : null}
 
-              <ul className="space-y-0.5" aria-label="Folders">
-                {visible.map((entry) => (
-                  <li key={entry.name}>
-                    <button
-                      type="button"
+              <ul id="folder-options" role="listbox" aria-label="Folders" className="space-y-0.5">
+                {visible.map((entry, index) => {
+                  const selected = index === active;
+                  return (
+                    <li
+                      key={entry.name}
+                      id={`folder-option-${index}`}
+                      role="option"
+                      aria-selected={selected}
+                      data-selected={selected}
+                      onMouseEnter={() => setActive(index)}
                       onClick={() => void load(entry.path)}
-                      className="flex min-h-10 w-full cursor-pointer items-center gap-2 rounded-lg px-3 text-left text-sm hover:bg-surface-secondary focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none"
+                      className={cn(
+                        "flex min-h-10 cursor-pointer items-center gap-2 rounded-lg px-3 text-sm",
+                        selected
+                          ? "bg-accent-soft text-accent-soft-foreground"
+                          : "text-foreground hover:bg-surface-secondary",
+                      )}
                     >
                       <Folder aria-hidden="true" className="size-4 shrink-0 text-muted" />
                       <span className="truncate">{entry.name}</span>
-                    </button>
-                  </li>
-                ))}
+                      {selected ? (
+                        <CornerDownLeft
+                          aria-hidden="true"
+                          className="ml-auto size-3.5 shrink-0 self-center text-muted"
+                        />
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
 
               {error !== null && listing === null ? (
@@ -244,6 +372,20 @@ export function FolderPicker({
                 </form>
               ) : (
                 <>
+                  <p aria-live="polite" className="w-full text-xs">
+                    <span className="text-muted">Destination </span>
+                    {choice !== null ? (
+                      <span className="font-mono break-all text-foreground">{choice}</span>
+                    ) : (
+                      <>
+                        <span className="text-foreground">not chosen yet</span>
+                        <span className="text-muted"> — this folder is </span>
+                        <span className="font-mono break-all text-foreground">
+                          {listing?.path || "…"}
+                        </span>
+                      </>
+                    )}
+                  </p>
                   <Button
                     size="sm"
                     variant="ghost"
@@ -254,19 +396,29 @@ export function FolderPicker({
                     New folder
                   </Button>
                   <div className="ml-auto flex items-center gap-2">
-                    <Chip size="sm" variant="soft" color="default" className="hidden sm:inline-flex">
-                      <span className="max-w-[12rem] truncate">{listing ? currentName(listing) : "…"}</span>
-                    </Chip>
+                    {choice === null ? (
+                      // The folder the dialog opened on is a real destination, so
+                      // there is always a way to pick it without navigating away
+                      // and back just to arm the primary action.
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        isDisabled={listing === null || listing.error !== null || busy}
+                        onPress={chooseThisFolder}
+                      >
+                        Use this folder
+                      </Button>
+                    ) : null}
                     <Button size="sm" variant="ghost" onPress={() => onOpenChange(false)}>
                       Cancel
                     </Button>
                     <Button
                       size="sm"
                       variant="primary"
-                      isDisabled={listing === null || listing.error !== null || busy}
+                      isDisabled={!canChoose}
                       onPress={() => {
-                        if (listing) {
-                          onChoose(listing.path);
+                        if (choice !== null) {
+                          onChoose(choice);
                           onOpenChange(false);
                         }
                       }}
