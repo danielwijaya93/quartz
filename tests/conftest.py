@@ -2,11 +2,50 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Iterator
 from typing import Any
+
+import pytest
 
 from quartz.core.compact import CompactionResult
 from quartz.core.events import TurnObserver
 from quartz.kernel.client import CellResult
+
+
+@pytest.fixture(scope="session", autouse=True)
+def isolated_quartz_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Keep every persisted-state path out of the developer's own `$HOME`.
+
+    Session-scoped and autouse because the paths are read lazily, per request: the
+    sidebar path is consulted inside `create_app`'s `store()` on the first request,
+    not when the app is built. A test that constructs `create_app` itself (several
+    in `tests/web` do) therefore wrote into the real `~/.quartz/web/sidebar.json`
+    unless it remembered three `monkeypatch.setenv` calls -- and one that forgot
+    was a test silently editing the sidebar the developer uses every day.
+
+    The per-test fixtures (`app_client`, `picker_app`) still redirect these to their
+    own `tmp_path`; this is the floor under them, not a replacement, so an override
+    is a narrowing rather than a fight.
+    """
+    root = tmp_path_factory.mktemp("quartz-home")
+    overrides = {
+        "QUARTZ_WEB_SIDEBAR": root / "web" / "sidebar.json",
+        "QUARTZ_CONFIG_FILE": root / "config.json",
+        "SESSION_DIR": root / "sessions",
+    }
+    previous = {key: os.environ.get(key) for key in overrides}
+    os.environ.update({key: str(path) for key, path in overrides.items()})
+    try:
+        yield
+    finally:
+        # `monkeypatch` in a test has already restored its own value by now, so this
+        # only has to put the process back the way it found it.
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 class RecordingObserver(TurnObserver):
