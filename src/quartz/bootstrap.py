@@ -151,7 +151,7 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
             else:
                 active_session, messages = Session.load(target_id)
             resumed = True
-            restored_notice = active_session.restore_kernel(kernel)
+            restored_notice = active_session.restore_kernel(kernel, root=cwd)
             if restored_notice:
                 messages.append({"role": "user", "content": restored_notice})
         else:

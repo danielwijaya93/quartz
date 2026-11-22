@@ -393,7 +393,7 @@ def _terminal_continue(rt: AgentRuntime, arg: str) -> None:
     rt.turn_count = 0
     rt.wait_snapshot()
     rt.kernel.restart()
-    restored_notice = rt.active_session.restore_kernel(rt.kernel)
+    restored_notice = rt.active_session.restore_kernel(rt.kernel, root=rt.cwd)
     if restored_notice:
         rt.messages.append({"role": "user", "content": restored_notice})
     # Restored last-turn usage is a provider count from the old session; it

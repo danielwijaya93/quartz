@@ -575,8 +575,13 @@ class Session:
     def save_kernel(self, kernel: KernelClient) -> dict[str, Any]:
         return kernel.snapshot(self.snapshot_dir)
 
-    def restore_kernel(self, kernel: KernelClient) -> str | None:
+    def restore_kernel(self, kernel: KernelClient, root: Path | None = None) -> str | None:
+        """Put this session's kernel state back, in `root` when the caller says where.
+
+        ``root`` is the folder the session is being resumed in. Without it the
+        snapshot's own directory wins, which is only right when nothing moved.
+        """
         if not self.snapshot_dir.is_dir():
             return None
-        res = kernel.restore(self.snapshot_dir)
+        res = kernel.restore(self.snapshot_dir, root=root)
         return format_python_state_restored(res["restored"], res["skipped"])
