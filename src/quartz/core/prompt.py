@@ -139,6 +139,7 @@ def build_system_prompt(
     global_helpers_path: Path | None = None,
     project_helpers_path: Path | None = None,
     headless: bool = False,
+    trusted: bool | None = None,
 ) -> str:
     """Assemble the static prompt plus dynamic environment, skills, and context files."""
     work_dir = (cwd or Path.cwd()).resolve()
@@ -146,6 +147,7 @@ def build_system_prompt(
         cwd=work_dir,
         global_helpers_path=global_helpers_path,
         project_helpers_path=project_helpers_path,
+        trusted=trusted,
     )
     helpers_block = format_helpers_for_prompt(loaded_helpers)
     prompt_base = f"{PROMPT_HEADER}\n\n{helpers_block}\n\n{PROMPT_RULES}"
@@ -159,7 +161,7 @@ def build_system_prompt(
     )
     sections.append(env_block)
 
-    mcp_servers = load_mcp_servers(work_dir)
+    mcp_servers = load_mcp_servers(work_dir, trusted=trusted)
     if mcp_servers:
         tool_cache = load_mcp_tool_cache()
         mcp_lines = [

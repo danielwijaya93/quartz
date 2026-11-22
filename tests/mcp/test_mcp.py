@@ -178,17 +178,35 @@ def _write_cfg(path: Path, servers: dict) -> None:
     path.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
 
 
-def test_project_mcp_config_overrides_global(tmp_path: Path, monkeypatch) -> None:
+def test_global_mcp_config_wins_over_project_and_untrusted_is_skipped(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import pytest
+
+    monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "config.json"))
+    monkeypatch.delenv("QUARTZ_TRUST_PROJECT", raising=False)
+
     global_cfg = tmp_path / "global.json"
     _write_cfg(global_cfg, {"a": {"command": "ga"}, "b": {"command": "gb"}, "c": {"command": "gc"}})
     monkeypatch.setenv("MCP_CONFIG", str(global_cfg))
     project = tmp_path / "proj"
-    _write_cfg(project / ".quartz" / "mcp.json", {"a": {"command": "pa"}, "b": {"enabled": False, "command": "gb"}, "d": {"url": "http://x"}})
+    _write_cfg(
+        project / ".quartz" / "mcp.json",
+        {"a": {"command": "pa"}, "b": {"enabled": False, "command": "gb"}, "d": {"url": "http://x"}},
+    )
 
+    # Untrusted project: .quartz/mcp.json is skipped with a warning.
+    with pytest.warns(UserWarning, match="Skipped untrusted project MCP config"):
+        untrusted_servers = load_mcp_servers(project)
+    assert set(untrusted_servers) == {"a", "b", "c"}
+    assert "d" not in untrusted_servers
+
+    # Trusted project: new server 'd' is added, but global 'a' and 'b' cannot be overridden/disabled.
+    monkeypatch.setenv("QUARTZ_TRUST_PROJECT", "1")
     servers = load_mcp_servers(project)
-    assert servers["a"]["command"] == "pa"
-    assert "b" not in servers
-    assert set(servers) == {"a", "c", "d"}
+    assert servers["a"]["command"] == "ga"
+    assert "b" in servers
+    assert set(servers) == {"a", "b", "c", "d"}
     assert set(load_mcp_servers()) == {"a", "b", "c"}
     assert set(load_mcp_servers(tmp_path / "empty")) == {"a", "b", "c"}
 

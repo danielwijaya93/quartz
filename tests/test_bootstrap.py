@@ -387,3 +387,25 @@ def test_adapter_keeps_the_short_path_in_the_missing_session_message(
     assert excinfo.value.code == 1
     assert "Error: No previous session found for ~/proj." in buf.getvalue()
     assert _last_kernel().closed is True
+
+
+def test_trust_project_option_persists_before_building_runtime(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from quartz.settings import is_project_trusted
+
+    monkeypatch.setattr(bootstrap, "build_provider", _stub_provider)
+    monkeypatch.delenv("QUARTZ_TRUST_PROJECT", raising=False)
+    proj = env / "proj"
+    proj.mkdir(parents=True, exist_ok=True)
+    assert is_project_trusted(proj) is False
+
+    bootstrap.build_runtime(_options(env, cwd=proj, trust_project=True))
+    assert is_project_trusted(proj) is True
+
+
+def test_adapter_maps_trust_project_flag() -> None:
+    opts = cli._bootstrap_options(_namespace(trust_project=True))
+    assert opts.trust_project is True
+    default_opts = cli._bootstrap_options(_namespace())
+    assert default_opts.trust_project is False
