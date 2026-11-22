@@ -232,4 +232,112 @@ describe("Composer", () => {
     expect(screen.getByRole("listbox", { name: "Available commands" })).toBeInTheDocument();
     expect(screen.getByText("/usage")).toBeInTheDocument();
   });
+
+  it("runs /reset via onRunCommand", async () => {
+    const user = userEvent.setup();
+    const onRunCommand = vi.fn();
+    const { onSubmit } = setup({
+      commands: [
+        { name: "help", description: "Show available commands" },
+        { name: "reset", description: "Reset the kernel to a clean namespace" },
+      ],
+      onRunCommand,
+    });
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+    await user.click(textarea);
+    await user.keyboard("/reset{Enter}");
+    expect(onRunCommand).toHaveBeenCalledWith("reset", undefined);
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("");
+  });
+
+  it("runs a known command with arguments via onRunCommand", async () => {
+    const user = userEvent.setup();
+    const onRunCommand = vi.fn();
+    const { onSubmit } = setup({
+      commands: [{ name: "compact", description: "Compact the conversation now", usage: "[tokens]" }],
+      onRunCommand,
+    });
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+    await user.click(textarea);
+    await user.keyboard("/compact 4000{Enter}");
+    expect(onRunCommand).toHaveBeenCalledWith("compact", "4000");
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("");
+  });
+
+  it("sends unknown /command prompts as text instead of misrouting to onRunCommand", async () => {
+    const user = userEvent.setup();
+    const onRunCommand = vi.fn();
+    const { onSubmit } = setup({
+      commands: [
+        { name: "help", description: "Show available commands" },
+        { name: "reset", description: "Reset the kernel" },
+      ],
+      onRunCommand,
+    });
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+    await user.click(textarea);
+    await user.keyboard("/unknownword{Enter}");
+    expect(onRunCommand).not.toHaveBeenCalled();
+    expect(onSubmit).toHaveBeenCalledWith("/unknownword", []);
+    expect(textarea).toHaveValue("");
+  });
+
+  it("steers unknown /command prompts when a turn is running", async () => {
+    const user = userEvent.setup();
+    const onRunCommand = vi.fn();
+    const { onSteer } = setup({
+      turnRunning: true,
+      commands: [{ name: "help", description: "Show available commands" }],
+      onRunCommand,
+    });
+    const textarea = screen.getByRole("textbox", { name: "Steer the running turn" });
+    await user.click(textarea);
+    await user.keyboard("/unknownword{Enter}");
+    expect(onRunCommand).not.toHaveBeenCalled();
+    expect(onSteer).toHaveBeenCalledWith("/unknownword");
+    expect(textarea).toHaveValue("");
+  });
+
+  it("preserves typed arguments when another command matches the full query", async () => {
+    const user = userEvent.setup();
+    const onRunCommand = vi.fn();
+    const { onSubmit } = setup({
+      commands: [
+        { name: "reset", description: "Clear the kernel namespace" },
+        { name: "image", description: "Attach an image file", usage: "<path|clear>" },
+        { name: "expand", description: "Show full output", usage: "[n]" },
+      ],
+      onRunCommand,
+    });
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+    await user.click(textarea);
+    await user.keyboard("/image clear{Enter}");
+    expect(onRunCommand).toHaveBeenCalledWith("image", "clear");
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("");
+  });
+
+  it("blocks oversized payloads exceeding MAX_FRAME_BYTES without clearing draft or attachments", async () => {
+    const user = userEvent.setup();
+    const { onSubmit } = setup();
+    const bigBytes = new Uint8Array(800 * 1024);
+    const file = new File([bigBytes], "huge.png", { type: "image/png" });
+    const input = screen.getByLabelText("Attach images");
+    await user.upload(input, file);
+    expect(await screen.findByAltText("Pending attachment 1")).toBeInTheDocument();
+
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+    await user.click(textarea);
+    await user.keyboard("keep me{Enter}");
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("1 MiB");
+    expect(textarea).toHaveValue("keep me");
+    expect(screen.getByAltText("Pending attachment 1")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Remove attachment 1" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
 });

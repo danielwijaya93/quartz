@@ -19,6 +19,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/ws": { target: "ws://127.0.0.1:8765", ws: true, rewriteWsOrigin: true },
+      "/api": { target: "http://127.0.0.1:8765" },
     },
   },
   build: {
@@ -59,7 +60,10 @@ export default defineConfig({
           ) {
             return undefined;
           }
-          if (id.includes("node_modules/highlight.js") || id.includes("node_modules/lowlight")) {
+          if (id.includes("commonjsHelpers")) {
+            return "commonjs";
+          }
+          if (id.includes("node_modules/highlight.js")) {
             return "highlight";
           }
           if (id.includes("node_modules")) return "vendor";

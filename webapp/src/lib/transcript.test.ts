@@ -584,6 +584,95 @@ describe("session_state and reconnect", () => {
     const running = fold([{ ...history, turnRunning: true } as ServerMessage]);
     expect(running.turnRunning).toBe(true);
   });
+
+  it("does not duplicate assistant rows when session_state replays after a finished turn (e.g. Rich UI toggle)", () => {
+    const live = fold([
+      history,
+      { type: "turn_start", turnId: "t1" },
+      { type: "text_delta", text: "root = Stack([])" },
+      { type: "turn_end", status: "ok", tokens: 1, elapsedMs: 1 },
+    ]);
+    const liveAssistant = live.rows.find(
+      (row): row is AssistantRow => row.kind === "assistant" && row.text === "root = Stack([])",
+    );
+    expect(liveAssistant).toBeDefined();
+    const withForm = setRowFormState(live, liveAssistant!.id, { field: "saved" });
+
+    const afterToggle = fold(
+      [
+        {
+          ...history,
+          messages: [
+            ...history.messages,
+            { role: "user", content: "draw UI" },
+            { role: "assistant", content: "root = Stack([])" },
+          ],
+        },
+      ],
+      withForm,
+    );
+
+    const assistants = afterToggle.rows.filter((row) => row.kind === "assistant");
+    expect(assistants).toHaveLength(3);
+    expect(assistants[2]).toMatchObject({
+      text: "root = Stack([])",
+      formState: { field: "saved" },
+    });
+  });
+
+  it("does not split the live assistant row on mid-turn reconnect (session_state -> turn_start -> text_delta)", () => {
+    const reconnected = fold([
+      {
+        ...history,
+        turnRunning: true,
+        streamingText: "Hello ",
+      },
+      { type: "turn_start", turnId: "t-reattach" },
+      { type: "text_delta", text: "world" },
+    ]);
+
+    const assistants = reconnected.rows.filter((row) => row.kind === "assistant");
+    expect(assistants).toHaveLength(3);
+    expect(assistants[2]).toMatchObject({ text: "Hello world" });
+  });
+
+  it("preserves multimodal user prompts and tool outputs on history replay", () => {
+    const state = fold([
+      {
+        ...history,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "what is in this image?" },
+              { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+            ],
+          },
+          {
+            role: "assistant",
+            content: "let me inspect",
+            tool_calls: [
+              { id: "tc-json", function: { name: "ipython", arguments: '{"code":"x = 42\\nprint(x)"}' } },
+            ],
+          },
+          { role: "tool", tool_call_id: "tc-json", content: "42\n" },
+        ],
+      },
+    ]);
+
+    expect(state.rows[0]).toMatchObject({
+      kind: "user",
+      text: "what is in this image?",
+      images: [{ mimeType: "image/png", data: "AAAA" }],
+    });
+    expect(state.rows[2]).toMatchObject({
+      kind: "tool",
+      id: "tc-json",
+      code: "x = 42\nprint(x)",
+      status: "ok",
+      output: "42\n",
+    });
+  });
 });
 
 describe("robustness", () => {

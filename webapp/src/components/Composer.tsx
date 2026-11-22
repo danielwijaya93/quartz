@@ -7,6 +7,7 @@ import type { ConnectionStatus } from "@/lib/connection";
 import type { Command, ImageAttachment } from "@/protocol";
 
 const MAX_TEXTAREA_PX = 200;
+export const MAX_FRAME_BYTES = 1024 * 1024;
 
 export interface ComposerProps {
   connection: ConnectionStatus;
@@ -64,6 +65,7 @@ export function Composer({
   const [caretAtEnd, setCaretAtEnd] = React.useState(false);
   const [slashDismissed, setSlashDismissed] = React.useState(false);
   const [activeCmd, setActiveCmd] = React.useState(0);
+  const [payloadError, setPayloadError] = React.useState<string | null>(null);
   const localRef = React.useRef<HTMLTextAreaElement | null>(null);
   const textareaRef = forwardedRef ?? localRef;
   const fileRef = React.useRef<HTMLInputElement | null>(null);
@@ -146,6 +148,7 @@ export function Composer({
     (name: string, arg?: string) => {
       onRunCommand?.(name, arg);
       setText("");
+      setPayloadError(null);
       setSlashDismissed(false);
       setHistoryIndex(null);
       textareaRef.current?.focus();
@@ -157,21 +160,41 @@ export function Composer({
     const value = text.trim();
     if (value === "" && images.length === 0) return;
     if (slashOpen && onRunCommand) {
-      const selected = inlineCommands[activeCmd];
-      if (selected) {
-        runInlineCommand(selected.name);
-        return;
-      }
       const parsed = parseCommandInput(value);
-      if (parsed.name !== "") {
-        runInlineCommand(parsed.name, parsed.arg === "" ? undefined : parsed.arg);
-        return;
+      const exact = commands.find(
+        (command) => command.name.toLowerCase() === parsed.name.toLowerCase(),
+      );
+      if (parsed.arg !== "") {
+        if (exact) {
+          runInlineCommand(exact.name, parsed.arg);
+          return;
+        }
+      } else {
+        const selected = inlineCommands[activeCmd];
+        if (selected) {
+          runInlineCommand(selected.name);
+          return;
+        }
+        if (exact) {
+          runInlineCommand(exact.name);
+          return;
+        }
       }
     }
     if (turnRunning) {
       if (value === "") return;
       onSteer(value);
     } else {
+      const frameBytes = new TextEncoder().encode(
+        JSON.stringify({ type: "prompt", text: value, images }),
+      ).length;
+      if (frameBytes > MAX_FRAME_BYTES) {
+        setPayloadError(
+          "Message and attachments exceed the 1 MiB limit — remove an attachment or shorten the text.",
+        );
+        return;
+      }
+      setPayloadError(null);
       onSubmit(value, images);
       setHistory((prev) => [...prev, value].filter((entry) => entry !== ""));
     }
@@ -180,6 +203,7 @@ export function Composer({
     setHistoryIndex(null);
   }, [
     activeCmd,
+    commands,
     images,
     inlineCommands,
     onRunCommand,
@@ -232,7 +256,10 @@ export function Composer({
       if (event.key === "Escape") {
         event.preventDefault();
         if (turnRunning) onCancel();
-        else if (text !== "") setText("");
+        else if (text !== "") {
+          setText("");
+          setPayloadError(null);
+        }
         return;
       }
       if (event.key === "/" && text === "" && commands.length === 0) {
@@ -280,6 +307,7 @@ export function Composer({
     if (!files || files.length === 0) return;
     const imageFiles = Array.from(files).filter((file) => file.type.startsWith("image/"));
     if (imageFiles.length === 0) return;
+    setPayloadError(null);
     void Promise.all(imageFiles.map(readAsAttachment)).then((attachments) => {
       setImages((prev) => [...prev, ...attachments]);
     });
@@ -378,6 +406,16 @@ export function Composer({
               </Alert.Description>
             </Alert.Content>
           </Alert>
+        ) : payloadError !== null ? (
+          <Alert status="danger" role="alert">
+            <Alert.Indicator />
+            <Alert.Content>
+              <Alert.Title>Message too large</Alert.Title>
+              <Alert.Description>
+                <span className="text-sm">{payloadError}</span>
+              </Alert.Description>
+            </Alert.Content>
+          </Alert>
         ) : null}
 
         <div className="rounded-2xl border border-border bg-surface/70 px-3 pt-2 pb-2 shadow-sm transition-colors focus-within:border-focus focus-within:ring-2 focus-within:ring-focus/20">
@@ -392,7 +430,10 @@ export function Composer({
                   />
                   <button
                     type="button"
-                    onClick={() => setImages((prev) => prev.filter((_, i) => i !== index))}
+                    onClick={() => {
+                      setImages((prev) => prev.filter((_, i) => i !== index));
+                      setPayloadError(null);
+                    }}
                     aria-label={`Remove attachment ${index + 1}`}
                     className="absolute -top-1.5 -right-1.5 inline-flex size-5 cursor-pointer items-center justify-center rounded-full border border-border bg-surface text-muted hover:text-foreground"
                   >
@@ -410,6 +451,7 @@ export function Composer({
             disabled={disabled}
             onChange={(event) => {
               setText(event.target.value);
+              setPayloadError(null);
               setSlashDismissed(false);
             }}
             onKeyDown={onKeyDown}

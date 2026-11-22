@@ -70,6 +70,27 @@ describe("AssistantRowView", () => {
     expect(screen.queryByTestId("openui-surface")).toBeNull();
   });
 
+  it("does not treat a python code block containing root = ... as openui-lang", async () => {
+    const python = "```python\nroot = TreeNode(1)\nprint(root)\n```";
+    const { container } = renderRow({ text: python, richUi: true });
+    await waitFor(() => expect(container.querySelector("code")).not.toBeNull());
+    expect(screen.queryByTestId("openui-surface")).toBeNull();
+    expect(screen.queryByRole("button", { name: "View source" })).toBeNull();
+  });
+
+  it("does not treat markdown prose with an embedded root = Stack(...) fence as openui-lang", async () => {
+    const prose = "Here is an example:\n\n```python\nroot = Stack([1, 2])\n```";
+    const { container } = renderRow({ text: prose, richUi: true });
+    await waitFor(() => expect(container.querySelector("code")).not.toBeNull());
+    expect(screen.queryByTestId("openui-surface")).toBeNull();
+  });
+
+  it("does not treat a plain variable assignment root = '/tmp' as openui-lang", async () => {
+    const { container } = renderRow({ text: "root = \"/tmp/data\"", richUi: true });
+    await waitFor(() => expect(container.querySelector("p")).not.toBeNull());
+    expect(screen.queryByTestId("openui-surface")).toBeNull();
+  });
+
   it("renders a fenced program while it is still streaming", async () => {
     // The fence has no closing backticks yet: detection runs on the stripped text,
     // so a partial tree renders instead of a code block full of DSL.

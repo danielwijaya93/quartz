@@ -72,13 +72,6 @@ export function buildActionUserMessage(event: ActionEvent): string {
   return event.humanFriendlyMessage ? built : built.slice(built.indexOf("\n") + 1);
 }
 
-/** Open a link the surface asked to open. Always leaves the app: it is a tool, not a browser. */
-export function openExternalUrl(url: unknown): void {
-  if (typeof url !== "string" || url === "") return;
-  if (typeof window === "undefined") return;
-  window.open(url, "_blank", "noopener,noreferrer");
-}
-
 export function OpenUISurface({
   response,
   isStreaming,
