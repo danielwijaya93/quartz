@@ -304,7 +304,7 @@ export function Transcript({
             aria-label="Session transcript"
             className="mx-auto flex w-full max-w-3xl flex-col gap-4"
           >
-            {rows.length === 0 ? <EmptyTranscript cwd={cwd} /> : null}
+            {rows.length === 0 ? <EmptyTranscript cwd={cwd} onPrompt={onPrompt} /> : null}
             {items.map((item) =>
               isTurn(item) ? (
                 <TurnView
@@ -406,16 +406,47 @@ function JumpToNewest({
  * messages, so it has no log and no row in the sidebar, and without its folder's
  * name here the screen would look exactly as it did before the tap.
  */
-function EmptyTranscript({ cwd }: { cwd: string }): React.ReactElement {
+const STARTER_PROMPTS = [
+  "Summarize this repository and its key files",
+  "Show recent git commits and current status",
+  "What tests or checks can I run here?",
+];
+
+function EmptyTranscript({
+  cwd,
+  onPrompt,
+}: {
+  cwd: string;
+  onPrompt: (text: string) => void;
+}): React.ReactElement {
   const folder = cwd ? directoryLabel(cwd) : "";
   return (
-    <div className="flex flex-col items-center gap-2 py-24 text-center">
-      <p className="text-base font-medium text-foreground" title={cwd || undefined}>
-        {folder ? `New session in ${folder}` : "No turns yet"}
-      </p>
-      <p className="text-sm text-muted">
-        Send a prompt to start, or press <kbd className="font-mono">/</kbd> for commands.
-      </p>
+    <div className="flex flex-col items-center gap-4 py-20 text-center">
+      <div className="flex size-10 items-center justify-center rounded-2xl border border-border bg-surface-secondary/70 shadow-xs">
+        <span aria-hidden="true" className="size-3 rounded-full bg-accent" />
+      </div>
+      <div className="space-y-1.5">
+        <p className="text-base font-semibold tracking-tight text-foreground" title={cwd || undefined}>
+          {folder ? `New session in ${folder}` : "No turns yet"}
+        </p>
+        <p className="text-sm text-muted">
+          Send a prompt to start, or press <kbd className="rounded border border-border bg-surface-secondary px-1.5 py-0.5 font-mono text-xs">/</kbd> for commands.
+        </p>
+      </div>
+      {folder ? (
+        <div className="mt-2 flex flex-wrap justify-center gap-2">
+          {STARTER_PROMPTS.map((suggestion) => (
+            <button
+              key={suggestion}
+              type="button"
+              onClick={() => onPrompt(suggestion)}
+              className="cursor-pointer rounded-full border border-border bg-surface/80 px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/40 hover:bg-surface-secondary hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none"
+            >
+              {suggestion}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

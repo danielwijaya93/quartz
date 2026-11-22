@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Button, Input, Modal, Spinner, cn, useOverlayState } from "@heroui/react";
-import { ArrowUp, ChevronRight, CornerDownLeft, Folder, FolderPlus, RefreshCw } from "lucide-react";
+import { ArrowUp, ChevronRight, CornerDownLeft, Folder, FolderPlus, RefreshCw, Search } from "lucide-react";
 import {
   choiceForCreated,
   choiceForListing,
@@ -251,27 +251,30 @@ export function FolderPicker({
               </ol>
             </div>
 
-            <div className="flex items-center gap-2 px-4 py-2">
-              <Input
-                ref={filterRef}
-                value={query}
-                onChange={(event) => onFilterChange(event.target.value)}
-                onKeyDown={onFilterKeyDown}
-                placeholder="Filter folders…"
-                aria-label="Filter folders"
-                // A filter that drives a listbox is a combobox: it owns focus, and
-                // `aria-activedescendant` is what makes the highlighted row audible.
-                role="combobox"
-                aria-expanded="true"
-                aria-controls="folder-options"
-                aria-autocomplete="list"
-                aria-activedescendant={
-                  highlighted === null || active < 0 ? undefined : `folder-option-${active}`
-                }
-                spellCheck={false}
-                autoComplete="off"
-                className="border-0 bg-transparent px-0 shadow-none"
-              />
+            <div className="px-4 py-2">
+              <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-secondary/50 px-3 py-1.5 focus-within:border-focus focus-within:ring-2 focus-within:ring-focus/25">
+                <Search aria-hidden="true" className="size-4 shrink-0 text-muted" />
+                <Input
+                  ref={filterRef}
+                  value={query}
+                  onChange={(event) => onFilterChange(event.target.value)}
+                  onKeyDown={onFilterKeyDown}
+                  placeholder="Filter folders…"
+                  aria-label="Filter folders"
+                  // A filter that drives a listbox is a combobox: it owns focus, and
+                  // `aria-activedescendant` is what makes the highlighted row audible.
+                  role="combobox"
+                  aria-expanded="true"
+                  aria-controls="folder-options"
+                  aria-autocomplete="list"
+                  aria-activedescendant={
+                    highlighted === null || active < 0 ? undefined : `folder-option-${active}`
+                  }
+                  spellCheck={false}
+                  autoComplete="off"
+                  className="w-full border-0 bg-transparent px-0 shadow-none outline-none! ring-0! focus-visible:outline-none!"
+                />
+              </div>
             </div>
 
             {error !== null ? (
@@ -386,45 +389,48 @@ export function FolderPicker({
                       </>
                     )}
                   </p>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onPress={() => setCreating(true)}
-                    isDisabled={listing === null || listing.error !== null}
-                  >
-                    <FolderPlus aria-hidden="true" className="size-3.5" />
-                    New folder
-                  </Button>
-                  <div className="ml-auto flex items-center gap-2">
-                    {choice === null ? (
-                      // The folder the dialog opened on is a real destination, so
-                      // there is always a way to pick it without navigating away
-                      // and back just to arm the primary action.
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        isDisabled={listing === null || listing.error !== null || busy}
-                        onPress={chooseThisFolder}
-                      >
-                        Use this folder
-                      </Button>
-                    ) : null}
-                    <Button size="sm" variant="ghost" onPress={() => onOpenChange(false)}>
-                      Cancel
-                    </Button>
+                  <div className="flex w-full items-center justify-between gap-2">
                     <Button
                       size="sm"
-                      variant="primary"
-                      isDisabled={!canChoose}
-                      onPress={() => {
-                        if (choice !== null) {
-                          onChoose(choice);
-                          onOpenChange(false);
-                        }
-                      }}
+                      variant="ghost"
+                      onPress={() => setCreating(true)}
+                      isDisabled={listing === null || listing.error !== null}
+                      className="shrink-0"
                     >
-                      {chooseLabel}
+                      <FolderPlus aria-hidden="true" className="size-3.5" />
+                      New folder
                     </Button>
+                    <div className="flex items-center gap-2">
+                      {choice === null ? (
+                        // The folder the dialog opened on is a real destination, so
+                        // there is always a way to pick it without navigating away
+                        // and back just to arm the primary action.
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          isDisabled={listing === null || listing.error !== null || busy}
+                          onPress={chooseThisFolder}
+                        >
+                          Use this folder
+                        </Button>
+                      ) : null}
+                      <Button size="sm" variant="ghost" onPress={() => onOpenChange(false)}>
+                        Cancel
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        isDisabled={!canChoose}
+                        onPress={() => {
+                          if (choice !== null) {
+                            onChoose(choice);
+                            onOpenChange(false);
+                          }
+                        }}
+                      >
+                        {chooseLabel}
+                      </Button>
+                    </div>
                   </div>
                 </>
               )}

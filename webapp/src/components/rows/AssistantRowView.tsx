@@ -61,7 +61,7 @@ export interface AssistantRowViewProps {
 export function AssistantRowView({
   row,
   streaming,
-  richUi,
+  richUi: _richUi,
   onPrompt,
   onFormState,
   showSpeaker = true,
@@ -70,7 +70,9 @@ export function AssistantRowView({
     () => stripOpenUIFences(row.text, streaming),
     [row.text, streaming],
   );
-  const isOpenUILang = richUi && hasOpenUILangSyntax(cleaned);
+  const hasOpenUI = hasOpenUILangSyntax(cleaned);
+  const [showSource, setShowSource] = React.useState(false);
+  const isOpenUILang = hasOpenUI && !showSource;
 
   const handleContinue = React.useCallback(
     (message: string) => {
@@ -97,10 +99,19 @@ export function AssistantRowView({
   return (
     <article className="flex flex-col gap-1.5">
       {showSpeaker ? (
-        <p className="flex items-center gap-1.5 text-xs font-medium text-muted">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-muted">
           <span aria-hidden="true" className="size-1.5 rounded-full bg-accent" />
-          Quartz
-        </p>
+          <span>Quartz</span>
+          {hasOpenUI && !streaming ? (
+            <button
+              type="button"
+              onClick={() => setShowSource((prev) => !prev)}
+              className="ml-auto cursor-pointer rounded px-1.5 py-0.5 text-[11px] font-normal text-meta hover:bg-surface-secondary hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none"
+            >
+              {showSource ? "View UI" : "View source"}
+            </button>
+          ) : null}
+        </div>
       ) : null}
       {isOpenUILang ? (
         <SurfaceBoundary fallback={markdown}>

@@ -1,9 +1,10 @@
 import * as React from "react";
-import { Alert, Button, TextArea } from "@heroui/react";
-import { ArrowUp, CornerDownRight, ImagePlus, Square, X } from "lucide-react";
-import { PROMPT_HANDOFF_EVENT, readPromptHandoff } from "@/lib/commandText";
+import { Alert, Button, TextArea, cn } from "@heroui/react";
+import { ArrowUp, CornerDownLeft, CornerDownRight, ImagePlus, Slash, Square, X } from "lucide-react";
+import { PROMPT_HANDOFF_EVENT, isProseQuery, readPromptHandoff } from "@/lib/commandText";
+import { filterCommands, isTerminalOnly, orderCommands, parseCommandInput } from "./CommandPalette";
 import type { ConnectionStatus } from "@/lib/connection";
-import type { ImageAttachment } from "@/protocol";
+import type { Command, ImageAttachment } from "@/protocol";
 
 const MAX_TEXTAREA_PX = 200;
 
@@ -12,9 +13,11 @@ export interface ComposerProps {
   turnRunning: boolean;
   /** Latched fatal error blocks submission, matching the server's stance. */
   fatalError: string | null;
+  commands?: readonly Command[];
   onSubmit: (text: string, images: ImageAttachment[]) => void;
   onSteer: (text: string) => void;
   onCancel: () => void;
+  onRunCommand?: (name: string, arg?: string) => void;
   onOpenPalette: () => void;
   /** Exposed so the app can return focus here after an overlay closes. */
   textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
@@ -46,9 +49,11 @@ export function Composer({
   connection,
   turnRunning,
   fatalError,
+  commands = [],
   onSubmit,
   onSteer,
   onCancel,
+  onRunCommand,
   onOpenPalette,
   textareaRef: forwardedRef,
 }: ComposerProps): React.ReactElement {
@@ -57,6 +62,8 @@ export function Composer({
   const [history, setHistory] = React.useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = React.useState<number | null>(null);
   const [caretAtEnd, setCaretAtEnd] = React.useState(false);
+  const [slashDismissed, setSlashDismissed] = React.useState(false);
+  const [activeCmd, setActiveCmd] = React.useState(0);
   const localRef = React.useRef<HTMLTextAreaElement | null>(null);
   const textareaRef = forwardedRef ?? localRef;
   const fileRef = React.useRef<HTMLInputElement | null>(null);
@@ -65,6 +72,25 @@ export function Composer({
   const blocked = fatalError !== null;
   const disabled = offline || blocked;
   const canSend = !disabled && (text.trim() !== "" || images.length > 0);
+
+  const commandNames = React.useMemo(() => commands.map((c) => c.name), [commands]);
+  const slashQuery = React.useMemo(() => {
+    if (!text.startsWith("/") || text.includes("\n")) return null;
+    const raw = text.slice(1);
+    if (isProseQuery(raw, commandNames)) return null;
+    return raw;
+  }, [commandNames, text]);
+
+  const inlineCommands = React.useMemo(() => {
+    if (slashQuery === null || commands.length === 0) return [];
+    return orderCommands(filterCommands(commands, slashQuery));
+  }, [commands, slashQuery]);
+
+  const slashOpen = !disabled && !slashDismissed && slashQuery !== null && commands.length > 0;
+
+  React.useEffect(() => {
+    setActiveCmd(0);
+  }, [slashQuery]);
 
   const resize = React.useCallback(() => {
     const node = textareaRef.current;
@@ -116,9 +142,32 @@ export function Composer({
     if (!disabled) textareaRef.current?.focus();
   }, [disabled, turnRunning, textareaRef]);
 
+  const runInlineCommand = React.useCallback(
+    (name: string, arg?: string) => {
+      onRunCommand?.(name, arg);
+      setText("");
+      setSlashDismissed(false);
+      setHistoryIndex(null);
+      textareaRef.current?.focus();
+    },
+    [onRunCommand, textareaRef],
+  );
+
   const submit = React.useCallback(() => {
     const value = text.trim();
     if (value === "" && images.length === 0) return;
+    if (slashOpen && onRunCommand) {
+      const selected = inlineCommands[activeCmd];
+      if (selected) {
+        runInlineCommand(selected.name);
+        return;
+      }
+      const parsed = parseCommandInput(value);
+      if (parsed.name !== "") {
+        runInlineCommand(parsed.name, parsed.arg === "" ? undefined : parsed.arg);
+        return;
+      }
+    }
     if (turnRunning) {
       if (value === "") return;
       onSteer(value);
@@ -129,10 +178,52 @@ export function Composer({
     setText("");
     setImages([]);
     setHistoryIndex(null);
-  }, [images, onSteer, onSubmit, text, turnRunning]);
+  }, [
+    activeCmd,
+    images,
+    inlineCommands,
+    onRunCommand,
+    onSteer,
+    onSubmit,
+    runInlineCommand,
+    slashOpen,
+    text,
+    turnRunning,
+  ]);
 
   const onKeyDown = React.useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (slashOpen) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          setActiveCmd((prev) =>
+            inlineCommands.length === 0 ? 0 : (prev + 1) % inlineCommands.length,
+          );
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          setActiveCmd((prev) =>
+            inlineCommands.length === 0
+              ? 0
+              : (prev - 1 + inlineCommands.length) % inlineCommands.length,
+          );
+          return;
+        }
+        if (event.key === "Tab") {
+          const selected = inlineCommands[activeCmd];
+          if (selected) {
+            event.preventDefault();
+            setText(`/${selected.name} `);
+            return;
+          }
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setSlashDismissed(true);
+          return;
+        }
+      }
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         submit();
@@ -144,11 +235,8 @@ export function Composer({
         else if (text !== "") setText("");
         return;
       }
-      if (event.key === "/" && text === "") {
-        // Let `/` seed the palette: it is the command affordance, and typing it
-        // into the prompt first would make the palette feel like a second mode.
-        // A `/` that turns out to start a sentence rather than a command comes
-        // back through `PROMPT_HANDOFF_EVENT` instead of being run as one.
+      if (event.key === "/" && text === "" && commands.length === 0) {
+        // Fallback when inline commands aren't wired (e.g. standalone tests).
         event.preventDefault();
         onOpenPalette();
         return;
@@ -173,7 +261,19 @@ export function Composer({
         }
       }
     },
-    [history, historyIndex, onCancel, onOpenPalette, submit, text, turnRunning],
+    [
+      activeCmd,
+      commands.length,
+      history,
+      historyIndex,
+      inlineCommands,
+      onCancel,
+      onOpenPalette,
+      slashOpen,
+      submit,
+      text,
+      turnRunning,
+    ],
   );
 
   const addFiles = React.useCallback((files: FileList | null) => {
@@ -194,8 +294,78 @@ export function Composer({
       : "Ask Quartz anything — press / for commands";
 
   return (
-    <div className="shrink-0 border-t border-separator bg-background px-4 pt-3 pb-4">
-      <div className="mx-auto w-full max-w-3xl space-y-2">
+    <div className="shrink-0 bg-background px-4 pt-2 pb-4">
+      <div className="relative mx-auto w-full max-w-3xl space-y-2">
+        {slashOpen ? (
+          <div
+            role="region"
+            aria-label="Slash commands"
+            className="absolute right-0 bottom-full left-0 z-20 mb-2 overflow-hidden rounded-xl border border-border bg-surface shadow-lg"
+          >
+            <div className="flex items-center justify-between border-b border-separator px-3 py-2 text-xs text-muted">
+              <span className="font-medium text-foreground">Commands</span>
+              <span>↑↓ navigate · Tab complete · Enter run · Esc close</span>
+            </div>
+            {inlineCommands.length === 0 ? (
+              <p className="px-3 py-4 text-center text-sm text-muted">
+                No command matches “/{slashQuery}”. Press Enter to send as text or Esc to close.
+              </p>
+            ) : (
+              <ul
+                id="inline-command-list"
+                role="listbox"
+                aria-label="Available commands"
+                className="max-h-64 space-y-0.5 overflow-y-auto p-1.5"
+              >
+                {inlineCommands.map((command, index) => {
+                  const selected = index === activeCmd;
+                  const terminalOnly = isTerminalOnly(command);
+                  return (
+                    <li
+                      key={command.name}
+                      id={`inline-command-${command.name}`}
+                      role="option"
+                      aria-selected={selected}
+                      data-selected={selected}
+                      onMouseEnter={() => setActiveCmd(index)}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        runInlineCommand(command.name);
+                      }}
+                      className={cn(
+                        "flex min-h-9 cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm",
+                        selected
+                          ? "bg-accent-soft text-accent-soft-foreground"
+                          : "text-foreground hover:bg-surface-secondary",
+                        terminalOnly && "opacity-60",
+                      )}
+                    >
+                      <span className="shrink-0 font-mono text-xs font-semibold">
+                        /{command.name}
+                      </span>
+                      {command.usage ? (
+                        <span className="shrink-0 font-mono text-xs text-muted">
+                          {command.usage}
+                        </span>
+                      ) : null}
+                      <span className="min-w-0 flex-1 truncate text-xs text-muted">
+                        {command.description}
+                      </span>
+                      {terminalOnly ? (
+                        <span className="shrink-0 rounded bg-surface-secondary px-1.5 py-0.5 text-[10px] font-medium text-muted">
+                          Terminal
+                        </span>
+                      ) : selected ? (
+                        <CornerDownLeft aria-hidden="true" className="size-3.5 shrink-0 text-muted" />
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        ) : null}
+
         {blocked ? (
           <Alert status="danger" role="alert">
             <Alert.Indicator />
@@ -210,108 +380,132 @@ export function Composer({
           </Alert>
         ) : null}
 
-        {images.length > 0 ? (
-          <ul className="flex flex-wrap gap-2" aria-label="Pending attachments">
-            {images.map((image, index) => (
-              <li key={`pending-${index}`} className="relative">
-                <img
-                  src={`data:${image.mimeType};base64,${image.data}`}
-                  alt={`Pending attachment ${index + 1}`}
-                  className="size-14 rounded-lg border border-border object-cover"
-                />
-                <button
-                  type="button"
-                  onClick={() => setImages((prev) => prev.filter((_, i) => i !== index))}
-                  aria-label={`Remove attachment ${index + 1}`}
-                  className="absolute -top-1.5 -right-1.5 inline-flex size-5 cursor-pointer items-center justify-center rounded-full border border-border bg-surface text-muted hover:text-foreground"
-                >
-                  <X aria-hidden="true" className="size-3" />
-                </button>
-              </li>
-            ))}
-          </ul>
-        ) : null}
+        <div className="rounded-2xl border border-border bg-surface/70 px-3 pt-2 pb-2 shadow-sm transition-colors focus-within:border-focus focus-within:ring-2 focus-within:ring-focus/20">
+          {images.length > 0 ? (
+            <ul className="mb-2 flex flex-wrap gap-2" aria-label="Pending attachments">
+              {images.map((image, index) => (
+                <li key={`pending-${index}`} className="relative">
+                  <img
+                    src={`data:${image.mimeType};base64,${image.data}`}
+                    alt={`Pending attachment ${index + 1}`}
+                    className="size-14 rounded-lg border border-border object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setImages((prev) => prev.filter((_, i) => i !== index))}
+                    aria-label={`Remove attachment ${index + 1}`}
+                    className="absolute -top-1.5 -right-1.5 inline-flex size-5 cursor-pointer items-center justify-center rounded-full border border-border bg-surface text-muted hover:text-foreground"
+                  >
+                    <X aria-hidden="true" className="size-3" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
 
-        <TextArea
-          ref={textareaRef}
-          rows={1}
-          value={text}
-          disabled={disabled}
-          onChange={(event) => setText(event.target.value)}
-          onKeyDown={onKeyDown}
-          onPaste={(event) => {
-            const files = event.clipboardData?.files;
-            if (files && files.length > 0) addFiles(files);
-          }}
-          placeholder={placeholder}
-          aria-label={turnRunning ? "Steer the running turn" : "Prompt quartz"}
-          spellCheck={false}
-          autoCapitalize="off"
-          autoComplete="off"
-          className="max-h-[200px] min-h-[52px] w-full resize-none py-3 text-[0.9375rem]"
-        />
-
-        <div className="flex items-center gap-2">
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*"
-            multiple
-            className="sr-only"
-            aria-label="Attach images"
+          <TextArea
+            ref={textareaRef}
+            rows={1}
+            value={text}
+            disabled={disabled}
             onChange={(event) => {
-              addFiles(event.target.files);
-              event.target.value = "";
+              setText(event.target.value);
+              setSlashDismissed(false);
             }}
+            onKeyDown={onKeyDown}
+            onPaste={(event) => {
+              const files = event.clipboardData?.files;
+              if (files && files.length > 0) addFiles(files);
+            }}
+            placeholder={placeholder}
+            aria-label={turnRunning ? "Steer the running turn" : "Prompt quartz"}
+            spellCheck={false}
+            autoCapitalize="off"
+            autoComplete="off"
+            className="max-h-[200px] min-h-[40px] w-full resize-none border-0 bg-transparent px-1 py-1.5 text-[0.9375rem] shadow-none outline-none! ring-0! focus-visible:outline-none!"
           />
-          <Button
-            size="sm"
-            variant="ghost"
-            isIconOnly
-            isDisabled={disabled}
-            onPress={() => fileRef.current?.click()}
-            aria-label="Attach an image"
-          >
-            <ImagePlus aria-hidden="true" className="size-4" />
-          </Button>
 
-          <p className="hidden text-xs text-muted sm:block">
-            <kbd className="font-mono">Enter</kbd> {turnRunning ? "to steer" : "to send"}
-            <span aria-hidden="true"> · </span>
-            <kbd className="font-mono">Shift+Enter</kbd> for a new line
-          </p>
-
-          <div className="ml-auto flex items-center gap-2">
-            {turnRunning ? (
-              <Button
-                size="sm"
-                variant="outline"
-                onPress={onCancel}
-                aria-label="Cancel the running turn"
-              >
-                <Square aria-hidden="true" className="size-3.5" />
-                Stop
-              </Button>
-            ) : null}
+          <div className="mt-1 flex items-center gap-1.5">
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="sr-only"
+              aria-label="Attach images"
+              onChange={(event) => {
+                addFiles(event.target.files);
+                event.target.value = "";
+              }}
+            />
             <Button
               size="sm"
-              variant={canSend ? "primary" : "outline"}
-              isDisabled={!canSend}
-              onPress={submit}
-              aria-label={turnRunning ? "Steer the running turn" : "Send prompt"}
+              variant="ghost"
+              isIconOnly
+              isDisabled={disabled}
+              onPress={() => fileRef.current?.click()}
+              aria-label="Attach an image"
             >
-              {turnRunning ? (
-                <>
-                  <CornerDownRight aria-hidden="true" className="size-3.5" />
-                  Steer
-                </>
-              ) : (
-                <>
-                  <ArrowUp aria-hidden="true" className="size-3.5" />
-                  Send
-                </>
-              )}
+              <ImagePlus aria-hidden="true" className="size-4" />
             </Button>
+
+            <Button
+              size="sm"
+              variant="ghost"
+              isIconOnly
+              isDisabled={disabled}
+              onPress={() => {
+                if (commands.length > 0) {
+                  setText("/");
+                  setSlashDismissed(false);
+                  textareaRef.current?.focus();
+                } else {
+                  onOpenPalette();
+                }
+              }}
+              aria-label="Slash commands"
+            >
+              <Slash aria-hidden="true" className="size-3.5" />
+            </Button>
+
+            <p className="ml-1 hidden text-xs text-muted sm:block">
+              <kbd className="font-mono">Enter</kbd> {turnRunning ? "to steer" : "to send"}
+              <span aria-hidden="true"> · </span>
+              <kbd className="font-mono">Shift+Enter</kbd> new line
+            </p>
+
+            <div className="ml-auto flex items-center gap-2">
+              {turnRunning ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onPress={onCancel}
+                  aria-label="Cancel the running turn"
+                >
+                  <Square aria-hidden="true" className="size-3.5" />
+                  Stop
+                </Button>
+              ) : null}
+              <Button
+                size="sm"
+                variant={canSend ? "primary" : "outline"}
+                isDisabled={!canSend}
+                onPress={submit}
+                aria-label={turnRunning ? "Steer the running turn" : "Send prompt"}
+              >
+                {turnRunning ? (
+                  <>
+                    <CornerDownRight aria-hidden="true" className="size-3.5" />
+                    Steer
+                  </>
+                ) : (
+                  <>
+                    <ArrowUp aria-hidden="true" className="size-3.5" />
+                    Send
+                  </>
+                )}
+              </Button>
+            </div>
           </div>
         </div>
       </div>

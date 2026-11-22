@@ -198,4 +198,38 @@ describe("Composer", () => {
     expect(textarea).toHaveValue("a / b");
     expect(onOpenPalette).not.toHaveBeenCalled();
   });
+
+  it("shows inline slash commands when commands are provided and runs the selected command", async () => {
+    const user = userEvent.setup();
+    const onRunCommand = vi.fn();
+    setup({
+      commands: [
+        { name: "help", description: "Show available commands" },
+        { name: "compact", description: "Summarize older messages", usage: "[focus]" },
+      ],
+      onRunCommand,
+    });
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+    await user.click(textarea);
+    await user.keyboard("/");
+
+    expect(screen.getByRole("listbox", { name: "Available commands" })).toBeInTheDocument();
+    expect(screen.getByText("/help")).toBeInTheDocument();
+    expect(screen.getByText("/compact")).toBeInTheDocument();
+
+    await user.keyboard("he{Enter}");
+    expect(onRunCommand).toHaveBeenCalledWith("help", undefined);
+    expect(textarea).toHaveValue("");
+  });
+
+  it("opens inline slash commands via the Slash commands button", async () => {
+    const user = userEvent.setup();
+    setup({
+      commands: [{ name: "usage", description: "Show token usage" }],
+      onRunCommand: vi.fn(),
+    });
+    await user.click(screen.getByRole("button", { name: "Slash commands" }));
+    expect(screen.getByRole("listbox", { name: "Available commands" })).toBeInTheDocument();
+    expect(screen.getByText("/usage")).toBeInTheDocument();
+  });
 });
