@@ -1,5 +1,6 @@
 import * as React from "react";
 import { ScrollShadow } from "@heroui/react";
+import { directoryLabel } from "@/lib/sidebar";
 import { groupTurns, isTurn, type Row, type Turn } from "@/lib/transcript";
 import { TranscriptAnnouncer } from "./TranscriptAnnouncer";
 import { TurnTray } from "./TurnTray";
@@ -122,11 +123,14 @@ export function Transcript({
   rows,
   turnRunning,
   richUi,
+  cwd,
   onPrompt,
   onFormState,
 }: {
   rows: readonly Row[];
   turnRunning: boolean;
+  /** Where the session runs: the empty state says so instead of saying nothing. */
+  cwd: string;
   /** Draw openui-lang replies as a live surface rather than prose. */
   richUi: boolean;
   /** Send a message into the session; an OpenUI form submit goes through here. */
@@ -209,7 +213,7 @@ export function Transcript({
           aria-label="Session transcript"
           className="mx-auto flex w-full max-w-3xl flex-col gap-4"
         >
-          {rows.length === 0 ? <EmptyTranscript /> : null}
+          {rows.length === 0 ? <EmptyTranscript cwd={cwd} /> : null}
           {items.map((item) =>
             isTurn(item) ? (
               <TurnView
@@ -243,12 +247,22 @@ export function Transcript({
   );
 }
 
-function EmptyTranscript(): React.ReactElement {
+/**
+ * A session with nothing in it yet.
+ *
+ * This is the whole of the feedback for "start a session": a fresh session has no
+ * messages, so it has no log and no row in the sidebar, and without its folder's
+ * name here the screen would look exactly as it did before the tap.
+ */
+function EmptyTranscript({ cwd }: { cwd: string }): React.ReactElement {
+  const folder = cwd ? directoryLabel(cwd) : "";
   return (
     <div className="flex flex-col items-center gap-2 py-24 text-center">
-      <p className="text-base font-medium text-foreground">No turns yet</p>
+      <p className="text-base font-medium text-foreground" title={cwd || undefined}>
+        {folder ? `New session in ${folder}` : "No turns yet"}
+      </p>
       <p className="text-sm text-muted">
-        Type a prompt below, or press <kbd className="font-mono">/</kbd> for commands.
+        Send a prompt to start, or press <kbd className="font-mono">/</kbd> for commands.
       </p>
     </div>
   );

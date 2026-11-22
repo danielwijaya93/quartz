@@ -48,12 +48,13 @@ const commandRow: Row = {
  * Markdown mode plus no-op callbacks is the default shape; the tests that care
  * about OpenUI pass their own.
  */
-function renderRows(rows: Row[], richUi = false): void {
+function renderRows(rows: Row[], richUi = false, cwd = "/home/x/gkyz-experiment"): void {
   render(
     <Transcript
       rows={rows}
       turnRunning={false}
       richUi={richUi}
+      cwd={cwd}
       onPrompt={() => {}}
       onFormState={() => {}}
     />,
@@ -81,9 +82,16 @@ describe("Transcript", () => {
     expect(liveRegion === undefined ? true : log.contains(liveRegion)).toBe(false);
   });
 
-  it("shows an empty state with the palette hint", () => {
+  it("names the folder in an empty session, so starting one is acknowledged", () => {
     renderRows([]);
-    expect(screen.getByText(/No turns yet/)).toBeInTheDocument();
+    expect(screen.getByText("New session in gkyz-experiment")).toBeInTheDocument();
+    expect(screen.getByText(/Send a prompt to start/)).toBeInTheDocument();
+    expect(screen.getByText(/for commands/)).toBeInTheDocument();
+  });
+
+  it("falls back to a plain empty state when the folder is not known yet", () => {
+    renderRows([], false, "");
+    expect(screen.getByText("No turns yet")).toBeInTheDocument();
   });
 
   it("renders a user row", () => {
@@ -278,6 +286,7 @@ function transcript(rows: Row[], turnRunning: boolean): React.ReactElement {
       rows={rows}
       turnRunning={turnRunning}
       richUi={false}
+      cwd=""
       onPrompt={() => {}}
       onFormState={() => {}}
     />
@@ -470,7 +479,7 @@ describe("Transcript tail following", () => {
   it("stops observing the content column on unmount", () => {
     const records = stubResizeObserver();
 
-    const { unmount } = render(<Transcript rows={[userRow]} turnRunning={false} richUi={false} onPrompt={() => {}} onFormState={() => {}} />);
+    const { unmount } = render(<Transcript rows={[userRow]} turnRunning={false} richUi={false} cwd="" onPrompt={() => {}} onFormState={() => {}} />);
     const observer = contentObserver(records);
     expect(observer.disconnected).toBe(false);
     unmount();

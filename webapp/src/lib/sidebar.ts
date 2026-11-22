@@ -164,6 +164,23 @@ export function directoryLabel(cwd: string): string {
   return parts[parts.length - 1] ?? cwd;
 }
 
+function withoutTrailingSlash(cwd: string): string {
+  return cwd.replace(/\/+$/, "") || cwd;
+}
+
+/**
+ * Whether two `cwd` values name the same folder.
+ *
+ * The sidebar marks the folder the live session is running in, and the two paths
+ * being compared come from different frames: `session_state` and the workspace
+ * list. Both are server-resolved, so this only has to forgive a trailing slash --
+ * but forgiving it here beats a highlight that silently does not appear.
+ */
+export function sameFolder(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  return withoutTrailingSlash(a) === withoutTrailingSlash(b);
+}
+
 function timestamp(iso: string): number {
   const value = Date.parse(iso);
   return Number.isFinite(value) ? value : 0;

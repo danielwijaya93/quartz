@@ -29,6 +29,7 @@ function renderSidebar(overrides: Partial<FolderSidebarProps> = {}): {
     error: null,
     actionError: null,
     currentSessionId: "s1",
+    currentCwd: "/home/x/project",
     variant: "rail",
     onClose: vi.fn(),
     onReload: vi.fn(),
@@ -112,6 +113,33 @@ describe("FolderSidebar", () => {
     const { props } = renderSidebar();
     await user.click(screen.getByRole("button", { name: "first prompt" }));
     expect(props.onSelectSession).toHaveBeenCalledWith("s1");
+  });
+
+  it("marks the folder a brand-new session was started in, before it has a row", () => {
+    // A new session has no messages, so it has no log and no row. The folder is the
+    // only thing that can acknowledge the `+` that created it.
+    renderSidebar({
+      data: payload({
+        sessions: [],
+        sidebar: { ...EMPTY_SIDEBAR, workspaces: [{ cwd: "/home/x/fresh", label: "fresh", cwdExists: true }] },
+      }),
+      currentSessionId: "",
+      currentCwd: "/home/x/fresh/",
+    });
+
+    expect(screen.getByRole("button", { name: "fresh folder" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    // An empty folder that is not the live one says "empty", not "new".
+    expect(screen.queryByText("new")).toBeInTheDocument();
+  });
+
+  it("does not mark a folder that merely shares a prefix with the live one", () => {
+    renderSidebar({ currentCwd: "/home/x/projects" });
+    expect(screen.getByRole("button", { name: "project folder" })).not.toHaveAttribute(
+      "aria-current",
+    );
   });
 
   it("marks the current session", () => {

@@ -8,6 +8,7 @@ import {
   groupSessions,
   isVisible,
   parseSidebarPayload,
+  sameFolder,
   type SidebarPayload,
   type SidebarSession,
 } from "./sidebar";
@@ -153,6 +154,20 @@ describe("groupSessions", () => {
   it("labels a folder that arrived with sessions", () => {
     expect(directoryLabel("/home/x/project")).toBe("project");
     expect(groupSessions(payload())[0]?.label).toBe("project");
+  });
+});
+
+describe("sameFolder", () => {
+  it("matches the live session to its folder, ignoring a trailing slash", () => {
+    expect(sameFolder("/home/x/project", "/home/x/project")).toBe(true);
+    expect(sameFolder("/home/x/project/", "/home/x/project")).toBe(true);
+    expect(sameFolder("/home/x/project", "/home/x/project/")).toBe(true);
+  });
+
+  it("does not match a different folder, or one side that is empty", () => {
+    expect(sameFolder("/home/x/project", "/home/x/projects")).toBe(false);
+    expect(sameFolder("/home/x/project", "")).toBe(false);
+    expect(sameFolder("", "")).toBe(false);
   });
 });
 

@@ -14,6 +14,7 @@ import {
   displayTitle,
   formatAge,
   groupSessions,
+  sameFolder,
   type SidebarPayload,
   type SidebarSession,
   type SidebarState,
@@ -29,6 +30,13 @@ export interface FolderSidebarProps {
   /** A failed action (hide, rename). Shown above the list; the data is unchanged. */
   actionError: string | null;
   currentSessionId: string;
+  /**
+   * The live session's folder.
+   *
+   * A fresh session has no messages, so it has no log and no row: this is the only
+   * thing on screen that can acknowledge the `+` that just created it.
+   */
+  currentCwd: string;
   /** `rail` is the desktop column; `drawer` is the phone overlay. */
   variant: "rail" | "drawer";
   onClose: () => void;
@@ -70,6 +78,7 @@ export function FolderSidebar({
   error,
   actionError,
   currentSessionId,
+  currentCwd,
   variant,
   onClose,
   onReload,
@@ -184,6 +193,7 @@ export function FolderSidebar({
                   <li key={group.cwd}>
                     <WorkspaceRow
                       group={group}
+                      current={sameFolder(group.cwd, currentCwd)}
                       expanded={!collapsed.has(group.cwd)}
                       onToggle={(expanded) => toggle(group.cwd, expanded)}
                       onNewSession={() => onNewSession(group.cwd)}
@@ -249,12 +259,15 @@ function EmptySidebar({
 
 function WorkspaceRow({
   group,
+  current,
   expanded,
   onToggle,
   onNewSession,
   children,
 }: {
   group: WorkspaceGroup;
+  /** The live session runs here, so this is where the next prompt lands. */
+  current: boolean;
   expanded: boolean;
   onToggle: (expanded: boolean) => void;
   onNewSession: () => void;
@@ -266,12 +279,13 @@ function WorkspaceRow({
     <Disclosure
       isExpanded={expanded}
       onExpandedChange={onToggle}
-      className="rounded-lg hover:bg-surface-secondary"
+      className={cn("rounded-lg", current ? "bg-accent-soft" : "hover:bg-surface-secondary")}
     >
       <div className="group/workspace flex items-center gap-0.5 pl-0.5 pr-1">
         <Disclosure.Heading className="min-w-0 flex-1">
           <Disclosure.Trigger
             aria-label={`${group.label} folder`}
+            aria-current={current ? "true" : undefined}
             className="flex min-h-9 w-full cursor-pointer items-center gap-1 rounded-md px-1 py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
           >
             <ChevronRight
@@ -281,7 +295,13 @@ function WorkspaceRow({
                 expanded && "rotate-90",
               )}
             />
-            <span className="min-w-0 truncate text-sm" title={group.cwd}>
+            <span
+              className={cn(
+                "min-w-0 truncate text-sm",
+                current && "font-medium text-accent-soft-foreground",
+              )}
+              title={group.cwd}
+            >
               {group.label}
             </span>
             {count > 0 ? (
@@ -290,7 +310,7 @@ function WorkspaceRow({
               </Chip>
             ) : (
               <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wide text-muted">
-                empty
+                {current ? "new" : "empty"}
               </span>
             )}
           </Disclosure.Trigger>
