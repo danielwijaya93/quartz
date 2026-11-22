@@ -447,7 +447,10 @@ class WebSession:
             # runner swapped in by a test.
             outcome = TurnOutcome(TurnStatus.ERROR, error=exc)
         try:
-            self.emit(_turn_end_frame(outcome))
+            rt = self.runtime
+            max_ctx = rt.max_context_tokens
+            ctx_pct = round(rt.usage_stats.context_pct(max_ctx), 1) if max_ctx > 0 else 0.0
+            self.emit(_turn_end_frame(outcome, context_pct=ctx_pct, max_context_tokens=max_ctx))
         finally:
             self._settle_streamed_text(outcome)
             with self._lock:
@@ -582,12 +585,16 @@ class WebSession:
             turn_running = self._turn is not None
             streaming = self._streaming if turn_running else ""
             messages = list(runtime.messages)
+        max_ctx = runtime.max_context_tokens
+        ctx_pct = round(runtime.usage_stats.context_pct(max_ctx), 1) if max_ctx > 0 else 0.0
         return {
             "type": "session_state",
             "sessionId": runtime.active_session.id,
             "cwd": str(runtime.cwd),
             "model": runtime.model,
             "effort": runtime.effort,
+            "contextPct": ctx_pct,
+            "maxContextTokens": max_ctx,
             "messages": messages,
             "turnRunning": turn_running,
             # The answer the running turn has written but not yet committed to
@@ -624,13 +631,22 @@ def resolve_cwd(raw: object, fallback: Path) -> Path:
     return candidate if candidate.is_dir() else fallback
 
 
-def _turn_end_frame(outcome: TurnOutcome) -> Frame:
+def _turn_end_frame(
+    outcome: TurnOutcome,
+    *,
+    context_pct: float | None = None,
+    max_context_tokens: int | None = None,
+) -> Frame:
     frame: Frame = {
         "type": "turn_end",
         "status": outcome.status.value,
         "tokens": outcome.tokens,
         "elapsedMs": int(outcome.elapsed_s * 1000),
     }
+    if context_pct is not None:
+        frame["contextPct"] = context_pct
+    if max_context_tokens is not None:
+        frame["maxContextTokens"] = max_context_tokens
     if outcome.error is not None:
         frame["error"] = str(outcome.error) or outcome.error.__class__.__name__
     return frame

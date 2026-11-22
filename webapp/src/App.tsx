@@ -207,6 +207,8 @@ export function App(): React.ReactElement {
           commands={quartz.state.session.commands}
           model={quartz.state.session.model}
           effort={quartz.state.session.effort}
+          contextPct={quartz.state.session.contextPct}
+          maxContextTokens={quartz.state.session.maxContextTokens}
           onOpenModelPicker={() => setModelPickerOpen(true)}
           onSubmit={onSubmit}
           onSteer={quartz.steer}

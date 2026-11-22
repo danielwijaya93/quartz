@@ -112,6 +112,8 @@ export interface SessionStateMessage {
   cwd: string;
   model: string;
   effort: string;
+  contextPct?: number;
+  maxContextTokens?: number;
   messages: Message[];
   turnRunning: boolean;
   /**
@@ -157,6 +159,8 @@ export type ServerMessage =
       status: TurnEndStatus;
       tokens: number;
       elapsedMs: number;
+      contextPct?: number;
+      maxContextTokens?: number;
       error?: string;
     }
   | { type: "error"; message: string; fatal: boolean }
