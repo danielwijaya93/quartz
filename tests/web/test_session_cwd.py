@@ -59,7 +59,12 @@ def test_new_session_without_a_directory_uses_the_server_default(tmp_path: Path)
 
 
 def test_load_session_never_takes_a_directory(tmp_path: Path) -> None:
-    """A resumed session's directory is in its own log; a client cannot move it."""
+    """A resumed session's directory is in its own log; a client cannot move it.
+
+    `load_session` has no `cwd` parameter at all -- the folder it forwards is the one
+    the log records, which is why the assertion is on what `build` was handed rather
+    than on the call signature alone.
+    """
     source = Session.create(tmp_path)
     source.save_messages([{"role": "user", "content": "earlier"}])
     build = Recorder(tmp_path)
@@ -67,7 +72,38 @@ def test_load_session_never_takes_a_directory(tmp_path: Path) -> None:
 
     session.load_session(source.id)
 
-    assert build.calls == [(source.id, None)]
+    assert build.calls == [(source.id, tmp_path.resolve())]
+
+
+def test_load_session_builds_in_the_folder_its_log_records(tmp_path: Path) -> None:
+    """The bug: the server's folder was used, so the kernel and prompt were wrong."""
+    project = tmp_path / "project"
+    project.mkdir()
+    source = Session.create(project)
+    source.save_messages([{"role": "user", "content": "earlier"}])
+    build = Recorder(tmp_path)
+    session = WebSession(build, cwd=tmp_path)
+
+    session.load_session(source.id)
+
+    assert build.calls == [(source.id, project.resolve())]
+    assert session.runtime.cwd == project.resolve()
+
+
+def test_load_session_falls_back_when_the_recorded_folder_is_gone(tmp_path: Path) -> None:
+    """A worktree deleted after the session was written must not stop a resume."""
+    project = tmp_path / "worktree"
+    project.mkdir()
+    source = Session.create(project)
+    source.save_messages([{"role": "user", "content": "earlier"}])
+    project.rmdir()
+    build = Recorder(tmp_path)
+    session = WebSession(build, cwd=tmp_path)
+
+    session.load_session(source.id)
+
+    assert build.calls == [(source.id, tmp_path)]
+    assert session.runtime.cwd == tmp_path.resolve()
 
 
 def test_hello_cwd_applies_to_the_first_build_only(tmp_path: Path) -> None:
@@ -165,6 +201,49 @@ def test_a_bad_new_session_directory_is_forgiven_not_fatal(
 
     assert state["type"] == "session_state"
     assert state["cwd"] == str(tmp_path.resolve())
+
+
+def test_resuming_a_session_reports_the_folder_its_log_records(
+    picker_app: tuple[TestClient, Recorder], tmp_path: Path
+) -> None:
+    """The wire value must match the transcript, not the directory the server booted in."""
+    client, build = picker_app
+    project = tmp_path / "project"
+    project.mkdir()
+    source = Session.create(project)
+    source.save_messages([{"role": "user", "content": "earlier"}])
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "hello", "clientVersion": 1})
+        ws.receive_json()
+        ws.send_json({"type": "load_session", "sessionId": source.id})
+        state = ws.receive_json()
+
+    assert state["type"] == "session_state"
+    assert state["cwd"] == str(project.resolve())
+    assert build.calls[-1] == (source.id, project.resolve())
+
+
+def test_a_repeated_hello_does_not_move_a_running_session(
+    picker_app: tuple[TestClient, Recorder], tmp_path: Path
+) -> None:
+    """`hello` is re-sent on every Rich UI toggle; its `cwd` places a new session only."""
+    client, build = picker_app
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "hello", "clientVersion": 1, "cwd": str(first)})
+        assert ws.receive_json()["cwd"] == str(first.resolve())
+        ws.send_json(
+            {"type": "hello", "clientVersion": 1, "cwd": str(second), "systemPromptAppend": "X"}
+        )
+        state = ws.receive_json()
+
+    assert state["cwd"] == str(first.resolve())
+    assert [cwd for _session_id, cwd in build.calls] == [first.resolve()]
 
 
 def test_a_new_session_makes_its_folder_appear_in_the_sidebar(

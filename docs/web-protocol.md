@@ -115,7 +115,10 @@ Rules:
    is an idempotent config frame and its `cwd` is ignored; use `new_session`.
 4. `load_session` takes no `cwd`: a resumed session already knows its own directory
    from its `meta` record, and letting a client override it would silently replay
-   history into a kernel rooted somewhere else.
+   history into a kernel rooted somewhere else. The server builds the runtime in that
+   folder — kernel cwd, system prompt and `session_state.cwd` all follow it. If the
+   folder has since been deleted, the session opens in the server's own directory
+   instead (not an error), and `session_state.cwd` says where it landed.
 5. Optional and forgiving. An absent, empty, non-string or non-existent value falls
    back to the server's `--cwd`; it never produces a fatal `error` frame, because a
    page that cannot start a session is worse than one that starts in the wrong

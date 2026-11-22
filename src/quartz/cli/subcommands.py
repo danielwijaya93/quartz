@@ -496,8 +496,9 @@ def _handle_web_cli(argv: list[str]) -> None:
         -- apart from `origin`, which is what lets the browser's sidebar tell its
         own sessions apart from ones started at a prompt.
 
-        `session_cwd` is the folder picked in the browser for a *new* session. It is
-        ignored when resuming: a resumed session's directory is in its own log.
+        `session_cwd` is the folder to build in: the one picked in the browser for a
+        *new* session, or -- on a resume -- the folder that session's own log records,
+        resolved by the caller. Omitting it means the server's `--cwd`.
         """
         return build_runtime(
             BootstrapOptions(
