@@ -27,7 +27,7 @@ describe("RichUiToggle", () => {
     expect(onChange).toHaveBeenCalledWith("rich");
 
     rerender(<RichUiToggle mode="rich" onChange={onChange} />);
-    await user.click(screen.getByRole("switch", { name: "Rich UI" }));
+    await user.click(screen.getByText("Rich UI"));
     expect(onChange).toHaveBeenCalledWith("markdown");
   });
 });
