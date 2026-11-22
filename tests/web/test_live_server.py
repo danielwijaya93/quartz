@@ -59,6 +59,7 @@ def _runtime(cwd: Path) -> AgentRuntime:
         verbose=False,
         plain_output=False,
         headless=False,
+        transport="web",
     )
 
 

@@ -204,6 +204,65 @@ def test_help_lists_every_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert "Keybindings:" in result.body
 
 
+def test_session_sends_a_terminal_user_to_the_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The terminal's own `/session` draws the paths; core's answer stays a redirect."""
+    rt = _make_rt(tmp_path, monkeypatch)
+
+    result = _run(rt, "/session")
+
+    assert isinstance(result, CommandResult)
+    assert result.kind == "needs_terminal"
+
+
+def test_session_in_the_browser_prints_the_id_and_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A browser has no terminal to send someone to, so the values are the answer."""
+    rt = _make_rt(tmp_path, monkeypatch)
+    rt.transport = "web"
+
+    result = _run(rt, "/session")
+
+    assert isinstance(result, CommandResult)
+    assert result.kind == "text"
+    assert rt.active_session.id in result.body
+    assert str(rt.active_session.jsonl_path) in result.body
+    assert str(rt.active_session.snapshot_dir) in result.body
+
+
+#: Keys that only work in a terminal window. The web's help must not list any of
+#: them, because a browser user has no way to press them.
+_TERMINAL_ONLY_KEYS = ("Ctrl+T", "Ctrl+O", "Ctrl+D", "Ctrl+C", "Ctrl+J", "@path", "\\+Enter")
+
+
+def test_help_lists_the_keybindings_of_the_transport_that_asked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Terminal output is unchanged; the browser gets keys a browser actually has."""
+    rt = _make_rt(tmp_path, monkeypatch)
+
+    terminal = _run(rt, "/help")
+    assert isinstance(terminal, CommandResult)
+    assert terminal.body == COMMAND_REGISTRY.format_help()
+    for key in _TERMINAL_ONLY_KEYS:
+        assert key in terminal.body, f"{key} is a terminal key; the terminal help lost it"
+
+    rt.transport = "web"
+    browser = _run(rt, "/help")
+    assert isinstance(browser, CommandResult)
+    for key in _TERMINAL_ONLY_KEYS:
+        assert key not in browser.body, f"the browser help still advertises {key}"
+    for browser_key in ("Enter", "Shift+Enter", "Esc", "Up", "command palette"):
+        assert browser_key in browser.body
+
+    # Same commands either way: only the keys describe a different surface.
+    for cmd in COMMAND_REGISTRY.list_commands():
+        if cmd.name != "/help":
+            assert cmd.name in browser.body
+
+
 def test_vars_returns_rows_and_says_so_when_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

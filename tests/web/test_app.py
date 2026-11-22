@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from quartz.core.commands import COMMAND_REGISTRY, serves_web
 from quartz.core.turn import TurnStatus
 from quartz.web.app import create_app
 
@@ -52,6 +53,24 @@ def test_session_state_advertises_every_command(app_client: AppClient, wire: Any
     assert all(not name.startswith("/") for name in names)
     for command in state["commands"]:
         assert command["description"]
+
+
+def test_every_advertised_command_says_whether_it_needs_a_terminal(
+    app_client: AppClient, wire: Any
+) -> None:
+    """The browser cannot badge a command without this flag, and must not guess it."""
+    with app_client.client.websocket_connect("/ws") as socket:
+        state = wire.hello(socket)
+
+    flags = {command["name"]: command["needsTerminal"] for command in state["commands"]}
+    assert len(flags) == len(state["commands"])
+    for command in COMMAND_REGISTRY.list_commands():
+        exposed = command.needs_terminal and not serves_web(command)
+        assert flags[command.name.lstrip("/")] is exposed, command.name
+    # A command only the terminal can run, and one the browser answers itself.
+    assert flags["model"] is True
+    assert flags["session"] is False
+    assert flags["vars"] is False
 
 
 # -- the parity claim --------------------------------------------------
@@ -278,6 +297,21 @@ def test_command_needs_terminal_is_reported_as_such(app_client: AppClient, wire:
     result = frames[-1]["result"]
     assert result["kind"] == "needs_terminal"
     assert result["message"]
+
+
+def test_command_session_prints_the_paths_in_the_browser(app_client: AppClient, wire: Any) -> None:
+    """A browser user cannot act on "run this in the terminal"; the paths are the answer."""
+    with app_client.client.websocket_connect("/ws") as socket:
+        wire.hello(socket)
+        socket.send_json({"type": "command", "name": "/session"})
+        frames = wire.drain(socket, until="command_result")
+
+    result = frames[-1]["result"]
+    session = app_client.runtime.active_session
+    assert result["kind"] == "text"
+    assert session.id in result["body"]
+    assert str(session.jsonl_path) in result["body"]
+    assert str(session.snapshot_dir) in result["body"]
 
 
 def test_command_settings_mutates_the_live_runtime(app_client: AppClient, wire: Any) -> None:

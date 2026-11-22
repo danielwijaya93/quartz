@@ -44,6 +44,11 @@ class AgentRuntime:
     show_thinking: bool = False
     show_details: bool = False
     progress_every: int = 0
+    #: Which transport is serving this runtime: ``"cli"`` or ``"web"``. A command with
+    #: a terminal-shaped answer and a browser-shaped one branches on this, because the
+    #: session's `origin` cannot answer it: a *terminal* session opened in the browser
+    #: is still being read in a browser, and `/session` must print real paths there.
+    transport: str = "cli"
     cell_history: list[tuple[str, CellResult, float]] = dataclasses.field(default_factory=list)
     pending_images: list[ImageAttachment] = dataclasses.field(default_factory=list)
     total_elapsed_s: float = 0.0

@@ -24,7 +24,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from quartz.core.commands import COMMAND_REGISTRY, CommandResult, SlashCommand
+from quartz.core.commands import (
+    COMMAND_REGISTRY,
+    CommandResult,
+    SlashCommand,
+    serves_web,
+)
 from quartz.core.images import ImageAttachment, build_user_content
 from quartz.core.session import Session
 from quartz.core.turn import TurnOutcome, TurnStatus, run_interactive_turn
@@ -328,12 +333,19 @@ class WebSession:
     # -- commands ----------------------------------------------------------
 
     def commands(self) -> list[dict[str, Any]]:
-        """The registry as the browser's palette needs it. Names carry no slash."""
+        """The registry as the browser's palette needs it. Names carry no slash.
+
+        `needsTerminal` is derived from the registry -- its `needs_terminal` flag,
+        narrowed by whether the handler also answers outside a terminal -- rather than
+        maintained here as a second list, so a command cannot be badged as
+        terminal-only while it is quietly answering in the browser.
+        """
         return [
             {
                 "name": command.name.lstrip("/"),
                 "description": command.description,
                 "usage": command.usage,
+                "needsTerminal": command.needs_terminal and not serves_web(command),
             }
             for command in COMMAND_REGISTRY.list_commands()
         ]

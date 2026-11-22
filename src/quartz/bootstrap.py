@@ -75,6 +75,11 @@ class BootstrapOptions:
     # web sidebar can list browser sessions and leave terminal ones alone until
     # they are imported. `core.session.ORIGIN_CLI` for every terminal path.
     origin: str = "cli"
+    # Where that transport draws: `"cli"` or `"web"`. Same information as `origin`,
+    # kept separate because they answer different questions -- `origin` is a fact
+    # about the session on disk and never changes on resume, while this is a fact
+    # about who is looking at it now.
+    transport: str = "cli"
 
 
 def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
@@ -176,6 +181,7 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
                 headless=options.headless,
                 default=settings.progress_every,
             ),
+            transport=options.transport,
         )
         return runtime, resumed
     except BaseException:

@@ -224,6 +224,21 @@ def test_a_resumed_session_whose_folder_is_gone_falls_back_instead_of_raising(
     assert web_session.snapshot()["cwd"] == str(web_env.resolve())
 
 
+def test_the_web_build_marks_the_runtime_as_the_web_transport(
+    web_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/help and /session answer with browser text only if the runtime knows where it is.
+
+    Checked on the real build closure rather than on a fixture's runtime: a fake that
+    sets the field would pass even if `quartz web` never passed it.
+    """
+    build = _capture_web_build(monkeypatch, web_env)
+
+    runtime, _resumed = build(None)
+
+    assert runtime.transport == "web"
+
+
 # -- a taken port -------------------------------------------------------
 #
 # The reported failure was a raw uvicorn traceback -- `ERROR: [Errno 98] error
