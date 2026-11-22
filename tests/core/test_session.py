@@ -422,3 +422,39 @@ def test_fork_keeps_the_origin_of_its_source(tmp_path: Path) -> None:
 
     forked, _ = Session.fork(source.id, tmp_path, sessions_dir=sessions_dir)
     assert forked.origin == "web"
+
+
+def test_session_id_rejects_path_traversal(tmp_path: Path) -> None:
+    import pytest
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    secret = tmp_path / "secret.jsonl"
+    secret.write_text('{"type": "meta", "cwd": "/tmp"}\n', encoding="utf-8")
+
+    # Symlink inside sessions_dir pointing outside must also be rejected.
+    escape_link = sessions_dir / "escape.jsonl"
+    os.symlink(secret, escape_link)
+
+    bad_ids = [
+        "../secret",
+        "/abs/path",
+        str(secret.with_suffix("")),
+        "foo/bar",
+        "foo\\bar",
+        ".",
+        "..",
+        "",
+        "   ",
+        "bad\x00id",
+        "escape",
+    ]
+    for bad_id in bad_ids:
+        with pytest.raises(ValueError):
+            Session(bad_id, sessions_dir=sessions_dir)
+        with pytest.raises(ValueError):
+            Session.load(bad_id, sessions_dir=sessions_dir)
+        with pytest.raises(ValueError):
+            Session.fork(bad_id, tmp_path, sessions_dir=sessions_dir)
+        with pytest.raises(ValueError):
+            Session.recorded_cwd(bad_id, sessions_dir=sessions_dir)

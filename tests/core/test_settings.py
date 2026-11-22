@@ -11,9 +11,13 @@ from quartz.settings import (
     DEFAULT_COMPACT_RESERVE_TOKENS,
     DEFAULT_KEEP_RECENT_TOKENS,
     Settings,
+    is_project_trusted,
     load_settings,
+    load_trusted_projects,
     save_settings,
     settings_as_dict,
+    trust_project,
+    update_config_json,
     validate_tokens,
 )
 
@@ -114,3 +118,44 @@ def test_context_budget_from_settings_reads_config_json(
 
     _, reserve, keep = _context_budget_from_settings()
     assert (reserve, keep) == (12345, 23456)
+
+
+def test_update_config_json_is_atomic_and_creates_parents(tmp_path: Path) -> None:
+    cfg = tmp_path / "nested" / "dir" / "config.json"
+
+    def _set_a(data: dict) -> None:
+        data["provider"] = "openai"
+
+    update_config_json(_set_a, path=cfg)
+    update_config_json(lambda d: {**d, "model": "gpt-5"}, path=cfg)
+
+    assert json.loads(cfg.read_text(encoding="utf-8")) == {"provider": "openai", "model": "gpt-5"}
+    assert [p.name for p in cfg.parent.iterdir()] == ["config.json"]
+
+
+def test_trusted_projects_persistence_and_env_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = tmp_path / "config.json"
+    monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(cfg))
+    monkeypatch.delenv("QUARTZ_TRUST_PROJECT", raising=False)
+
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    untrusted = tmp_path / "other"
+    untrusted.mkdir()
+
+    assert is_project_trusted(proj) is False
+    assert load_trusted_projects() == []
+
+    # Trust via non-canonical path (with ..) and verify it resolves and deduplicates.
+    trust_project(proj / ".." / "repo")
+    trust_project(proj)
+    assert load_trusted_projects() == [str(proj.resolve())]
+    assert is_project_trusted(proj) is True
+    assert is_project_trusted(untrusted) is False
+
+    # Env override trusts any project without writing to disk.
+    monkeypatch.setenv("QUARTZ_TRUST_PROJECT", "1")
+    assert is_project_trusted(untrusted) is True
+    assert str(untrusted.resolve()) not in load_trusted_projects()

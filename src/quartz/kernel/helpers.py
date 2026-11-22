@@ -17,12 +17,14 @@ import stat
 import subprocess
 import sys
 import uuid
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from quartz.core.images import load_image_file
 from quartz.kernel.pycheck import check_python_source
+from quartz.settings import is_project_trusted
 
 _IGNORE_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", ".mypy_cache"}
 
@@ -394,8 +396,9 @@ def load_helpers(
     *,
     global_helpers_path: Path | None = None,
     project_helpers_path: Path | None = None,
+    trusted: bool | None = None,
 ) -> LoadedHelpers:
-    """Load built-in helpers, then merge global ~/.quartz/helpers.py and project .quartz/helpers.py."""
+    """Load built-in helpers, then merge global ~/.quartz/helpers.py and trusted project .quartz/helpers.py."""
     functions: dict[str, Callable[..., Any]] = {}
     infos: dict[str, HelperInfo] = {}
     loaded = LoadedHelpers(functions=functions, infos=infos, warnings=[])
@@ -420,13 +423,23 @@ def load_helpers(
         g_path = Path(env_g).expanduser() if env_g else Path.home() / ".quartz" / "helpers.py"
     _load_helper_file(g_path, "global", loaded)
 
-    # 3. Project-local helpers (.quartz/helpers.py)
+    # 3. Project-local helpers (.quartz/helpers.py) -- only when project is trusted
+    base_dir = (cwd or Path.cwd()).resolve()
     if project_helpers_path is not None:
         p_path = project_helpers_path
     else:
-        base_dir = (cwd or Path.cwd()).resolve()
         p_path = base_dir / ".quartz" / "helpers.py"
-    _load_helper_file(p_path, "project", loaded)
+    if p_path.is_file():
+        is_trusted = is_project_trusted(base_dir) if trusted is None else trusted
+        if is_trusted:
+            _load_helper_file(p_path, "project", loaded)
+        else:
+            msg = (
+                f"Skipped untrusted project helpers at {p_path}. "
+                "Pass --trust-project or set QUARTZ_TRUST_PROJECT=1 to enable."
+            )
+            loaded.warnings.append(msg)
+            warnings.warn(msg, UserWarning, stacklevel=2)
 
     return loaded
 

@@ -176,6 +176,7 @@ def _bootstrap_options(args: argparse.Namespace) -> BootstrapOptions:
         show_thinking=args.show_thinking,
         show_details=args.show_details,
         progress_every=args.progress_every,
+        trust_project=getattr(args, "trust_project", False),
     )
 
 
@@ -309,6 +310,11 @@ def main() -> None:
         "--show-details",
         action="store_true",
         help="Show full tool call details (Ctrl+O).",
+    )
+    parser.add_argument(
+        "--trust-project",
+        action="store_true",
+        help="Trust the project in --cwd (allows .quartz/helpers.py and .quartz/mcp.json) and persist to config.",
     )
     args = parser.parse_args()
 

@@ -28,6 +28,10 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
+import stat
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -148,16 +152,99 @@ def validate_progress_every(value: int) -> bool:
     )
 
 
-def save_settings(settings: Settings, path: Path | None = None) -> Path:
-    """Persist settings, merging into the existing config (preserves provider/model/effort)."""
+def update_config_json(
+    mutator: Callable[[dict[str, Any]], dict[str, Any] | None],
+    path: Path | None = None,
+) -> Path:
+    """Atomically read-modify-write config.json using a temp file and `os.replace`."""
     cfg = _config_path(path)
     cfg.parent.mkdir(parents=True, exist_ok=True)
-    data = _read_raw(path)
-    data["compact_reserve_tokens"] = settings.compact_reserve_tokens
-    data["keep_recent_tokens"] = settings.keep_recent_tokens
-    data["progress_every"] = settings.progress_every
-    cfg.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    data = _read_raw(cfg)
+    result = mutator(data)
+    updated = result if isinstance(result, dict) else data
+    existing_mode = stat.S_IMODE(cfg.stat().st_mode) if cfg.exists() else None
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=cfg.parent,
+        prefix=f".{cfg.name}.",
+        suffix=".tmp",
+        delete=False,
+    )
+    tmp_path = Path(tmp.name)
+    try:
+        if existing_mode is not None:
+            os.chmod(tmp_path, existing_mode)
+        tmp.write(json.dumps(updated, indent=2) + "\n")
+        tmp.flush()
+        os.fsync(tmp.fileno())
+        tmp.close()
+        os.replace(tmp_path, cfg)
+    except BaseException:
+        if not tmp.closed:
+            tmp.close()
+        tmp_path.unlink(missing_ok=True)
+        raise
     return cfg
+
+
+def load_trusted_projects(path: Path | None = None) -> list[str]:
+    """Return normalized trusted project paths from config.json."""
+    raw = _read_raw(path)
+    entries = raw.get("trusted_projects")
+    if not isinstance(entries, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in entries:
+        if isinstance(item, str) and item.strip():
+            norm = str(Path(item).expanduser().resolve())
+            if norm not in seen:
+                seen.add(norm)
+                out.append(norm)
+    return out
+
+
+def is_project_trusted(cwd: Path | str | None = None, path: Path | None = None) -> bool:
+    """Return True if `cwd` is in `trusted_projects` or `QUARTZ_TRUST_PROJECT` is enabled."""
+    env_val = os.getenv("QUARTZ_TRUST_PROJECT", "").strip().lower()
+    if env_val in ("1", "true", "yes", "on"):
+        return True
+    target = str((Path(cwd) if cwd is not None else Path.cwd()).expanduser().resolve())
+    return target in load_trusted_projects(path)
+
+
+def trust_project(cwd: Path | str, path: Path | None = None) -> Path:
+    """Persist `cwd` (resolved) to `trusted_projects` in config.json."""
+    target = str(Path(cwd).expanduser().resolve())
+
+    def _add(data: dict[str, Any]) -> None:
+        existing = data.get("trusted_projects")
+        items: list[str] = []
+        seen: set[str] = set()
+        if isinstance(existing, list):
+            for entry in existing:
+                if isinstance(entry, str) and entry.strip():
+                    norm = str(Path(entry).expanduser().resolve())
+                    if norm not in seen:
+                        seen.add(norm)
+                        items.append(norm)
+        if target not in seen:
+            items.append(target)
+        data["trusted_projects"] = items
+
+    return update_config_json(_add, path=path)
+
+
+def save_settings(settings: Settings, path: Path | None = None) -> Path:
+    """Persist settings, merging into the existing config (preserves provider/model/effort)."""
+
+    def _apply(data: dict[str, Any]) -> None:
+        data["compact_reserve_tokens"] = settings.compact_reserve_tokens
+        data["keep_recent_tokens"] = settings.keep_recent_tokens
+        data["progress_every"] = settings.progress_every
+
+    return update_config_json(_apply, path=path)
 
 
 def settings_as_dict(settings: Settings) -> dict[str, int]:

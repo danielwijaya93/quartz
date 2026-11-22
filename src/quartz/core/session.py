@@ -171,19 +171,46 @@ class _SessionFacts:
     origin: str
 
 
+def _resolve_session_paths(session_id: str, sessions_dir: Path) -> tuple[Path, Path]:
+    """Validate `session_id` and return `(jsonl_path, snapshot_dir)` strictly inside `sessions_dir`."""
+    if not isinstance(session_id, str) or not session_id or not session_id.strip():
+        raise ValueError(f"Invalid session ID: {session_id!r}")
+    if (
+        session_id in (".", "..")
+        or "/" in session_id
+        or "\\" in session_id
+        or "\x00" in session_id
+        or Path(session_id).name != session_id
+    ):
+        raise ValueError(f"Invalid session ID: {session_id!r}")
+
+    root = sessions_dir.resolve()
+    jsonl_path = (root / f"{session_id}.jsonl").resolve()
+    snapshot_dir = (root / f"{session_id}.snapshot").resolve()
+    if (
+        not jsonl_path.is_relative_to(root)
+        or jsonl_path.parent != root
+        or not snapshot_dir.is_relative_to(root)
+        or snapshot_dir.parent != root
+    ):
+        raise ValueError(f"Invalid session ID {session_id!r}: path escapes sessions directory")
+    return jsonl_path, snapshot_dir
+
+
 class Session:
     """Append-only JSONL conversation log paired with a dill kernel snapshot."""
 
     def __init__(self, session_id: str, sessions_dir: Path | None = None) -> None:
-        self.id = session_id
         self.sessions_dir = (sessions_dir or default_sessions_dir()).resolve()
+        jsonl_path, snapshot_dir = _resolve_session_paths(session_id, self.sessions_dir)
+        self.id = session_id
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
-        self.jsonl_path = self.sessions_dir / f"{self.id}.jsonl"
+        self.jsonl_path = jsonl_path
         # Which transport created this log; see `ORIGIN_CLI`. Set from the meta
         # record by `create`/`load`, and read by a fresh session created in the
         # same seat (`/new` must not turn a browser session into a terminal one).
         self.origin = ORIGIN_CLI
-        self.snapshot_dir = self.sessions_dir / f"{self.id}.snapshot"
+        self.snapshot_dir = snapshot_dir
         self._persisted_count = 0
         self._persisted_refs: list[dict[str, Any]] = []
         self._pending_meta: dict[str, Any] | None = None
@@ -254,7 +281,7 @@ class Session:
         written is a fallback, not an error -- worktrees get removed.
         """
         root = (sessions_dir or default_sessions_dir()).resolve()
-        path = root / f"{session_id}.jsonl"
+        path, _ = _resolve_session_paths(session_id, root)
         if not path.is_file():
             return None
         return cls._inspect_session(path).cwd

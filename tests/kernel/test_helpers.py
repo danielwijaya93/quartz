@@ -69,7 +69,7 @@ def test_load_project_helpers_and_override(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    loaded = load_helpers(cwd=tmp_path, global_helpers_path=Path("/nonexistent"))
+    loaded = load_helpers(cwd=tmp_path, global_helpers_path=Path("/nonexistent"), trusted=True)
     assert "project_helper" in loaded.functions
     assert loaded.infos["project_helper"].source == "project"
 
@@ -92,7 +92,7 @@ def test_protected_primitives_cannot_be_overridden(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    loaded = load_helpers(cwd=tmp_path, global_helpers_path=Path("/nonexistent"))
+    loaded = load_helpers(cwd=tmp_path, global_helpers_path=Path("/nonexistent"), trusted=True)
     assert "valid_fn" in loaded.functions
     # bash and mcp should NOT be in loaded.functions (they are protected kernel primitives)
     assert "bash" not in loaded.functions
@@ -230,7 +230,7 @@ def test_same_stem_global_and_project_helpers_coexist(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    loaded = load_helpers(cwd=tmp_path, global_helpers_path=global_file)
+    loaded = load_helpers(cwd=tmp_path, global_helpers_path=global_file, trusted=True)
     try:
         assert loaded.functions["from_global"]() == "global"
         assert loaded.functions["from_project"]() == "project"
@@ -251,13 +251,14 @@ def test_format_helpers_for_prompt_includes_custom(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    prompt = build_system_prompt(tmp_path, global_helpers_path=Path("/nonexistent"))
+    prompt = build_system_prompt(tmp_path, global_helpers_path=Path("/nonexistent"), trusted=True)
     assert "## REPL Functions" in prompt
     assert "Custom user helpers:" in prompt
     assert "`deploy_db(env: str) -> bool`: Migrate database for target environment. (project)" in prompt
 
 
-def test_kernel_executes_custom_project_helper(tmp_path: Path) -> None:
+def test_kernel_executes_custom_project_helper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("QUARTZ_TRUST_PROJECT", "1")
     project_dir = tmp_path / ".quartz"
     project_dir.mkdir(parents=True)
     project_file = project_dir / "helpers.py"
@@ -326,13 +327,14 @@ def test_custom_helper_can_compose_builtin_helpers(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    loaded = load_helpers(cwd=tmp_path, global_helpers_path=Path("/nonexistent"))
+    loaded = load_helpers(cwd=tmp_path, global_helpers_path=Path("/nonexistent"), trusted=True)
     assert "read_first_line" in loaded.functions
     res = loaded.functions["read_first_line"](str(sample_file))
     assert "1: first line" in res
 
 
-def test_custom_helper_can_call_bash_in_kernel(tmp_path: Path) -> None:
+def test_custom_helper_can_call_bash_in_kernel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("QUARTZ_TRUST_PROJECT", "1")
     project_dir = tmp_path / ".quartz"
     project_dir.mkdir(parents=True)
     project_file = project_dir / "helpers.py"
@@ -488,7 +490,7 @@ def test_write_py_check_syntax_error_and_non_py_skip(tmp_path: Path) -> None:
 
 
 def test_system_prompt_mentions_stdlib_auto_import_and_explicit_py_imports(tmp_path: Path) -> None:
-    prompt = build_system_prompt(tmp_path, global_helpers_path=Path("/nonexistent"))
+    prompt = build_system_prompt(tmp_path, global_helpers_path=Path("/nonexistent"), trusted=True)
     assert "auto-imported" in prompt
     assert "explicit imports are still required" in prompt
 
@@ -647,3 +649,33 @@ def test_find_skips_unreadable_and_symlink_dirs(tmp_path: Path) -> None:
         os.chmod(locked, 0o755)
     assert "real/x.py" in hits
     assert not any(h.startswith("link/") for h in hits)
+
+
+def test_untrusted_project_helpers_are_skipped_with_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "config.json"))
+    monkeypatch.delenv("QUARTZ_TRUST_PROJECT", raising=False)
+
+    marker = tmp_path / "executed.txt"
+    project_dir = tmp_path / ".quartz"
+    project_dir.mkdir(parents=True)
+    (project_dir / "helpers.py").write_text(
+        f"from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('pwned', encoding='utf-8')\n"
+        "def evil():\n    return 'evil'\n",
+        encoding="utf-8",
+    )
+
+    with pytest.warns(UserWarning, match="Skipped untrusted project helpers"):
+        loaded = load_helpers(cwd=tmp_path, global_helpers_path=Path("/nonexistent"))
+
+    assert not marker.exists()
+    assert "evil" not in loaded.functions
+    assert any("Skipped untrusted project helpers" in w for w in loaded.warnings)
+
+    # Once trusted via env, it loads cleanly.
+    monkeypatch.setenv("QUARTZ_TRUST_PROJECT", "1")
+    loaded_trusted = load_helpers(cwd=tmp_path, global_helpers_path=Path("/nonexistent"))
+    assert marker.exists()
+    assert loaded_trusted.functions["evil"]() == "evil"

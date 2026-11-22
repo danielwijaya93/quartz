@@ -35,7 +35,7 @@ from quartz.errors import SessionNotFoundError
 from quartz.kernel.client import KernelClient
 from quartz.providers.registry import resolve_context_tokens
 from quartz.providers.selection import build_provider
-from quartz.settings import load_settings
+from quartz.settings import load_settings, trust_project
 
 __all__ = ["BootstrapOptions", "build_runtime"]
 
@@ -80,6 +80,7 @@ class BootstrapOptions:
     # about the session on disk and never changes on resume, while this is a fact
     # about who is looking at it now.
     transport: str = "cli"
+    trust_project: bool = False
 
 
 def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
@@ -99,6 +100,8 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
     kernel subprocess. Callers cannot close it themselves: they never see the object.
     """
     cwd = options.cwd.resolve()
+    if options.trust_project:
+        trust_project(cwd)
 
     kernel = KernelClient(cwd=cwd)
     kernel_err: list[BaseException] = []

@@ -6,10 +6,13 @@ import asyncio
 import json
 import os
 import tempfile
+import warnings
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
+
+from quartz.settings import is_project_trusted
 
 
 def default_mcp_config_path() -> Path:
@@ -160,18 +163,34 @@ def project_mcp_config_path(cwd: Path) -> Path:
     return (cwd / ".quartz" / "mcp.json").resolve()
 
 
-def load_mcp_servers(cwd: Path | None = None) -> dict[str, dict[str, Any]]:
-    """Discover enabled MCP servers: global config (or MCP_CONFIG) overlaid by `<cwd>/.quartz/mcp.json`.
+def load_mcp_servers(
+    cwd: Path | None = None,
+    *,
+    trusted: bool | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Discover enabled MCP servers: global config (or MCP_CONFIG) plus trusted `<cwd>/.quartz/mcp.json`.
 
-    Project entries replace global entries of the same name; `enabled: false` in the project
-    file disables a globally-defined server.
+    Global entries always take precedence over project entries of the same name.
+    Untrusted projects' `.quartz/mcp.json` files are skipped with a warning.
     """
-    raw = load_raw_mcp_config()
+    global_raw = load_raw_mcp_config()
+    merged = dict(global_raw)
     if cwd is not None:
         project_path = project_mcp_config_path(cwd)
-        if project_path != default_mcp_config_path():
-            raw = {**raw, **load_raw_mcp_config(project_path)}
-    return {name: spec for name, spec in raw.items() if spec.get("enabled", True) is not False}
+        if project_path != default_mcp_config_path() and project_path.is_file():
+            is_trusted = is_project_trusted(cwd) if trusted is None else trusted
+            if is_trusted:
+                for name, spec in load_raw_mcp_config(project_path).items():
+                    if name not in global_raw:
+                        merged[name] = spec
+            else:
+                warnings.warn(
+                    f"Skipped untrusted project MCP config at {project_path}. "
+                    "Pass --trust-project or set QUARTZ_TRUST_PROJECT=1 to enable.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+    return {name: spec for name, spec in merged.items() if spec.get("enabled", True) is not False}
 
 
 DEFAULT_CALL_TIMEOUT = 60.0
