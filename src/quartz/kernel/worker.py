@@ -94,6 +94,9 @@ class _UnpickleFailed:
     """
 
 
+_UNPICKLE_FAILED = _UnpickleFailed()
+
+
 def _skip_reason(pickle_err: BaseException, dill_err: BaseException) -> str:
     """One short clause explaining why a value was left out of a snapshot.
 
@@ -870,7 +873,7 @@ class KernelWorker:
                 self._namespace[name] = loaded
                 restored.append(name)
             except Exception:
-                loaded_by_file[fname] = _UnpickleFailed
+                loaded_by_file[fname] = _UNPICKLE_FAILED
                 skipped.append(f"{name} (unpickle error)")
 
         for name, val in self._default_bindings.items():

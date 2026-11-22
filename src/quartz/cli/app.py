@@ -196,15 +196,6 @@ def _build_runtime(args: argparse.Namespace) -> tuple[AgentRuntime, bool]:
         sys.exit(1)
 
 
-def _context_budget_from_settings() -> tuple[int, int, int]:
-    """Return (0, reserve, keep) from ~/.quartz/config.json via /settings.
-
-    Kept for the ACP call site. Legacy COMPACT_* env vars are silently ignored.
-    """
-    settings = load_settings()
-    return (0, settings.compact_reserve_tokens, settings.keep_recent_tokens)
-
-
 def _load_env_files() -> None:
     """Load ~/.quartz/.env then the project .env, without overriding real env vars.
 
@@ -358,3 +349,9 @@ def main() -> None:
             except Exception:
                 pass
         rt.kernel.close()
+        close_client = getattr(rt.client, "close", None)
+        if callable(close_client):
+            try:
+                close_client()
+            except Exception:
+                pass

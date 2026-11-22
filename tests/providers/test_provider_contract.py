@@ -224,6 +224,18 @@ def test_contract_multiline_sse_and_midstream_errors(
         list(p_err.stream("m", [{"role": "user", "content": "hi"}]))
     assert exc_info.value.status_code == 503
 
+    # Mid-stream {"error": {"code": "<string>"}} does not crash with ValueError
+    str_err_lines = ['data: {"error": {"code": "context_length_exceeded", "message": "too long"}}', ""]
+    p_str_err = _make_provider(kind, tmp_path, monkeypatch, [_FakeStreamResp(200, lines=str_err_lines)])
+    with pytest.raises(ContextOverflowError):
+        list(p_str_err.stream("m", [{"role": "user", "content": "hi"}]))
+
+    str_unknown_lines = ['data: {"error": {"code": "server_error", "message": "boom"}}', ""]
+    p_str_unk = _make_provider(kind, tmp_path, monkeypatch, [_FakeStreamResp(200, lines=str_unknown_lines)])
+    with pytest.raises(ProviderError) as unk_exc:
+        list(p_str_unk.stream("m", [{"role": "user", "content": "hi"}]))
+    assert unk_exc.value.status_code == 500
+
     # Malformed JSON raises ProviderError
     bad_json = ["data: {not-valid-json", ""]
     p_bad = _make_provider(kind, tmp_path, monkeypatch, [_FakeStreamResp(200, lines=bad_json)])
