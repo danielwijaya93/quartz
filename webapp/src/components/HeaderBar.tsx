@@ -1,6 +1,6 @@
 import * as React from "react";
-import { Button, Chip } from "@heroui/react";
-import { PanelLeft, Plus } from "lucide-react";
+import { Button, Chip, cn } from "@heroui/react";
+import { ChevronDown, Folder, PanelLeft, Plus } from "lucide-react";
 import { RichUiToggle } from "./RichUiToggle";
 import { ThemeToggle } from "./ThemeToggle";
 import type { ConnectionStatus } from "@/lib/connection";
@@ -47,21 +47,52 @@ function MetaChip({
 /**
  * Where the session is running: the folder's own name, never a stub.
  */
-function CwdChip({ cwd }: { cwd: string }): React.ReactElement {
+function CwdChip({
+  cwd,
+  onChangeFolder,
+}: {
+  cwd: string;
+  onChangeFolder?: () => void;
+}): React.ReactElement {
+  const inner = (
+    <Chip
+      size="sm"
+      variant="soft"
+      color="default"
+      title={cwd || undefined}
+      className={cn(
+        "max-w-full min-w-0 overflow-hidden bg-surface-secondary/70",
+        onChangeFolder && "cursor-pointer transition-colors hover:bg-surface-secondary",
+      )}
+    >
+      <Folder aria-hidden="true" className="mr-1 size-3 shrink-0 text-muted" />
+      <span className="sr-only">
+        {cwd ? `Working directory ${cwd}` : "Working directory not set"}
+      </span>
+      <span aria-hidden="true" dir="rtl" className="block truncate text-left font-medium">
+        {cwd ? directoryLabel(cwd) : "—"}
+      </span>
+      {onChangeFolder ? (
+        <ChevronDown aria-hidden="true" className="ml-0.5 size-3 shrink-0 text-muted" />
+      ) : null}
+    </Chip>
+  );
+
   return (
     <li className="min-w-0 flex-1">
-      <Chip
-        size="sm"
-        variant="soft"
-        color="default"
-        title={cwd || undefined}
-        className="max-w-full min-w-0 overflow-hidden bg-surface-secondary/70"
-      >
-        <span className="sr-only">{cwd ? `Working directory ${cwd}` : "Working directory not set"}</span>
-        <span aria-hidden="true" dir="rtl" className="block truncate text-left font-medium">
-          {cwd ? directoryLabel(cwd) : "—"}
-        </span>
-      </Chip>
+      {onChangeFolder ? (
+        <button
+          type="button"
+          onClick={onChangeFolder}
+          aria-label={`Switch folder (current: ${cwd || "not set"})`}
+          title={cwd ? `${cwd} — click to switch folder` : "Click to choose a folder"}
+          className="inline-flex max-w-full min-w-0 cursor-pointer items-center rounded-md focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none"
+        >
+          {inner}
+        </button>
+      ) : (
+        inner
+      )}
     </li>
   );
 }
@@ -79,6 +110,7 @@ export function HeaderBar({
   richUiMode,
   onRichUiModeChange,
   onNewSession,
+  onChangeFolder,
   sidebarOpen,
   onToggleSidebar,
 }: {
@@ -86,8 +118,10 @@ export function HeaderBar({
   status: ConnectionStatus;
   richUiMode: RichUiMode;
   onRichUiModeChange: (mode: RichUiMode) => void;
-  /** Opens the folder picker: a new session needs a folder first. */
+  /** Starts a new session in the current folder (or opens the picker if unset). */
   onNewSession: () => void;
+  /** Opens the folder picker to start a session in another folder. */
+  onChangeFolder?: () => void;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
 }): React.ReactElement {
@@ -152,7 +186,7 @@ export function HeaderBar({
             title={session.sessionId ? `Session ${session.sessionId}` : undefined}
             className="shrink-0"
           />
-          <CwdChip cwd={session.cwd} />
+          <CwdChip cwd={session.cwd} onChangeFolder={onChangeFolder} />
           <MetaChip
             label={model}
             title={model}

@@ -98,4 +98,15 @@ describe("HeaderBar", () => {
     await user.click(screen.getByRole("button", { name: "Start a new session" }));
     expect(props.onNewSession).toHaveBeenCalled();
   });
+
+  it("lets the folder chip trigger onChangeFolder when provided", async () => {
+    const user = userEvent.setup();
+    const onChangeFolder = vi.fn();
+    renderHeader({ onChangeFolder });
+
+    await user.click(
+      screen.getByRole("button", { name: `Switch folder (current: ${SESSION.cwd})` }),
+    );
+    expect(onChangeFolder).toHaveBeenCalledTimes(1);
+  });
 });

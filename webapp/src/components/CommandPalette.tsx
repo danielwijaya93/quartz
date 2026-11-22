@@ -235,7 +235,7 @@ export function CommandPalette({
                   spellCheck={false}
                   autoComplete="off"
                   autoFocus
-                  className="w-full border-0 bg-transparent px-0 shadow-none outline-none! ring-0! focus-visible:outline-none!"
+                  className="quartz-bare-input w-full border-0 bg-transparent px-0 shadow-none"
                 />
               </div>
             </div>

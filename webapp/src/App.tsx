@@ -157,7 +157,11 @@ export function App(): React.ReactElement {
           status={quartz.status}
           richUiMode={richUi.mode}
           onRichUiModeChange={richUi.setMode}
-          onNewSession={() => setPicker("session")}
+          onNewSession={() => {
+            if (quartz.state.session.cwd) newSessionIn(quartz.state.session.cwd);
+            else setPicker("session");
+          }}
+          onChangeFolder={() => setPicker("session")}
           sidebarOpen={sidebarOpen}
           onToggleSidebar={() => setSidebarOpen((open) => !open)}
         />

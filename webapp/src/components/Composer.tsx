@@ -422,7 +422,7 @@ export function Composer({
             spellCheck={false}
             autoCapitalize="off"
             autoComplete="off"
-            className="max-h-[200px] min-h-[40px] w-full resize-none border-0 bg-transparent px-1 py-1.5 text-[0.9375rem] shadow-none outline-none! ring-0! focus-visible:outline-none!"
+            className="quartz-bare-input max-h-[200px] min-h-[40px] w-full resize-none border-0 bg-transparent px-1 py-1.5 text-[0.9375rem] shadow-none"
           />
 
           <div className="mt-1 flex items-center gap-1.5">
