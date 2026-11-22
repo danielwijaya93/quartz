@@ -2,10 +2,18 @@ import * as React from "react";
 import { Spinner } from "@heroui/react";
 import { ConnectionBanner } from "./ConnectionBanner";
 import type { ConnectionStatus } from "@/lib/connection";
+import { trayOwnsStatus } from "@/lib/transcript";
 
 /**
  * One line above the composer: the server's coarse status label, or a reconnect
  * banner if the socket is unhappy. Non-blocking in both cases.
+ *
+ * Deliberately quiet, and deliberately conditional: while a turn runs, the turn
+ * tray's header is already the live line - "Thinking", "Running read_csv", with the
+ * transcript's one live region - and the server's own label names the same moment
+ * in different words ("Thinking... · running"). Drawn together they read as two
+ * turns doing two things, so a label the tray already covers is not repeated here.
+ * Anything the tray cannot know still shows, unchanged.
  */
 export function StatusLine({
   label,
@@ -20,6 +28,7 @@ export function StatusLine({
     return <ConnectionBanner status={status} />;
   }
   if (label === null) return null;
+  if (trayOwnsStatus(label, turnRunning)) return null;
   return (
     <div
       role="status"
@@ -28,8 +37,6 @@ export function StatusLine({
     >
       <Spinner size="sm" color="current" aria-hidden="true" />
       <span>{label}</span>
-      {turnRunning ? <span aria-hidden="true">·</span> : null}
-      {turnRunning ? <span>running</span> : null}
     </div>
   );
 }

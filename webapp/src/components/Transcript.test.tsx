@@ -23,6 +23,12 @@ const toolRow: Row = {
   actions: null,
 };
 const noticeRow: Row = { kind: "bash_notice", id: "n1", text: "job 3 finished" };
+const systemNoticeRow: Row = {
+  kind: "system_notice",
+  id: "sn1",
+  tag: "python-state-restored",
+  text: "Restored 4 Python variables/functions from the previous session: df, model.",
+};
 const steeringRow: Row = { kind: "steering", id: "s1", text: "also x" };
 const compactionRow: Row = {
   kind: "compaction",
@@ -112,7 +118,7 @@ describe("Transcript", () => {
     // Nothing the turn did is on the page until the tray is opened.
     expect(screen.queryByRole("button", { name: /Thinking, 3 lines/ })).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: /1 step/ }));
+    await user.click(screen.getByRole("button", { name: /Thought/ }));
     const trigger = screen.getByRole("button", { name: /Thinking, 3 lines/ });
     const body = (): Element | null => document.querySelector("pre");
     expect(body()).not.toBeVisible();
@@ -127,7 +133,7 @@ describe("Transcript", () => {
 
     // The run, not the call, is the tray's row: one line for one kind of work.
     expect(screen.queryByText("Succeeded")).toBeNull();
-    await user.click(screen.getByRole("button", { name: /1 step/ }));
+    await user.click(screen.getByRole("button", { name: /1 tool/ }));
     await user.click(screen.getByRole("button", { name: /Used 1 tool/ }));
 
     expect(screen.getByText("Succeeded")).toBeInTheDocument();
@@ -141,7 +147,7 @@ describe("Transcript", () => {
     // The failure is visible before anything is opened: the header counts it.
     expect(screen.getByText("1 failed")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /1 step/ }));
+    await user.click(screen.getByRole("button", { name: /1 tool/ }));
     await user.click(screen.getByRole("button", { name: /Used 1 tool/ }));
     expect(screen.getByText("Failed")).toBeInTheDocument();
     expect(screen.getByText("NameError: x")).toBeVisible();
@@ -155,7 +161,7 @@ describe("Transcript", () => {
         images: [{ mimeType: "image/png", data: "abc" }],
       } as Row,
     ]);
-    await user.click(screen.getByRole("button", { name: /1 step/ }));
+    await user.click(screen.getByRole("button", { name: /1 tool/ }));
     await user.click(screen.getByRole("button", { name: /Used 1 tool/ }));
 
     expect(screen.getByAltText("Tool output image 1")).toHaveAttribute(
@@ -167,7 +173,7 @@ describe("Transcript", () => {
   it("renders action chips as text, not colour", async () => {
     const user = userEvent.setup();
     renderRows([{ ...toolRow, actions: { wrote: "plot.png", cells: 4 } } as Row]);
-    await user.click(screen.getByRole("button", { name: /1 step/ }));
+    await user.click(screen.getByRole("button", { name: /1 tool/ }));
     await user.click(screen.getByRole("button", { name: /Used 1 tool/ }));
     await user.click(screen.getByRole("button", { name: /Tool call, Succeeded/ }));
 
@@ -182,6 +188,17 @@ describe("Transcript", () => {
     expect(screen.getByText(/You steered the turn/)).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Context compacted" })).toBeInTheDocument();
     expect(screen.getByText(/30→8 messages/)).toBeInTheDocument();
+  });
+
+  it("draws a harness notice as the application speaking, not as the reader", () => {
+    renderRows([systemNoticeRow]);
+
+    // Left-aligned, labelled, and quieter than an answer: the application restored
+    // a kernel, the reader did not say so.
+    const notice = screen.getByRole("region", { name: "System notice" });
+    expect(notice).toHaveTextContent("python-state-restored");
+    expect(notice).toHaveTextContent("Restored 4 Python variables/functions");
+    expect(screen.queryByText("You")).toBeNull();
   });
 
   it("renders an error row", () => {
@@ -216,6 +233,7 @@ describe("Transcript", () => {
       assistantRow,
       toolRow,
       noticeRow,
+      systemNoticeRow,
       steeringRow,
       compactionRow,
       errorRow,
@@ -224,8 +242,8 @@ describe("Transcript", () => {
     ]);
     const log = screen.getByRole("log");
     // One node per standalone row, one per turn (which holds its tray and its
-    // answer), plus the scroll sentinel: ten rows become eight.
-    expect(log.children).toHaveLength(9);
+    // answer), plus the scroll sentinel: eleven rows become nine.
+    expect(log.children).toHaveLength(10);
   });
 
   it("folds a turn's work into one closed tray above the answer", () => {
@@ -242,8 +260,9 @@ describe("Transcript", () => {
     // The old shape was one card per thinking block and per tool call.
     expect(screen.queryByText("Succeeded")).toBeNull();
 
-    // Thinking plus one folded run of three calls: two steps, not four cards.
-    const tray = screen.getByRole("button", { name: /2 steps/ });
+    // Thinking plus one folded run of three calls: two steps, not four cards, and
+    // the header names the work rather than counting the steps.
+    const tray = screen.getByRole("button", { name: /Thought, 3 tools/ });
     expect(tray).toHaveAttribute("aria-expanded", "false");
     // The answer is on the page, at full width, in the reading column.
     expect(screen.getByText("hi").tagName).toBe("STRONG");
@@ -253,7 +272,7 @@ describe("Transcript", () => {
 
   it("renders a turn with no answer as just its tray", () => {
     renderRows([{ kind: "thinking", id: "k1", text: "thinking only" } as Row]);
-    expect(screen.getByRole("button", { name: /1 step/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Thought/ })).toBeInTheDocument();
     expect(screen.queryByText("Quartz")).toBeNull();
   });
 
@@ -275,7 +294,7 @@ describe("Transcript", () => {
     expect(texts[1]).toContain("job 3 finished");
     expect(texts[2]).toContain("second");
     // An answer-only turn has no machinery, so it gets no tray.
-    expect(screen.queryAllByRole("button", { name: /step/ })).toHaveLength(0);
+    expect(screen.queryAllByRole("button", { name: /Thought|tools/ })).toHaveLength(0);
   });
 });
 
@@ -474,6 +493,121 @@ describe("Transcript tail following", () => {
     await flushFrames();
 
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers a way back to the newest message only when the reader is off the tail", () => {
+    renderRows([userRow, assistantRow]);
+    expect(screen.queryByRole("button", { name: /Jump to the newest message/ })).toBeNull();
+
+    const container = scrollContainer();
+    setScrollMetrics(container, 0); // 900px above the tail
+    fireEvent.scroll(container);
+
+    // A real name, in words: an icon-only circle above a transcript is a mystery.
+    expect(screen.getByRole("button", { name: /Jump to the newest message/ })).toBeInTheDocument();
+
+    setScrollMetrics(container, 900);
+    fireEvent.scroll(container);
+    expect(screen.queryByRole("button", { name: /Jump to the newest message/ })).toBeNull();
+  });
+
+  it("says when output arrived while the reader was away, without a live region", () => {
+    const first: Row[] = [userRow, assistantRow];
+    const { rerender } = render(transcript(first, true));
+    const container = scrollContainer();
+    setScrollMetrics(container, 0);
+    fireEvent.scroll(container);
+
+    // Nothing new yet: it is a scroll button and says nothing more.
+    const before = screen.getByRole("button", { name: /Jump to the newest message/ });
+    expect(before).not.toHaveTextContent("New output");
+
+    rerender(transcript([...first, { ...assistantRow, id: "a2", text: "and more" }], true));
+    const after = screen.getByRole("button", { name: /Jump to the newest message/ });
+    expect(after).toHaveTextContent("New output arrived below.");
+    // Still not a live region: the transcript's announcements stay single-sourced.
+    expect(after).not.toHaveAttribute("aria-live");
+  });
+
+  it("pins the tail again when the way back is pressed", () => {
+    renderRows([userRow, assistantRow]);
+    const container = scrollContainer();
+    setScrollMetrics(container, 0);
+    fireEvent.scroll(container);
+
+    const sentinel = logNode().lastElementChild as HTMLElement;
+    const scrollIntoView = vi.spyOn(sentinel, "scrollIntoView").mockImplementation(() => {});
+
+    fireEvent.click(screen.getByRole("button", { name: /Jump to the newest message/ }));
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "end" });
+    // Back at the tail, the control is gone - there is nothing left to jump to.
+    expect(screen.queryByRole("button", { name: /Jump to the newest message/ })).toBeNull();
+  });
+
+  it("keeps the way back on screen while a keyboard user holds it", async () => {
+    const user = userEvent.setup();
+    renderRows([userRow, assistantRow]);
+    const container = scrollContainer();
+    setScrollMetrics(container, 0);
+    fireEvent.scroll(container);
+
+    // Reached and pressed from the keyboard. Removing the node under the focus ring
+    // would drop focus on <body> and send the next Tab to the top of the page.
+    await user.tab();
+    const button = screen.getByRole("button", { name: /Jump to the newest message/ });
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("jump-to-newest")).toHaveFocus();
+
+    act(() => button.blur());
+    expect(screen.queryByTestId("jump-to-newest")).toBeNull();
+  });
+
+  it("scrolls to a row the reader just sent, even from the middle of history", () => {
+    const history: Row[] = [userRow, assistantRow];
+    const { rerender } = render(transcript(history, true));
+    const container = scrollContainer();
+    setScrollMetrics(container, 0); // reading, far above the tail
+    fireEvent.scroll(container);
+
+    const sentinel = logNode().lastElementChild as HTMLElement;
+    const scrollIntoView = vi.spyOn(sentinel, "scrollIntoView").mockImplementation(() => {});
+
+    // The prompt is echoed straight into the row stream - the same shape every send
+    // path produces - and sending is an explicit act, not the stream talking.
+    const sent: Row = { kind: "user", id: "local-user-1", text: "what is 6*7?", images: [] };
+    rerender(transcript([...history, sent], true));
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "end" });
+    // ...and the reader is now following the reply again.
+    expect(screen.queryByTestId("jump-to-newest")).toBeNull();
+  });
+
+  it("lands at the tail when the session is switched", () => {
+    // History rows are numbered by position, so the two sessions share every id:
+    // the words are what tell the transcript it is looking at another conversation.
+    const sessionOne: Row[] = [
+      { kind: "user", id: "history-user-0", text: "about the data", images: [] },
+      { kind: "assistant", id: "history-assistant-1", text: "here it is", formState: null },
+    ];
+    const sessionTwo: Row[] = [
+      { kind: "user", id: "history-user-0", text: "about the plots", images: [] },
+      { kind: "assistant", id: "history-assistant-1", text: "here they are", formState: null },
+    ];
+
+    const { rerender } = render(transcript(sessionOne, false));
+    const container = scrollContainer();
+    setScrollMetrics(container, 0);
+    fireEvent.scroll(container);
+    expect(screen.getByTestId("jump-to-newest")).toBeInTheDocument();
+
+    const sentinel = logNode().lastElementChild as HTMLElement;
+    const scrollIntoView = vi.spyOn(sentinel, "scrollIntoView").mockImplementation(() => {});
+
+    rerender(transcript(sessionTwo, false));
+
+    // A different conversation opens at its newest message, never mid-history.
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "end" });
   });
 
   it("stops observing the content column on unmount", () => {

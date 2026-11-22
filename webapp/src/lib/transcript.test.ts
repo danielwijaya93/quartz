@@ -6,11 +6,16 @@ import {
   groupTurns,
   initialState,
   isTurn,
+  lastUserRowId,
   lineCount,
+  parseHarnessNotice,
   reduceAll,
   resetIdCounter,
+  sameConversation,
   setRowFormState,
   stepLabel,
+  trayOwnsStatus,
+  turnSummary,
   type AssistantRow,
   type Row,
   type ThinkingRow,
@@ -287,6 +292,77 @@ describe("system rows", () => {
   it("emits a steering row", () => {
     const state = fold([{ type: "steering", text: "also check x" }]);
     expect(state.rows[0]).toMatchObject({ kind: "steering", text: "also check x" });
+  });
+
+  it("classifies a harness notice as a notice, not as the reader speaking", () => {
+    // A resumed session opens with this: the application reporting that it
+    // restored a kernel, delivered on the only role the wire lets it use.
+    const notice =
+      "[python-state-restored]\nRestored 2 Python variables/functions from the previous session: df, model.\nNothing was skipped.";
+    const state = fold([
+      {
+        type: "session_state",
+        sessionId: "s1",
+        cwd: "/tmp",
+        model: "m",
+        effort: "high",
+        turnRunning: false,
+        commands: [],
+        messages: [{ role: "user", content: notice }],
+      },
+    ]);
+
+    expect(state.rows).toHaveLength(1);
+    expect(state.rows[0]).toMatchObject({
+      kind: "system_notice",
+      tag: "python-state-restored",
+      text: "Restored 2 Python variables/functions from the previous session: df, model.\nNothing was skipped.",
+    });
+    // Nothing claims the reader said it.
+    expect(state.rows.some((row) => row.kind === "user")).toBe(false);
+  });
+
+  it("keeps the reader's own bracketed words out of the notice rule", () => {
+    const state = fold([
+      {
+        type: "session_state",
+        sessionId: "s1",
+        cwd: "/tmp",
+        model: "m",
+        effort: "",
+        turnRunning: false,
+        commands: [],
+        messages: [
+          { role: "user", content: "[x] try this instead" },
+          { role: "user", content: "look at [the docs] please" },
+        ],
+      },
+    ]);
+    expect(state.rows.map((row) => row.kind)).toEqual(["user", "user"]);
+  });
+});
+
+describe("harness notices", () => {
+  it("splits the tag from the body it announced", () => {
+    expect(
+      parseHarnessNotice("[bash-done pid:4821 exit:0 duration:1.2s]\ncommand: ls\ntail:\nout"),
+    ).toEqual({
+      tag: "bash-done pid:4821 exit:0 duration:1.2s",
+      text: "command: ls\ntail:\nout",
+    });
+  });
+
+  it("reads a one-line notice's sentence after its tag", () => {
+    expect(parseHarnessNotice("[progress] Update the user now on the progress.")).toEqual({
+      tag: "progress",
+      text: "Update the user now on the progress.",
+    });
+  });
+
+  it("reads ordinary prose as ordinary prose", () => {
+    expect(parseHarnessNotice("what is 6*7?")).toBeNull();
+    // Brackets stop being a tag the moment they are not the first thing said.
+    expect(parseHarnessNotice("please [python-state-restored] this")).toBeNull();
   });
 });
 
@@ -931,5 +1007,108 @@ describe("turn summaries", () => {
   it("says 'a tool' when a running call has no code yet", () => {
     const turn = fold(tool("t1", "running", ""), assistant("a1", "done"));
     expect(stepLabel(turn.steps[0]!)).toBe("Running a tool");
+  });
+});
+
+describe("the settled header", () => {
+  const turnOf = (...rows: Row[]): Turn => turnsOf(groupTurns(rows))[0]!;
+  const manyTools = (count: number): Row[] =>
+    Array.from({ length: count }, (_, index) => tool(`t${index + 1}`));
+
+  it("names the work, not how many rows the tray holds", () => {
+    // The old header said "1 step" over a body reading "Used 4 tools": one idea,
+    // two units, and the useless number in front.
+    const turn = turnOf(...manyTools(4), assistant("a1", "done"));
+    expect(turn.steps).toHaveLength(1);
+    expect(turnSummary(turn)).toBe("4 tools");
+  });
+
+  it("says so when there was also thinking, still with one count", () => {
+    const turn = turnOf(thinking("k1", "hmm"), ...manyTools(4), assistant("a1", "done"));
+    expect(turnSummary(turn)).toBe("Thought, 4 tools");
+  });
+
+  it("never counts steps alongside the tools inside them", () => {
+    const turn = turnOf(
+      thinking("k1", "a"),
+      tool("t1"),
+      assistant("a1", "one down"),
+      tool("t2"),
+      tool("t3"),
+      assistant("a2", "answer"),
+    );
+    // Three steps, three tools: the header says the second one only.
+    expect(turn.steps).toHaveLength(4);
+    expect(turnSummary(turn)).toBe("Thought, 3 tools");
+  });
+
+  it("says 'tool' for one", () => {
+    expect(turnSummary(turnOf(tool("t1"), assistant("a1", "done")))).toBe("1 tool");
+  });
+
+  it("says only 'Thought' when nothing ran", () => {
+    expect(turnSummary(turnOf(thinking("k1", "a"), assistant("a1", "done")))).toBe("Thought");
+  });
+
+  it("leaves the failure count to its own suffix", () => {
+    const turn = turnOf(tool("t1", "failed"), tool("t2", "failed"), tool("t3"), assistant("a1", "x"));
+    // The header reads "3 tools · 2 failed": the count of what ran, the count of
+    // what broke, and nothing counted twice.
+    expect(turnSummary(turn)).toBe("3 tools");
+    expect(failedToolCount(turn)).toBe(2);
+  });
+});
+
+describe("who owns a running turn", () => {
+  it("hands the tray's own words to the tray while a turn runs", () => {
+    // The tray header is the live line: "Thinking", "Running read_csv", "Writing a
+    // reply". The server's label for the same moment is not a second line.
+    expect(trayOwnsStatus("Thinking...", true)).toBe(true);
+    expect(trayOwnsStatus("Running ipython...", true)).toBe(true);
+    expect(trayOwnsStatus("Writing a reply", true)).toBe(true);
+  });
+
+  it("keeps a label the tray cannot know", () => {
+    expect(trayOwnsStatus("Compacting context…", true)).toBe(false);
+  });
+
+  it("never hides a label when no turn runs, because no tray is speaking", () => {
+    expect(trayOwnsStatus("Thinking...", false)).toBe(false);
+    expect(trayOwnsStatus(null, true)).toBe(false);
+  });
+});
+
+describe("following the stream", () => {
+  it("finds the newest row the reader spoke", () => {
+    const rows: Row[] = [user("u1", "first"), assistant("a1", "one"), user("u2", "second")];
+    expect(lastUserRowId(rows)).toBe("u2");
+    expect(lastUserRowId([assistant("a1", "one")])).toBeNull();
+    expect(lastUserRowId([])).toBeNull();
+  });
+
+  it("treats growth as the same conversation and a replacement as another one", () => {
+    const first: Row[] = [user("u1", "first"), assistant("a1", "one")];
+    const grown: Row[] = [...first, assistant("a2", "more")];
+    expect(sameConversation(first, grown)).toBe(true);
+
+    // History rows are numbered by position, so two sessions reuse "history-user-0".
+    // The words are what tells them apart.
+    const sessionOne: Row[] = [
+      { kind: "user", id: "history-user-0", text: "about the data", images: [] },
+      { kind: "assistant", id: "history-assistant-1", text: "here it is", formState: null },
+    ];
+    const sessionTwo: Row[] = [
+      { kind: "user", id: "history-user-0", text: "about the plots", images: [] },
+      { kind: "assistant", id: "history-assistant-1", text: "here they are", formState: null },
+    ];
+    expect(sameConversation(sessionOne, sessionTwo)).toBe(false);
+  });
+
+  it("does not call the first render a switch", () => {
+    expect(sameConversation([], [user("u1", "hi")])).toBe(true);
+  });
+
+  it("does call an emptied log one, because that is a new session", () => {
+    expect(sameConversation([user("u1", "hi")], [])).toBe(false);
   });
 });
