@@ -216,6 +216,28 @@ def create_app(
             }
         )
 
+    @app.get("/api/jobs/{pid}/tail")
+    async def job_tail(pid: int) -> JSONResponse:
+        if not session.built:
+            return JSONResponse({"error": "No active runtime"}, status_code=404)
+        tail_fn = getattr(session.runtime.kernel, "bash_tail", None)
+        if not callable(tail_fn):
+            return JSONResponse({"error": "Job tail unavailable"}, status_code=404)
+        tail = await asyncio.to_thread(tail_fn, pid)
+        if tail is None:
+            return JSONResponse({"error": f"Job {pid} not found"}, status_code=404)
+        return JSONResponse({"pid": pid, "tail": tail})
+
+    @app.post("/api/jobs/{pid}/kill")
+    async def job_kill(pid: int) -> JSONResponse:
+        if not session.built:
+            return JSONResponse({"error": "No active runtime"}, status_code=404)
+        kill_fn = getattr(session.runtime.kernel, "kill_bash", None)
+        if not callable(kill_fn):
+            return JSONResponse({"error": "Job kill unavailable"}, status_code=404)
+        killed = await asyncio.to_thread(kill_fn, pid)
+        return JSONResponse({"pid": pid, "killed": bool(killed)})
+
     # -- the sidebar -------------------------------------------------------
 
     @app.get("/api/sessions")
