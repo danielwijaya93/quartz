@@ -360,4 +360,14 @@
   .openui-surface > * {
     max-width: 100%;
   }
+
+  /* Inner inputs inside custom focus-within wrappers delegate focus ring to the wrapper. */
+  .quartz-bare-input,
+  .quartz-bare-input:focus,
+  .quartz-bare-input:focus-visible,
+  .quartz-bare-input[data-focus-visible="true"] {
+    outline: none !important;
+    box-shadow: none !important;
+    border-color: transparent !important;
+  }
 }
