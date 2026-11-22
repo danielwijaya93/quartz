@@ -10,6 +10,8 @@ import { FolderPicker } from "./components/FolderPicker";
 import { SessionArchiveDialog } from "./components/SessionArchiveDialog";
 import { TrustFolderDialog } from "./components/TrustFolderDialog";
 import { ModelPickerDialog } from "./components/ModelPickerDialog";
+import { SettingsModal } from "./components/SettingsModal";
+import { JobsModal } from "./components/JobsModal";
 import { useQuartz } from "./useQuartz";
 import { useCommandPalette } from "./lib/useCommandPalette";
 import { useOpenUISystemPrompt, useRichUiMode } from "./lib/useRichUi";
@@ -54,6 +56,8 @@ export function App(): React.ReactElement {
   const [picker, setPicker] = React.useState<PickerMode | null>(null);
   const [archiveOpen, setArchiveOpen] = React.useState(false);
   const [modelPickerOpen, setModelPickerOpen] = React.useState(false);
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [jobsOpen, setJobsOpen] = React.useState(false);
   const [dismissedTrustCwds, setDismissedTrustCwds] = React.useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -112,6 +116,14 @@ export function App(): React.ReactElement {
       const cleaned = name.trim().toLowerCase();
       if (cleaned === "model" && (!arg || arg.trim() === "")) {
         setModelPickerOpen(true);
+        return;
+      }
+      if (cleaned === "settings" && (!arg || arg.trim() === "")) {
+        setSettingsOpen(true);
+        return;
+      }
+      if (cleaned === "jobs" && (!arg || arg.trim() === "")) {
+        setJobsOpen(true);
         return;
       }
       quartz.runCommand(name, arg);
@@ -264,6 +276,26 @@ export function App(): React.ReactElement {
         onDismiss={() => {
           if (!projectTrust) return;
           setDismissedTrustCwds((prev) => new Set(prev).add(projectTrust.cwd));
+        }}
+      />
+
+      <SettingsModal
+        open={settingsOpen}
+        onOpenChange={(open) => {
+          setSettingsOpen(open);
+          if (!open) {
+            window.requestAnimationFrame(() => composerRef.current?.focus());
+          }
+        }}
+      />
+
+      <JobsModal
+        open={jobsOpen}
+        onOpenChange={(open) => {
+          setJobsOpen(open);
+          if (!open) {
+            window.requestAnimationFrame(() => composerRef.current?.focus());
+          }
         }}
       />
 

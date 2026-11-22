@@ -216,6 +216,102 @@ def create_app(
             }
         )
 
+    @app.get("/api/settings")
+    async def get_settings() -> JSONResponse:
+        from quartz.providers.registry import config_file_path
+        from quartz.settings import (
+            DEFAULT_BACKGROUND_CHECK_EVERY,
+            DEFAULT_COMPACT_RESERVE_TOKENS,
+            DEFAULT_KEEP_RECENT_TOKENS,
+            DEFAULT_PROGRESS_EVERY,
+            load_settings,
+        )
+
+        if session.built:
+            rt = session.runtime
+            values = {
+                "reserve": rt.compact_reserve_tokens,
+                "keep": rt.keep_recent_tokens,
+                "progress": rt.progress_every,
+                "bg": rt.background_check_every,
+            }
+        else:
+            loaded = await asyncio.to_thread(load_settings)
+            values = {
+                "reserve": loaded.compact_reserve_tokens,
+                "keep": loaded.keep_recent_tokens,
+                "progress": loaded.progress_every,
+                "bg": loaded.background_check_every,
+            }
+        return JSONResponse(
+            {
+                "values": values,
+                "defaults": {
+                    "reserve": DEFAULT_COMPACT_RESERVE_TOKENS,
+                    "keep": DEFAULT_KEEP_RECENT_TOKENS,
+                    "progress": DEFAULT_PROGRESS_EVERY,
+                    "bg": DEFAULT_BACKGROUND_CHECK_EVERY,
+                },
+                "configPath": str(config_file_path()),
+            }
+        )
+
+    @app.post("/api/settings")
+    async def update_settings(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+        if not isinstance(payload, dict):
+            return JSONResponse({"error": "Body must be an object"}, status_code=400)
+        key = str(payload.get("key") or "").strip()
+        value = str(payload.get("value") or "").strip()
+        arg = "reset" if key == "reset" else f"{key} {value}".strip()
+        if not arg:
+            return JSONResponse({"error": "Missing setting key"}, status_code=400)
+        if not session.built:
+            await asyncio.to_thread(session.ensure)
+        ok, result = await asyncio.to_thread(session.run_command, "settings", arg)
+        if not ok:
+            return JSONResponse(
+                {"ok": False, "error": getattr(result, "message", None) or "Invalid setting"},
+                status_code=400,
+            )
+        rt = session.runtime
+        return JSONResponse(
+            {
+                "ok": True,
+                "message": getattr(result, "body", "Saved."),
+                "values": {
+                    "reserve": rt.compact_reserve_tokens,
+                    "keep": rt.keep_recent_tokens,
+                    "progress": rt.progress_every,
+                    "bg": rt.background_check_every,
+                },
+            }
+        )
+
+    @app.get("/api/jobs")
+    async def list_jobs() -> JSONResponse:
+        if not session.built:
+            return JSONResponse({"jobs": []})
+        from quartz.kernel.actions import describe_job_label
+
+        jobs_fn = getattr(session.runtime.kernel, "running_bash_jobs", None)
+        raw_jobs = await asyncio.to_thread(lambda: list(jobs_fn()) if callable(jobs_fn) else [])
+        out = []
+        for job in raw_jobs:
+            cmd = str(job.get("command", ""))
+            out.append(
+                {
+                    "pid": job.get("pid", "?"),
+                    "command": cmd,
+                    "label": describe_job_label(cmd),
+                    "elapsed_s": float(job.get("elapsed_s", 0.0) or 0.0),
+                }
+            )
+        return JSONResponse({"jobs": out})
+
     @app.get("/api/jobs/{pid}/tail")
     async def job_tail(pid: int) -> JSONResponse:
         if not session.built:
