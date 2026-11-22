@@ -1,4 +1,4 @@
-"""Mutable runtime state, persistence, and compaction for a CLI session."""
+"""Mutable runtime state, persistence, and compaction for an agent session."""
 
 from __future__ import annotations
 
@@ -20,10 +20,33 @@ from quartz.core.session import Session
 from quartz.kernel.base import CellResult, Kernel
 from quartz.providers.base import LLMProvider
 
+__all__ = ["AgentRuntime", "SessionState", "ViewConfig"]
+
 
 @dataclasses.dataclass
+class ViewConfig:
+    """Presentation and display preferences for a front-end view."""
+
+    verbose: bool = False
+    plain_output: bool = False
+    show_thinking: bool = False
+    show_details: bool = False
+
+
+@dataclasses.dataclass
+class SessionState:
+    """Transcript history, usage, and snapshot persistence for an active session."""
+
+    session: Session
+    messages: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    usage: TurnUsage = dataclasses.field(default_factory=TurnUsage)
+    cell_history: list[tuple[str, CellResult, float]] = dataclasses.field(default_factory=list)
+    total_elapsed_s: float = 0.0
+    turn_count: int = 0
+
+
 class AgentRuntime:
-    """Mutable session and UI state for one CLI invocation."""
+    """Orchestrates execution context, session persistence, and view configuration."""
 
     cwd: Path
     kernel: Kernel
@@ -32,31 +55,166 @@ class AgentRuntime:
     model: str
     effort: str
     system_prompt: str
-    active_session: Session
-    messages: list[dict[str, Any]]
-    usage_stats: TurnUsage
     max_context_tokens: int
     compact_reserve_tokens: int
     keep_recent_tokens: int
-    verbose: bool
-    plain_output: bool
     headless: bool
-    show_thinking: bool = False
-    show_details: bool = False
-    progress_every: int = 0
-    #: Seconds between status reports for a running background job (``0`` disables).
-    background_check_every: int = 0
-    #: Which transport is serving this runtime: ``"cli"`` or ``"web"``. A command with
-    #: a terminal-shaped answer and a browser-shaped one branches on this, because the
-    #: session's `origin` cannot answer it: a *terminal* session opened in the browser
-    #: is still being read in a browser, and `/session` must print real paths there.
-    transport: str = "cli"
-    cell_history: list[tuple[str, CellResult, float]] = dataclasses.field(default_factory=list)
-    pending_images: list[ImageAttachment] = dataclasses.field(default_factory=list)
-    total_elapsed_s: float = 0.0
-    turn_count: int = 0
-    _snapshot_thread: threading.Thread | None = dataclasses.field(default=None, repr=False)
-    _snapshot_lock: threading.Lock = dataclasses.field(default_factory=threading.Lock, repr=False)
+    progress_every: int
+    background_check_every: int
+    transport: str
+    session_state: SessionState
+    view_config: ViewConfig
+    pending_images: list[ImageAttachment]
+
+    def __init__(
+        self,
+        cwd: Path,
+        kernel: Kernel,
+        client: LLMProvider,
+        provider_name: str,
+        model: str,
+        effort: str,
+        system_prompt: str,
+        active_session: Session,
+        messages: list[dict[str, Any]],
+        usage_stats: TurnUsage,
+        max_context_tokens: int,
+        compact_reserve_tokens: int,
+        keep_recent_tokens: int,
+        verbose: bool = False,
+        plain_output: bool = False,
+        headless: bool = False,
+        show_thinking: bool = False,
+        show_details: bool = False,
+        progress_every: int = 0,
+        background_check_every: int = 0,
+        transport: str = "cli",
+        session_state: SessionState | None = None,
+        view_config: ViewConfig | None = None,
+        cell_history: list[tuple[str, CellResult, float]] | None = None,
+        pending_images: list[ImageAttachment] | None = None,
+        total_elapsed_s: float = 0.0,
+        turn_count: int = 0,
+    ) -> None:
+        self.cwd = cwd
+        self.kernel = kernel
+        self.client = client
+        self.provider_name = provider_name
+        self.model = model
+        self.effort = effort
+        self.system_prompt = system_prompt
+        self.max_context_tokens = max_context_tokens
+        self.compact_reserve_tokens = compact_reserve_tokens
+        self.keep_recent_tokens = keep_recent_tokens
+        self.headless = headless
+        self.progress_every = progress_every
+        self.background_check_every = background_check_every
+        self.transport = transport
+        self.pending_images = pending_images if pending_images is not None else []
+        self._snapshot_thread: threading.Thread | None = None
+        self._snapshot_lock = threading.Lock()
+
+        if view_config is not None:
+            self.view_config = view_config
+        else:
+            self.view_config = ViewConfig(
+                verbose=verbose,
+                plain_output=plain_output,
+                show_thinking=show_thinking,
+                show_details=show_details,
+            )
+
+        if session_state is not None:
+            self.session_state = session_state
+        else:
+            self.session_state = SessionState(
+                session=active_session,
+                messages=messages,
+                usage=usage_stats,
+                cell_history=cell_history if cell_history is not None else [],
+                total_elapsed_s=total_elapsed_s,
+                turn_count=turn_count,
+            )
+
+    @property
+    def active_session(self) -> Session:
+        return self.session_state.session
+
+    @active_session.setter
+    def active_session(self, s: Session) -> None:
+        self.session_state.session = s
+
+    @property
+    def messages(self) -> list[dict[str, Any]]:
+        return self.session_state.messages
+
+    @messages.setter
+    def messages(self, m: list[dict[str, Any]]) -> None:
+        self.session_state.messages = m
+
+    @property
+    def usage_stats(self) -> TurnUsage:
+        return self.session_state.usage
+
+    @usage_stats.setter
+    def usage_stats(self, u: TurnUsage) -> None:
+        self.session_state.usage = u
+
+    @property
+    def cell_history(self) -> list[tuple[str, CellResult, float]]:
+        return self.session_state.cell_history
+
+    @cell_history.setter
+    def cell_history(self, ch: list[tuple[str, CellResult, float]]) -> None:
+        self.session_state.cell_history = ch
+
+    @property
+    def total_elapsed_s(self) -> float:
+        return self.session_state.total_elapsed_s
+
+    @total_elapsed_s.setter
+    def total_elapsed_s(self, t: float) -> None:
+        self.session_state.total_elapsed_s = t
+
+    @property
+    def turn_count(self) -> int:
+        return self.session_state.turn_count
+
+    @turn_count.setter
+    def turn_count(self, c: int) -> None:
+        self.session_state.turn_count = c
+
+    @property
+    def verbose(self) -> bool:
+        return self.view_config.verbose
+
+    @verbose.setter
+    def verbose(self, v: bool) -> None:
+        self.view_config.verbose = v
+
+    @property
+    def plain_output(self) -> bool:
+        return self.view_config.plain_output
+
+    @plain_output.setter
+    def plain_output(self, p: bool) -> None:
+        self.view_config.plain_output = p
+
+    @property
+    def show_thinking(self) -> bool:
+        return self.view_config.show_thinking
+
+    @show_thinking.setter
+    def show_thinking(self, st: bool) -> None:
+        self.view_config.show_thinking = st
+
+    @property
+    def show_details(self) -> bool:
+        return self.view_config.show_details
+
+    @show_details.setter
+    def show_details(self, sd: bool) -> None:
+        self.view_config.show_details = sd
 
     def wait_snapshot(self) -> None:
         """Wait for any in-flight background kernel snapshot to complete."""
@@ -91,11 +249,6 @@ class AgentRuntime:
                             stacklevel=2,
                         )
                         return
-                    # A snapshot that silently drops state is worse than one that says
-                    # so: the user resumes, finds a variable missing, and has no thread
-                    # to pull. `skipped` carries a reason per entry. The warning belongs
-                    # here rather than in the worker: the snapshot is taken in a
-                    # subprocess whose stderr the user never sees.
                     skipped = manifest.get("skipped") or []
                     if skipped:
                         warnings.warn(
