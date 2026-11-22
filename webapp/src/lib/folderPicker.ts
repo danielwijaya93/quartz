@@ -1,6 +1,7 @@
 /**
- * The folder picker's model: filtering the current directory, and the few string
- * shapes a breadcrumb needs.
+ * The folder picker's model: filtering the current directory, where the
+ * highlight sits, what the dialog is pointed at, and the few string shapes a
+ * breadcrumb needs.
  *
  * There is no path parsing here on purpose. `docs/web-protocol.md` says the picker
  * is tap-through only -- a directory list plus breadcrumbs, never a path box -- so
@@ -82,6 +83,78 @@ export function parseListing(raw: unknown): DirectoryListing {
     entries,
     error: typeof body.error === "string" && body.error !== "" ? body.error : null,
   };
+}
+
+/* ------------------------------------------------------------- the highlight */
+
+/**
+ * Where the highlight lands when an arrow key moves it.
+ *
+ * The filter keeps focus -- it is the only thing being typed into -- so arrowing
+ * through the list moves an *index*, not focus, and the input announces the row
+ * it points at through `aria-activedescendant`. `-1` is "nothing highlighted",
+ * which is what a list with no rows in it has.
+ *
+ * The step wraps. The list is a handful of rows and never scrolls, so running off
+ * the end and stopping would feel like a dead key rather than an end of list.
+ */
+export function stepHighlight(current: number, count: number, step: -1 | 1): number {
+  if (count <= 0) return -1;
+  if (current < 0 || current >= count) return step > 0 ? 0 : count - 1;
+  return (current + step + count) % count;
+}
+
+/** The row Enter would open, or null when the highlight is on nothing. */
+export function highlightedEntry(
+  entries: readonly DirectoryEntry[],
+  index: number,
+): DirectoryEntry | null {
+  if (index < 0 || index >= entries.length) return null;
+  return entries[index] ?? null;
+}
+
+/* --------------------------------------------------------------- the choice */
+
+/**
+ * The folder the dialog would act on, once the person has pointed at one.
+ *
+ * The picker opens on the server's directory and chooses *nothing*: the action
+ * stays off until a folder has been opened, walked up into, or created. That is
+ * the whole point -- a picker that arms itself on the folder it happened to land
+ * on is one stray click away from a session in the wrong place.
+ *
+ * The answer is always a path the server handed over; nothing here is assembled
+ * from a name and a parent, so what the footer prints is exactly what gets sent.
+ * `null` means nothing has been chosen and the dialog must not act.
+ */
+export type PickerChoice = string;
+
+/** The folder on screen, once a deliberate move has put the person in it. */
+export function choiceForListing(listing: DirectoryListing): PickerChoice | null {
+  if (listing.path === "" || listing.error !== null) return null;
+  return listing.path;
+}
+
+/**
+ * A folder that was just created inside the listing, found by name.
+ *
+ * `mkdir` answers with the re-read directory, so the new folder is in
+ * `entries` -- and that entry carries the server's path for it. Returns null if
+ * the listing does not show it (a server that says "created" but does not list
+ * it leaves us with no path we are allowed to invent).
+ */
+export function choiceForCreated(
+  listing: DirectoryListing,
+  name: string,
+): PickerChoice | null {
+  const entry = listing.entries.find((candidate) => candidate.name === name);
+  if (!entry || entry.path === "") return null;
+  return entry.path;
+}
+
+/** The row a freshly created folder sits on, so the highlight can follow it. */
+export function indexOfEntry(entries: readonly DirectoryEntry[], name: string): number {
+  return entries.findIndex((entry) => entry.name === name);
 }
 
 /**

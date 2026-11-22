@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { handOffPrompt } from "@/lib/commandText";
 import { Composer } from "./Composer";
 
 function setup(overrides: Partial<React.ComponentProps<typeof Composer>> = {}) {
@@ -129,5 +130,72 @@ describe("Composer", () => {
     expect(images[0]?.mimeType).toBe("image/png");
     // Base64 payload, no `data:` prefix: what the protocol asks for.
     expect(images[0]?.data).not.toContain("data:");
+  });
+
+  it("takes a slash draft back from the palette, caret at the end", async () => {
+    const user = userEvent.setup();
+    const { onSubmit } = setup();
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+    await user.click(textarea);
+
+    // The palette decides this text was never a command and hands it back whole.
+    handOffPrompt("etc/");
+
+    await waitFor(() => expect(textarea).toHaveValue("/etc/"));
+    expect(textarea).toHaveFocus();
+    expect((textarea as HTMLTextAreaElement).selectionStart).toBe(5);
+
+    await user.keyboard("hosts says what?{Enter}");
+    expect(onSubmit).toHaveBeenCalledWith("/etc/hosts says what?", []);
+  });
+
+  it("appends the handed-back text to a draft that already spans lines", async () => {
+    const user = userEvent.setup();
+    setup();
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+    await user.click(textarea);
+    await user.keyboard("first{Shift>}{Enter}{/Shift}");
+
+    handOffPrompt("etc/");
+
+    await waitFor(() => expect(textarea).toHaveValue("first\n/etc/"));
+  });
+
+  it("never opens the palette when a pasted draft starts with a slash", async () => {
+    const user = userEvent.setup();
+    const { onOpenPalette } = setup();
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+
+    await user.click(textarea);
+    await user.paste("/etc/hosts says what?");
+
+    expect(textarea).toHaveValue("/etc/hosts says what?");
+    expect(onOpenPalette).not.toHaveBeenCalled();
+  });
+
+  it("opens the palette again for a slash typed after Escape", async () => {
+    const user = userEvent.setup();
+    const { onOpenPalette } = setup();
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+    await user.click(textarea);
+
+    await user.keyboard("/");
+    expect(onOpenPalette).toHaveBeenCalledTimes(1);
+
+    await user.keyboard("{Escape}");
+    await user.keyboard("/");
+    // Nothing was left behind in the field, so the affordance still works.
+    expect(onOpenPalette).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not open the palette for a slash inside a draft", async () => {
+    const user = userEvent.setup();
+    const { onOpenPalette } = setup();
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+    await user.click(textarea);
+
+    await user.keyboard("a / b");
+    expect(textarea).toHaveValue("a / b");
+    expect(onOpenPalette).not.toHaveBeenCalled();
   });
 });

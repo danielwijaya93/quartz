@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Alert, Button, TextArea } from "@heroui/react";
 import { ArrowUp, CornerDownRight, ImagePlus, Square, X } from "lucide-react";
+import { PROMPT_HANDOFF_EVENT, readPromptHandoff } from "@/lib/commandText";
 import type { ConnectionStatus } from "@/lib/connection";
 import type { ImageAttachment } from "@/protocol";
 
@@ -55,6 +56,7 @@ export function Composer({
   const [images, setImages] = React.useState<ImageAttachment[]>([]);
   const [history, setHistory] = React.useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = React.useState<number | null>(null);
+  const [caretAtEnd, setCaretAtEnd] = React.useState(false);
   const localRef = React.useRef<HTMLTextAreaElement | null>(null);
   const textareaRef = forwardedRef ?? localRef;
   const fileRef = React.useRef<HTMLInputElement | null>(null);
@@ -74,6 +76,39 @@ export function Composer({
   React.useEffect(() => {
     resize();
   }, [text, resize]);
+
+  /**
+   * A draft that only looked like a command comes back here.
+   *
+   * `/` opens the palette, and from then on the palette's filter is what receives
+   * the keystrokes: a question about a path ("`/etc/hosts` says what?") turns into
+   * a command nobody can run. The palette notices and hands the text back; it
+   * arrives as composer text, with the caret after it, so the sentence can simply
+   * be finished.
+   */
+  React.useEffect(() => {
+    const onHandoff = (event: Event): void => {
+      const handed = readPromptHandoff(event);
+      if (handed === null) return;
+      setText((prev) => prev + handed);
+      setHistoryIndex(null);
+      setCaretAtEnd(true);
+    };
+    window.addEventListener(PROMPT_HANDOFF_EVENT, onHandoff);
+    return () => window.removeEventListener(PROMPT_HANDOFF_EVENT, onHandoff);
+  }, []);
+
+  // The caret can only be moved once the new value is in the DOM, which is the
+  // render after the handoff lands in `text`.
+  React.useEffect(() => {
+    if (!caretAtEnd) return;
+    setCaretAtEnd(false);
+    const node = textareaRef.current;
+    if (!node) return;
+    node.focus();
+    const end = node.value.length;
+    node.setSelectionRange(end, end);
+  }, [caretAtEnd, text, textareaRef]);
 
   // The composer owns focus: this is a keyboard tool, and losing focus after a
   // submit is the single most common papercut in chat UIs.
@@ -112,6 +147,8 @@ export function Composer({
       if (event.key === "/" && text === "") {
         // Let `/` seed the palette: it is the command affordance, and typing it
         // into the prompt first would make the palette feel like a second mode.
+        // A `/` that turns out to start a sentence rather than a command comes
+        // back through `PROMPT_HANDOFF_EVENT` instead of being run as one.
         event.preventDefault();
         onOpenPalette();
         return;
