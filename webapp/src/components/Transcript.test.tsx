@@ -275,8 +275,8 @@ describe("Transcript", () => {
     expect(tray).toHaveAttribute("aria-expanded", "false");
     // The answer is on the page, at full width, in the reading column.
     expect(screen.getByText("hi").tagName).toBe("STRONG");
-    // One speaker label per turn, not one per assistant row.
-    expect(screen.getAllByText("Quartz")).toHaveLength(1);
+    // No redundant speaker label above assistant replies.
+    expect(screen.queryByText("Quartz")).toBeNull();
   });
 
   it("renders a turn with no answer as just its tray", () => {
