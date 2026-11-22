@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 import threading
 import warnings
+
+logger = logging.getLogger(__name__)
 from pathlib import Path
 from typing import Any
 
@@ -251,13 +254,12 @@ class AgentRuntime:
                         return
                     skipped = manifest.get("skipped") or []
                     if skipped:
-                        warnings.warn(
-                            "Kernel snapshot skipped "
-                            f"{len(skipped)} value{'s' if len(skipped) != 1 else ''}: "
-                            + "; ".join(skipped[:5])
-                            + (" ..." if len(skipped) > 5 else ""),
-                            RuntimeWarning,
-                            stacklevel=2,
+                        logger.debug(
+                            "Kernel snapshot skipped %d value%s: %s%s",
+                            len(skipped),
+                            "s" if len(skipped) != 1 else "",
+                            "; ".join(skipped[:5]),
+                            " ..." if len(skipped) > 5 else "",
                         )
 
                 t = threading.Thread(target=_save_kernel_bg, daemon=True)
