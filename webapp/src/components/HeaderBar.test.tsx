@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { HeaderBar, shortSessionId } from "./HeaderBar";
+import { HeaderBar } from "./HeaderBar";
 import { EMPTY_SESSION, type SessionMeta } from "@/lib/transcript";
 
 const SESSION: SessionMeta = {
@@ -39,24 +39,24 @@ function chipFor(text: string): HTMLElement {
 describe("HeaderBar", () => {
   it("shows the folder's own name, not a two-letter stub of the path", () => {
     renderHeader();
-    // The whole path used to collapse to its last two segments, which for a
-    // worktree is "run" or worse.
     expect(screen.getByText("fix-web-sidebar-first-run")).toBeInTheDocument();
     expect(screen.queryByText(/^\.\.\.\//)).not.toBeInTheDocument();
   });
 
-  it("keeps the working directory on a phone, where the model gives way", () => {
+  it("keeps the working directory visible at all widths", () => {
     renderHeader();
 
     const folder = chipFor("fix-web-sidebar-first-run");
-    // Never hidden at any width, and on a row of its own: sharing one with the
-    // controls left it a few characters wide at laptop sizes.
     expect(folder).not.toHaveClass("hidden");
     expect(folder.closest("header")).not.toBeNull();
-
-    const model = chipFor("claude-sonnet-4-5 · high");
-    expect(model).toHaveClass("hidden");
     expect(screen.getByRole("list")).toContainElement(folder);
+  });
+
+  it("does not render session id, model/effort, or theme toggle in the top bar", () => {
+    renderHeader();
+    expect(screen.queryByText(SESSION.sessionId.slice(-8))).not.toBeInTheDocument();
+    expect(screen.queryByText(/claude-sonnet-4-5/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Theme:/ })).not.toBeInTheDocument();
   });
 
   it("keeps the full path for hover and for the accessible name", () => {
@@ -69,17 +69,9 @@ describe("HeaderBar", () => {
   it("truncates the folder name from the left rather than collapsing", () => {
     renderHeader();
     const label = screen.getByText("fix-web-sidebar-first-run");
-    // `dir="rtl"` + `text-left` puts the ellipsis on the left, so the tail of a long
-    // name -- the discriminating part -- is what stays readable.
     expect(label).toHaveAttribute("dir", "rtl");
     expect(label).toHaveClass("truncate");
     expect(label).toHaveClass("text-left");
-  });
-
-  it("still offers the other chips on a wide screen", () => {
-    renderHeader();
-    expect(screen.getByText(shortSessionId(SESSION.sessionId))).toBeInTheDocument();
-    expect(screen.getByText("claude-sonnet-4-5 · high")).toBeInTheDocument();
   });
 
   it("says the directory is unknown rather than drawing an empty chip", () => {

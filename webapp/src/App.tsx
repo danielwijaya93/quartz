@@ -184,7 +184,6 @@ export function App(): React.ReactElement {
             else setPicker("session");
           }}
           onChangeFolder={() => setPicker("session")}
-          onOpenModelPicker={() => setModelPickerOpen(true)}
           sidebarOpen={sidebarOpen}
           onToggleSidebar={() => setSidebarOpen((open) => !open)}
         />
@@ -206,6 +205,9 @@ export function App(): React.ReactElement {
           turnRunning={quartz.state.turnRunning}
           fatalError={quartz.state.fatalError}
           commands={quartz.state.session.commands}
+          model={quartz.state.session.model}
+          effort={quartz.state.session.effort}
+          onOpenModelPicker={() => setModelPickerOpen(true)}
           onSubmit={onSubmit}
           onSteer={quartz.steer}
           onCancel={quartz.cancel}
