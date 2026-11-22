@@ -262,7 +262,17 @@ def _terminal_logout(rt: AgentRuntime, arg: str) -> None:
 
 
 def _terminal_model(rt: AgentRuntime, arg: str) -> None:
-    del arg
+    trimmed = arg.strip()
+    if trimmed:
+        from quartz.core.commands import apply_model_switch, resolve_model_arg
+        provider, model, effort = resolve_model_arg(trimmed, rt.provider_name)
+        ok, msg = apply_model_switch(rt, provider, model, effort)
+        if ok:
+            console_print(f"[green]{escape(msg)}[/green]")
+        else:
+            console_print(f"[red]Error: {escape(msg)}[/red]")
+        return
+
     provider_opts: list[tuple[str, str]] = [
         (pname, f"{pspec.label} ({_provider_status_label(pname)})")
         for pname, pspec in PROVIDERS.items()

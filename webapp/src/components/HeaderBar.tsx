@@ -27,19 +27,42 @@ function MetaChip({
   label,
   title,
   className,
+  onClick,
+  ariaLabel,
 }: {
   label: string;
   title?: string;
   className?: string;
+  onClick?: () => void;
+  ariaLabel?: string;
 }): React.ReactElement {
+  const inner = (
+    <span
+      title={title}
+      className={cn(
+        "block max-w-[15rem] truncate rounded-md px-1.5 py-0.5 font-mono text-[11px] text-meta transition-colors",
+        onClick && "cursor-pointer hover:bg-surface-secondary hover:text-foreground",
+      )}
+    >
+      {label}
+    </span>
+  );
+
   return (
     <li className={className}>
-      <span
-        title={title}
-        className="block max-w-[15rem] truncate rounded-md px-1.5 py-0.5 font-mono text-[11px] text-meta"
-      >
-        {label}
-      </span>
+      {onClick ? (
+        <button
+          type="button"
+          onClick={onClick}
+          aria-label={ariaLabel || label}
+          title={title}
+          className="inline-flex max-w-full cursor-pointer items-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+        >
+          {inner}
+        </button>
+      ) : (
+        inner
+      )}
     </li>
   );
 }
@@ -111,6 +134,7 @@ export function HeaderBar({
   onRichUiModeChange,
   onNewSession,
   onChangeFolder,
+  onOpenModelPicker,
   sidebarOpen,
   onToggleSidebar,
 }: {
@@ -122,6 +146,8 @@ export function HeaderBar({
   onNewSession: () => void;
   /** Opens the folder picker to start a session in another folder. */
   onChangeFolder?: () => void;
+  /** Opens the model picker dialog to switch provider/model. */
+  onOpenModelPicker?: () => void;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
 }): React.ReactElement {
@@ -190,8 +216,10 @@ export function HeaderBar({
           <CwdChip cwd={session.cwd} onChangeFolder={onChangeFolder} />
           <MetaChip
             label={model}
-            title={model}
-            className="ml-auto hidden max-w-[12rem] shrink-0 sm:block"
+            title={model ? `${model} — click to switch model` : "Click to choose a model"}
+            className="ml-auto hidden max-w-[14rem] shrink-0 sm:block"
+            onClick={onOpenModelPicker}
+            ariaLabel={model ? `Switch model (current: ${model})` : "Choose a model"}
           />
         </ul>
       </div>

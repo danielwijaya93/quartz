@@ -68,7 +68,8 @@ def test_every_advertised_command_says_whether_it_needs_a_terminal(
         exposed = command.needs_terminal and not serves_web(command)
         assert flags[command.name.lstrip("/")] is exposed, command.name
     # A command only the terminal can run, and one the browser answers itself.
-    assert flags["model"] is True
+    assert flags["login"] is True
+    assert flags["model"] is False
     assert flags["session"] is False
     assert flags["vars"] is False
 
@@ -288,10 +289,10 @@ def test_command_unknown_name_is_an_error_card(app_client: AppClient, wire: Any)
 
 
 def test_command_needs_terminal_is_reported_as_such(app_client: AppClient, wire: Any) -> None:
-    """`/model` is a terminal modal today; the browser must say so, not fail."""
+    """A terminal-only command says so in the browser rather than failing."""
     with app_client.client.websocket_connect("/ws") as socket:
         wire.hello(socket)
-        socket.send_json({"type": "command", "name": "model"})
+        socket.send_json({"type": "command", "name": "continue"})
         frames = wire.drain(socket, until="command_result")
 
     result = frames[-1]["result"]
@@ -312,6 +313,51 @@ def test_command_session_prints_the_paths_in_the_browser(app_client: AppClient, 
     assert session.id in result["body"]
     assert str(session.jsonl_path) in result["body"]
     assert str(session.snapshot_dir) in result["body"]
+
+
+def test_command_model_answers_in_the_browser(app_client: AppClient, wire: Any) -> None:
+    """`/model` reports active model and instructions in the browser rather than redirecting."""
+    with app_client.client.websocket_connect("/ws") as socket:
+        wire.hello(socket)
+        socket.send_json({"type": "command", "name": "/model"})
+        frames = wire.drain(socket, until="command_result")
+
+    result = frames[-1]["result"]
+    assert result["kind"] == "text"
+    assert app_client.runtime.model in result["body"]
+
+
+def test_api_models_lists_providers_and_current(app_client: AppClient) -> None:
+    resp = app_client.client.get("/api/models")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "current" in data
+    assert data["current"]["model"] == app_client.runtime.model
+    assert "providers" in data
+    assert any(p["id"] == "google" for p in data["providers"])
+
+
+def test_api_models_select_switches_model(app_client: AppClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+    monkeypatch.setattr(
+        "quartz.providers.selection.build_provider",
+        lambda provider, model_override=None, effort_override=None: (
+            SimpleNamespace(close=lambda: None),
+            provider,
+            model_override or "test-model",
+            effort_override or "medium",
+        ),
+    )
+    resp = app_client.client.post(
+        "/api/models/select",
+        json={"provider": "google", "model": "gemini-2.5-pro", "effort": "high"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["model"] == "gemini-2.5-pro"
+    assert data["effort"] == "high"
+    assert app_client.runtime.model == "gemini-2.5-pro" 
 
 
 def test_command_settings_mutates_the_live_runtime(app_client: AppClient, wire: Any) -> None:
