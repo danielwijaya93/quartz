@@ -98,7 +98,12 @@ export function TurnTray({
       <Disclosure
         isExpanded={open}
         onExpandedChange={handleExpandedChange}
-        className="overflow-hidden rounded-xl border border-border bg-surface-secondary/40"
+        className={cn(
+          "overflow-hidden rounded-xl transition-colors",
+          open
+            ? "border border-border/70 bg-surface-secondary/35"
+            : "border border-transparent bg-transparent hover:bg-surface-secondary/35",
+        )}
       >
         <Disclosure.Heading>
           {/* The visible text *is* the accessible name: an aria-label would hide

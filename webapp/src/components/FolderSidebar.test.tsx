@@ -300,17 +300,14 @@ describe("FolderSidebar's current workspace", () => {
 });
 
 describe("FolderSidebar's row actions", () => {
-  it("shows the current row's actions without a hover", () => {
-    // Discoverability: on a desktop nobody hovers a row to find out that Rename
-    // exists, and on a phone there is no hover at all. The row you are working in
-    // shows its affordance, which is what teaches the pattern for the others.
+  it("keeps the current row's actions hidden until hover or focus", () => {
     renderSidebar();
     const hide = screen.getByRole("button", {
       name: "Hide session first prompt from the sidebar",
     });
     const actions = hide.parentElement;
-    expect(actions?.className).toContain("opacity-100");
-    expect(actions?.className).not.toContain("[@media(hover:hover)]:opacity-0");
+    expect(actions?.className).toContain("[@media(hover:hover)]:opacity-0");
+    expect(actions?.className).toContain("group-hover/session:opacity-100");
   });
 
   it("still keeps another row's actions out of the way until hover or focus", () => {

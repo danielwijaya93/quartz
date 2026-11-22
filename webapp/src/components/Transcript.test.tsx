@@ -100,10 +100,10 @@ describe("Transcript", () => {
     expect(screen.getByText("No turns yet")).toBeInTheDocument();
   });
 
-  it("renders a user row", () => {
+  it("renders a user row without a redundant You label", () => {
     renderRows([userRow]);
     expect(screen.getByText("hello")).toBeInTheDocument();
-    expect(screen.getByText("You")).toBeInTheDocument();
+    expect(screen.queryByText("You")).toBeNull();
   });
 
   it("renders assistant markdown as html", () => {
@@ -190,15 +190,24 @@ describe("Transcript", () => {
     expect(screen.getByText(/30→8 messages/)).toBeInTheDocument();
   });
 
-  it("draws a harness notice as the application speaking, not as the reader", () => {
+  it("draws a harness notice collapsed by default and expands on click", async () => {
+    const user = userEvent.setup();
     renderRows([systemNoticeRow]);
 
-    // Left-aligned, labelled, and quieter than an answer: the application restored
-    // a kernel, the reader did not say so.
     const notice = screen.getByRole("region", { name: "System notice" });
-    expect(notice).toHaveTextContent("python-state-restored");
+    expect(notice).toHaveTextContent("python-state-restored · 4 vars");
+    expect(screen.queryByText("Restored 4 Python variables/functions")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /python-state-restored/ }));
     expect(notice).toHaveTextContent("Restored 4 Python variables/functions");
-    expect(screen.queryByText("You")).toBeNull();
+  });
+
+  it("hides internal progress and tool-images notices from the stream", () => {
+    renderRows([
+      { kind: "system_notice", id: "p1", tag: "progress", text: "Update the user now on the progress." },
+      { kind: "system_notice", id: "ti1", tag: "tool-images", text: "Attached image(s) from tool output:" },
+    ]);
+    expect(screen.queryByRole("region", { name: "System notice" })).toBeNull();
   });
 
   it("renders an error row", () => {

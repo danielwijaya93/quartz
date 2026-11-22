@@ -95,52 +95,69 @@ export function HeaderBar({
 }): React.ReactElement {
   const copy = STATUS_COPY[status];
 
+  const dotClass =
+    status === "connected"
+      ? "bg-success/80"
+      : status === "connecting"
+        ? "bg-warning motion-safe:animate-pulse"
+        : "bg-danger";
+
   return (
-    <header className="shrink-0 border-b border-separator bg-background/85 backdrop-blur">
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-1 px-4 py-2 sm:px-5">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
-          <Button
-            isIconOnly
-            size="sm"
-            variant="ghost"
-            aria-label={sidebarOpen ? "Hide the session sidebar" : "Show the session sidebar"}
-            aria-expanded={sidebarOpen}
-            onPress={onToggleSidebar}
-          >
-            <PanelLeft aria-hidden="true" className="size-4" />
-          </Button>
+    <header className="shrink-0 border-b border-separator/70 bg-background/85 backdrop-blur">
+      <div className="mx-auto flex w-full max-w-3xl items-center gap-2 px-4 py-2 sm:px-5">
+        <Button
+          isIconOnly
+          size="sm"
+          variant="ghost"
+          aria-label={sidebarOpen ? "Hide the session sidebar" : "Show the session sidebar"}
+          aria-expanded={sidebarOpen}
+          onPress={onToggleSidebar}
+        >
+          <PanelLeft aria-hidden="true" className="size-4" />
+        </Button>
 
-          <div className="flex shrink-0 items-center gap-2">
-            <span aria-hidden="true" className="size-2 rounded-full bg-accent ring-2 ring-accent/25" />
-            <span className="text-sm font-bold tracking-tight text-foreground">Quartz</span>
-          </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <span
+            aria-hidden="true"
+            title={copy.label}
+            className={cn("size-2 rounded-full", dotClass)}
+          />
+          <span className="text-sm font-semibold tracking-tight text-foreground">Quartz</span>
+        </div>
 
-          <div className="ml-auto flex shrink-0 items-center justify-end gap-2.5">
-            <span role="status" aria-label={`Connection ${copy.label}`}>
+        <span aria-hidden="true" className="text-xs text-muted/60">
+          /
+        </span>
+
+        <ul className="flex min-w-0 flex-1 items-center overflow-hidden">
+          <CwdChip cwd={session.cwd} onChangeFolder={onChangeFolder} />
+        </ul>
+
+        <div className="ml-auto flex shrink-0 items-center justify-end gap-2">
+          <span role="status" aria-label={`Connection ${copy.label}`}>
+            {status === "connected" ? (
+              <span className="sr-only">{copy.label}</span>
+            ) : (
               <Chip size="sm" variant="soft" color={copy.color} className="h-7 text-xs font-medium">
                 <span className="flex items-center gap-1.5">
                   <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
                   <span className="hidden md:inline">{copy.label}</span>
                 </span>
               </Chip>
-            </span>
-            <RichUiToggle mode={richUiMode} onChange={onRichUiModeChange} />
-            <Button
-              size="sm"
-              variant="outline"
-              onPress={onNewSession}
-              aria-label="Start a new session"
-              className="h-7 gap-1 border-border/80 bg-surface-secondary/40 font-medium hover:bg-surface-secondary hover:text-foreground"
-            >
-              <Plus aria-hidden="true" className="size-3.5" />
-              <span className="hidden md:inline">New</span>
-            </Button>
-          </div>
+            )}
+          </span>
+          <RichUiToggle mode={richUiMode} onChange={onRichUiModeChange} />
+          <Button
+            size="sm"
+            variant="outline"
+            onPress={onNewSession}
+            aria-label="Start a new session"
+            className="h-7 gap-1 border-border/80 bg-surface-secondary/40 font-medium hover:bg-surface-secondary hover:text-foreground"
+          >
+            <Plus aria-hidden="true" className="size-3.5" />
+            <span className="hidden md:inline">New</span>
+          </Button>
         </div>
-
-        <ul className="flex min-w-0 items-center gap-1.5 overflow-hidden">
-          <CwdChip cwd={session.cwd} onChangeFolder={onChangeFolder} />
-        </ul>
       </div>
     </header>
   );

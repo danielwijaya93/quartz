@@ -10,9 +10,8 @@ import type { UserRow } from "@/lib/transcript";
  */
 export function UserRowView({ row }: { row: UserRow }): React.ReactElement {
   return (
-    <article className="flex flex-col items-end gap-1.5 pl-6">
-      <p className="text-xs font-medium text-muted">You</p>
-      <Card variant="secondary" className="max-w-full px-4 py-3">
+    <article className="flex flex-col items-end pl-6">
+      <Card variant="secondary" className="max-w-full px-4 py-2.5">
         <p className="whitespace-pre-wrap text-[0.9375rem] leading-relaxed text-surface-secondary-foreground">
           {row.text}
         </p>

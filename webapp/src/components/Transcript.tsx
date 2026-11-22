@@ -379,19 +379,17 @@ function JumpToNewest({
     <button
       type="button"
       data-testid="jump-to-newest"
+      aria-label={hasNew ? "Jump to the newest message (new output arrived below)" : "Jump to the newest message"}
+      title="Jump to the newest message"
       onClick={handleClick}
       onFocus={() => onFocusChange(true)}
       onBlur={() => onFocusChange(false)}
-      className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-surface-secondary px-3 py-1.5 text-xs font-medium text-surface-secondary-foreground shadow-md transition-colors duration-[var(--duration-feedback)] hover:bg-surface-secondary/80"
+      className="absolute right-4 bottom-3 flex size-8 cursor-pointer items-center justify-center rounded-full border border-border/80 bg-surface/90 text-muted shadow-sm backdrop-blur transition-colors duration-[var(--duration-feedback)] hover:bg-surface-secondary hover:text-foreground"
     >
       <ArrowDown aria-hidden="true" className="size-3.5 shrink-0" />
-      <span>Jump to the newest message</span>
       {hasNew ? (
         <>
-          <span aria-hidden="true" className="text-muted">
-            ·
-          </span>
-          <span aria-hidden="true" className="size-1.5 rounded-full bg-accent" />
+          <span aria-hidden="true" className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-foreground" />
           <span className="sr-only">New output arrived below.</span>
         </>
       ) : null}
