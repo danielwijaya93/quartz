@@ -1067,6 +1067,33 @@ async def _main() -> None:
         elif msg_type == "running_bash":
             count = sum(1 for h in worker._handles if h.running)
             worker._send({"type": "running_bash_result", "id": req_id, "count": count})
+        elif msg_type == "bash_tail":
+            target_pid = msg.get("pid")
+            lines = int(msg.get("lines", 50) or 50)
+            handle = next((h for h in worker._handles if h.pid == target_pid), None)
+            if handle is None:
+                worker._send({"type": "bash_tail_result", "id": req_id, "found": False, "tail": ""})
+            else:
+                worker._send(
+                    {
+                        "type": "bash_tail_result",
+                        "id": req_id,
+                        "found": True,
+                        "tail": _truncate(handle.tail(lines), 4000),
+                        "running": handle.running,
+                    }
+                )
+        elif msg_type == "kill_bash":
+            target_pid = msg.get("pid")
+            handle = next((h for h in worker._handles if h.pid == target_pid and h.running), None)
+            if handle is None:
+                worker._send({"type": "kill_bash_result", "id": req_id, "killed": False})
+            else:
+                try:
+                    handle.kill()
+                    worker._send({"type": "kill_bash_result", "id": req_id, "killed": True})
+                except Exception as exc:
+                    worker._send({"type": "kill_bash_result", "id": req_id, "killed": False, "error": str(exc)})
         elif msg_type == "snapshot":
             try:
                 manifest = worker.snapshot_vars(msg.get("dir", ""))

@@ -29,7 +29,11 @@ from quartz.core.commands import (  # re-exported: the registry is the public su
     CommandResult,
     SlashCommand,
 )
-from quartz.core.commands import _cmd_compact  # re-exported: callers reach for it directly
+from quartz.core.commands import (  # re-exported: callers reach for it directly
+    _cmd_compact,
+    _cmd_jobs,
+    _cmd_settings,
+)
 from quartz.core.compact import CompactionReason, CompactionResult
 from quartz.core.images import load_clipboard_image, load_image_file
 from quartz.core.loop import TurnUsage
@@ -48,7 +52,7 @@ from quartz.providers.selection import (
     build_provider,
 )
 from quartz.tui.images import show_image_preview
-from quartz.tui.modals import _pick_option, _pick_searchable_option
+from quartz.tui.modals import _pick_option, _pick_searchable_option, _prompt_input
 from quartz.tui.provider_setup import _login_provider, _logout_provider
 from quartz.tui.render import (
     _active_printer,
@@ -486,11 +490,154 @@ def _terminal_session(rt: AgentRuntime, arg: str) -> None:
     )
 
 
+def _run_core_handler(
+    name: str,
+    fallback: Callable[[AgentRuntime, str], CommandResult | None],
+    rt: AgentRuntime,
+    arg: str,
+) -> CommandResult | None:
+    cmd = COMMAND_REGISTRY.get(name)
+    handler = cmd.handler if cmd is not None else fallback
+    res = handler(rt, arg)
+    return res if isinstance(res, CommandResult) else None
+
+
+def _terminal_settings(rt: AgentRuntime, arg: str) -> None:
+    trimmed = arg.strip()
+    if trimmed or getattr(rt, "headless", True):
+        result = _run_core_handler("/settings", _cmd_settings, rt, trimmed)
+        if result is not None:
+            _render_settings(rt, result)
+        return
+
+    from quartz.settings import (
+        DEFAULT_BACKGROUND_CHECK_EVERY,
+        DEFAULT_COMPACT_RESERVE_TOKENS,
+        DEFAULT_KEEP_RECENT_TOKENS,
+        DEFAULT_PROGRESS_EVERY,
+    )
+
+    while True:
+        opts = [
+            (
+                "reserve",
+                f"Reserve tokens: {rt.compact_reserve_tokens:,} (default {DEFAULT_COMPACT_RESERVE_TOKENS:,})",
+            ),
+            (
+                "keep",
+                f"Keep recent tokens: {rt.keep_recent_tokens:,} (default {DEFAULT_KEEP_RECENT_TOKENS:,})",
+            ),
+            (
+                "progress",
+                f"Progress update interval: {rt.progress_every} turns (default {DEFAULT_PROGRESS_EVERY}, 0 disables)",
+            ),
+            (
+                "bg",
+                f"Background check interval: {rt.background_check_every}s (default {DEFAULT_BACKGROUND_CHECK_EVERY}s, 0 disables)",
+            ),
+            ("reset", "Reset all settings to defaults"),
+        ]
+        picked = _pick_option("Settings", opts)
+        if not picked:
+            return
+
+        if picked == "reset":
+            result = _cmd_settings(rt, "reset")
+            if result is not None:
+                _render_settings(rt, result)
+            continue
+
+        prompts = {
+            "reserve": ("Reserve tokens", str(rt.compact_reserve_tokens)),
+            "keep": ("Keep recent tokens", str(rt.keep_recent_tokens)),
+            "progress": ("Progress update interval (turns, 0 disables)", str(rt.progress_every)),
+            "bg": ("Background check interval (seconds, 0 disables)", str(rt.background_check_every)),
+        }
+        label, current_val = prompts[picked]
+        entered = _prompt_input(f"{label} (current: {current_val}): ")
+        if entered is None or not entered.strip():
+            continue
+
+        result = _cmd_settings(rt, f"{picked} {entered.strip()}")
+        if result is not None:
+            _render_settings(rt, result)
+
+
+def _terminal_jobs(rt: AgentRuntime, arg: str) -> None:
+    result = _run_core_handler("/jobs", _cmd_jobs, rt, arg)
+    if getattr(rt, "headless", True) or result is None or not result.items:
+        if result is not None:
+            _render_jobs(rt, result)
+        return
+
+    from quartz.kernel.actions import describe_job_label
+    from quartz.tui.render import _fmt_stopwatch
+
+    while True:
+        result = _run_core_handler("/jobs", _cmd_jobs, rt, arg)
+        if result is None or not result.items:
+            if result is not None:
+                _render_jobs(rt, result)
+            return
+
+        opts: list[tuple[str, str]] = []
+        jobs_by_pid: dict[str, dict[str, object]] = {}
+        for job in result.items:
+            pid_str = str(job.get("pid", "?"))
+            command = str(job.get("command", ""))
+            label = describe_job_label(command)
+            elapsed_s = float(job.get("elapsed_s", 0.0) or 0.0)
+            opts.append((pid_str, f"pid {pid_str} · {label} · {_fmt_stopwatch(elapsed_s)}"))
+            jobs_by_pid[pid_str] = job
+
+        picked_pid = _pick_option("Background Jobs", opts)
+        if not picked_pid:
+            return
+
+        action = _pick_option(
+            f"Job pid {picked_pid}",
+            [
+                ("tail", "View output tail"),
+                ("kill", "Kill job"),
+                ("back", "Back"),
+            ],
+        )
+        if action is None or action == "back":
+            continue
+
+        selected_job = jobs_by_pid.get(picked_pid, {})
+        command = str(selected_job.get("command", ""))
+        if action == "tail":
+            tail_fn = getattr(rt.kernel, "bash_tail", None)
+            tail_text: str | None = None
+            if callable(tail_fn) and picked_pid.isdigit():
+                tail_text = tail_fn(int(picked_pid))
+            body = f"$ {command}\n\n" if command else ""
+            if tail_text is None:
+                body += "(output tail unavailable)"
+            elif not tail_text.strip():
+                body += "(no output yet)"
+            else:
+                body += tail_text
+            console_print(Panel(Text(body), title=f"Job pid {picked_pid}", border_style="dim"))
+            continue
+
+        if action == "kill":
+            kill_fn = getattr(rt.kernel, "kill_bash", None)
+            killed = bool(kill_fn(int(picked_pid))) if callable(kill_fn) and picked_pid.isdigit() else False
+            if killed:
+                console_print(f"[green]Killed job pid {escape(picked_pid)}.[/green]")
+            else:
+                console_print(f"[yellow]Job pid {escape(picked_pid)} is no longer running.[/yellow]")
+
+
 #: Terminal implementations, keyed by the canonical name core registered.
 _TERMINAL_HANDLERS: dict[str, TerminalHandler] = {
     "/login": _terminal_login,
     "/logout": _terminal_logout,
     "/model": _terminal_model,
+    "/settings": _terminal_settings,
+    "/jobs": _terminal_jobs,
     "/continue": _terminal_continue,
     "/image": _terminal_image,
     "/paste": _terminal_paste,
