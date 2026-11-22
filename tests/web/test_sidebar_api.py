@@ -351,8 +351,6 @@ def test_new_session_appears_in_sidebar_as_soon_as_prompt_starts(
     app_client: AppClient, tmp_path: Path, wire: Any
 ) -> None:
     """A new session must be listable immediately on prompt start, before turn_end."""
-    from tests.web.conftest import GATE_TIMEOUT_S
-
     app_client.runtime.active_session = Session.create(
         tmp_path, sessions_dir=tmp_path / "sessions", origin="web"
     )
@@ -367,7 +365,7 @@ def test_new_session_appears_in_sidebar_as_soon_as_prompt_starts(
             assert session_id not in [r["sessionId"] for r in before["sessions"]]
 
             ws.send_json({"type": "prompt", "text": "first prompt", "images": []})
-            assert app_client.runner.started.wait(timeout=GATE_TIMEOUT_S)
+            assert app_client.runner.started.wait(timeout=10)
 
             # While the turn is still in flight (no turn_end yet), it must appear.
             during = _payload(app_client.client.get("/api/sessions"))
