@@ -91,6 +91,29 @@ When the user requests working on a feature, bug fix, or investigation in parall
      ```bash
      git worktree remove .worktrees/<branch-name>
      ```
+5. **The worker never verifies the UI.** Its job ends at typecheck, tests, and a production build.
+   Browser verification belongs to the orchestrator session (see *UI Verification* below): workers
+   that try it burn their whole run on headless-browser harnesses that hang, and a worker cannot
+   see what it is looking at anyway.
+
+### 4. UI Verification (orchestrator only)
+Any change with a user-visible surface (`webapp/`, `quartz web`) is verified in a real browser by the
+agent that owns the session, **not** by a background worker, and **always with the
+`invisible_playwright_mcp` tools**:
+
+- `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_read_text`,
+  `browser_take_screenshot`.
+- Do **not** hand-roll verification: no `google-chrome --headless --remote-debugging-port` plus a
+  CDP script, no ad-hoc `/tmp` harness with a bundled `ws`, no `mock/server.mjs` on a long timeout.
+  Those approaches repeatedly hung for minutes, left 300 MB of profile dirs in `/tmp`, and produced
+  less evidence than a snapshot.
+- Prefer `browser_snapshot` for assertions: it exposes accessible names, so a check states what a
+  control is *called* instead of probing pixels or evaluating JavaScript.
+- Verify against the built artifact the user will actually load (`webapp/dist`), served by a real
+  `quartz web`, and check every claimed fix — including the empty and error states, not just the
+  happy path.
+- When the review target must be reached from the user's phone, serve on the Tailscale address and
+  confirm first that it is reachable there **and** refused on the LAN and the public internet.
 
 ---
 
