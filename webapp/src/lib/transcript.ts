@@ -470,6 +470,38 @@ function mergeHistory(state: TranscriptState, messages: Message[]): TranscriptSt
   return withRows(state, ordered);
 }
 
+/**
+ * Draw the text a running turn has written but not yet committed to history.
+ *
+ * A reconnect while an answer is being written replays `messages`, which stop at the
+ * prompt: `core/loop.py` appends its assistant message only once a *step* completes.
+ * Without this the page would reconnect onto a transcript that ends at the question,
+ * with the answer continuing somewhere it cannot see -- the "chat no longer updates"
+ * symptom, from the reader's side.
+ *
+ * Rows already on screen are kept, because the deltas that arrived on the previous
+ * socket are as real as the ones in the snapshot. The live text is only *added*: it
+ * goes after anything present, and is never allowed to duplicate an answer that
+ * history already carries.
+ */
+function withLiveText(state: TranscriptState, streamingText: string | undefined): TranscriptState {
+  const text = (streamingText ?? "").trim();
+  if (text === "") return state;
+
+  const last = state.rows[state.rows.length - 1];
+  if (last !== undefined && last.kind === "assistant" && last.text.trim().endsWith(text)) {
+    // The loop committed this text as a message a moment ago; history has it.
+    return { ...state, openRowId: last.id };
+  }
+  const row: AssistantRow = {
+    kind: "assistant",
+    id: makeId("assistant"),
+    text,
+    formState: null,
+  };
+  return { ...withRows(state, [...state.rows, row]), openRowId: row.id };
+}
+
 /* ------------------------------------------------------------------ reducer */
 
 export function reduce(state: TranscriptState, message: ServerMessage): TranscriptState {
@@ -482,7 +514,7 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
       const switched =
         state.session.sessionId !== "" && state.session.sessionId !== message.sessionId;
       const base = switched ? { ...initialState, session: state.session } : state;
-      const merged = mergeHistory(base, message.messages);
+      const merged = withLiveText(mergeHistory(base, message.messages), message.streamingText);
       return {
         ...merged,
         turnRunning: message.turnRunning,

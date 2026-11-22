@@ -41,9 +41,19 @@ if TYPE_CHECKING:
 __all__ = [
     "BuildRuntime",
     "NoActiveTurnError",
+    "RECONNECT_GRACE_S",
     "TurnBusyError",
     "WebSession",
 ]
+
+#: How long a turn may keep running with no browser attached.
+#:
+#: A phone whose screen turns off is not a user who quit: the socket dies, the tab is
+#: frozen, and seconds later the same page is back asking where the answer got to.
+#: Aborting on the first `close` therefore threw away work the person was still
+#: waiting for. So a disconnect only detaches the sink, and the turn carries on; this
+#: is the timeout that stops a genuinely closed tab from running forever.
+RECONNECT_GRACE_S = 120.0
 
 class BuildRuntime(Protocol):
     """Build a runtime; ``None`` means a fresh session, an id means resume it.
@@ -106,6 +116,20 @@ class WebSession:
         self._runtime: AgentRuntime | None = None
         self._turn: _Turn | None = None
         self._lock = threading.Lock()
+        # Whoever is looking right now. A turn keeps pushing through `emit`, which
+        # resolves this set on every frame, so a browser that reconnects mid-turn
+        # starts receiving the answer where it is up to instead of waiting for a
+        # turn_end that would go to a socket nobody holds any more.
+        self._sinks: set[Push] = set()
+        self._grace: threading.Timer | None = None
+        # Where the kernel is rooted, as last stated by a caller that knew. The
+        # in-flight message needs it on every delta, and `runtime.cwd` is already the
+        # authoritative answer; this only covers the window before a runtime exists.
+        self._kernel_root: Path | None = cwd
+        # What the turn in flight has said so far, so a tab that reconnects mid-answer
+        # can be caught up without asking the kernel to say it again.
+        self._streaming = ""
+        self._status: str | None = None
         # The system prompt as `build_runtime` produced it. Kept so a client's
         # append can be applied, replaced and withdrawn without ever stacking two
         # copies of it on the live runtime.
@@ -238,6 +262,113 @@ class WebSession:
     def close(self) -> None:
         self._retire()
 
+    # -- who is watching ---------------------------------------------------
+
+    def attach(self, push: Push, *, root: Path | None = None) -> None:
+        """Register the socket that should receive this session's frames.
+
+        Also settles the background directory: if a disconnected turn has already
+        run past its grace, landing on the page again ends it now rather than making
+        the next keystroke discover it.
+        """
+        self._cancel_grace()
+        self.detach(push)
+        with self._lock:
+            self._sinks.add(push)
+        if root is not None:
+            self._kernel_root = root
+
+    def detach(self, push: Push) -> None:
+        """Stop sending to one socket, without deciding anything yet.
+
+        The turn in flight is deliberately *not* aborted here: see
+        `RECONNECT_GRACE_S`. `begin_grace` is what eventually stops it.
+        """
+        with self._lock:
+            self._sinks.discard(push)
+
+    @property
+    def attached(self) -> bool:
+        """Whether any socket is listening. Also true while nobody ever has been."""
+        with self._lock:
+            return bool(self._sinks)
+
+    @property
+    def turn_id(self) -> str | None:
+        with self._lock:
+            turn = self._turn
+        return None if turn is None else turn.id
+
+    @property
+    def turn_status(self) -> str | None:
+        """The last status label this turn pushed, for a client that just arrived."""
+        return self._status
+
+    def pending_text(self) -> str:
+        """The answer this turn has written so far but not yet settled into a step."""
+        return self._streaming
+
+    def note_root(self, root: Path) -> None:
+        """Record where the kernel actually landed, for a turn that outlives a socket."""
+        self._kernel_root = root
+
+    def emit(self, frame: Frame) -> None:
+        """Send a frame to every attached socket. Safe from a turn thread.
+
+        A sink that raises is dropped rather than allowed to fail the turn: the
+        socket dying is exactly the case this class exists to survive.
+        """
+        # Keep the in-flight answer so a tab that arrives mid-turn can be told, in one
+        # frame, the text it missed. The browser appends `text_delta`s to the trailing
+        # assistant row, so replaying it as one delta takes the same path live text
+        # does. Reset by `start_turn`, not by `turn_end`, so a turn that has just
+        # finished still replays to a socket that connected a moment too late.
+        kind = frame.get("type")
+        if kind == "text_delta":
+            self._streaming += str(frame.get("text") or "")
+        elif kind == "status":
+            label = frame.get("label")
+            self._status = label if isinstance(label, str) else None
+
+        with self._lock:
+            sinks = tuple(self._sinks)
+        for sink in sinks:
+            try:
+                sink(frame)
+            except Exception:  # noqa: BLE001 - a dead socket must not kill a turn
+                self.detach(sink)
+
+    def _cancel_grace(self) -> None:
+        grace, self._grace = self._grace, None
+        if grace is not None:
+            grace.cancel()
+
+    def begin_grace(self, timeout: float = RECONNECT_GRACE_S) -> None:
+        """Let the running turn continue for `timeout`, then stop it.
+
+        Cancelled by any reconnect, so the common case -- a phone that comes back --
+        costs nothing at all. Silently does nothing when no turn is running, or when
+        a socket is still attached (a second tab closing is not a disconnect).
+        """
+        if self.turn_running is False:
+            return
+        if self.attached:
+            return
+        self._cancel_grace()
+        grace = threading.Timer(timeout, self._abort_if_unattended)
+        grace.daemon = True
+        self._grace = grace
+        grace.start()
+
+    def _abort_if_unattended(self) -> None:
+        """The grace expired. Stop the turn only if nobody came back."""
+        with self._lock:
+            self._grace = None
+            attached = bool(self._sinks)
+        if attached:
+            return
+        self._abort_and_join()
+
     # -- the turn ----------------------------------------------------------
 
     @property
@@ -258,13 +389,18 @@ class WebSession:
                 raise TurnBusyError("A turn is already running.")
             turn = _Turn(id=f"turn-{uuid.uuid4().hex[:12]}")
             self._turn = turn
+            self._streaming = ""
+            self._status = None
             runtime.messages.append(
                 {"role": "user", "content": build_user_content(text, images)}
             )
-            observer = WebObserver(push, runtime=runtime)
+            # The observer pushes through `self.emit`, not through the socket that
+            # started the turn: that socket may be gone (a phone asleep) and another
+            # may be listening by the time the next token arrives.
+            observer = WebObserver(self.emit, runtime=runtime)
             turn.thread = threading.Thread(
                 target=self._run_turn,
-                args=(turn, observer, push),
+                args=(turn, observer),
                 name=f"quartz-web-{turn.id}",
                 daemon=True,
             )
@@ -272,11 +408,11 @@ class WebSession:
         thread.start()
         return turn.id
 
-    def _run_turn(self, turn: _Turn, observer: WebObserver, push: Push) -> None:
+    def _run_turn(self, turn: _Turn, observer: WebObserver) -> None:
         """The turn thread. Must always emit exactly one `turn_end`."""
         outcome: TurnOutcome
         try:
-            push({"type": "turn_start", "turnId": turn.id})
+            self.emit({"type": "turn_start", "turnId": turn.id})
             outcome = self._runner(
                 self.runtime,
                 observer,
@@ -289,11 +425,43 @@ class WebSession:
             # runner swapped in by a test.
             outcome = TurnOutcome(TurnStatus.ERROR, error=exc)
         try:
-            push(_turn_end_frame(outcome))
+            self.emit(_turn_end_frame(outcome))
         finally:
+            self._settle_streamed_text(outcome)
             with self._lock:
                 if self._turn is turn:
                     self._turn = None
+
+    def _settle_streamed_text(self, outcome: TurnOutcome) -> None:
+        """Keep what the turn wrote, when the turn is stopped before it can save itself.
+
+        `run_interactive_turn` persists on success and on abort, but the loop only
+        appends an assistant message once a *step* completes -- so an answer that was
+        halfway through writing is not in what gets saved. The text is already here
+        (`emit` accumulated every delta), so a turn that ends early keeps it instead
+        of vanishing; the browser would otherwise lose several paragraphs it had
+        already been shown.
+        """
+        text = self._streaming.strip()
+        if not text:
+            return
+        if outcome.status is TurnStatus.OK:
+            # The loop saved its own copy; ours would be a duplicate.
+            return
+        runtime = self._runtime
+        if runtime is None:
+            return
+        tail = runtime.messages[-1] if runtime.messages else None
+        if isinstance(tail, dict) and tail.get("role") == "assistant":
+            # Close enough to the loop's own record; do not add a second one.
+            return
+        runtime.messages.append(
+            {"role": "assistant", "content": f"{text}\n\n_(interrupted)_"}
+        )
+        try:
+            runtime.active_session.save_messages(runtime.messages)
+        except OSError:
+            pass
 
     def steer(self, text: str) -> None:
         with self._lock:
@@ -390,6 +558,11 @@ class WebSession:
             "effort": runtime.effort,
             "messages": runtime.messages,
             "turnRunning": self.turn_running,
+            # The answer the running turn has written but not yet committed to
+            # history. A client that connects mid-turn draws it, so the prose already
+            # on the writer's screen is on the reader's too -- and then appends the
+            # live deltas that follow, rather than showing a reply that restarts.
+            "streamingText": self._streaming if self.turn_running else "",
             "commands": self.commands(),
         }
 
