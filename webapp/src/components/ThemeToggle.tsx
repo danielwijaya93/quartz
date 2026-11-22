@@ -1,56 +1,43 @@
 import * as React from "react";
-import { ToggleButton, ToggleButtonGroup } from "@heroui/react";
+import { Button } from "@heroui/react";
 import { Monitor, Moon, Sun } from "lucide-react";
-import { THEME_MODES, type ThemeMode, useThemeMode } from "@/lib/theme";
+import { type ThemeMode, useThemeMode } from "@/lib/theme";
 
 const MODE_COPY: Record<ThemeMode, { label: string; icon: React.ReactElement }> = {
-  light: { label: "Light", icon: <Sun aria-hidden="true" className="size-3.5" /> },
-  dark: { label: "Dark", icon: <Moon aria-hidden="true" className="size-3.5" /> },
-  system: { label: "System", icon: <Monitor aria-hidden="true" className="size-3.5" /> },
+  light: { label: "Light", icon: <Sun aria-hidden="true" className="size-4" /> },
+  dark: { label: "Dark", icon: <Moon aria-hidden="true" className="size-4" /> },
+  system: { label: "System", icon: <Monitor aria-hidden="true" className="size-4" /> },
+};
+
+const NEXT_MODE: Record<ThemeMode, ThemeMode> = {
+  system: "light",
+  light: "dark",
+  dark: "system",
 };
 
 /**
- * Theme control.
+ * Compact theme control.
  *
- * Three explicit states rather than one button that cycles: the user can see
- * which mode is active *and* what the other two are without pressing anything.
- * Each option is a labelled toggle button, so the state is announced as pressed
- * or not pressed and never relies on colour alone.
+ * Cycles between System, Light, and Dark modes via a single icon button.
  */
 export function ThemeToggle(): React.ReactElement {
   const { mode, setMode } = useThemeMode();
 
-  const onSelectionChange = React.useCallback(
-    (keys: "all" | Iterable<React.Key>) => {
-      if (keys === "all") return;
-      const [first] = [...keys];
-      const next = THEME_MODES.find((entry) => entry === first);
-      if (next) setMode(next);
-    },
-    [setMode],
-  );
+  const cycleMode = React.useCallback(() => {
+    const next = NEXT_MODE[mode];
+    setMode(next);
+  }, [mode, setMode]);
 
   return (
-    <ToggleButtonGroup
-      aria-label="Colour theme"
+    <Button
+      isIconOnly
       size="sm"
-      disallowEmptySelection
-      selectionMode="single"
-      selectedKeys={[mode]}
-      onSelectionChange={onSelectionChange}
-      className="rounded-lg border border-separator bg-surface-secondary/60 p-0.5"
+      variant="ghost"
+      onPress={cycleMode}
+      aria-label={`Theme: ${MODE_COPY[mode].label}. Click to switch theme`}
+      className="text-muted hover:text-foreground"
     >
-      {THEME_MODES.map((entry) => (
-        <ToggleButton
-          key={entry}
-          id={entry}
-          aria-label={`${MODE_COPY[entry].label} theme`}
-          className="h-7 cursor-pointer gap-1.5 rounded-md px-2 text-xs font-medium"
-        >
-          {MODE_COPY[entry].icon}
-          <span className="hidden xl:inline">{MODE_COPY[entry].label}</span>
-        </ToggleButton>
-      ))}
-    </ToggleButtonGroup>
+      {MODE_COPY[mode].icon}
+    </Button>
   );
 }
