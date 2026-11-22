@@ -98,7 +98,7 @@ function TurnView({
   onFormState: (id: string, state: Record<string, unknown>) => void;
 }): React.ReactElement {
   return (
-    <div className="flex flex-col gap-2.5">
+    <div className={turn.answer !== null ? "mb-2 flex flex-col gap-1.5" : "flex flex-col gap-1"}>
       {turn.steps.length > 0 ? (
         <TurnTray turn={turn} richUi={richUi} onPrompt={onPrompt} onFormState={onFormState} />
       ) : null}
@@ -302,7 +302,7 @@ export function Transcript({
             ref={contentRef}
             role="log"
             aria-label="Session transcript"
-            className="mx-auto flex w-full max-w-3xl flex-col gap-4"
+            className="mx-auto flex w-full max-w-3xl flex-col gap-1"
           >
             {rows.length === 0 ? <EmptyTranscript cwd={cwd} onPrompt={onPrompt} /> : null}
             {items.map((item) =>
