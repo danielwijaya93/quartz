@@ -310,6 +310,22 @@ class KernelClient:
             out.append(fresh)
         return out
 
+    def bash_tail(self, pid: int, lines: int = 50, timeout: float = 5.0) -> str | None:
+        """Return the last *lines* of output for background job *pid*, or None if unavailable."""
+        if self._proc is None or self._proc.poll() is not None:
+            return None
+        resp = self._request({"type": "bash_tail", "pid": pid, "lines": lines}, timeout=timeout)
+        if not resp.get("found"):
+            return None
+        return str(resp.get("tail", ""))
+
+    def kill_bash(self, pid: int, timeout: float = 5.0) -> bool:
+        """Terminate a running background bash job by *pid*."""
+        if self._proc is None or self._proc.poll() is not None:
+            return False
+        resp = self._request({"type": "kill_bash", "pid": pid}, timeout=timeout)
+        return bool(resp.get("killed"))
+
     def has_pending_events(self) -> bool:
         with self._events_cond:
             return bool(self._events)
