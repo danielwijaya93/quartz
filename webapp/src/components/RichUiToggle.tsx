@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Switch } from "@heroui/react";
+import { cn } from "@heroui/react";
 import type { RichUiMode } from "@/lib/richUi";
 
 /**
@@ -18,19 +18,34 @@ export function RichUiToggle({
   const isRich = mode === "rich";
 
   return (
-    <Switch
-      size="sm"
-      isSelected={isRich}
-      onChange={(selected) => onChange(selected ? "rich" : "markdown")}
+    <button
+      type="button"
+      role="switch"
+      aria-checked={isRich}
       aria-label="Rich UI"
-      className="flex-row items-center gap-1.5"
+      title="Draw replies as OpenUI charts, tables and forms. Off by default (Markdown)."
+      onClick={() => onChange(isRich ? "markdown" : "rich")}
+      className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg px-1.5 text-xs font-medium text-muted transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
     >
-      <Switch.Control>
-        <Switch.Thumb />
-      </Switch.Control>
-      <Switch.Content className="whitespace-nowrap text-xs font-medium text-muted select-none">
-        Rich UI
-      </Switch.Content>
-    </Switch>
+      <span
+        aria-hidden="true"
+        className={cn(
+          "relative inline-flex h-4 w-7 shrink-0 items-center rounded-full border transition-colors duration-150",
+          isRich
+            ? "border-foreground/30 bg-foreground/85"
+            : "border-border bg-surface-secondary",
+        )}
+      >
+        <span
+          className={cn(
+            "inline-block size-3 rounded-full transition-transform duration-150",
+            isRich
+              ? "translate-x-3.5 bg-background"
+              : "translate-x-0.5 bg-muted",
+          )}
+        />
+      </span>
+      <span className="whitespace-nowrap select-none">Rich UI</span>
+    </button>
   );
 }

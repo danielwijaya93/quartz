@@ -563,26 +563,25 @@ export function Composer({
               <Plus aria-hidden="true" className="size-4" />
             </Button>
 
-            {onOpenModelPicker ? (
-              <button
-                type="button"
-                onClick={onOpenModelPicker}
-                aria-label={
-                  model
-                    ? `Switch model (current: ${model}${effort ? ` ${formatEffortLabel(effort)}` : ""})`
-                    : "Choose a model"
-                }
-                className="inline-flex h-7 max-w-[16rem] cursor-pointer items-center gap-1 rounded-lg px-2 text-xs text-muted transition-colors hover:bg-surface-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
-              >
-                <span className="truncate font-medium">{model || "Model"}</span>
-                {effort ? (
-                  <span className="shrink-0 text-muted/80">{formatEffortLabel(effort)}</span>
-                ) : null}
-                <ChevronDown aria-hidden="true" className="size-3 shrink-0 text-muted/70" />
-              </button>
-            ) : null}
-
             <div className="ml-auto flex items-center gap-1.5">
+              {onOpenModelPicker ? (
+                <button
+                  type="button"
+                  onClick={onOpenModelPicker}
+                  aria-label={
+                    model
+                      ? `Switch model (current: ${model}${effort ? ` ${formatEffortLabel(effort)}` : ""})`
+                      : "Choose a model"
+                  }
+                  className="inline-flex h-7 max-w-[16rem] cursor-pointer items-center gap-1 rounded-lg px-2 text-xs text-muted transition-colors hover:bg-surface-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                >
+                  <span className="truncate font-medium">{model || "Model"}</span>
+                  {effort ? (
+                    <span className="shrink-0 text-muted/80">{formatEffortLabel(effort)}</span>
+                  ) : null}
+                  <ChevronDown aria-hidden="true" className="size-3 shrink-0 text-muted/70" />
+                </button>
+              ) : null}
               {turnRunning ? (
                 <Button
                   size="sm"
