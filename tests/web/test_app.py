@@ -595,3 +595,66 @@ def test_load_session_rejects_path_traversal(app_client: AppClient, wire: Any) -
 
     assert frames[-1]["fatal"] is False
     assert "Invalid sessionId" in frames[-1]["message"]
+
+
+def test_reset_command_pushes_updated_session_state(
+    app_client: AppClient, wire: Any
+) -> None:
+    with app_client.client.websocket_connect("/ws") as socket:
+        initial = wire.hello(socket)
+        app_client.runtime.messages.append({"role": "user", "content": "old message"})
+        socket.send_json({"type": "command", "name": "reset"})
+        cmd_frames = wire.drain(socket, until="command_result")
+        state_frames = wire.drain(socket, until="session_state")
+
+    assert cmd_frames[-1]["name"] == "reset"
+    assert cmd_frames[-1]["ok"] is True
+    new_state = state_frames[-1]
+    assert new_state["sessionId"] != initial["sessionId"]
+    assert new_state["messages"] == []
+
+
+def test_image_only_prompt_starts_turn(app_client: AppClient, wire: Any) -> None:
+    with app_client.client.websocket_connect("/ws") as socket:
+        wire.hello(socket)
+        socket.send_json(
+            {
+                "type": "prompt",
+                "text": "",
+                "images": [
+                    {
+                        "mimeType": "image/png",
+                        "data": "iVBORw0KGgo=",
+                        "label": "shot.png",
+                    }
+                ],
+            }
+        )
+        frames = wire.drain(socket, until="turn_end")
+
+    assert any(frame["type"] == "turn_start" for frame in frames)
+    assert app_client.runner.calls == 1
+
+
+def test_web_observer_on_compaction_reports_messages_before() -> None:
+    from quartz.core.compact import CompactionReason, CompactionResult
+    from quartz.web.bridge import WebObserver
+
+    pushed: list[dict[str, Any]] = []
+    obs = WebObserver(pushed.append, runtime=None)  # type: ignore[arg-type]
+    obs.on_compaction(
+        CompactionResult(
+            reason=CompactionReason.SUMMARIZED,
+            summarized=6,
+            kept=4,
+            cleared=2,
+            messages=[{"role": "user", "content": "summary"}],
+            estimated_tokens_before=1000,
+            estimated_tokens_after=200,
+        )
+    )
+
+    assert len(pushed) == 1
+    assert pushed[0]["type"] == "compaction"
+    assert pushed[0]["messagesBefore"] == 10
+    assert pushed[0]["messagesAfter"] == 1

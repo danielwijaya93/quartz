@@ -338,6 +338,9 @@ class KernelClient:
             self._write_lock.release()
 
     def close(self) -> None:
+        if self._atexit_registered:
+            atexit.unregister(self.close)
+            self._atexit_registered = False
         proc = self._proc
         self._proc = None
         self._running_bash_count = 0

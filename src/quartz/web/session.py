@@ -14,6 +14,7 @@ this class, and it is the only place a `threading.Thread` is created for a turn.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import os
 import queue
@@ -122,10 +123,6 @@ class WebSession:
         # turn_end that would go to a socket nobody holds any more.
         self._sinks: set[Push] = set()
         self._grace: threading.Timer | None = None
-        # Where the kernel is rooted, as last stated by a caller that knew. The
-        # in-flight message needs it on every delta, and `runtime.cwd` is already the
-        # authoritative answer; this only covers the window before a runtime exists.
-        self._kernel_root: Path | None = cwd
         # What the turn in flight has said so far, so a tab that reconnects mid-answer
         # can be caught up without asking the kernel to say it again.
         self._streaming = ""
@@ -263,18 +260,21 @@ class WebSession:
         if runtime is None:
             return
         try:
+            runtime.wait_snapshot()
             if runtime.messages and not runtime.headless and runtime.kernel.dirty:
                 runtime.active_session.save_kernel(runtime.kernel)
         except Exception:  # noqa: BLE001 - a failed snapshot must not block a swap
             pass
         runtime.kernel.close()
+        with contextlib.suppress(Exception):
+            runtime.client.close()
 
     def close(self) -> None:
         self._retire()
 
     # -- who is watching ---------------------------------------------------
 
-    def attach(self, push: Push, *, root: Path | None = None) -> None:
+    def attach(self, push: Push) -> None:
         """Register the socket that should receive this session's frames.
 
         Also settles the background directory: if a disconnected turn has already
@@ -285,8 +285,6 @@ class WebSession:
         self.detach(push)
         with self._lock:
             self._sinks.add(push)
-        if root is not None:
-            self._kernel_root = root
 
     def detach(self, push: Push) -> None:
         """Stop sending to one socket, without deciding anything yet.
@@ -312,15 +310,13 @@ class WebSession:
     @property
     def turn_status(self) -> str | None:
         """The last status label this turn pushed, for a client that just arrived."""
-        return self._status
+        with self._lock:
+            return self._status
 
     def pending_text(self) -> str:
         """The answer this turn has written so far but not yet settled into a step."""
-        return self._streaming
-
-    def note_root(self, root: Path) -> None:
-        """Record where the kernel actually landed, for a turn that outlives a socket."""
-        self._kernel_root = root
+        with self._lock:
+            return self._streaming
 
     def emit(self, frame: Frame) -> None:
         """Send a frame to every attached socket. Safe from a turn thread.
@@ -331,16 +327,18 @@ class WebSession:
         # Keep the in-flight answer so a tab that arrives mid-turn can be told, in one
         # frame, the text it missed. The browser appends `text_delta`s to the trailing
         # assistant row, so replaying it as one delta takes the same path live text
-        # does. Reset by `start_turn`, not by `turn_end`, so a turn that has just
-        # finished still replays to a socket that connected a moment too late.
+        # does. Reset on `tool_call` (which settles the preceding step) and on
+        # `start_turn`, not on `turn_end`, so a turn that has just finished still
+        # replays to a socket that connected a moment too late.
         kind = frame.get("type")
-        if kind == "text_delta":
-            self._streaming += str(frame.get("text") or "")
-        elif kind == "status":
-            label = frame.get("label")
-            self._status = label if isinstance(label, str) else None
-
         with self._lock:
+            if kind == "text_delta":
+                self._streaming += str(frame.get("text") or "")
+            elif kind == "tool_call":
+                self._streaming = ""
+            elif kind == "status":
+                label = frame.get("label")
+                self._status = label if isinstance(label, str) else None
             sinks = tuple(self._sinks)
         for sink in sinks:
             try:
@@ -452,7 +450,8 @@ class WebSession:
         of vanishing; the browser would otherwise lose several paragraphs it had
         already been shown.
         """
-        text = self._streaming.strip()
+        with self._lock:
+            text = self._streaming.strip()
         if not text:
             return
         if outcome.status is TurnStatus.OK:
@@ -565,19 +564,23 @@ class WebSession:
     def snapshot(self) -> Frame:
         """The `session_state` frame: everything a client needs to draw the session."""
         runtime = self.runtime
+        with self._lock:
+            turn_running = self._turn is not None
+            streaming = self._streaming if turn_running else ""
+            messages = list(runtime.messages)
         return {
             "type": "session_state",
             "sessionId": runtime.active_session.id,
             "cwd": str(runtime.cwd),
             "model": runtime.model,
             "effort": runtime.effort,
-            "messages": runtime.messages,
-            "turnRunning": self.turn_running,
+            "messages": messages,
+            "turnRunning": turn_running,
             # The answer the running turn has written but not yet committed to
             # history. A client that connects mid-turn draws it, so the prose already
             # on the writer's screen is on the reader's too -- and then appends the
             # live deltas that follow, rather than showing a reply that restarts.
-            "streamingText": self._streaming if self.turn_running else "",
+            "streamingText": streaming,
             "commands": self.commands(),
         }
 

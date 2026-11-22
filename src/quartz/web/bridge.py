@@ -133,7 +133,7 @@ class WebObserver(TurnView):
             {
                 "type": "compaction",
                 "summary": summary,
-                "messagesBefore": result.summarized + result.kept + result.cleared,
+                "messagesBefore": result.summarized + result.kept,
                 "messagesAfter": len(result.messages),
                 "tokensBefore": result.estimated_tokens_before,
                 "tokensAfter": result.estimated_tokens_after,

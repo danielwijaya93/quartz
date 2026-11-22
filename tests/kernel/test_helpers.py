@@ -630,6 +630,47 @@ def test_ls_find_rg_error_handling(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert "timed out" in helpers.rg("hello", str(tmp_path))
 
 
+def test_rg_expands_tilde_for_external_rg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from quartz.kernel import helpers
+
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "note.txt").write_text("needle\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(helpers.shutil, "which", lambda _n: "/usr/bin/rg")
+
+    seen_cmds: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_k: object) -> Any:
+        seen_cmds.append(cmd)
+        return type("Proc", (), {"returncode": 0, "stdout": f"{sub / 'note.txt'}:1:needle\n", "stderr": ""})()
+
+    monkeypatch.setattr(helpers.subprocess, "run", fake_run)
+    out = helpers.rg("needle", "~/sub")
+    assert "needle" in out
+    assert seen_cmds and seen_cmds[0][-1] == str(sub)
+
+
+def test_kernel_client_close_unregisters_atexit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import atexit
+
+    from quartz.kernel.client import KernelClient
+
+    unregistered: list[Any] = []
+    monkeypatch.setattr(atexit, "unregister", unregistered.append)
+
+    client = KernelClient(cwd=tmp_path)
+    client._atexit_registered = True
+    client.close()
+
+    assert client._atexit_registered is False
+    assert unregistered == [client.close]
+
+
 def test_find_skips_unreadable_and_symlink_dirs(tmp_path: Path) -> None:
     import os
 

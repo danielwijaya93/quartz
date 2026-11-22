@@ -449,3 +449,58 @@ def test_a_non_port_exit_from_uvicorn_is_left_alone(
         subcommands._handle_web_cli(["--cwd", str(web_env), "--port", str(_unused_port())])
 
     assert exit_info.value.code == 3
+
+
+def test_web_cli_trust_project_sets_env_without_touching_home(
+    web_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_server: list[tuple[Any, ...]],
+) -> None:
+    import os
+
+    monkeypatch.delenv("QUARTZ_TRUST_PROJECT", raising=False)
+    port = _unused_port()
+    subcommands._handle_web_cli(
+        ["--cwd", str(web_env), "--port", str(port), "--trust-project"]
+    )
+
+    assert len(no_server) == 1
+    assert os.environ.get("QUARTZ_TRUST_PROJECT") == "1"
+
+
+def test_open_browser_when_ready_brackets_ipv6_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+    import webbrowser
+
+    opened: list[str] = []
+    probed: list[tuple[str, int]] = []
+
+    class _FakeConn:
+        def __enter__(self) -> _FakeConn:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def _fake_create_connection(addr: tuple[str, int], timeout: float = 0.0) -> _FakeConn:
+        del timeout
+        probed.append(addr)
+        return _FakeConn()
+
+    class _InlineThread:
+        def __init__(self, target: Any, **kwargs: Any) -> None:
+            del kwargs
+            self._target = target
+
+        def start(self) -> None:
+            self._target()
+
+    monkeypatch.setattr(socket, "create_connection", _fake_create_connection)
+    monkeypatch.setattr(webbrowser, "open", opened.append)
+    monkeypatch.setattr(threading, "Thread", _InlineThread)
+
+    subcommands._open_browser_when_ready("::1", 8765, timeout=1.0)
+    assert probed == [("::1", 8765)]
+    assert opened == ["http://[::1]:8765/"]

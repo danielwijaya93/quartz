@@ -64,3 +64,37 @@ def test_renderable_emits_raw_sequence_on_terminal_only() -> None:
     plain = io.StringIO()
     Console(file=plain, force_terminal=False, width=80).print(InlineImage(seq))
     assert seq not in plain.getvalue()
+
+
+def test_corrupt_inline_image_mention_does_not_crash_cli_or_dock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from types import SimpleNamespace
+
+    import quartz.cli.app as cli_app
+    from quartz.tui.dock import InteractiveDock
+
+    (tmp_path / "bad.png").write_bytes(b"not-a-png")
+    buf = io.StringIO()
+    test_console = Console(file=buf, force_terminal=False, width=100, color_system=None)
+    monkeypatch.setattr(cli_app, "console", test_console)
+
+    rt = SimpleNamespace(cwd=tmp_path, messages=[], pending_images=[])
+    cli_app._run_headless(rt, "check @bad.png", [], 0.0)  # type: ignore[arg-type]
+    assert "Error:" in buf.getvalue()
+    assert rt.messages == []
+
+    # Dock idle submission catches the same error cleanly without spawning a turn.
+    printed: list[object] = []
+    fake_dock = SimpleNamespace(
+        rt=SimpleNamespace(cwd=tmp_path, messages=[], pending_images=[]),
+        terminal_width=100,
+        _invalidate=lambda: None,
+        _execute_dock_turn=lambda: (_ for _ in ()).throw(AssertionError("should not run turn")),
+    )
+    monkeypatch.setattr(
+        "quartz.tui.dock._active_printer",
+        lambda: SimpleNamespace(block=printed.append),
+    )
+    InteractiveDock._handle_submitted_idle(fake_dock, "check @bad.png")  # type: ignore[arg-type]
+    assert any("Error:" in str(item) for item in printed)

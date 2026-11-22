@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import sys
@@ -248,25 +249,29 @@ class ACPServer:
         cwd = Path(raw_cwd).expanduser().resolve() if raw_cwd else Path.cwd().resolve()
         kernel = KernelClient(cwd=cwd)
         kernel.start()
-        session = Session.create(cwd)
-        system_prompt = build_system_prompt(cwd)
-        append = _extract_system_prompt_append(params)
-        if append:
-            system_prompt = f"{system_prompt}\n\n{append}"
-        state = _ActiveSession(
-            session=session,
-            kernel=kernel,
-            cwd=cwd,
-            system_prompt=system_prompt,
-            messages=[],
-            usage=TurnUsage(),
-        )
-        with self._sessions_lock:
-            old_state = self._sessions.pop(session.id, None)
-            self._sessions[session.id] = state
-        if old_state is not None:
-            self._retire_session(old_state)
-        return {"sessionId": session.id}
+        try:
+            session = Session.create(cwd)
+            system_prompt = build_system_prompt(cwd)
+            append = _extract_system_prompt_append(params)
+            if append:
+                system_prompt = f"{system_prompt}\n\n{append}"
+            state = _ActiveSession(
+                session=session,
+                kernel=kernel,
+                cwd=cwd,
+                system_prompt=system_prompt,
+                messages=[],
+                usage=TurnUsage(),
+            )
+            with self._sessions_lock:
+                old_state = self._sessions.pop(session.id, None)
+                self._sessions[session.id] = state
+            if old_state is not None:
+                self._retire_session(old_state)
+            return {"sessionId": session.id}
+        except BaseException:
+            kernel.close()
+            raise
 
     def _handle_session_load(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = str(params.get("sessionId", "")).strip()
@@ -278,27 +283,31 @@ class ACPServer:
 
         kernel = KernelClient(cwd=cwd)
         kernel.start()
-        restored_notice = session.restore_kernel(kernel, root=cwd)
-        if restored_notice:
-            messages.append({"role": "user", "content": restored_notice})
+        try:
+            restored_notice = session.restore_kernel(kernel, root=cwd)
+            if restored_notice:
+                messages.append({"role": "user", "content": restored_notice})
 
-        system_prompt = build_system_prompt(cwd)
-        append = _extract_system_prompt_append(params)
-        if append:
-            system_prompt = f"{system_prompt}\n\n{append}"
-        state = _ActiveSession(
-            session=session,
-            kernel=kernel,
-            cwd=cwd,
-            system_prompt=system_prompt,
-            messages=messages,
-            usage=TurnUsage.from_dict(session.last_usage),
-        )
-        with self._sessions_lock:
-            old_state = self._sessions.pop(session.id, None)
-            self._sessions[session.id] = state
-        if old_state is not None:
-            self._retire_session(old_state)
+            system_prompt = build_system_prompt(cwd)
+            append = _extract_system_prompt_append(params)
+            if append:
+                system_prompt = f"{system_prompt}\n\n{append}"
+            state = _ActiveSession(
+                session=session,
+                kernel=kernel,
+                cwd=cwd,
+                system_prompt=system_prompt,
+                messages=messages,
+                usage=TurnUsage.from_dict(session.last_usage),
+            )
+            with self._sessions_lock:
+                old_state = self._sessions.pop(session.id, None)
+                self._sessions[session.id] = state
+            if old_state is not None:
+                self._retire_session(old_state)
+        except BaseException:
+            kernel.close()
+            raise
 
         for msg in messages:
             role = msg.get("role")
@@ -453,6 +462,12 @@ class ACPServer:
                 self._abort_session(state)
             for t in workers:
                 t.join(timeout=2.0)
+            with self._client_lock:
+                client = self._client
+                self._client = None
+            if client is not None and hasattr(client, "close"):
+                with contextlib.suppress(Exception):
+                    client.close()
             with self._sessions_lock:
                 for state in self._sessions.values():
                     try:

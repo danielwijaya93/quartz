@@ -376,9 +376,6 @@ async def _dispatch(
     try:
         if kind == "hello":
             await _ensure(session, push, resolve_cwd(message.get("cwd"), session.cwd))
-            # Tell the session where this kernel is rooted, so a turn that outlives
-            # this socket can still settle its message correctly.
-            session.note_root(session.runtime.cwd)
             await asyncio.to_thread(_remember_workspace, sidebar, session)
             # A client-supplied system-prompt append, the web twin of ACP's
             # `_meta.quartz.systemPrompt.append`. Applied after the runtime exists,
@@ -393,7 +390,8 @@ async def _dispatch(
 
         elif kind == "prompt":
             text = str(message.get("text") or "").strip()
-            if not text:
+            images = _attachments(message.get("images"))
+            if not text and not images:
                 push({"type": "error", "message": "Empty prompt.", "fatal": False})
                 return
             await _ensure(session, push)
@@ -408,7 +406,7 @@ async def _dispatch(
                     }
                 )
                 return
-            session.start_turn(text, _attachments(message.get("images")))
+            session.start_turn(text, images)
 
         elif kind == "steer":
             text = str(message.get("text") or "").strip()
@@ -425,6 +423,7 @@ async def _dispatch(
             await _ensure(session, push)
             name = str(message.get("name") or "")
             arg = str(message.get("arg") or "")
+            before_id = session.runtime.active_session.id
             ok, result = await asyncio.to_thread(session.run_command, name, arg)
             push(
                 {
@@ -434,6 +433,8 @@ async def _dispatch(
                     "result": _command_payload(result),
                 }
             )
+            if session.runtime.active_session.id != before_id:
+                push(session.snapshot())
 
         elif kind == "new_session":
             # A folder picked in the browser. `None` means "the server's directory",

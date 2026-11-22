@@ -10,15 +10,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from prompt_toolkit import Application
-from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.filters import Condition, Filter
-from prompt_toolkit.formatted_text import StyleAndTextTuples
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
-from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl, UIContent, UIControl
-from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.layout.processors import BeforeInput, DynamicProcessor, PasswordProcessor
 from prompt_toolkit.styles import Style
 from rich.console import Console, Group
 from rich.markdown import Markdown
@@ -473,7 +464,6 @@ class TurnProgressTracker:
         self.active_tool_code: str | None = None
         self.active_tool_start: float | None = None
         self.tool_entries: list[tuple[int, str, CellResult, float]] = []
-        self.input_buffer: str = ""
         self.steering_messages: list[str] = []
         self._flushed = False
         self._last_render_at: float = 0.0
@@ -494,7 +484,6 @@ class TurnProgressTracker:
                 and (
                     self.active_thinking_start is not None
                     or self.active_tool_code is not None
-                    or self.input_buffer
                     or self.steering_messages
                 )
             ):
@@ -535,16 +524,6 @@ class TurnProgressTracker:
             preview = s_msg[:60] + ("..." if len(s_msg) > 60 else "")
             items.append(Text(f"[steering] {preview}", style="cyan"))
 
-        if self.input_buffer:
-            width = _active_width()
-            max_buf_len = max(10, width - 6)
-            displayed = (
-                self.input_buffer
-                if len(self.input_buffer) <= max_buf_len
-                else "..." + self.input_buffer[-(max_buf_len - 3) :]
-            )
-            items.append(Text(f"▌ {displayed}█", style="cyan"))
-
         return Group(*items)
 
     def tick(self) -> None:
@@ -554,7 +533,6 @@ class TurnProgressTracker:
             if (
                 self.active_thinking_start is not None
                 or self.active_tool_code is not None
-                or self.input_buffer
                 or self.steering_messages
                 or (self.show_thinking and self.thinking_text)
             ):
@@ -574,19 +552,10 @@ class TurnProgressTracker:
                 return
             self._render_current()
 
-    def set_input_buffer(self, text: str) -> None:
-        if self.plain_output or self.verbose:
-            return
-        with self.lock:
-            self.input_buffer = text
-            self._flushed = False
-            self._render_current()
-
     def add_steering_message(self, text: str) -> None:
         if self.plain_output or self.verbose:
             return
         with self.lock:
-            self.input_buffer = ""
             self.steering_messages.append(text)
             self._flushed = False
             self._render_current()
@@ -601,7 +570,6 @@ class TurnProgressTracker:
     def close(self) -> None:
         self.flush()
         with self.lock:
-            self.input_buffer = ""
             self.steering_messages.clear()
             if self._live_renderer is not None:
                 self._live_renderer(None)
@@ -699,7 +667,7 @@ class TurnProgressTracker:
         elif entries and not self.show_details:
             self.printer.block(format_grouped_cell_summary(entries))
 
-        if (self.input_buffer or self.steering_messages) and not self.plain_output and not self.verbose:
+        if self.steering_messages and not self.plain_output and not self.verbose:
             self._flushed = False
             self._render_current()
 
@@ -716,11 +684,6 @@ class TurnProgressTracker:
             self.active_tool_code = None
             self.active_tool_start = None
             self._flush_chunk()
-
-
-# ---------------------------------------------------------------------------
-# Shared inline modal state, layout, and keybindings
-# ---------------------------------------------------------------------------
 
 
 def _fmt_duration(seconds: float) -> str:

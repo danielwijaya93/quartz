@@ -65,7 +65,11 @@ def _run_headless(
         except (FileNotFoundError, ValueError) as exc:
             console.print(f"[red]Error: {escape(str(exc))}[/red]")
             return
-    cli_images.extend(extract_inline_image_mentions(prompt, rt.cwd))
+    try:
+        cli_images.extend(extract_inline_image_mentions(prompt, rt.cwd))
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]Error: {escape(str(exc))}[/red]")
+        return
     rt.messages.append({"role": "user", "content": build_user_content(prompt, cli_images)})
     _, rt.messages, _ = _run_turn(rt)
     rt.persist()
@@ -148,7 +152,11 @@ def _run_interactive(rt: AgentRuntime, resumed: bool) -> None:
         if cmd_res is False:
             continue
 
-        inline_images = extract_inline_image_mentions(user_input, rt.cwd)
+        try:
+            inline_images = extract_inline_image_mentions(user_input, rt.cwd)
+        except (OSError, ValueError) as exc:
+            console.print(f"[red]Error: {escape(str(exc))}[/red]")
+            continue
         attached_images = [*rt.pending_images, *inline_images]
         rt.pending_images.clear()
         rt.messages.append({"role": "user", "content": build_user_content(user_input, attached_images)})

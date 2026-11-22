@@ -458,3 +458,39 @@ def test_session_id_rejects_path_traversal(tmp_path: Path) -> None:
             Session.fork(bad_id, tmp_path, sessions_dir=sessions_dir)
         with pytest.raises(ValueError):
             Session.recorded_cwd(bad_id, sessions_dir=sessions_dir)
+
+
+def test_save_messages_clears_steering_indices_on_compaction(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    s = Session.create(tmp_path, sessions_dir=sessions_dir)
+    msgs = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "reply"},
+        {"role": "user", "content": "steer"},
+    ]
+    s.record_steering(2)
+    s.save_messages(msgs)
+    assert s.steering_indices == {2}
+
+    compacted_msgs = [{"role": "user", "content": "[compacted summary]"}]
+    s.save_messages(compacted_msgs, compacted=True)
+    assert s.steering_indices == set()
+
+    loaded, _ = Session.load(s.id, sessions_dir=sessions_dir)
+    assert loaded.steering_indices == set()
+
+
+def test_list_all_includes_preview_for_forked_session(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    source = Session.create(tmp_path, sessions_dir=sessions_dir)
+    source.save_messages(
+        [
+            {"role": "user", "content": "Explain the compaction preview"},
+            {"role": "assistant", "content": "Sure."},
+        ]
+    )
+    forked, _ = Session.fork(source.id, tmp_path, sessions_dir=sessions_dir)
+
+    rows, _ = Session.list_all(sessions_dir=sessions_dir)
+    by_id = {row["sessionId"]: row for row in rows}
+    assert by_id[forked.id]["title"] == "Explain the compaction preview"

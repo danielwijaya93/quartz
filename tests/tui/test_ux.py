@@ -914,12 +914,6 @@ def test_turn_progress_tracker_interactive_steering() -> None:
     tracker = ui.TurnProgressTracker(test_console, test_printer)
     tracker.start_thinking()
 
-    # User types partial steering message
-    tracker.set_input_buffer("Actually check logs")
-    grp = tracker._render_group()
-    plain_texts = [getattr(r, "plain", getattr(getattr(r, "text", None), "plain", "")) for r in grp.renderables]
-    assert any("▌ Actually check logs█" in t for t in plain_texts)
-
     # User presses Enter -> steering message
     tracker.add_steering_message("Actually check logs")
     grp2 = tracker._render_group()

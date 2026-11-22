@@ -784,7 +784,14 @@ class InteractiveDock:
         active_printer = _active_printer()
         active_printer.block(render_user_prompt(text, width=self.terminal_width))
 
-        inline_images = extract_inline_image_mentions(text, self.rt.cwd)
+        try:
+            inline_images = extract_inline_image_mentions(text, self.rt.cwd)
+        except (OSError, ValueError) as exc:
+            from rich.text import Text
+
+            active_printer.block(Text(f"Error: {exc}", style="red"))
+            self._invalidate()
+            return
         attached_images = [*self.rt.pending_images, *inline_images]
         self.rt.pending_images.clear()
         self.rt.messages.append({"role": "user", "content": build_user_content(text, attached_images)})

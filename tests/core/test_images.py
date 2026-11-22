@@ -289,3 +289,20 @@ def test_inline_mentions_quoted_and_delimited(tmp_path: Path) -> None:
     found = extract_inline_image_mentions("see @'my shot.png'", tmp_path)
     assert [f.label for f in found] == ["my shot.png"]
     assert extract_inline_image_mentions("mail me@b.png", tmp_path) == []
+
+
+def test_clipboard_falls_back_to_next_tool_when_first_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("quartz.core.images.shutil.which", lambda n: f"/usr/bin/{n}")
+
+    def fake_run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+        del kwargs
+        if cmd[0] == "wl-paste":
+            raise OSError("no wayland display")
+        if "TARGETS" in cmd:
+            return SimpleNamespace(returncode=0, stdout="image/png\n")
+        return SimpleNamespace(returncode=0, stdout=_TINY_PNG)
+
+    monkeypatch.setattr("quartz.core.images.subprocess.run", fake_run)
+    assert load_clipboard_image().label == "clipboard.png"
