@@ -242,6 +242,24 @@ class Session:
         return _SessionFacts(has_msgs, session_cwd, origin)
 
     @classmethod
+    def recorded_cwd(cls, session_id: str, sessions_dir: Path | None = None) -> str | None:
+        """The ``cwd`` a session's own `meta` record names, or ``None``.
+
+        Read from the first line rather than by loading the transcript, because the
+        caller only needs to know where to *build*: a resume that paid for the whole
+        history first would start its kernel in the wrong folder and then find out.
+
+        ``None`` means "no such log, or no `cwd` in it", and every caller reads that
+        as "use your own directory". A folder that was deleted after the session was
+        written is a fallback, not an error -- worktrees get removed.
+        """
+        root = (sessions_dir or default_sessions_dir()).resolve()
+        path = root / f"{session_id}.jsonl"
+        if not path.is_file():
+            return None
+        return cls._inspect_session(path).cwd
+
+    @classmethod
     def latest_id(
         cls, cwd: Path | None = None, sessions_dir: Path | None = None
     ) -> str | None:

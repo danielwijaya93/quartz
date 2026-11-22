@@ -53,7 +53,11 @@ class FakeKernel:
 
 
 def make_runtime(tmp_path: Path) -> AgentRuntime:
-    """A real `AgentRuntime` over a real `Session`, with the process parts faked."""
+    """A real `AgentRuntime` over a real `Session`, with the process parts faked.
+
+    `transport="web"` mirrors what the real build closure sets: a runtime served by the
+    browser must know it is, or `/help` and `/session` answer with terminal text.
+    """
     return AgentRuntime(
         cwd=tmp_path,
         kernel=FakeKernel(),  # type: ignore[arg-type]
@@ -71,6 +75,7 @@ def make_runtime(tmp_path: Path) -> AgentRuntime:
         verbose=False,
         plain_output=False,
         headless=False,
+        transport="web",
     )
 
 

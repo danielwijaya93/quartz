@@ -24,8 +24,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from quartz.core.commands import COMMAND_REGISTRY, CommandResult, SlashCommand
+from quartz.core.commands import (
+    COMMAND_REGISTRY,
+    CommandResult,
+    SlashCommand,
+    serves_web,
+)
 from quartz.core.images import ImageAttachment, build_user_content
+from quartz.core.session import Session
 from quartz.core.turn import TurnOutcome, TurnStatus, run_interactive_turn
 from quartz.web.bridge import Frame, Push, WebObserver
 
@@ -42,11 +48,12 @@ __all__ = [
 class BuildRuntime(Protocol):
     """Build a runtime; ``None`` means a fresh session, an id means resume it.
 
-    ``cwd`` is where a *fresh* session should run, and it is why this is a protocol
-    rather than a bare callable: a folder-first sidebar starts sessions in folders
-    that were picked in the browser, not in the directory the server was launched
-    from. ``None`` means "wherever the server starts", and it is ignored when
-    resuming, because a resumed session's directory comes from its own `meta`.
+    ``cwd`` is the folder the runtime -- kernel, system prompt, session -- must be
+    built in. It is why this is a protocol rather than a bare callable: a folder-first
+    sidebar starts sessions in folders that were picked in the browser, not in the
+    directory the server was launched from. ``None`` means "wherever the server
+    starts". When resuming, the caller passes the folder that session's own `meta`
+    record names (see `WebSession.load_session`), never one a client asked for.
 
     Blocking and slow (it starts a kernel and resolves model metadata over the
     network), so every caller must run it off the event loop.
@@ -159,10 +166,26 @@ class WebSession:
         """Resume a session, in the directory its own `meta` record names.
 
         No `cwd` parameter on purpose: letting a client point a resume somewhere
-        else would replay history into a kernel rooted in a different project.
+        else would replay history into a kernel rooted in a different project. The
+        folder is read from the log instead and handed to `build`, so the kernel,
+        the system prompt, `AgentRuntime.cwd` and `session_state.cwd` all agree with
+        the transcript the browser is about to show.
         """
         self._retire()
-        self._swap(*self._build(session_id))
+        self._swap(*self._build(session_id, self._resume_cwd(session_id)))
+
+    def _resume_cwd(self, session_id: str) -> Path:
+        """The folder to resume in: the log's own `meta.cwd`, or the server's.
+
+        A recorded folder that no longer exists -- a worktree removed after the
+        session was written -- falls back to the server's directory rather than
+        raising: the history is still worth opening, and `session_state.cwd` then
+        says where it actually landed.
+        """
+        recorded = Session.recorded_cwd(session_id)
+        if recorded is None:
+            return self._cwd
+        return resolve_cwd(recorded, self._cwd)
 
     def _swap(self, runtime: AgentRuntime, resumed: bool) -> None:
         del resumed  # the browser learns everything from `session_state`
@@ -310,12 +333,19 @@ class WebSession:
     # -- commands ----------------------------------------------------------
 
     def commands(self) -> list[dict[str, Any]]:
-        """The registry as the browser's palette needs it. Names carry no slash."""
+        """The registry as the browser's palette needs it. Names carry no slash.
+
+        `needsTerminal` is derived from the registry -- its `needs_terminal` flag,
+        narrowed by whether the handler also answers outside a terminal -- rather than
+        maintained here as a second list, so a command cannot be badged as
+        terminal-only while it is quietly answering in the browser.
+        """
         return [
             {
                 "name": command.name.lstrip("/"),
                 "description": command.description,
                 "usage": command.usage,
+                "needsTerminal": command.needs_terminal and not serves_web(command),
             }
             for command in COMMAND_REGISTRY.list_commands()
         ]

@@ -46,6 +46,7 @@ __all__ = [
     "CommandRegistry",
     "CommandResult",
     "SlashCommand",
+    "serves_web",
 ]
 
 CommandKind = Literal["text", "list", "error", "needs_terminal"]
@@ -91,6 +92,23 @@ class CommandResult:
 
 
 CommandHandler = Callable[["AgentRuntime", str], "CommandResult | None"]
+
+#: Set on a handler that answers outside a terminal too, even though its command is
+#: registered `needs_terminal`. The flag stays because the *terminal* owns these
+#: commands' richer form; this marks the ones whose transport-neutral answer is real
+#: rather than a redirect, so a browser is never told to go and run something it just
+#: ran. Read it through `serves_web`, never by name.
+_SERVES_WEB_ATTR = "serves_web"
+
+
+def serves_web(command: SlashCommand) -> bool:
+    """Whether a command answers in a browser despite its `needs_terminal` flag."""
+    return bool(getattr(command.handler, _SERVES_WEB_ATTR, False))
+
+
+def _transport(rt: AgentRuntime) -> str:
+    """Which transport is drawing. ``"cli"`` unless the runtime says otherwise."""
+    return getattr(rt, "transport", "cli")
 
 
 @dataclasses.dataclass
@@ -182,11 +200,14 @@ class CommandRegistry:
     def to_completion_dict(self) -> dict[str, str]:
         return {cmd.name: cmd.description for cmd in self._commands.values()}
 
-    def format_help(self) -> str:
-        """The one help text, for the terminal and for the web's command list.
+    def format_help(self, *, transport: str = "cli") -> str:
+        """The one help text, for the terminal and for the browser's command list.
 
-        Keybindings are terminal-only, but they are listed here rather than in the
-        TUI so that "what can I type" has a single answer.
+        The command list is identical in every transport, because the commands are.
+        Only the keybinding block moves: they are listed here rather than in the TUI
+        so that "what can I type" has a single answer, and `transport` picks which
+        set of keys that answer is about. Defaulting to ``"cli"`` is what keeps the
+        terminal's output byte-identical to what it has always printed.
         """
         lines: list[str] = []
         for cmd in self._commands.values():
@@ -194,20 +215,8 @@ class CommandRegistry:
                 continue
             cmd_str = f"{cmd.name} {cmd.usage}".strip()
             lines.append(f"{cmd_str:<17}{cmd.description}")
-        lines.extend(
-            [
-                "",
-                "Keybindings:",
-                "  Enter            Submit prompt or steer running turn",
-                "  Ctrl+J / \\+Enter Insert newline",
-                "  Esc              Abort running turn or cancel modal/completion",
-                "  Ctrl+C           Clear draft / abort turn / exit",
-                "  Ctrl+D           Exit when input is empty",
-                "  Ctrl+T           Toggle thinking trace",
-                "  Ctrl+O           Toggle detail tool calls",
-                "  @path            Attach or mention a file",
-            ]
-        )
+        keys = _WEB_KEYBINDINGS if transport == "web" else _CLI_KEYBINDINGS
+        lines.extend(["", "Keybindings:", *keys])
         return "\n".join(lines)
 
     def handle(self, rt: AgentRuntime, user_input: str) -> CommandResult | None:
@@ -225,6 +234,29 @@ class CommandRegistry:
 
 
 COMMAND_REGISTRY = CommandRegistry()
+
+#: The terminal's keys. Byte-identical to what `/help` has always printed: people
+#: learn these by running `/help`, and a reflowed column is a real cost to them.
+_CLI_KEYBINDINGS = [
+    "  Enter            Submit prompt or steer running turn",
+    "  Ctrl+J / \\+Enter Insert newline",
+    "  Esc              Abort running turn or cancel modal/completion",
+    "  Ctrl+C           Clear draft / abort turn / exit",
+    "  Ctrl+D           Exit when input is empty",
+    "  Ctrl+T           Toggle thinking trace",
+    "  Ctrl+O           Toggle detail tool calls",
+    "  @path            Attach or mention a file",
+]
+
+#: The browser's. Same headings, different keys: Ctrl+T and `@path` do nothing in a
+#: page, and a help card full of dead keys is worse than no help at all.
+_WEB_KEYBINDINGS = [
+    "  Enter            Send the prompt, or steer the running turn",
+    "  Shift+Enter      Insert a newline",
+    "  Esc              Abort the running turn or close the palette",
+    "  Up               Recall the previous prompt",
+    "  /                Open the command palette",
+]
 
 # ---------------------------------------------------------------------------
 # Commands only the terminal can run.
@@ -379,10 +411,27 @@ def _cmd_helpers(rt: AgentRuntime, arg: str) -> CommandResult | None:
     needs_terminal=True,
 )
 def _cmd_session(rt: AgentRuntime, arg: str) -> CommandResult | None:
-    del rt, arg
+    del arg
+    if _transport(rt) == "web":
+        # The browser has no terminal to send the reader to, and these three values
+        # *are* the answer: printing them beats telling someone to go and ask again
+        # somewhere else. The paths are the server's own -- the browser cannot open
+        # them, but a person debugging where a session lives can read them.
+        return CommandResult.text(
+            f"Session ID: {rt.active_session.id}\n"
+            f"Log: {rt.active_session.jsonl_path}\n"
+            f"Snapshot: {rt.active_session.snapshot_dir}"
+        )
     return CommandResult.needs_terminal(
         "Run /session in the terminal to print the session ID, log path, and snapshot path."
     )
+
+
+# The registration above keeps `needs_terminal`: the *terminal* has the richer form of
+# this command. But the answer above is real in a browser, not a redirect, so a web
+# client must not badge it as terminal-only -- `serves_web` is what tells it apart
+# from the commands that genuinely have nowhere else to go.
+setattr(_cmd_session, _SERVES_WEB_ATTR, True)
 
 
 @COMMAND_REGISTRY.register(
@@ -689,8 +738,8 @@ def _cmd_jobs(rt: AgentRuntime, arg: str) -> CommandResult | None:
     immediate=True,
 )
 def _cmd_help(rt: AgentRuntime, arg: str) -> CommandResult | None:
-    del rt, arg
-    return CommandResult.text(COMMAND_REGISTRY.format_help())
+    del arg
+    return CommandResult.text(COMMAND_REGISTRY.format_help(transport=_transport(rt)))
 
 
 @COMMAND_REGISTRY.register(

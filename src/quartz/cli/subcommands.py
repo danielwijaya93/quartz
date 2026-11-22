@@ -496,8 +496,14 @@ def _handle_web_cli(argv: list[str]) -> None:
         -- apart from `origin`, which is what lets the browser's sidebar tell its
         own sessions apart from ones started at a prompt.
 
-        `session_cwd` is the folder picked in the browser for a *new* session. It is
-        ignored when resuming: a resumed session's directory is in its own log.
+        `session_cwd` is the folder to build in: the one picked in the browser for a
+        *new* session, or -- on a resume -- the folder that session's own log records,
+        resolved by the caller. Omitting it means the server's `--cwd`.
+
+        `transport="web"` is what lets `/help` and `/session` answer with browser
+        text instead of "run this in the terminal": it is a fact about who is drawing,
+        which the session's `origin` cannot tell us (a terminal session opened in the
+        browser still has `origin="cli"`).
         """
         return build_runtime(
             BootstrapOptions(
@@ -506,6 +512,7 @@ def _handle_web_cli(argv: list[str]) -> None:
                 headless=False,
                 plain_output=False,
                 origin="web",
+                transport="web",
             )
         )
 

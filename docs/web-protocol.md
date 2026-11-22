@@ -115,7 +115,10 @@ Rules:
    is an idempotent config frame and its `cwd` is ignored; use `new_session`.
 4. `load_session` takes no `cwd`: a resumed session already knows its own directory
    from its `meta` record, and letting a client override it would silently replay
-   history into a kernel rooted somewhere else.
+   history into a kernel rooted somewhere else. The server builds the runtime in that
+   folder — kernel cwd, system prompt and `session_state.cwd` all follow it. If the
+   folder has since been deleted, the session opens in the server's own directory
+   instead (not an error), and `session_state.cwd` says where it landed.
 5. Optional and forgiving. An absent, empty, non-string or non-existent value falls
    back to the server's `--cwd`; it never produces a fatal `error` frame, because a
    page that cannot start a session is worse than one that starts in the wrong
@@ -184,13 +187,20 @@ Rules:
 - `tui/commands.py` owns rendering: it turns a `CommandResult` into the exact
   `rich` output the terminal shows today. Terminal output must not change.
 - Commands that fundamentally need a terminal modal (`/login`, `/model`,
-  `/session`, `/continue`) return `kind="needs_terminal"` in Phase 1 rather than
-  being reimplemented as web forms. Phase 4 turns them into real web controls.
+  `/continue`) return `kind="needs_terminal"` in Phase 1 rather than being
+  reimplemented as web forms. Phase 4 turns them into real web controls. `/session`
+  is registered `needs_terminal` for the same reason (the terminal has the richer
+  form), but it answers in the browser too: the session id, log path and snapshot
+  path as ordinary text.
 - Commands that mutate `AgentRuntime` state (`/settings`, `/compact`, `/reset`)
   mutate the *live* runtime, so the next web turn sees the change immediately.
 
 The advertised command list is sent in `session_state.commands` — the same
-information ACP v2 would carry in `availableCommands`.
+information ACP v2 would carry in `availableCommands`. Each entry is
+`{name, description, usage, needsTerminal}`, with the name carrying no leading `/`.
+`needsTerminal` is derived from the registry, never maintained separately, so a
+client can badge (or hide) a command that cannot work in a browser without guessing:
+`/session` is `false` there because it answers with real text.
 
 ## Sidebar and filesystem API
 
