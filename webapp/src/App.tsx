@@ -195,6 +195,7 @@ export function App(): React.ReactElement {
           richUi={wantsRichUi(richUi.mode)}
           onPrompt={onPrompt}
           onFormState={quartz.setFormState}
+          onRunCommand={handleRunCommand}
         />
         <StatusLine
           label={quartz.state.status}

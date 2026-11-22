@@ -29,6 +29,7 @@ interface RowProps {
   richUi: boolean;
   onPrompt: (text: string) => void;
   onFormState: (id: string, state: Record<string, unknown>) => void;
+  onRunCommand?: (name: string, arg?: string) => void;
 }
 
 function RowView({
@@ -37,6 +38,7 @@ function RowView({
   richUi,
   onPrompt,
   onFormState,
+  onRunCommand,
 }: RowProps): React.ReactElement {
   switch (row.kind) {
     case "user":
@@ -70,7 +72,7 @@ function RowView({
     case "turn_end":
       return <TurnEndRowView row={row} />;
     case "command":
-      return <CommandRowView row={row} />;
+      return <CommandRowView row={row} onRunCommand={onRunCommand} />;
     default:
       return <></>;
   }
@@ -144,6 +146,7 @@ export function Transcript({
   cwd,
   onPrompt,
   onFormState,
+  onRunCommand,
 }: {
   rows: readonly Row[];
   turnRunning: boolean;
@@ -155,6 +158,8 @@ export function Transcript({
   onPrompt: (text: string) => void;
   /** Persist surface form state onto its row so a re-render cannot reset it. */
   onFormState: (id: string, state: Record<string, unknown>) => void;
+  /** Run a slash command directly from an interactive command card. */
+  onRunCommand?: (name: string, arg?: string) => void;
 }): React.ReactElement {
   const items = React.useMemo(() => groupTurns(rows, { running: turnRunning }), [rows, turnRunning]);
   const lastRowId = rows[rows.length - 1]?.id;
@@ -327,6 +332,7 @@ export function Transcript({
                   richUi={richUi}
                   onPrompt={onPrompt}
                   onFormState={onFormState}
+                  onRunCommand={onRunCommand}
                 />
               ),
             )}

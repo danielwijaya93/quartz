@@ -1,6 +1,6 @@
 import * as React from "react";
-import { Alert, Button, Card, Chip, Separator } from "@heroui/react";
-import { Check, Copy, Terminal } from "lucide-react";
+import { Alert, Button, Card, Chip, Input, Separator } from "@heroui/react";
+import { Check, Copy, Eye, RotateCcw, Square, Terminal } from "lucide-react";
 import { Markdown } from "../Markdown";
 import { parseCommandText, type CommandTextRow } from "@/lib/commandText";
 import type { CommandResult } from "@/protocol";
@@ -85,12 +85,242 @@ function TextBody({ body }: { body: string }): React.ReactElement {
   );
 }
 
+interface ParsedSetting {
+  key: string;
+  argName: string;
+  label: string;
+  value: string;
+  hint: string;
+}
+
+const SETTING_META: Record<string, { argName: string; label: string }> = {
+  reserve_tokens: { argName: "reserve", label: "Reserve tokens" },
+  keep_recent_tokens: { argName: "keep", label: "Keep recent tokens" },
+  progress_every: { argName: "progress", label: "Progress update interval (turns)" },
+  background_check_every: { argName: "bg", label: "Background check interval (seconds)" },
+};
+
+function parseSettingsBody(body: string): { settings: ParsedSetting[]; storedIn: string | null } | null {
+  const settings: ParsedSetting[] = [];
+  let storedIn: string | null = null;
+  for (const rawLine of body.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line.startsWith("Stored in ")) {
+      storedIn = line;
+      continue;
+    }
+    const match = /^([a-z_]+):\s*([0-9,]+)s?\s*\(([^)]+)\)$/.exec(line);
+    if (!match) continue;
+    const key = match[1];
+    const rawVal = match[2];
+    const hint = match[3];
+    if (!key || !rawVal || !hint) continue;
+    const meta = SETTING_META[key];
+    if (!meta) continue;
+    settings.push({
+      key,
+      argName: meta.argName,
+      label: meta.label,
+      value: rawVal.replaceAll(",", ""),
+      hint,
+    });
+  }
+  return settings.length > 0 ? { settings, storedIn } : null;
+}
+
+function InteractiveSettingsBody({
+  body,
+  onRunCommand,
+}: {
+  body: string;
+  onRunCommand?: (name: string, arg?: string) => void;
+}): React.ReactElement {
+  const parsed = React.useMemo(() => parseSettingsBody(body), [body]);
+  const [drafts, setDrafts] = React.useState<Record<string, string>>(() => {
+    const init: Record<string, string> = {};
+    if (parsed) {
+      for (const s of parsed.settings) init[s.key] = s.value;
+    }
+    return init;
+  });
+
+  React.useEffect(() => {
+    if (!parsed) return;
+    const next: Record<string, string> = {};
+    for (const s of parsed.settings) next[s.key] = s.value;
+    setDrafts(next);
+  }, [parsed]);
+
+  if (!parsed) return <TextBody body={body} />;
+
+  const saveOne = (s: ParsedSetting): void => {
+    const val = (drafts[s.key] ?? "").trim();
+    if (val === "" || !onRunCommand) return;
+    onRunCommand("settings", `${s.argName} ${val}`);
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="divide-y divide-separator rounded-md border border-border">
+        {parsed.settings.map((s) => {
+          const val = drafts[s.key] ?? s.value;
+          const dirty = val.trim() !== s.value;
+          return (
+            <div
+              key={s.key}
+              className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-foreground">{s.label}</p>
+                <p className="text-xs text-muted">{s.hint}</p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Input
+                  aria-label={s.label}
+                  value={val}
+                  onChange={(e) => setDrafts((prev) => ({ ...prev, [s.key]: e.target.value }))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      saveOne(s);
+                    }
+                  }}
+                  className="w-28 font-mono text-xs"
+                />
+                <Button
+                  size="sm"
+                  variant={dirty ? "primary" : "outline"}
+                  isDisabled={!onRunCommand || val.trim() === ""}
+                  onPress={() => saveOne(s)}
+                >
+                  Save
+                </Button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        {parsed.storedIn ? <p className="text-xs text-muted">{parsed.storedIn}</p> : <span />}
+        {onRunCommand ? (
+          <Button
+            size="sm"
+            variant="outline"
+            onPress={() => onRunCommand("settings", "reset")}
+          >
+            <RotateCcw aria-hidden="true" className="size-3.5" />
+            Reset to defaults
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function InteractiveJobsBody({
+  items,
+  onRunCommand,
+}: {
+  items: readonly { label: string; detail: string; key: string }[];
+  onRunCommand?: (name: string, arg?: string) => void;
+}): React.ReactElement {
+  const [tails, setTails] = React.useState<Record<string, string | null>>({});
+  const [loadingPid, setLoadingPid] = React.useState<string | null>(null);
+  const [killingPid, setKillingPid] = React.useState<string | null>(null);
+
+  const toggleTail = async (pid: string): Promise<void> => {
+    if (tails[pid] !== undefined) {
+      setTails((prev) => {
+        const next = { ...prev };
+        delete next[pid];
+        return next;
+      });
+      return;
+    }
+    setLoadingPid(pid);
+    try {
+      const resp = await fetch(`/api/jobs/${encodeURIComponent(pid)}/tail`);
+      if (!resp.ok) {
+        setTails((prev) => ({ ...prev, [pid]: "(output tail unavailable)" }));
+      } else {
+        const data = (await resp.json()) as { tail?: string };
+        const text = (data.tail ?? "").trim();
+        setTails((prev) => ({ ...prev, [pid]: text || "(no output yet)" }));
+      }
+    } catch {
+      setTails((prev) => ({ ...prev, [pid]: "(failed to load output tail)" }));
+    } finally {
+      setLoadingPid(null);
+    }
+  };
+
+  const killJob = async (pid: string): Promise<void> => {
+    setKillingPid(pid);
+    try {
+      await fetch(`/api/jobs/${encodeURIComponent(pid)}/kill`, { method: "POST" });
+      onRunCommand?.("jobs");
+    } finally {
+      setKillingPid(null);
+    }
+  };
+
+  return (
+    <ul className="divide-y divide-separator rounded-md border border-border">
+      {items.map((item) => {
+        const pid = item.label;
+        const tail = tails[pid];
+        const showingTail = tail !== undefined;
+        return (
+          <li key={item.key} className="space-y-2 px-3 py-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <span className="font-mono text-xs font-medium text-foreground">pid {pid}</span>
+                {item.detail ? (
+                  <p className="mt-0.5 truncate text-xs text-muted">{item.detail}</p>
+                ) : null}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  isDisabled={loadingPid === pid}
+                  onPress={() => void toggleTail(pid)}
+                >
+                  <Eye aria-hidden="true" className="size-3.5" />
+                  {showingTail ? "Hide Tail" : "View Tail"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="danger-soft"
+                  isDisabled={killingPid === pid}
+                  onPress={() => void killJob(pid)}
+                >
+                  <Square aria-hidden="true" className="size-3" />
+                  Kill
+                </Button>
+              </div>
+            </div>
+            {showingTail ? (
+              <pre className="max-h-48 overflow-auto rounded-md border border-border bg-background p-2.5 font-mono text-xs whitespace-pre-wrap text-foreground">
+                {tail}
+              </pre>
+            ) : null}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function CommandBody({
   name,
   result,
+  onRunCommand,
 }: {
   name: string;
   result: CommandResult;
+  onRunCommand?: (name: string, arg?: string) => void;
 }): React.ReactElement {
   switch (result.kind) {
     case "text":
@@ -101,7 +331,13 @@ function CommandBody({
               {result.title}
             </p>
           ) : null}
-          {result.body ? <TextBody body={result.body} /> : null}
+          {result.body ? (
+            name === "settings" && result.title === "Settings" ? (
+              <InteractiveSettingsBody body={result.body} onRunCommand={onRunCommand} />
+            ) : (
+              <TextBody body={result.body} />
+            )
+          ) : null}
         </div>
       );
 
@@ -120,6 +356,8 @@ function CommandBody({
           ) : null}
           {items.length === 0 ? (
             <p className="text-sm text-muted">Nothing to show.</p>
+          ) : name === "jobs" ? (
+            <InteractiveJobsBody items={items} onRunCommand={onRunCommand} />
           ) : (
             <ColumnList rows={items} />
           )}
@@ -163,7 +401,13 @@ function CommandBody({
   }
 }
 
-export function CommandRowView({ row }: { row: CommandRow }): React.ReactElement {
+export function CommandRowView({
+  row,
+  onRunCommand,
+}: {
+  row: CommandRow;
+  onRunCommand?: (name: string, arg?: string) => void;
+}): React.ReactElement {
   return (
     <Card className="gap-2 rounded-xl px-4 py-3">
       <header className="flex items-center gap-2">
@@ -173,7 +417,7 @@ export function CommandRowView({ row }: { row: CommandRow }): React.ReactElement
         </Chip>
       </header>
       <Separator />
-      <CommandBody name={row.name} result={row.result} />
+      <CommandBody name={row.name} result={row.result} onRunCommand={onRunCommand} />
     </Card>
   );
 }

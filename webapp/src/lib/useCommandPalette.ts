@@ -33,7 +33,10 @@ export function useCommandPalette(
   const onOpenChange = React.useCallback(
     (next: boolean) => {
       setOpen(next);
-      if (!next) focusComposer();
+      if (!next) {
+        window.requestAnimationFrame(() => focusComposer());
+        window.setTimeout(() => focusComposer(), 180);
+      }
     },
     [focusComposer],
   );
