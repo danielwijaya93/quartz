@@ -767,8 +767,47 @@ class KernelWorker:
             except Exception:
                 skipped.append(f"{alias} (module {mod_name} not importable)")
 
-    def restore_vars(self, snapshot_dir: str) -> dict[str, Any]:
-        """Restore variables from `snapshot_dir` into the kernel namespace."""
+    @staticmethod
+    def _restore_cwd(saved_cwd: object, root: str | None) -> str | None:
+        """Which directory a restore should land in, or ``None`` to leave it alone.
+
+        Three cases, and the third is the one that matters:
+
+        - No snapshot cwd, or it no longer exists: stay in ``root`` if it is usable.
+        - It names a place inside ``root`` (or ``root`` itself): honour it, because a
+          person who ``os.chdir``-ed into a subdirectory expects to come back there.
+        - It names somewhere else entirely -- a different project, or an ancestor of
+          ``root`` recorded before the session's folder was corrected: ignore it and
+          use ``root``. A snapshot is a picture of a kernel, not a decision about
+          which project the session belongs to; that decision is the log's.
+        """
+        if not isinstance(root, str) or root == "":
+            # A caller that did not say where it is has not said anything better than
+            # the snapshot did, so the old behaviour is still the right one.
+            return saved_cwd if isinstance(saved_cwd, str) and os.path.isdir(saved_cwd) else None
+
+        usable_root = root if os.path.isdir(root) else None
+        if not isinstance(saved_cwd, str) or not os.path.isdir(saved_cwd):
+            return usable_root
+        root_real = os.path.realpath(root)
+        saved_real = os.path.realpath(saved_cwd)
+        if saved_real == root_real or saved_real.startswith(root_real + os.sep):
+            return saved_cwd
+        return usable_root
+
+    def restore_vars(self, snapshot_dir: str, root: str | None = None) -> dict[str, Any]:
+        """Restore variables from `snapshot_dir` into the kernel namespace.
+
+        ``root`` is the directory this kernel was started in -- the folder the
+        session is being resumed in. A snapshot also records the directory the
+        kernel happened to be in when it was saved, because a person can call
+        ``os.chdir`` and expect to come back to it. That absolute path is only
+        meaningful while it still names a place inside ``root``: a session reopened
+        from another folder, or one whose snapshot was written before that folder
+        was fixed, would otherwise restore the kernel into a directory the rest of
+        the runtime does not believe it is in -- the model then reads files from a
+        project the page never mentioned.
+        """
         import pickle
         from pathlib import Path
 
@@ -780,9 +819,9 @@ class KernelWorker:
             return {"restored": [], "skipped": []}
 
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        saved_cwd = manifest.get("cwd")
-        if saved_cwd and os.path.isdir(saved_cwd):
-            os.chdir(saved_cwd)
+        restore_into = self._restore_cwd(manifest.get("cwd"), root)
+        if restore_into is not None:
+            os.chdir(restore_into)
 
         restored: list[str] = []
         skipped: list[str] = list(manifest.get("skipped", []))
@@ -922,7 +961,10 @@ async def _main() -> None:
                 worker._send({"type": "error", "id": req_id, "error": str(exc)})
         elif msg_type == "restore":
             try:
-                result = worker.restore_vars(msg.get("dir", ""))
+                raw_root = msg.get("root")
+                result = worker.restore_vars(
+                    msg.get("dir", ""), raw_root if isinstance(raw_root, str) else None
+                )
                 worker._send({"type": "restore_result", "id": req_id, **result})
             except Exception as exc:
                 worker._send({"type": "error", "id": req_id, "error": str(exc)})

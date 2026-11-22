@@ -278,7 +278,7 @@ class ACPServer:
 
         kernel = KernelClient(cwd=cwd)
         kernel.start()
-        restored_notice = session.restore_kernel(kernel)
+        restored_notice = session.restore_kernel(kernel, root=cwd)
         if restored_notice:
             messages.append({"role": "user", "content": restored_notice})
 

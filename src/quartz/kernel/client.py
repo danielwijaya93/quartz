@@ -242,10 +242,22 @@ class KernelClient:
         self.dirty = False
         return resp.get("manifest", {"saved": [], "skipped": []})
 
-    def restore(self, snapshot_dir: Path, timeout: float = 30.0) -> dict[str, list[str]]:
+    def restore(
+        self, snapshot_dir: Path, timeout: float = 30.0, root: Path | None = None
+    ) -> dict[str, list[str]]:
+        """Restore a snapshot into this kernel.
+
+        ``root`` is the folder this kernel serves: the worker lands the restored
+        kernel there unless the snapshot's own directory is inside it (see
+        ``KernelWorker._restore_cwd``). Omitting it keeps the old behaviour, where
+        the snapshot's directory wins outright.
+        """
         if self._proc is None or self._proc.poll() is not None:
             self.start()
-        resp = self._request({"type": "restore", "dir": str(snapshot_dir)}, timeout=timeout)
+        frame: dict[str, Any] = {"type": "restore", "dir": str(snapshot_dir)}
+        if root is not None:
+            frame["root"] = str(root)
+        resp = self._request(frame, timeout=timeout)
         return {
             "restored": list(resp.get("restored", [])),
             "skipped": list(resp.get("skipped", [])),

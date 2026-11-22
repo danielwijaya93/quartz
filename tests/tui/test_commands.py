@@ -216,7 +216,9 @@ def test_real_runtime_cmd_continue(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         [{"role": "user", "content": "old task"}, {"role": "assistant", "content": "done"}]
     )
     target_session.save_usage({"prompt_tokens": 420, "total_prompt_tokens": 420})
-    monkeypatch.setattr(Session, "restore_kernel", lambda self, k: "[restored vars]")
+    monkeypatch.setattr(
+        Session, "restore_kernel", lambda self, k, root=None: "[restored vars]"
+    )
 
     assert _handle_slash_command(rt, f"/continue {target_session.id}") is False
     assert rt.active_session.id == target_session.id
