@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Alert, Button, TextArea, cn } from "@heroui/react";
-import { ArrowUp, CornerDownLeft, CornerDownRight, ImagePlus, Slash, Square, X } from "lucide-react";
+import { ArrowUp, ChevronDown, CornerDownLeft, CornerDownRight, FileText, Plus, Square, X } from "lucide-react";
 import { PROMPT_HANDOFF_EVENT, isProseQuery, readPromptHandoff } from "@/lib/commandText";
 import { filterCommands, isTerminalOnly, orderCommands, parseCommandInput } from "./CommandPalette";
 import type { ConnectionStatus } from "@/lib/connection";
@@ -9,12 +9,35 @@ import type { Command, ImageAttachment } from "@/protocol";
 const MAX_TEXTAREA_PX = 200;
 export const MAX_FRAME_BYTES = 1024 * 1024;
 
+export interface AttachedFile {
+  name: string;
+  content: string;
+}
+
+const EFFORT_LABELS: Record<string, string> = {
+  none: "Off",
+  minimal: "Min",
+  low: "Low",
+  medium: "Med",
+  high: "High",
+  max: "Max",
+};
+
+export function formatEffortLabel(effort: string): string {
+  const key = effort.trim().toLowerCase();
+  if (!key) return "";
+  return EFFORT_LABELS[key] ?? `${key.charAt(0).toUpperCase()}${key.slice(1)}`;
+}
+
 export interface ComposerProps {
   connection: ConnectionStatus;
   turnRunning: boolean;
   /** Latched fatal error blocks submission, matching the server's stance. */
   fatalError: string | null;
   commands?: readonly Command[];
+  model?: string;
+  effort?: string;
+  onOpenModelPicker?: () => void;
   onSubmit: (text: string, images: ImageAttachment[]) => void;
   onSteer: (text: string) => void;
   onCancel: () => void;
@@ -39,6 +62,17 @@ async function readAsAttachment(file: File): Promise<ImageAttachment> {
   };
 }
 
+/** Read a non-image File as UTF-8 text. */
+async function readAsTextFile(file: File): Promise<AttachedFile> {
+  const content = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error ?? new Error("read failed"));
+    reader.readAsText(file);
+  });
+  return { name: file.name, content };
+}
+
 /**
  * The input.
  *
@@ -51,6 +85,9 @@ export function Composer({
   turnRunning,
   fatalError,
   commands = [],
+  model,
+  effort,
+  onOpenModelPicker,
   onSubmit,
   onSteer,
   onCancel,
@@ -60,6 +97,7 @@ export function Composer({
 }: ComposerProps): React.ReactElement {
   const [text, setText] = React.useState("");
   const [images, setImages] = React.useState<ImageAttachment[]>([]);
+  const [attachedFiles, setAttachedFiles] = React.useState<AttachedFile[]>([]);
   const [history, setHistory] = React.useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = React.useState<number | null>(null);
   const [caretAtEnd, setCaretAtEnd] = React.useState(false);
@@ -73,7 +111,7 @@ export function Composer({
   const offline = connection !== "connected";
   const blocked = fatalError !== null;
   const disabled = offline || blocked;
-  const canSend = !disabled && (text.trim() !== "" || images.length > 0);
+  const canSend = !disabled && (text.trim() !== "" || images.length > 0 || attachedFiles.length > 0);
 
   const commandNames = React.useMemo(() => commands.map((c) => c.name), [commands]);
   const slashQuery = React.useMemo(() => {
@@ -158,7 +196,7 @@ export function Composer({
 
   const submit = React.useCallback(() => {
     const value = text.trim();
-    if (value === "" && images.length === 0) return;
+    if (value === "" && images.length === 0 && attachedFiles.length === 0) return;
     if (slashOpen && onRunCommand) {
       const parsed = parseCommandInput(value);
       const exact = commands.find(
@@ -185,8 +223,12 @@ export function Composer({
       if (value === "") return;
       onSteer(value);
     } else {
+      const fileBlocks = attachedFiles.map(
+        (file) => `[Attached file: ${file.name}]\n\`\`\`\n${file.content}\n\`\`\``,
+      );
+      const finalText = [value, ...fileBlocks].filter(Boolean).join("\n\n");
       const frameBytes = new TextEncoder().encode(
-        JSON.stringify({ type: "prompt", text: value, images }),
+        JSON.stringify({ type: "prompt", text: finalText, images }),
       ).length;
       if (frameBytes > MAX_FRAME_BYTES) {
         setPayloadError(
@@ -195,14 +237,16 @@ export function Composer({
         return;
       }
       setPayloadError(null);
-      onSubmit(value, images);
+      onSubmit(finalText, images);
       setHistory((prev) => [...prev, value].filter((entry) => entry !== ""));
     }
     setText("");
     setImages([]);
+    setAttachedFiles([]);
     setHistoryIndex(null);
   }, [
     activeCmd,
+    attachedFiles,
     commands,
     images,
     inlineCommands,
@@ -305,12 +349,20 @@ export function Composer({
 
   const addFiles = React.useCallback((files: FileList | null) => {
     if (!files || files.length === 0) return;
-    const imageFiles = Array.from(files).filter((file) => file.type.startsWith("image/"));
-    if (imageFiles.length === 0) return;
+    const list = Array.from(files);
+    const imageFiles = list.filter((file) => file.type.startsWith("image/"));
+    const otherFiles = list.filter((file) => !file.type.startsWith("image/"));
     setPayloadError(null);
-    void Promise.all(imageFiles.map(readAsAttachment)).then((attachments) => {
-      setImages((prev) => [...prev, ...attachments]);
-    });
+    if (imageFiles.length > 0) {
+      void Promise.all(imageFiles.map(readAsAttachment)).then((attachments) => {
+        setImages((prev) => [...prev, ...attachments]);
+      });
+    }
+    if (otherFiles.length > 0) {
+      void Promise.all(otherFiles.map(readAsTextFile)).then((parsed) => {
+        setAttachedFiles((prev) => [...prev, ...parsed]);
+      });
+    }
   }, []);
 
   const placeholder = disabled
@@ -319,7 +371,7 @@ export function Composer({
       : "Blocked after an error — start a new session to continue"
     : turnRunning
       ? "Steer the running turn…"
-      : "Ask Quartz anything, or press / for commands";
+      : "Ask Quartz anything";
 
   return (
     <div className="shrink-0 bg-background px-4 pt-2 pb-5">
@@ -418,11 +470,11 @@ export function Composer({
           </Alert>
         ) : null}
 
-        <div className="rounded-2xl border border-border/80 bg-surface/70 px-3.5 pt-2.5 pb-2 shadow-xs transition-all duration-150 focus-within:border-accent/40 focus-within:ring-2 focus-within:ring-accent/15">
-          {images.length > 0 ? (
+        <div className="rounded-2xl border border-border/70 bg-surface/70 px-3.5 pt-2.5 pb-2 shadow-xs transition-all duration-150 focus-within:border-foreground/25 focus-within:ring-1 focus-within:ring-foreground/10">
+          {images.length > 0 || attachedFiles.length > 0 ? (
             <ul className="mb-2 flex flex-wrap gap-2" aria-label="Pending attachments">
               {images.map((image, index) => (
-                <li key={`pending-${index}`} className="relative">
+                <li key={`pending-img-${index}`} className="relative">
                   <img
                     src={`data:${image.mimeType};base64,${image.data}`}
                     alt={`Pending attachment ${index + 1}`}
@@ -436,6 +488,26 @@ export function Composer({
                     }}
                     aria-label={`Remove attachment ${index + 1}`}
                     className="absolute -top-1.5 -right-1.5 inline-flex size-5 cursor-pointer items-center justify-center rounded-full border border-border bg-surface text-muted hover:text-foreground"
+                  >
+                    <X aria-hidden="true" className="size-3" />
+                  </button>
+                </li>
+              ))}
+              {attachedFiles.map((file, index) => (
+                <li
+                  key={`pending-file-${file.name}-${index}`}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-secondary/70 px-2.5 py-1.5 text-xs text-foreground"
+                >
+                  <FileText aria-hidden="true" className="size-3.5 shrink-0 text-muted" />
+                  <span className="max-w-[12rem] truncate font-mono">{file.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
+                      setPayloadError(null);
+                    }}
+                    aria-label={`Remove file ${file.name}`}
+                    className="ml-0.5 inline-flex size-4 cursor-pointer items-center justify-center rounded-full text-muted hover:text-foreground"
                   >
                     <X aria-hidden="true" className="size-3" />
                   </button>
@@ -471,10 +543,9 @@ export function Composer({
             <input
               ref={fileRef}
               type="file"
-              accept="image/*"
               multiple
               className="sr-only"
-              aria-label="Attach images"
+              aria-label="File upload"
               onChange={(event) => {
                 addFiles(event.target.files);
                 event.target.value = "";
@@ -486,37 +557,30 @@ export function Composer({
               isIconOnly
               isDisabled={disabled}
               onPress={() => fileRef.current?.click()}
-              aria-label="Attach an image"
-              className="size-7 rounded-lg text-muted hover:text-foreground hover:bg-surface-secondary"
+              aria-label="Attach files"
+              className="size-7 rounded-lg text-muted hover:bg-surface-secondary hover:text-foreground"
             >
-              <ImagePlus aria-hidden="true" className="size-4" />
+              <Plus aria-hidden="true" className="size-4" />
             </Button>
 
-            <Button
-              size="sm"
-              variant="ghost"
-              isIconOnly
-              isDisabled={disabled}
-              onPress={() => {
-                if (commands.length > 0) {
-                  setText("/");
-                  setSlashDismissed(false);
-                  textareaRef.current?.focus();
-                } else {
-                  onOpenPalette();
+            {onOpenModelPicker ? (
+              <button
+                type="button"
+                onClick={onOpenModelPicker}
+                aria-label={
+                  model
+                    ? `Switch model (current: ${model}${effort ? ` ${formatEffortLabel(effort)}` : ""})`
+                    : "Choose a model"
                 }
-              }}
-              aria-label="Slash commands"
-              className="size-7 rounded-lg text-muted hover:text-foreground hover:bg-surface-secondary"
-            >
-              <Slash aria-hidden="true" className="size-3.5" />
-            </Button>
-
-            <p className="ml-1.5 hidden text-xs text-muted/70 sm:block">
-              <kbd className="font-mono text-muted">Enter</kbd> {turnRunning ? "to steer" : "to send"}
-              <span aria-hidden="true" className="mx-1 text-muted/30">·</span>
-              <kbd className="font-mono text-muted">Shift+Enter</kbd> new line
-            </p>
+                className="inline-flex h-7 max-w-[16rem] cursor-pointer items-center gap-1 rounded-lg px-2 text-xs text-muted transition-colors hover:bg-surface-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+              >
+                <span className="truncate font-medium">{model || "Model"}</span>
+                {effort ? (
+                  <span className="shrink-0 text-muted/80">{formatEffortLabel(effort)}</span>
+                ) : null}
+                <ChevronDown aria-hidden="true" className="size-3 shrink-0 text-muted/70" />
+              </button>
+            ) : null}
 
             <div className="ml-auto flex items-center gap-1.5">
               {turnRunning ? (
@@ -534,14 +598,14 @@ export function Composer({
               <Button
                 size="sm"
                 isIconOnly
-                variant={canSend ? "primary" : "ghost"}
+                variant={canSend ? "secondary" : "ghost"}
                 isDisabled={!canSend}
                 onPress={submit}
                 aria-label={turnRunning ? "Steer the running turn" : "Send prompt"}
                 className={cn(
                   "size-8 rounded-full transition-all duration-150",
                   canSend
-                    ? "bg-accent text-accent-foreground shadow-xs hover:bg-accent/90"
+                    ? "bg-foreground/85 text-background shadow-xs hover:bg-foreground"
                     : "border border-border/50 bg-surface-secondary/40 text-muted opacity-40",
                 )}
               >

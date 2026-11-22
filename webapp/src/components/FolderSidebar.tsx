@@ -11,6 +11,7 @@ import {
   Undo2,
   X,
 } from "lucide-react";
+import { ThemeToggle } from "./ThemeToggle";
 import {
   currentWorkspaceCwd,
   displayTitle,
@@ -353,6 +354,10 @@ export function FolderSidebar({
             onDismiss={() => setNotice(null)}
           />
         )}
+      </div>
+
+      <div className="flex shrink-0 items-center justify-start border-t border-separator/70 px-2 py-1.5">
+        <ThemeToggle />
       </div>
     </nav>
   );

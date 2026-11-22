@@ -4,36 +4,30 @@ import userEvent from "@testing-library/user-event";
 import { RichUiToggle } from "./RichUiToggle";
 
 describe("RichUiToggle", () => {
-  it("offers both modes as labelled options, so nothing is colour-only", () => {
+  it("renders a labelled Rich UI switch that is off in markdown mode", () => {
     render(<RichUiToggle mode="markdown" onChange={() => {}} />);
 
-    expect(screen.getByRole("radiogroup", { name: "Assistant reply format" })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /Markdown replies/ })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /Rich UI replies/ })).toBeInTheDocument();
-    // The visible text is the label, not just the icon: a reader who cannot see
-    // the selected fill still knows which option is which.
-    expect(screen.getByText("Markdown")).toBeInTheDocument();
+    const toggle = screen.getByRole("switch", { name: "Rich UI" });
+    expect(toggle).toBeInTheDocument();
+    expect(toggle).not.toBeChecked();
     expect(screen.getByText("Rich UI")).toBeInTheDocument();
   });
 
-  it("marks the current mode as checked", () => {
+  it("marks the switch as checked when Rich UI is on", () => {
     render(<RichUiToggle mode="rich" onChange={() => {}} />);
-    expect(screen.getByRole("radio", { name: /Rich UI replies/ })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
-    expect(screen.getByRole("radio", { name: /Markdown replies/ })).toHaveAttribute(
-      "aria-checked",
-      "false",
-    );
+    expect(screen.getByRole("switch", { name: "Rich UI" })).toBeChecked();
   });
 
-  it("reports the chosen mode", async () => {
+  it("toggles between markdown and rich", async () => {
     const onChange = vi.fn();
     const user = userEvent.setup();
-    render(<RichUiToggle mode="markdown" onChange={onChange} />);
+    const { rerender } = render(<RichUiToggle mode="markdown" onChange={onChange} />);
 
-    await user.click(screen.getByRole("radio", { name: /Rich UI replies/ }));
+    await user.click(screen.getByRole("switch", { name: "Rich UI" }));
     expect(onChange).toHaveBeenCalledWith("rich");
+
+    rerender(<RichUiToggle mode="rich" onChange={onChange} />);
+    await user.click(screen.getByRole("switch", { name: "Rich UI" }));
+    expect(onChange).toHaveBeenCalledWith("markdown");
   });
 });

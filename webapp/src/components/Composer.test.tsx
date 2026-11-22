@@ -116,7 +116,7 @@ describe("Composer", () => {
     const user = userEvent.setup();
     const { onSubmit } = setup();
     const file = new File([new Uint8Array([137, 80, 78, 71])], "x.png", { type: "image/png" });
-    const input = screen.getByLabelText("Attach images");
+    const input = screen.getByLabelText("File upload");
     await user.upload(input, file);
     expect(await screen.findByAltText("Pending attachment 1")).toBeInTheDocument();
 
@@ -222,15 +222,47 @@ describe("Composer", () => {
     expect(textarea).toHaveValue("");
   });
 
-  it("opens inline slash commands via the Slash commands button", async () => {
+  it("omits the slash button and Enter/Shift+Enter hints", () => {
+    setup();
+    expect(screen.queryByRole("button", { name: "Slash commands" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Shift\+Enter/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/to send/i)).not.toBeInTheDocument();
+  });
+
+  it("attaches a non-image file like csv and sends its contents with the prompt", async () => {
     const user = userEvent.setup();
+    const { onSubmit } = setup();
+    const csv = new File(["a,b\n1,2"], "data.csv", { type: "text/csv" });
+    const input = screen.getByLabelText("File upload");
+    await user.upload(input, csv);
+    expect(await screen.findByText("data.csv")).toBeInTheDocument();
+
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+    await user.click(textarea);
+    await user.keyboard("summarize{Enter}");
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    const [text, images] = onSubmit.mock.calls[0] as [string, unknown[]];
+    expect(text).toContain("summarize");
+    expect(text).toContain("[Attached file: data.csv]");
+    expect(text).toContain("a,b");
+    expect(images).toEqual([]);
+  });
+
+  it("shows model and short effort label and opens model picker on click", async () => {
+    const user = userEvent.setup();
+    const onOpenModelPicker = vi.fn();
     setup({
-      commands: [{ name: "usage", description: "Show token usage" }],
-      onRunCommand: vi.fn(),
+      model: "gemini-4-hydrogen",
+      effort: "medium",
+      onOpenModelPicker,
     });
-    await user.click(screen.getByRole("button", { name: "Slash commands" }));
-    expect(screen.getByRole("listbox", { name: "Available commands" })).toBeInTheDocument();
-    expect(screen.getByText("/usage")).toBeInTheDocument();
+    const btn = screen.getByRole("button", {
+      name: "Switch model (current: gemini-4-hydrogen Med)",
+    });
+    expect(btn).toHaveTextContent("gemini-4-hydrogen");
+    expect(btn).toHaveTextContent("Med");
+    await user.click(btn);
+    expect(onOpenModelPicker).toHaveBeenCalledTimes(1);
   });
 
   it("runs /reset via onRunCommand", async () => {
@@ -324,7 +356,7 @@ describe("Composer", () => {
     const { onSubmit } = setup();
     const bigBytes = new Uint8Array(800 * 1024);
     const file = new File([bigBytes], "huge.png", { type: "image/png" });
-    const input = screen.getByLabelText("Attach images");
+    const input = screen.getByLabelText("File upload");
     await user.upload(input, file);
     expect(await screen.findByAltText("Pending attachment 1")).toBeInTheDocument();
 
