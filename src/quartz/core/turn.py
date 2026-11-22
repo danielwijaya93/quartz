@@ -84,6 +84,7 @@ def run_turn(
     *,
     abort_event: threading.Event | None = None,
     steering_queue: queue.Queue[str] | None = None,
+    loop_fn: Any = None,
 ) -> tuple[str, list[dict[str, Any]], int]:
     """Run one agent-loop turn for ``rt``, reporting every event to ``view``.
 
@@ -93,10 +94,24 @@ def run_turn(
     chips), and a final answer the provider never streamed is handed to
     ``view.show_final``.
     """
+    if hasattr(rt.client, "resolve"):
+        res = rt.client.resolve()
+        if len(res) == 5:
+            client, pname, model, effort, resolved_ctx = res
+            if resolved_ctx is not None:
+                rt.max_context_tokens = int(resolved_ctx)
+        else:
+            client, pname, model, effort = res[:4]
+        rt.client = client
+        rt.provider_name = pname
+        rt.model = model
+        rt.effort = effort
+
     view.reset()
     cell_start_idx = len(rt.cell_history)
+    effective_loop = loop_fn if loop_fn is not None else agent_loop
     try:
-        answer, updated_msgs, tokens = agent_loop(
+        answer, updated_msgs, tokens = effective_loop(
             rt.client,
             rt.model,
             rt.system_prompt,
@@ -145,6 +160,7 @@ def run_interactive_turn(
     *,
     abort_event: threading.Event | None = None,
     steering_queue: queue.Queue[str] | None = None,
+    loop_fn: Any = None,
 ) -> TurnOutcome:
     """Run one turn and keep the session's bookkeeping in step, then report how it ended.
 
@@ -157,7 +173,11 @@ def run_interactive_turn(
     started = time.monotonic()
     try:
         _, rt.messages, tokens = run_turn(
-            rt, view, abort_event=abort_event, steering_queue=steering_queue
+            rt,
+            view,
+            abort_event=abort_event,
+            steering_queue=steering_queue,
+            loop_fn=loop_fn,
         )
     except TurnAborted:
         rt.kernel.interrupt()
