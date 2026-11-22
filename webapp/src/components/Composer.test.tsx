@@ -299,4 +299,45 @@ describe("Composer", () => {
     expect(onSteer).toHaveBeenCalledWith("/unknownword");
     expect(textarea).toHaveValue("");
   });
+
+  it("preserves typed arguments when another command matches the full query", async () => {
+    const user = userEvent.setup();
+    const onRunCommand = vi.fn();
+    const { onSubmit } = setup({
+      commands: [
+        { name: "reset", description: "Clear the kernel namespace" },
+        { name: "image", description: "Attach an image file", usage: "<path|clear>" },
+        { name: "expand", description: "Show full output", usage: "[n]" },
+      ],
+      onRunCommand,
+    });
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+    await user.click(textarea);
+    await user.keyboard("/image clear{Enter}");
+    expect(onRunCommand).toHaveBeenCalledWith("image", "clear");
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("");
+  });
+
+  it("blocks oversized payloads exceeding MAX_FRAME_BYTES without clearing draft or attachments", async () => {
+    const user = userEvent.setup();
+    const { onSubmit } = setup();
+    const bigBytes = new Uint8Array(800 * 1024);
+    const file = new File([bigBytes], "huge.png", { type: "image/png" });
+    const input = screen.getByLabelText("Attach images");
+    await user.upload(input, file);
+    expect(await screen.findByAltText("Pending attachment 1")).toBeInTheDocument();
+
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+    await user.click(textarea);
+    await user.keyboard("keep me{Enter}");
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("1 MiB");
+    expect(textarea).toHaveValue("keep me");
+    expect(screen.getByAltText("Pending attachment 1")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Remove attachment 1" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
 });

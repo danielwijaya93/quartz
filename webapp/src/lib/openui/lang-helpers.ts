@@ -12,11 +12,6 @@
  * because quartz's web protocol has no `ask_question` tool payload to convert.
  */
 
-/** Escapes a string literal for openui-lang double-quoted strings. */
-export function quoteOpenUI(value: string): string {
-  return JSON.stringify(value);
-}
-
 /**
  * Strip accidental markdown code fences around OpenUI Lang output.
  *
