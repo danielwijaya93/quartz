@@ -8,6 +8,7 @@ import {
   groupSessions,
   isVisible,
   parseSidebarPayload,
+  sameFolder,
   type SidebarPayload,
   type SidebarSession,
 } from "./sidebar";
@@ -100,17 +101,40 @@ describe("groupSessions", () => {
     expect(groups[1]?.sessions).toEqual([]);
   });
 
-  it("carries cwdExists so a vanished worktree can be dimmed", () => {
+  it("drops a folder whose directory is gone, whether it arrived by hand or with a session", () => {
     const groups = groupSessions(
       payload({
-        sessions: [session({ cwdExists: false })],
+        sessions: [session({ sessionId: "kept" }), session({ sessionId: "dead", cwd: "/home/x/gone", cwdExists: false })],
         sidebar: {
           ...EMPTY_SIDEBAR,
-          workspaces: [{ cwd: "/home/x/gone", label: "gone", cwdExists: false }],
+          workspaces: [
+            { cwd: "/home/x/project", label: "project", cwdExists: true },
+            { cwd: "/home/x/via-workspace", label: "via-workspace", cwdExists: false },
+          ],
         },
       }),
     );
-    expect(groups.map((group) => group.cwdExists)).toEqual([false, false]);
+
+    expect(groups.map((group) => group.label)).toEqual(["project"]);
+    expect(groups[0]?.sessions.map((row) => row.sessionId)).toEqual(["kept"]);
+  });
+
+  it("shows nothing at all on a first run full of dead folders", () => {
+    // The state the product review started from: sixteen pytest temp folders, no
+    // browser session yet. A folder nobody can start a session in is not a row.
+    const groups = groupSessions(
+      payload({
+        sessions: [],
+        sidebar: {
+          ...EMPTY_SIDEBAR,
+          workspaces: [
+            { cwd: "/tmp/pytest-1", label: "pytest-1", cwdExists: false },
+            { cwd: "/tmp/pytest-2", label: "pytest-2", cwdExists: false },
+          ],
+        },
+      }),
+    );
+    expect(groups).toEqual([]);
   });
 
   it("does not duplicate a folder that is both hand-added and has sessions", () => {
@@ -133,6 +157,20 @@ describe("groupSessions", () => {
   });
 });
 
+describe("sameFolder", () => {
+  it("matches the live session to its folder, ignoring a trailing slash", () => {
+    expect(sameFolder("/home/x/project", "/home/x/project")).toBe(true);
+    expect(sameFolder("/home/x/project/", "/home/x/project")).toBe(true);
+    expect(sameFolder("/home/x/project", "/home/x/project/")).toBe(true);
+  });
+
+  it("does not match a different folder, or one side that is empty", () => {
+    expect(sameFolder("/home/x/project", "/home/x/projects")).toBe(false);
+    expect(sameFolder("/home/x/project", "")).toBe(false);
+    expect(sameFolder("", "")).toBe(false);
+  });
+});
+
 describe("archiveEntries", () => {
   it("lists what the sidebar is not showing, with what it would take", () => {
     const entries = archiveEntries(
@@ -149,6 +187,20 @@ describe("archiveEntries", () => {
     expect(entries.map((entry) => entry.session.sessionId)).toEqual(["cli-new", "web-hidden"]);
     expect(entries[0]).toMatchObject({ hidden: false, needsImport: true });
     expect(entries[1]).toMatchObject({ hidden: true, needsImport: false });
+  });
+
+  it("keeps a session whose folder is gone reachable, and says why it is here", () => {
+    const entries = archiveEntries(
+      payload({
+        sessions: [
+          session({ sessionId: "dead-folder", cwdExists: false }),
+          session({ sessionId: "listed" }),
+        ],
+      }),
+    );
+
+    expect(entries.map((entry) => entry.session.sessionId)).toEqual(["dead-folder"]);
+    expect(entries[0]).toMatchObject({ missingFolder: true });
   });
 
   it("asks for both an import and a restore when a terminal session was archived", () => {

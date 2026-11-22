@@ -111,11 +111,13 @@ export function App(): React.ReactElement {
     error: sidebar.error,
     actionError: sidebar.actionError,
     currentSessionId: sessionId,
+    currentCwd: quartz.state.session.cwd,
     onClose: closeSidebar,
     onReload: sidebar.reload,
     onSelectSession: selectSession,
     onNewSession: newSessionIn,
     onNewFolder: () => setPicker("workspace"),
+    onOpenFolder: () => setPicker("session"),
     onRename: (id: string, title: string) => void sidebar.rename(id, title),
     onHide: (id: string) => void sidebar.hide(id),
     onOpenArchive: () => setArchiveOpen(true),
@@ -143,6 +145,7 @@ export function App(): React.ReactElement {
         <Transcript
           rows={quartz.state.rows}
           turnRunning={quartz.state.turnRunning}
+          cwd={quartz.state.session.cwd}
           richUi={wantsRichUi(richUi.mode)}
           onPrompt={onPrompt}
           onFormState={quartz.setFormState}

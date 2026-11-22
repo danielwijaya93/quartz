@@ -463,3 +463,35 @@ def test_new_session_reapplies_the_append(app_client: AppClient, wire: Any) -> N
     # The fixture hands back the same runtime object for every build, so its
     # system prompt carries the append onto the "new" session.
     assert app_client.runtime.system_prompt == "sys\n\nAPPEND"
+
+
+# -- where the app is allowed to write ---------------------------------
+
+
+def test_a_hand_built_app_never_writes_into_the_real_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime: Any, wire: Any
+) -> None:
+    """A `create_app` built by hand must still not touch the developer's `$HOME`.
+
+    The regression this guards: `store()` resolves the sidebar path per *request*
+    on purpose, so building an app without redirecting `QUARTZ_WEB_SIDEBAR` used to
+    make a `hello` write a workspace into `~/.quartz/web/sidebar.json`, and a
+    transcript into `~/.quartz/sessions`. `HOME` is the sentinel: nothing at all may
+    appear under it, whether or not the test remembered to isolate itself.
+    """
+    sentinel = tmp_path / "sentinel-home"
+    sentinel.mkdir()
+    monkeypatch.setenv("HOME", str(sentinel))
+
+    app = create_app(
+        build=lambda session_id, cwd=None: (runtime, False),
+        cwd=tmp_path,
+        static_dir=tmp_path / "missing",
+    )
+    with TestClient(app) as client:
+        assert client.get("/api/sessions").status_code == 200
+        with client.websocket_connect("/ws") as socket:
+            wire.hello(socket)
+
+    leaked = sorted(str(path.relative_to(sentinel)) for path in sentinel.rglob("*"))
+    assert leaked == [], f"the app wrote into the real home: {leaked}"
