@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -268,11 +269,26 @@ def resolve_provider_credentials(
     return None, None, "none"
 
 
+_MODELS_CACHE_TTL_S = 300.0
+_MODELS_CACHE: dict[tuple[str, str], tuple[float, list[str]]] = {}
+_MODELS_CACHE_LOCK = threading.Lock()
+_MODEL_DETAILS_CACHE: dict[tuple[str, str], tuple[float, list[Any]]] = {}
+
+
+def clear_models_cache() -> None:
+    """Drop cached `/models` discovery responses."""
+    with _MODELS_CACHE_LOCK:
+        _MODELS_CACHE.clear()
+    with _EFFORT_CACHE_LOCK:
+        _MODEL_DETAILS_CACHE.clear()
+
+
 def discover_models(
     provider: str,
     client: LLMProvider | None = None,
     *,
     timeout_s: float = 8.0,
+    use_cache: bool = True,
 ) -> tuple[list[str], str | None]:
     """Discover available models for a provider.
 
@@ -284,10 +300,18 @@ def discover_models(
         return fallback, None
 
     owned_client: LLMProvider | None = None
+    cache_key: tuple[str, str] | None = None
     if client is None:
         api_key, base_url, _ = resolve_provider_credentials(provider)
         if not api_key:
             return fallback, "No API key configured"
+        cache_key = (provider, base_url or "")
+        if use_cache:
+            now = time.monotonic()
+            with _MODELS_CACHE_LOCK:
+                entry = _MODELS_CACHE.get(cache_key)
+                if entry is not None and (now - entry[0]) < _MODELS_CACHE_TTL_S:
+                    return list(entry[1]), None
         from quartz.providers.openai import OpenAIProvider
 
         owned_client = OpenAIProvider(api_key=api_key, base_url=base_url, timeout=timeout_s)
@@ -311,6 +335,9 @@ def discover_models(
     if not discovered:
         return fallback, "Provider returned an empty model list"
     discovered.sort()
+    if cache_key is not None and use_cache:
+        with _MODELS_CACHE_LOCK:
+            _MODELS_CACHE[cache_key] = (time.monotonic(), list(discovered))
     return discovered, None
 
 
@@ -329,9 +356,12 @@ _EFFORT_CACHE_LOCK = threading.Lock()
 
 
 def clear_effort_cache() -> None:
-    """Drop cached effort metadata (tests and `/model` re-discovery)."""
+    """Drop cached effort and `/models` metadata (tests and `/model` re-discovery)."""
     with _EFFORT_CACHE_LOCK:
         _EFFORT_CACHE.clear()
+        _MODEL_DETAILS_CACHE.clear()
+    with _MODELS_CACHE_LOCK:
+        _MODELS_CACHE.clear()
 
 
 def _effort_discovery_enabled() -> bool:
@@ -369,24 +399,44 @@ def discover_model_efforts(
     if spec is not None and spec.backend == "openai":
         api_key, base_url, _ = resolve_provider_credentials(provider)
         if api_key:
-            from quartz.providers.openai import OpenAIProvider
+            cache_key = (provider, base_url or "")
+            details_list: list[Any] | None = None
+            if use_cache:
+                now = time.monotonic()
+                with _EFFORT_CACHE_LOCK:
+                    entry = _MODEL_DETAILS_CACHE.get(cache_key)
+                    if entry is not None and (now - entry[0]) < _MODELS_CACHE_TTL_S:
+                        details_list = entry[1]
 
-            client: Any = None
-            try:
-                client = OpenAIProvider(api_key=api_key, base_url=base_url, timeout=timeout_s)
-                for details in client.list_model_details():
-                    if details.id != model:
-                        continue
-                    result = (details.supported_efforts, details.default_effort)
-                    break
-            except Exception:
-                result = (None, None)
-            finally:
-                if client is not None:
-                    try:
-                        client.close()
-                    except Exception:
-                        pass
+            if details_list is None:
+                from quartz.providers.openai import OpenAIProvider
+
+                client: Any = None
+                try:
+                    client = OpenAIProvider(api_key=api_key, base_url=base_url, timeout=timeout_s)
+                    details_list = list(client.list_model_details())
+                    if use_cache:
+                        with _EFFORT_CACHE_LOCK:
+                            _MODEL_DETAILS_CACHE[cache_key] = (time.monotonic(), details_list)
+                except Exception:
+                    details_list = None
+                finally:
+                    if client is not None:
+                        try:
+                            client.close()
+                        except Exception:
+                            pass
+
+            if details_list is not None:
+                for details in details_list:
+                    if use_cache and getattr(details, "id", None):
+                        with _EFFORT_CACHE_LOCK:
+                            _EFFORT_CACHE.setdefault(
+                                (provider, details.id),
+                                (details.supported_efforts, details.default_effort),
+                            )
+                    if details.id == model:
+                        result = (details.supported_efforts, details.default_effort)
 
     if use_cache:
         with _EFFORT_CACHE_LOCK:
@@ -474,18 +524,11 @@ def load_model_config(path: Path | None = None) -> dict[str, str]:
 def save_model_config(
     provider: str, model: str, effort: str, path: Path | None = None
 ) -> Path:
-    cfg = path or config_file_path()
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    data: dict[str, Any] = {}
-    if cfg.is_file():
-        try:
-            loaded = json.loads(cfg.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                data = loaded
-        except (OSError, json.JSONDecodeError):
-            data = {}
-    data["provider"] = provider
-    data["model"] = model
-    data["effort"] = effort
-    cfg.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return cfg
+    from quartz.settings import update_config_json
+
+    def _mutate(data: dict[str, Any]) -> None:
+        data["provider"] = provider
+        data["model"] = model
+        data["effort"] = effort
+
+    return update_config_json(_mutate, path=path)

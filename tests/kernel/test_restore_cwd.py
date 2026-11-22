@@ -108,3 +108,30 @@ def test_restore_vars_applies_the_root(tmp_path: Path, monkeypatch) -> None:
         assert Path(os.getcwd()).resolve() == root.resolve()
     finally:
         os.chdir(before)
+
+
+def test_restore_vars_unpickle_failed_sentinel_skips_aliases(tmp_path: Path) -> None:
+    """Aliases sharing an unpicklable snapshot file must both be skipped, not restored as sentinel."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "obj00000.dill").write_bytes(b"not valid pickle or dill")
+    (snapshot / "manifest.json").write_text(
+        json.dumps(
+            {
+                "saved": ["alias_a", "alias_b"],
+                "skipped": [],
+                "modules": {},
+                "files": {"alias_a": "obj00000.dill", "alias_b": "obj00000.dill"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    worker = object.__new__(KernelWorker)
+    worker._namespace = {}
+    worker._default_bindings = {}
+    res = worker.restore_vars(str(snapshot))
+    assert res["restored"] == []
+    assert res["skipped"] == ["alias_a (unpickle error)", "alias_b (unpickle error)"]
+    assert "alias_a" not in worker._namespace
+    assert "alias_b" not in worker._namespace

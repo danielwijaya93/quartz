@@ -276,6 +276,13 @@ def _kw_str(node: ast.Call, name: str) -> str | None:
     return None
 
 
+def _kw_int(node: ast.Call, name: str) -> int | None:
+    for kw in node.keywords:
+        if kw.arg == name:
+            return _intent_const_int(kw.value)
+    return None
+
+
 def _strip_env_prefix(tokens: list[str]) -> list[str]:
     """Drop leading ``VAR=value`` assignments and ``sudo``/``env`` tokens."""
     idx = 0
@@ -504,8 +511,12 @@ def _describe_call_intent(node: ast.Call) -> str | None:
         start = _intent_const_int(node.args[1]) if len(node.args) > 1 else None
         end = _intent_const_int(node.args[2]) if len(node.args) > 2 else None
         if start is None:
+            start = _kw_int(node, "start")
+        if start is None:
             kw_start = _kw_str(node, "start")
             start = int(kw_start) if kw_start and kw_start.lstrip("-").isdigit() else None
+        if end is None:
+            end = _kw_int(node, "end")
         if end is None:
             kw_end = _kw_str(node, "end")
             end = int(kw_end) if kw_end and kw_end.lstrip("-").isdigit() else None

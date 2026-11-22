@@ -329,6 +329,7 @@ def _terminal_model(rt: AgentRuntime, arg: str) -> None:
         console.print("[dim]Cancelled.[/dim]")
         return
 
+    old_client = rt.client
     try:
         rt.client, rt.provider_name, rt.model, rt.effort = build_provider(
             provider=picked_provider,
@@ -338,6 +339,13 @@ def _terminal_model(rt: AgentRuntime, arg: str) -> None:
     except (CredentialError, EndpointConfigError) as exc:
         console_print(f"[red]Error: {escape(str(exc))}[/red]")
         return
+    if old_client is not None and old_client is not rt.client:
+        close_fn = getattr(old_client, "close", None)
+        if callable(close_fn):
+            try:
+                close_fn()
+            except Exception:
+                pass
     save_model_config(rt.provider_name, rt.model, rt.effort)
     # The ctx denominator is per-model: re-resolve after a switch or the
     # banner/footer would keep showing the previous model's window

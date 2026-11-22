@@ -92,21 +92,19 @@ def test_settings_as_dict() -> None:
     }
 
 
-def test_context_budget_from_settings_ignores_env(
+def test_load_settings_ignores_compaction_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Legacy COMPACT_* env vars are silently ignored (decision 2B)."""
     monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "config.json"))
     monkeypatch.setenv("COMPACT_RESERVE_TOKENS", "999")
     monkeypatch.setenv("COMPACT_KEEP_RECENT_TOKENS", "111")
-    from quartz.cli.app import _context_budget_from_settings
-
-    _, reserve, keep = _context_budget_from_settings()
-    assert reserve == DEFAULT_COMPACT_RESERVE_TOKENS
-    assert keep == DEFAULT_KEEP_RECENT_TOKENS
+    loaded = load_settings()
+    assert loaded.compact_reserve_tokens == DEFAULT_COMPACT_RESERVE_TOKENS
+    assert loaded.keep_recent_tokens == DEFAULT_KEEP_RECENT_TOKENS
 
 
-def test_context_budget_from_settings_reads_config_json(
+def test_load_settings_reads_config_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "config.json").write_text(
@@ -114,10 +112,8 @@ def test_context_budget_from_settings_reads_config_json(
         encoding="utf-8",
     )
     monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "config.json"))
-    from quartz.cli.app import _context_budget_from_settings
-
-    _, reserve, keep = _context_budget_from_settings()
-    assert (reserve, keep) == (12345, 23456)
+    loaded = load_settings()
+    assert (loaded.compact_reserve_tokens, loaded.keep_recent_tokens) == (12345, 23456)
 
 
 def test_update_config_json_is_atomic_and_creates_parents(tmp_path: Path) -> None:

@@ -191,34 +191,22 @@ def test_resolve_non_throwing_on_client_errors() -> None:
 
 
 def test_max_context_tokens_env_no_longer_affects_resolution(
-    tmp_path, monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """MAX_CONTEXT_TOKENS is ignored: resolution never reads the env."""
     monkeypatch.setenv("MAX_CONTEXT_TOKENS", "999999999")
     assert resolve_context_tokens("openai", "gpt-4.1") == 1_047_576
     assert resolve_context_tokens("deepseek", "deepseek-flash") == 1_048_576
     assert resolve_context_tokens("openai", "unknown-model") == 128_000
-
-    # And the CLI budget helper no longer reads it either.
-    from quartz.cli.app import _context_budget_from_settings
-    from quartz.core.compact import DEFAULT_KEEP_RECENT_TOKENS
-
-    monkeypatch.delenv("COMPACT_RESERVE_TOKENS", raising=False)
-    monkeypatch.delenv("COMPACT_KEEP_RECENT_TOKENS", raising=False)
-    monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "nope.json"))
-    _, reserve, keep = _context_budget_from_settings()
-    assert reserve == 16_384
-    assert keep == DEFAULT_KEEP_RECENT_TOKENS
     # Resolution module must not reference the removed env var.
     assert "MAX_CONTEXT_TOKENS" not in open(models.__file__).read()
 
 
-def test_context_budget_ignores_compaction_env(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """COMPACT_* env vars are silently ignored; settings come from config.json."""
-    from quartz.cli.app import _context_budget_from_settings
-
-    monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "nope.json"))
-    monkeypatch.setenv("COMPACT_RESERVE_TOKENS", "999")
-    monkeypatch.setenv("COMPACT_KEEP_RECENT_TOKENS", "111")
-    _, reserve, keep = _context_budget_from_settings()
-    assert (reserve, keep) == (16_384, 32_000)
+def test_resolve_context_tokens_mock_client_not_masked_by_cache() -> None:
+    """Passing distinct mock clients to resolve_context_tokens must never be masked by cache."""
+    first = _DetailsClient([ModelDetails(id="gpt-4.1", context_length=44_444)])
+    second = _DetailsClient([ModelDetails(id="gpt-4.1", context_length=55_555)])
+    third = _ListModelsClient([{"id": "gpt-4.1", "context_length": 66_666}])
+    assert resolve_context_tokens("openai", "gpt-4.1", first) == 44_444
+    assert resolve_context_tokens("openai", "gpt-4.1", second) == 55_555
+    assert resolve_context_tokens("openai", "gpt-4.1", third) == 66_666

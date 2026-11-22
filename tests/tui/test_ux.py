@@ -547,6 +547,8 @@ def test_cell_intent_read_edit_write_helpers() -> None:
     from quartz.kernel.actions import describe_cell_intent
 
     assert describe_cell_intent("read('agent/ui.py', 200, 400)") == "Read agent/ui.py (200-400)"
+    assert describe_cell_intent("read('agent/ui.py', start=200, end=400)") == "Read agent/ui.py (200-400)"
+    assert describe_cell_intent("read('agent/ui.py', start=200)") == "Read agent/ui.py (from 200)"
     assert describe_cell_intent("read('agent/ui.py', 200)") == "Read agent/ui.py (from 200)"
     assert describe_cell_intent("read('agent/ui.py')") == "Read agent/ui.py"
     assert describe_cell_intent("read('agent/ui.py', 1, 50)") == "Read agent/ui.py"

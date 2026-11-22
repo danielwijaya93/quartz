@@ -174,7 +174,9 @@ def test_discover_model_efforts_caches_per_model(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(oc, "OpenAIProvider", _CountingClient)
     assert models.discover_model_efforts("openrouter", "meta/muse-ember") == (["max"], "max")
     assert models.discover_model_efforts("openrouter", "meta/muse-ember") == (["max"], "max")
-    assert fetched == ["fetch"]  # cached: second call did not re-fetch
+    # Different model on the same provider reuses the cached /models response.
+    assert models.discover_model_efforts("openrouter", "other/model") == (None, None)
+    assert fetched == ["fetch"]  # cached: subsequent calls did not re-fetch
 
 
 def test_discovery_respects_env_kill_switch(monkeypatch: pytest.MonkeyPatch) -> None:

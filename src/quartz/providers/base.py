@@ -8,7 +8,7 @@ import threading
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any, Protocol
 
-from quartz.errors import ProviderError, provider_error
+from quartz.errors import ProviderError, is_context_overflow, provider_error
 
 
 @dataclasses.dataclass
@@ -99,6 +99,29 @@ class LLMProvider(Protocol):
     def close(self) -> None: ...
 
 
+def _coerce_error_status(err: dict[str, Any], serialized: str) -> int:
+    """Resolve an HTTP-like status code from an SSE error dict without crashing on string codes."""
+    raw_code = err.get("code")
+    if isinstance(raw_code, int) and not isinstance(raw_code, bool):
+        return raw_code
+    if isinstance(raw_code, str) and raw_code.strip().isdigit():
+        return int(raw_code.strip())
+    raw_status = err.get("status") if err.get("status") is not None else err.get("status_code")
+    if isinstance(raw_status, int) and not isinstance(raw_status, bool):
+        return raw_status
+    if isinstance(raw_status, str) and raw_status.strip().isdigit():
+        return int(raw_status.strip())
+    if is_context_overflow(400, serialized):
+        return 400
+    if isinstance(raw_code, str):
+        lowered = raw_code.strip().lower()
+        if lowered in ("rate_limit_exceeded", "too_many_requests"):
+            return 429
+        if lowered in ("invalid_api_key", "authentication_error", "unauthorized", "permission_denied"):
+            return 401
+    return 500
+
+
 def _parse_sse_frame(data_lines: list[str], *, provider: str) -> dict[str, Any] | None:
     """Parse one flushed SSE data frame; return None on [DONE] or empty."""
     data_str = "\n".join(data_lines).strip()
@@ -122,8 +145,9 @@ def _parse_sse_frame(data_lines: list[str], *, provider: str) -> dict[str, Any] 
     ):
         err = payload["error"]
         if isinstance(err, dict):
-            code = int(err.get("code") or 500)
-            raise provider_error(provider, code, json.dumps(err))
+            serialized = json.dumps(err)
+            code = _coerce_error_status(err, serialized)
+            raise provider_error(provider, code, serialized)
         raise provider_error(provider, 500, str(err))
 
     if not isinstance(payload, dict):
