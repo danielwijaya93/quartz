@@ -17,27 +17,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-
-@dataclasses.dataclass
-class CellResult:
-    ok: bool
-    stdout: str
-    stderr: str
-    result: str | None
-    images: list[dict[str, str]] = dataclasses.field(default_factory=list)
-
-    def format_for_model(self) -> str:
-        """Format cell output concisely for the LLM tool result."""
-        parts: list[str] = []
-        if self.stdout:
-            parts.append(self.stdout.rstrip("\n"))
-        if self.result is not None:
-            parts.append(self.result)
-        if self.stderr:
-            parts.append(f"[stderr]\n{self.stderr.rstrip()}")
-        if not parts:
-            return "(ok, no output)"
-        return "\n".join(parts)
+from quartz.kernel.base import CellResult
 
 
 class KernelClient:

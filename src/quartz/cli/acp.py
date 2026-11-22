@@ -19,7 +19,8 @@ from quartz.core.loop import TurnAborted, TurnUsage, agent_loop
 from quartz.core.runtime import AgentRuntime
 from quartz.core.session import Session
 from quartz.core.turn import TurnOutcome, TurnStatus, TurnView, run_interactive_turn
-from quartz.kernel.client import CellResult, KernelClient
+from quartz.kernel.base import CellResult, Kernel
+from quartz.kernel.client import KernelClient
 
 PROTOCOL_VERSION = 1
 
@@ -36,7 +37,7 @@ class _ActiveSession:
         return self.runtime.active_session
 
     @property
-    def kernel(self) -> KernelClient:
+    def kernel(self) -> Kernel:
         return self.runtime.kernel
 
     @property

@@ -20,7 +20,7 @@ from quartz.core.compact import (
 from quartz.core.events import NO_OBSERVER, TurnObserver
 from quartz.core.progress import ProgressCheckpointer, announced_to_user
 from quartz.errors import ContextOverflowError
-from quartz.kernel.client import CellResult, KernelClient
+from quartz.kernel.base import CellExecutor, CellResult
 from quartz.providers.base import (
     CompletionResult,
     LLMProvider,
@@ -145,7 +145,7 @@ TOOLS = [
 ]
 
 
-def drain_bash_events(kernel: KernelClient, messages: list[dict[str, Any]]) -> str | None:
+def drain_bash_events(kernel: CellExecutor, messages: list[dict[str, Any]]) -> str | None:
     """Drain pending kernel events and append any background notice to ``messages``.
 
     Two kinds arrive here: ``bash_done`` when a job finishes, and ``bash_status``
@@ -355,7 +355,7 @@ def agent_loop(
     model: str,
     system_prompt: str,
     messages: list[dict[str, Any]],
-    kernel: KernelClient,
+    kernel: CellExecutor,
     *,
     observer: TurnObserver = NO_OBSERVER,
     max_context_tokens: int = 128_000,

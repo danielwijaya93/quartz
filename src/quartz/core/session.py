@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from quartz.core.images import content_to_text
-from quartz.kernel.client import KernelClient
+from quartz.kernel.base import KernelSnapshotter
 
 
 def default_sessions_dir() -> Path:
@@ -612,10 +612,10 @@ class Session:
         self.last_usage = dict(usage)
         self._append_record({"type": "usage", "usage": self.last_usage})
 
-    def save_kernel(self, kernel: KernelClient) -> dict[str, Any]:
+    def save_kernel(self, kernel: KernelSnapshotter) -> dict[str, Any]:
         return kernel.snapshot(self.snapshot_dir)
 
-    def restore_kernel(self, kernel: KernelClient, root: Path | None = None) -> str | None:
+    def restore_kernel(self, kernel: KernelSnapshotter, root: Path | None = None) -> str | None:
         """Put this session's kernel state back, in `root` when the caller says where.
 
         ``root`` is the folder the session is being resumed in. Without it the
