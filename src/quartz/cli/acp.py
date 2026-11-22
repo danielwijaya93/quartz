@@ -352,6 +352,7 @@ class ACPServer:
             max_context_tokens=self._max_context_tokens,
             client_factory=factory,
             kernel_factory=KernelClient,
+            lazy_provider=True,
         )
         runtime, _ = self._build_runtime_fn(options)
         state = _ActiveSession(runtime=runtime, system_prompt_base=runtime.system_prompt)
@@ -387,6 +388,7 @@ class ACPServer:
             max_context_tokens=self._max_context_tokens,
             client_factory=factory,
             kernel_factory=KernelClient,
+            lazy_provider=True,
         )
         runtime, _ = self._build_runtime_fn(options)
         state = _ActiveSession(runtime=runtime, system_prompt_base=runtime.system_prompt)

@@ -24,6 +24,7 @@ from __future__ import annotations
 import dataclasses
 import threading
 from pathlib import Path
+import contextlib
 from typing import Any, Callable
 
 from quartz.core.background import resolve_interval
@@ -38,7 +39,41 @@ from quartz.providers.registry import resolve_context_tokens
 from quartz.providers.selection import build_provider
 from quartz.settings import load_settings, trust_project
 
-__all__ = ["BootstrapOptions", "build_runtime"]
+__all__ = ["BootstrapOptions", "build_runtime", "LazyClient"]
+
+
+class LazyClient:
+    """Delays provider resolution until the first call."""
+
+    def __init__(self, factory: Callable[[], tuple[Any, ...]]) -> None:
+        self._factory = factory
+        self._resolved: tuple[Any, ...] | None = None
+        self._lock = threading.Lock()
+
+    def resolve(self) -> tuple[Any, ...]:
+        with self._lock:
+            if self._resolved is None:
+                self._resolved = self._factory()
+            return self._resolved
+
+    @property
+    def client(self) -> Any:
+        return self.resolve()[0]
+
+    def stream(self, *args: Any, **kwargs: Any) -> Any:
+        return self.client.stream(*args, **kwargs)
+
+    def complete(self, *args: Any, **kwargs: Any) -> Any:
+        return self.client.complete(*args, **kwargs)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._resolved is not None:
+                c = self._resolved[0]
+                if hasattr(c, "close"):
+                    with contextlib.suppress(Exception):
+                        c.close()
+                self._resolved = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -91,6 +126,7 @@ class BootstrapOptions:
     max_context_tokens: int | None = None
     client_factory: Callable[[], tuple[Any, ...]] | None = None
     kernel_factory: Any | None = None
+    lazy_provider: bool = False
 
 
 def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
@@ -127,7 +163,24 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
     kernel_thread.start()
     try:
         try:
-            if options.client_factory is not None:
+            if options.lazy_provider:
+                def _lazy_factory() -> tuple[Any, ...]:
+                    if options.client_factory is not None:
+                        return options.client_factory()
+                    p_client, pname, p_model, p_effort = build_provider(
+                        provider=options.provider or "auto",
+                        model_override=options.model,
+                        effort_override=options.effort,
+                    )
+                    ctx = resolve_context_tokens(pname, p_model, p_client)
+                    return p_client, pname, p_model, p_effort, ctx
+
+                client = LazyClient(_lazy_factory)
+                provider_name = ""
+                model = ""
+                effort = ""
+                max_context_tokens = options.max_context_tokens or 128_000
+            elif options.client_factory is not None:
                 factory_res = options.client_factory()
                 if len(factory_res) == 5:
                     client, provider_name, model, effort, resolved_ctx = factory_res
@@ -139,6 +192,7 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
                 else:
                     client, provider_name, model, effort = factory_res[:4]
                     max_ctx = resolve_context_tokens(provider_name, model, client)
+                max_context_tokens = options.max_context_tokens or max_ctx
             else:
                 client, provider_name, model, effort = build_provider(
                     provider=options.provider or "auto",
@@ -146,7 +200,7 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
                     effort_override=options.effort,
                 )
                 max_ctx = resolve_context_tokens(provider_name, model, client)
-            max_context_tokens = options.max_context_tokens or max_ctx
+                max_context_tokens = options.max_context_tokens or max_ctx
             settings = load_settings()
             system_prompt = build_system_prompt(cwd, headless=options.headless)
         finally:
