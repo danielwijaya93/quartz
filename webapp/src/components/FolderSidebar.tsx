@@ -8,13 +8,18 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Undo2,
   X,
 } from "lucide-react";
 import {
+  currentWorkspaceCwd,
   displayTitle,
+  folderBadge,
   formatAge,
   groupSessions,
-  sameFolder,
+  NOTICE_TIMEOUT_MS,
+  type FolderBadge,
+  type LiveSession,
   type SidebarPayload,
   type SidebarSession,
   type SidebarState,
@@ -47,8 +52,11 @@ export interface FolderSidebarProps {
   onNewFolder: () => void;
   /** Opens the folder picker to start a session in a folder picked there. */
   onOpenFolder: () => void;
-  onRename: (sessionId: string, title: string) => void;
-  onHide: (sessionId: string) => void;
+  /** Both resolve to whether the server did it, which is what the notice reports. */
+  onRename: (sessionId: string, title: string) => Promise<boolean>;
+  onHide: (sessionId: string) => Promise<boolean>;
+  /** The undo for a hide; the same request the archive's Restore makes. */
+  onRestore: (sessionId: string) => Promise<boolean>;
   onOpenArchive: () => void;
 }
 
@@ -88,13 +96,88 @@ export function FolderSidebar({
   onOpenFolder,
   onRename,
   onHide,
+  onRestore,
   onOpenArchive,
 }: FolderSidebarProps): React.ReactElement {
   const [collapsed, setCollapsed] = React.useState<ReadonlySet<string>>(new Set());
 
   const groups = React.useMemo(() => (data ? groupSessions(data) : []), [data]);
   const sidebarState = data?.sidebar ?? EMPTY_STATE;
+  const sessions = React.useMemo(() => data?.sessions ?? [], [data]);
   const drawer = variant === "drawer";
+
+  const live = React.useMemo<LiveSession>(
+    () => ({ sessionId: currentSessionId, cwd: currentCwd }),
+    [currentSessionId, currentCwd],
+  );
+  // One folder at most is the one the next prompt lands in, decided in `lib/` so
+  // the rule is testable without a browser. Everything below compares with `===`
+  // against this value, which is what stops two folders looking current.
+  const current = React.useMemo(() => currentWorkspaceCwd(groups, live), [groups, live]);
+
+  const [notice, setNotice] = React.useState<Notice | null>(null);
+  const [undoing, setUndoing] = React.useState(false);
+  const [noticeFocused, setNoticeFocused] = React.useState(false);
+
+  // A notice dismisses itself, and every new one restarts the clock: the person
+  // acting twice gets the second confirmation, not a countdown inherited from the
+  // first. It is held while the keyboard is inside it, so Undo can never expire
+  // mid-reach.
+  React.useEffect(() => {
+    if (notice === null || noticeFocused) return;
+    const timer = window.setTimeout(() => setNotice(null), NOTICE_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [notice, noticeFocused]);
+
+  const hide = React.useCallback(
+    async (sessionId: string, title: string): Promise<void> => {
+      const hidden = await onHide(sessionId);
+      // A hide that failed is already announced above the list, with the server's
+      // own message; a second copy here would be noise rather than a confirmation.
+      if (!hidden) return;
+      setNotice({ action: { kind: "hide", sessionId, title } });
+    },
+    [onHide],
+  );
+
+  const rename = React.useCallback(
+    async (sessionId: string, title: string, previousTitle: string): Promise<void> => {
+      const renamed = await onRename(sessionId, title);
+      if (!renamed) return;
+      setNotice({ action: { kind: "rename", sessionId, title, previousTitle } });
+    },
+    [onRename],
+  );
+
+  const undo = React.useCallback(
+    async (action: NoticeAction): Promise<void> => {
+      setUndoing(true);
+      try {
+        const done =
+          action.kind === "hide"
+            ? await onRestore(action.sessionId)
+            // An empty title clears the rename server-side, which is exactly how
+            // the title went back to its preview before the rename happened.
+            : await onRename(action.sessionId, action.previousTitle);
+        if (done) {
+          setNotice(null);
+          return;
+        }
+        // Never pretend it worked: the notice stays, says what failed, and offers
+        // the same request again.
+        setNotice({
+          action,
+          error:
+            action.kind === "hide"
+              ? `Could not restore “${action.title}”.`
+              : "Could not undo the rename.",
+        });
+      } finally {
+        setUndoing(false);
+      }
+    },
+    [onRestore, onRename],
+  );
 
   const toggle = React.useCallback((cwd: string, expanded: boolean) => {
     setCollapsed((prev) => {
@@ -189,35 +272,162 @@ export function FolderSidebar({
             )
             : (
               <ul className="space-y-1">
-                {groups.map((group) => (
-                  <li key={group.cwd}>
-                    <WorkspaceRow
-                      group={group}
-                      current={sameFolder(group.cwd, currentCwd)}
-                      expanded={!collapsed.has(group.cwd)}
-                      onToggle={(expanded) => toggle(group.cwd, expanded)}
-                      onNewSession={() => onNewSession(group.cwd)}
-                    >
-                      {group.sessions.map((session, index) => (
-                        <SessionRow
-                          key={session.sessionId}
-                          session={session}
-                          sidebar={sidebarState}
-                          current={session.sessionId === currentSessionId}
-                          last={index === group.sessions.length - 1}
-                          onSelect={() => onSelectSession(session.sessionId)}
-                          onRename={(title) => onRename(session.sessionId, title)}
-                          onHide={() => onHide(session.sessionId)}
-                        />
-                      ))}
-                    </WorkspaceRow>
-                  </li>
-                ))}
+                {groups.map((group) => {
+                  const here = group.cwd === current;
+                  return (
+                    <li key={group.cwd}>
+                      <WorkspaceRow
+                        group={group}
+                        current={here}
+                        badge={folderBadge(group, live, sessions)}
+                        expanded={!collapsed.has(group.cwd)}
+                        onToggle={(expanded) => toggle(group.cwd, expanded)}
+                        onNewSession={() => onNewSession(group.cwd)}
+                      >
+                        {group.sessions.map((session, index) => (
+                          <SessionRow
+                            key={session.sessionId}
+                            session={session}
+                            sidebar={sidebarState}
+                            // Both halves: a row is current only while its own
+                            // folder is the live one, so a row can never claim to
+                            // be where the next prompt lands when its folder is not.
+                            current={
+                              here &&
+                              currentSessionId !== "" &&
+                              session.sessionId === currentSessionId
+                            }
+                            last={index === group.sessions.length - 1}
+                            onSelect={() => onSelectSession(session.sessionId)}
+                            onRename={(title) =>
+                              void rename(
+                                session.sessionId,
+                                title,
+                                sidebarState.renames[session.sessionId] ?? "",
+                              )
+                            }
+                            onHide={() =>
+                              void hide(session.sessionId, displayTitle(session, sidebarState))
+                            }
+                          />
+                        ))}
+                      </WorkspaceRow>
+                    </li>
+                  );
+                })}
               </ul>
             )
           : null}
       </div>
+
+      {/* A live region that is always mounted, because one that appears together
+          with its text is not reliably announced. It sits below the scrolling list
+          and outside it: the confirmation belongs where the action happened, it
+          pushes nothing aside when it arrives, and it cannot cover the composer or
+          the last message, which live in the other column. */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        onFocus={() => setNoticeFocused(true)}
+        onBlur={() => setNoticeFocused(false)}
+        className={cn(
+          "shrink-0",
+          notice === null ? "" : "border-t border-separator px-2 py-2",
+        )}
+      >
+        {notice === null ? null : (
+          <ActionNotice
+            notice={notice}
+            busy={undoing}
+            onUndo={() => void undo(notice.action)}
+            onDismiss={() => setNotice(null)}
+          />
+        )}
+      </div>
     </nav>
+  );
+}
+
+/**
+ * What the sidebar is confirming, and what undoing it would take.
+ *
+ * The action is kept whole rather than as a callback so the notice can offer the
+ * same request twice: an undo that fails changes the sentence, not the affordance.
+ */
+type NoticeAction =
+  | { kind: "hide"; sessionId: string; title: string }
+  | { kind: "rename"; sessionId: string; title: string; previousTitle: string };
+
+interface Notice {
+  action: NoticeAction;
+  /** Set when the undo itself failed. The notice stays on screen and says so. */
+  error?: string;
+}
+
+function noticeMessage(action: NoticeAction): string {
+  if (action.kind === "hide") return `Hidden “${action.title}”.`;
+  return action.title === "" ? "Rename cleared." : `Renamed to “${action.title}”.`;
+}
+
+/**
+ * An undoable confirmation: one sentence, one action, one way out.
+ *
+ * It is part of the sidebar rather than a floating toast because that is where the
+ * change happened and because the sidebar column cannot cover the composer. It
+ * takes no focus: a confirmation that moves the caret out of a half-written prompt
+ * is worse than the row it replaced. Every control in it is a normal tab stop, so
+ * the keyboard reaches it without a hover.
+ */
+function ActionNotice({
+  notice,
+  busy,
+  onUndo,
+  onDismiss,
+}: {
+  notice: Notice;
+  busy: boolean;
+  onUndo: () => void;
+  onDismiss: () => void;
+}): React.ReactElement {
+  const failed = notice.error !== undefined;
+
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-1.5 rounded-lg border px-2 py-1.5",
+        failed ? "border-danger/40 bg-danger-soft" : "border-border bg-surface",
+      )}
+    >
+      <p
+        className={cn(
+          "min-w-0 flex-1 text-[11px] leading-snug break-words",
+          failed ? "text-danger-soft-foreground" : "text-foreground",
+        )}
+      >
+        {notice.error ?? noticeMessage(notice.action)}
+      </p>
+      <Button
+        size="sm"
+        variant={failed ? "outline" : "ghost"}
+        isDisabled={busy}
+        onPress={onUndo}
+        className="shrink-0 text-[11px]"
+      >
+        <Undo2 aria-hidden="true" className="size-3" />
+        {failed ? "Try again" : "Undo"}
+      </Button>
+      <Button
+        isIconOnly
+        size="sm"
+        variant="ghost"
+        aria-label="Dismiss notification"
+        onPress={onDismiss}
+        className="shrink-0"
+      >
+        <X aria-hidden="true" className="size-3" />
+      </Button>
+    </div>
   );
 }
 
@@ -260,6 +470,7 @@ function EmptySidebar({
 function WorkspaceRow({
   group,
   current,
+  badge,
   expanded,
   onToggle,
   onNewSession,
@@ -268,6 +479,8 @@ function WorkspaceRow({
   group: WorkspaceGroup;
   /** The live session runs here, so this is where the next prompt lands. */
   current: boolean;
+  /** `new` only while this folder is waiting for its first session row. */
+  badge: FolderBadge | null;
   expanded: boolean;
   onToggle: (expanded: boolean) => void;
   onNewSession: () => void;
@@ -308,9 +521,11 @@ function WorkspaceRow({
               <Chip size="sm" variant="soft" color="default" className="ml-auto shrink-0">
                 {count}
               </Chip>
-            ) : (
-              <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wide text-muted">
-                {current ? "new" : "empty"}
+            ) : badge === null ? null : (
+              // 11px and a token with room to spare: this used to be 10px at
+              // 4.4:1, which is under the floor for text this small.
+              <span className="ml-auto shrink-0 text-[11px] uppercase tracking-wide text-meta">
+                {badge}
               </span>
             )}
           </Disclosure.Trigger>
@@ -447,15 +662,27 @@ function SessionRow({
           {age ? (
             <span
               aria-hidden="true"
-              className="shrink-0 text-[10px] text-muted tabular-nums group-hover/session:hidden group-focus-within/session:hidden"
+              // 11px at `--meta` (>= 5:1 in both themes) instead of 10px at
+              // `--muted`'s 4.4:1, which is where "6h" stopped being readable.
+              className="shrink-0 text-[11px] text-meta tabular-nums group-hover/session:hidden group-focus-within/session:hidden"
             >
               {age}
             </span>
           ) : null}
 
           {/* Hover on a mouse, `focus-within` for a keyboard: the row's actions are
-              always the next tab stop, never mouse-only. */}
-          <div className="flex shrink-0 items-center motion-safe:transition-opacity [@media(hover:hover)]:opacity-0 group-focus-within/session:opacity-100 group-hover/session:opacity-100">
+              always the next tab stop, never mouse-only. The current row shows them
+              without being asked -- on a desktop nobody hovers a row to discover
+              that Rename exists, and this is the one row you are already working in,
+              so it is what makes the affordance discoverable everywhere else. */}
+          <div
+            className={cn(
+              "flex shrink-0 items-center motion-safe:transition-opacity",
+              current
+                ? "opacity-100"
+                : "[@media(hover:hover)]:opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100",
+            )}
+          >
             <Button
               isIconOnly
               size="sm"
