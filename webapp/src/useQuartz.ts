@@ -24,6 +24,8 @@ export interface QuartzApi {
   newSession: (cwd?: string) => void;
   /** Resume a session from the sidebar. Its directory comes from its own log. */
   loadSession: (sessionId: string) => void;
+  /** Persist trust for the active session's folder and reload it. */
+  trustProject: () => void;
   /** Persist an OpenUI surface's form state onto the row that rendered it. */
   setFormState: (id: string, formState: Record<string, unknown>) => void;
 }
@@ -109,6 +111,10 @@ export function useQuartz(url?: string, systemPromptAppend = ""): QuartzApi {
     connectionRef.current?.sendLoadSession(sessionId);
   }, []);
 
+  const trustProject = React.useCallback(() => {
+    connectionRef.current?.sendTrustProject();
+  }, []);
+
   const setFormState = React.useCallback(
     (id: string, formState: Record<string, unknown>) => {
       setState((prev) => setRowFormState(prev, id, formState));
@@ -125,6 +131,7 @@ export function useQuartz(url?: string, systemPromptAppend = ""): QuartzApi {
     runCommand,
     newSession,
     loadSession,
+    trustProject,
     setFormState,
   };
 }

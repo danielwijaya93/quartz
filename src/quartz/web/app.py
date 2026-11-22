@@ -454,6 +454,11 @@ async def _dispatch(
             await asyncio.to_thread(session.load_session, session_id)
             push(session.snapshot())
 
+        elif kind == "trust_project":
+            await _ensure(session, push)
+            await asyncio.to_thread(session.trust_current_project)
+            push(session.snapshot())
+
         else:
             push({"type": "error", "message": f"Unknown frame type: {kind}", "fatal": False})
 

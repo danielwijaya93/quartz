@@ -658,3 +658,30 @@ def test_web_observer_on_compaction_reports_messages_before() -> None:
     assert pushed[0]["type"] == "compaction"
     assert pushed[0]["messagesBefore"] == 10
     assert pushed[0]["messagesAfter"] == 1
+
+
+def test_session_state_reports_project_trust_and_trust_project_rebuilds(
+    app_client: AppClient, wire: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "config.json"))
+    monkeypatch.delenv("QUARTZ_TRUST_PROJECT", raising=False)
+    monkeypatch.setenv("QUARTZ_GLOBAL_HELPERS", str(tmp_path / "g_helpers.py"))
+    monkeypatch.setenv("MCP_CONFIG", str(tmp_path / "g_mcp.json"))
+
+    (app_client.runtime.cwd / ".quartz").mkdir(parents=True, exist_ok=True)
+    (app_client.runtime.cwd / ".quartz" / "helpers.py").write_text(
+        "def hi(): return 1\n", encoding="utf-8"
+    )
+
+    with app_client.client.websocket_connect("/ws") as socket:
+        initial = wire.hello(socket)
+        assert initial["projectTrust"]["needsTrust"] is True
+        assert initial["projectTrust"]["trusted"] is False
+        assert initial["projectTrust"]["files"] == [".quartz/helpers.py"]
+
+        socket.send_json({"type": "trust_project"})
+        frames = wire.drain(socket, until="session_state")
+
+    updated = frames[-1]
+    assert updated["projectTrust"]["trusted"] is True
+    assert updated["projectTrust"]["needsTrust"] is False

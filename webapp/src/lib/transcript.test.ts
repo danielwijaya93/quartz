@@ -1302,4 +1302,31 @@ describe("a reconnect in the middle of a turn", () => {
     ]);
     expect(state.rows.filter((row) => row.kind === "assistant")).toHaveLength(0);
   });
+
+  it("stores projectTrust from session_state onto session metadata", () => {
+    const state = fold([
+      {
+        type: "session_state",
+        sessionId: "s",
+        cwd: "/repo",
+        model: "m",
+        effort: "e",
+        turnRunning: false,
+        commands: [],
+        messages: [],
+        projectTrust: {
+          cwd: "/repo",
+          trusted: false,
+          files: [".quartz/helpers.py"],
+          needsTrust: true,
+        },
+      },
+    ]);
+    expect(state.session.projectTrust).toEqual({
+      cwd: "/repo",
+      trusted: false,
+      files: [".quartz/helpers.py"],
+      needsTrust: true,
+    });
+  });
 });

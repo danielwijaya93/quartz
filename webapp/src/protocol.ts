@@ -94,7 +94,15 @@ export type ClientMessage =
   | { type: "command"; name: string; arg?: string }
   /** `cwd` is the folder picked in the sidebar; omit it for the server's own. */
   | { type: "new_session"; cwd?: string }
-  | { type: "load_session"; sessionId: string };
+  | { type: "load_session"; sessionId: string }
+  | { type: "trust_project" };
+
+export interface ProjectTrustState {
+  cwd: string;
+  trusted: boolean;
+  files: string[];
+  needsTrust: boolean;
+}
 
 /* ------------------------------------------------------- server -> client */
 
@@ -114,6 +122,7 @@ export interface SessionStateMessage {
    * it. Empty when no turn is running, and absent from an older server.
    */
   streamingText?: string;
+  projectTrust?: ProjectTrustState;
   commands: Command[];
 }
 

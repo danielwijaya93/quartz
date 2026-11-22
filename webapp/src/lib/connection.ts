@@ -259,6 +259,10 @@ export class Connection {
     return this.send(cwd === undefined ? { type: "new_session" } : { type: "new_session", cwd });
   }
 
+  sendTrustProject(): boolean {
+    return this.send({ type: "trust_project" });
+  }
+
   sendLoadSession(sessionId: string): boolean {
     return this.send({ type: "load_session", sessionId });
   }

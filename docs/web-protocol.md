@@ -48,6 +48,7 @@ Every message is a flat object with a `type` string discriminator.
 | `cancel` | — | Abort the running turn. |
 | `command` | `name: str`, `arg?: str` | Run a slash command (see *Commands*). Name has no leading `/`. |
 | `new_session` | `cwd?: str` | Retire the current session, create a fresh one, in `cwd` when given (see *Choosing a working directory*). |
+| `trust_project` | _(none)_ | Persist trust for the active session's `cwd`, retire & rebuild the runtime so `.quartz/` config loads, and push `session_state`. |
 | `load_session` | `sessionId: str` | Retire the current session, load `sessionId`. |
 
 ### Server → Client
@@ -56,7 +57,7 @@ Turn lifecycle:
 
 | `type` | Fields |
 | --- | --- |
-| `session_state` | `sessionId`, `cwd`, `model`, `effort`, `messages: Message[]`, `turnRunning: bool`, `commands: Command[]` |
+| `session_state` | `sessionId`, `cwd`, `model`, `effort`, `messages: Message[]`, `turnRunning: bool`, `projectTrust?: { cwd, trusted, files, needsTrust }`, `commands: Command[]` |
 | `turn_start` | `turnId: str` |
 | `status` | `label: str \| null` |
 | `text_delta` | `text: str` |
