@@ -15,17 +15,17 @@ this class, and it is the only place a `threading.Thread` is created for a turn.
 from __future__ import annotations
 
 import dataclasses
+import os
 import queue
 import threading
 import uuid
 import weakref
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from quartz.core.commands import COMMAND_REGISTRY, CommandResult, SlashCommand
 from quartz.core.images import ImageAttachment, build_user_content
-from quartz.core.session import Session
 from quartz.core.turn import TurnOutcome, TurnStatus, run_interactive_turn
 from quartz.web.bridge import Frame, Push, WebObserver
 
@@ -39,12 +39,22 @@ __all__ = [
     "WebSession",
 ]
 
-BuildRuntime = Callable[[str | None], "tuple[AgentRuntime, bool]"]
-"""Build a runtime; ``None`` means a fresh session, an id means resume it.
+class BuildRuntime(Protocol):
+    """Build a runtime; ``None`` means a fresh session, an id means resume it.
 
-Blocking and slow (it starts a kernel and resolves model metadata over the
-network), so every caller must run it off the event loop.
-"""
+    ``cwd`` is where a *fresh* session should run, and it is why this is a protocol
+    rather than a bare callable: a folder-first sidebar starts sessions in folders
+    that were picked in the browser, not in the directory the server was launched
+    from. ``None`` means "wherever the server starts", and it is ignored when
+    resuming, because a resumed session's directory comes from its own `meta`.
+
+    Blocking and slow (it starts a kernel and resolves model metadata over the
+    network), so every caller must run it off the event loop.
+    """
+
+    def __call__(
+        self, session_id: str | None, cwd: Path | None = None
+    ) -> "tuple[AgentRuntime, bool]": ...
 
 TurnRunner = Callable[..., TurnOutcome]
 
@@ -112,22 +122,45 @@ class WebSession:
     def built(self) -> bool:
         return self._runtime is not None
 
-    def ensure_runtime(self) -> AgentRuntime:
+    @property
+    def cwd(self) -> Path:
+        """The server's directory: the default for a session the client did not place."""
+        return self._cwd
+
+    def ensure_runtime(self, cwd: Path | None = None) -> AgentRuntime:
         """Build the runtime once. Raises whatever `build` raises.
+
+        `cwd` is the client's choice for the *initial* session (`hello.cwd`). It is
+        ignored once a runtime exists, because `hello` is re-sent whenever the
+        client changes its system-prompt append: honouring a path there would make
+        a Rich UI toggle look like a request to move the session.
 
         Deliberately not locked: two connections racing here would each pay for a
         build, and the second `_swap` would retire the first, which is correct if
         wasteful. A local single-user server opens one tab.
         """
         if self._runtime is None:
-            self._swap(*self._build(None))
+            self._swap(*self._build(None, cwd))
         return self.runtime
 
-    def new_session(self) -> None:
+    def new_session(self, cwd: Path | None = None) -> None:
+        """Retire the current session and start a fresh one, in `cwd` when given.
+
+        Nothing is restarted: the retirement and the build happen in this call, on
+        the caller's thread, which is what lets a person pick a folder in the page
+        and start working in it without touching the terminal that served it.
+        Build failures propagate to the caller as before, leaving
+        `built is False` so the next request rebuilds.
+        """
         self._retire()
-        self._swap(*self._build(None))
+        self._swap(*self._build(None, cwd))
 
     def load_session(self, session_id: str) -> None:
+        """Resume a session, in the directory its own `meta` record names.
+
+        No `cwd` parameter on purpose: letting a client point a resume somewhere
+        else would replay history into a kernel rooted in a different project.
+        """
         self._retire()
         self._swap(*self._build(session_id))
 
@@ -330,10 +363,29 @@ class WebSession:
             "commands": self.commands(),
         }
 
-    def sessions(self) -> list[dict[str, Any]]:
-        """Known sessions for this working directory, newest first."""
-        rows, _cursor = Session.list_all(self._cwd)
-        return rows
+def resolve_cwd(raw: object, fallback: Path) -> Path:
+    """Read a client-supplied working directory, tolerating anything malformed.
+
+    Never raises and never rejects: `docs/web-protocol.md` says an unusable value
+    falls back to the server's own directory rather than producing a fatal frame,
+    because a page that cannot start a session is worse than one that starts in the
+    wrong folder -- and `session_state.cwd` tells the client where it actually
+    landed, so the header and the sidebar cannot lie about it.
+
+    A relative path falls back rather than being resolved against the server's cwd:
+    that resolution is what makes a path mean different things depending on how the
+    server was started.
+    """
+    if not isinstance(raw, str) or raw.strip() == "":
+        return fallback
+    text = raw.strip()
+    if not text.startswith(("~", os.sep)):
+        return fallback
+    try:
+        candidate = Path(text).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return fallback
+    return candidate if candidate.is_dir() else fallback
 
 
 def _turn_end_frame(outcome: TurnOutcome) -> Frame:

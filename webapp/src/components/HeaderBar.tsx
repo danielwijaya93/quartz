@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Button, Chip, Separator } from "@heroui/react";
-import { Plus } from "lucide-react";
+import { PanelLeft, Plus } from "lucide-react";
 import { RichUiToggle } from "./RichUiToggle";
 import { ThemeToggle } from "./ThemeToggle";
 import type { ConnectionStatus } from "@/lib/connection";
@@ -61,12 +61,17 @@ export function HeaderBar({
   richUiMode,
   onRichUiModeChange,
   onNewSession,
+  sidebarOpen,
+  onToggleSidebar,
 }: {
   session: SessionMeta;
   status: ConnectionStatus;
   richUiMode: RichUiMode;
   onRichUiModeChange: (mode: RichUiMode) => void;
+  /** Opens the folder picker: a new session needs a folder first. */
   onNewSession: () => void;
+  sidebarOpen: boolean;
+  onToggleSidebar: () => void;
 }): React.ReactElement {
   const copy = STATUS_COPY[status];
   const model = session.model ? `${session.model}${session.effort ? ` · ${session.effort}` : ""}` : "—";
@@ -74,6 +79,17 @@ export function HeaderBar({
   return (
     <header className="shrink-0 border-b border-separator bg-background/85 backdrop-blur">
       <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-4 py-2.5 sm:px-5">
+        <Button
+          isIconOnly
+          size="sm"
+          variant="ghost"
+          aria-label={sidebarOpen ? "Hide the session sidebar" : "Show the session sidebar"}
+          aria-expanded={sidebarOpen}
+          onPress={onToggleSidebar}
+        >
+          <PanelLeft aria-hidden="true" className="size-4" />
+        </Button>
+
         <div className="flex shrink-0 items-center gap-2">
           <span aria-hidden="true" className="size-2.5 rounded-full bg-accent" />
           <span className="text-sm font-semibold tracking-tight text-foreground">Quartz</span>
