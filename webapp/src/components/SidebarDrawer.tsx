@@ -45,7 +45,7 @@ export function SidebarDrawer({ onClose, children }: SidebarDrawerProps): React.
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="relative z-10 h-full w-[min(85vw,18rem)] shadow-2xl focus:outline-none"
+        className="relative z-10 h-full w-[min(85vw,16rem)] shadow-2xl focus:outline-none"
       >
         {children}
       </div>
