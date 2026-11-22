@@ -65,6 +65,11 @@
  */
 :root,
 [data-theme="light"] {
+  --accent: oklch(40% 0.025 250);
+  --accent-foreground: oklch(98% 0 0);
+  --accent-soft: oklch(93% 0.008 250);
+  --accent-soft-foreground: oklch(20% 0.015 250);
+  --success: oklch(52% 0.08 155);
   --code-keyword: oklch(52% 0.19 22);
   --code-string: oklch(32% 0.11 258);
   --code-number: oklch(43% 0.14 250);
@@ -76,6 +81,11 @@
 
 .dark,
 [data-theme="dark"] {
+  --accent: oklch(78% 0.025 250);
+  --accent-foreground: oklch(14% 0 0);
+  --accent-soft: oklch(24% 0.01 250);
+  --accent-soft-foreground: oklch(92% 0.008 250);
+  --success: oklch(68% 0.08 155);
   --code-keyword: oklch(70% 0.15 22);
   --code-string: oklch(84% 0.08 235);
   --code-number: oklch(78% 0.11 245);

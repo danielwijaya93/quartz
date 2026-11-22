@@ -43,14 +43,15 @@ function ContextRing({
   maxTokens?: number;
 }): React.ReactElement {
   const clamped = Math.max(0, Math.min(100, pct));
+  const visualPct = clamped > 0 && clamped < 3 ? 3 : clamped;
   const radius = 7;
   const circumference = 2 * Math.PI * radius;
-  const dashOffset = circumference * (1 - clamped / 100);
+  const dashOffset = circumference * (1 - visualPct / 100);
   const label = maxTokens && maxTokens > 0
     ? `Context: ${pct.toFixed(1)}% of ${formatTokenWindow(maxTokens)}`
     : `Context: ${pct.toFixed(1)}%`;
   const toneClass =
-    clamped >= 90 ? "text-danger" : clamped >= 75 ? "text-warning" : "text-muted";
+    clamped >= 90 ? "text-danger" : clamped >= 75 ? "text-warning" : "text-foreground/75";
 
   return (
     <span
@@ -67,7 +68,7 @@ function ContextRing({
           fill="none"
           stroke="currentColor"
           strokeWidth="2"
-          strokeOpacity={0.2}
+          strokeOpacity={0.18}
         />
         <circle
           cx="9"
@@ -530,7 +531,7 @@ export function Composer({
           </Alert>
         ) : null}
 
-        <div className="rounded-2xl border border-border/70 bg-surface/70 px-3.5 pt-2.5 pb-2 shadow-xs transition-all duration-150 focus-within:border-foreground/25 focus-within:ring-1 focus-within:ring-foreground/10">
+        <div className="rounded-2xl border border-border/70 bg-surface/70 px-3 pt-2 pb-1.5 shadow-xs transition-all duration-150 focus-within:border-foreground/25 focus-within:ring-1 focus-within:ring-foreground/10">
           {images.length > 0 || attachedFiles.length > 0 ? (
             <ul className="mb-2 flex flex-wrap gap-2" aria-label="Pending attachments">
               {images.map((image, index) => (
@@ -596,7 +597,7 @@ export function Composer({
             spellCheck={false}
             autoCapitalize="off"
             autoComplete="off"
-            className="quartz-bare-input max-h-[200px] min-h-[40px] w-full resize-none border-0 bg-transparent px-1 py-1.5 text-[0.9375rem] shadow-none"
+            className="quartz-bare-input max-h-[200px] min-h-[34px] w-full resize-none border-0 bg-transparent px-1 py-1 text-[0.9375rem] shadow-none"
           />
 
           <div className="mt-1 flex items-center gap-1.5">

@@ -1,60 +1,105 @@
 import * as React from "react";
-import { Alert } from "@heroui/react";
-import { Info } from "lucide-react";
+import { ChevronRight, Info, Terminal } from "lucide-react";
+import { cn } from "@heroui/react";
 import type { BashNoticeRow, SystemNoticeRow } from "@/lib/transcript";
 
 /** Either notice the application can put in the stream, as the transcript sees it. */
 export type NoticeRow = BashNoticeRow | SystemNoticeRow;
 
-/** A background job finished. System voice, not assistant voice. */
+const SILENT_TAGS = new Set(["progress", "tool-images"]);
+
+function summarizeNotice(tag: string, text: string): string {
+  if (tag.startsWith("bash-done")) {
+    const dur = /duration:([\d.]+s)/.exec(tag) ?? /duration:([\d.]+s)/.exec(text);
+    const exit = /exit:(-?\d+)/.exec(tag) ?? /exit:(-?\d+)/.exec(text);
+    const parts = ["bash-done"];
+    if (dur?.[1]) parts.push(dur[1]);
+    if (exit?.[1] && exit[1] !== "0") parts.push(`exit ${exit[1]}`);
+    return parts.join(" · ");
+  }
+  if (tag === "python-state-restored") {
+    const count = /Restored (\d+) Python/.exec(text);
+    return count ? `python-state-restored · ${count[1]} vars` : "python-state-restored";
+  }
+  return tag;
+}
+
+/** A background job finished. Quiet collapsible line, expandable on click. */
 export function BashNoticeRowView({ row }: { row: BashNoticeRow }): React.ReactElement {
+  const [open, setOpen] = React.useState(false);
+  const first = row.text.split("\n")[0]?.trim() || "Background job";
+
   return (
-    <Alert status="accent" className="rounded-xl">
-      <Alert.Indicator />
-      <Alert.Content>
-        <Alert.Title>Background job</Alert.Title>
-        <Alert.Description>
-          <span className="whitespace-pre-wrap font-mono text-xs">{row.text}</span>
-        </Alert.Description>
-      </Alert.Content>
-    </Alert>
+    <section aria-label="Background job" className="text-xs text-muted">
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        aria-expanded={open}
+        className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors hover:bg-surface-secondary/40 hover:text-foreground"
+      >
+        <ChevronRight
+          aria-hidden="true"
+          className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")}
+        />
+        <Terminal aria-hidden="true" className="size-3 shrink-0" />
+        <span className="truncate font-mono">{first}</span>
+      </button>
+      {open ? (
+        <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap rounded-lg border border-border/50 bg-surface-secondary/30 px-3 py-2 font-mono text-xs leading-relaxed">
+          {row.text}
+        </pre>
+      ) : null}
+    </section>
   );
 }
 
 /**
- * Something the application did - restored a resumed session's kernel, reported a
- * checkpoint - drawn in its own voice.
+ * Internal harness notices (e.g. bash-done, python-state-restored).
  *
- * These arrive as `user` messages on the wire (it is the only role the harness can
- * inject), which used to put "[python-state-restored]" in a right-aligned "You"
- * bubble: the reader quoted saying something they never typed. So it is drawn as
- * what it is - left, labelled, and smaller than any answer. Deliberately not a
- * card and not an alert: nothing here needs a decision, and a turn's answer has to
- * stay the loudest thing in the column.
+ * Purely internal plumbing (`progress`, `tool-images`) is silenced completely;
+ * everything else collapses into a single quiet, expandable line so the
+ * assistant's answer remains the focal point.
  */
-export function SystemNoticeRowView({ row }: { row: SystemNoticeRow }): React.ReactElement {
+export function SystemNoticeRowView({ row }: { row: SystemNoticeRow }): React.ReactElement | null {
+  const [open, setOpen] = React.useState(false);
+
+  if (SILENT_TAGS.has(row.tag)) {
+    return null;
+  }
+
+  const summary = summarizeNotice(row.tag, row.text);
+  const hasBody = row.text.trim() !== "";
+
   return (
-    <section
-      aria-label="System notice"
-      className="flex items-start gap-2 rounded-lg border border-border/60 bg-surface-secondary/30 px-3 py-2 text-xs text-muted"
-    >
-      <Info aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
-      <div className="min-w-0 space-y-1">
-        <p className="flex flex-wrap items-baseline gap-x-1.5">
-          <span className="font-medium">System notice</span>
-          <span aria-hidden="true">·</span>
-          <span className="font-mono break-all">{row.tag}</span>
-        </p>
-        {row.text === "" ? null : (
-          <p className="whitespace-pre-wrap leading-relaxed">{row.text}</p>
+    <section aria-label="System notice" className="text-xs text-muted">
+      <button
+        type="button"
+        disabled={!hasBody}
+        onClick={() => setOpen((prev) => !prev)}
+        aria-expanded={hasBody ? open : undefined}
+        className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors hover:bg-surface-secondary/40 hover:text-foreground disabled:cursor-default disabled:hover:bg-transparent"
+      >
+        {hasBody ? (
+          <ChevronRight
+            aria-hidden="true"
+            className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")}
+          />
+        ) : (
+          <Info aria-hidden="true" className="size-3 shrink-0" />
         )}
-      </div>
+        <span className="truncate font-mono">{summary}</span>
+      </button>
+      {open && hasBody ? (
+        <p className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap rounded-lg border border-border/50 bg-surface-secondary/30 px-3 py-2 font-mono text-xs leading-relaxed">
+          {row.text}
+        </p>
+      ) : null}
     </section>
   );
 }
 
 /** The notice row, whichever system wrote it. */
-export function NoticeRowView({ row }: { row: NoticeRow }): React.ReactElement {
+export function NoticeRowView({ row }: { row: NoticeRow }): React.ReactElement | null {
   return row.kind === "bash_notice" ? (
     <BashNoticeRowView row={row} />
   ) : (

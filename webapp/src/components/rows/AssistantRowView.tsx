@@ -97,16 +97,16 @@ export function AssistantRowView({
   const markdown = <Markdown streaming={streaming}>{row.text}</Markdown>;
 
   return (
-    <article className="flex flex-col gap-1.5">
+    <article className="group/assistant flex flex-col gap-1.5">
       {showSpeaker ? (
         <div className="flex items-center gap-1.5 text-xs font-medium text-muted">
-          <span aria-hidden="true" className="size-1.5 rounded-full bg-accent" />
+          <span aria-hidden="true" className="size-1.5 rounded-full bg-foreground/50" />
           <span>Quartz</span>
           {hasOpenUI && !streaming ? (
             <button
               type="button"
               onClick={() => setShowSource((prev) => !prev)}
-              className="ml-auto cursor-pointer rounded px-1.5 py-0.5 text-[11px] font-normal text-meta hover:bg-surface-secondary hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none"
+              className="ml-auto cursor-pointer rounded px-1.5 py-0.5 text-[11px] font-normal text-meta opacity-0 transition-opacity group-hover/assistant:opacity-100 group-focus-within/assistant:opacity-100 focus-visible:opacity-100 hover:bg-surface-secondary hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none"
             >
               {showSource ? "View UI" : "View source"}
             </button>

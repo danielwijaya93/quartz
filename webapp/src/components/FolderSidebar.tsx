@@ -100,7 +100,7 @@ export function FolderSidebar({
   onRestore,
   onOpenArchive,
 }: FolderSidebarProps): React.ReactElement {
-  const [collapsed, setCollapsed] = React.useState<ReadonlySet<string>>(new Set());
+  const [expandedOverrides, setExpandedOverrides] = React.useState<Readonly<Record<string, boolean>>>({});
 
   const groups = React.useMemo(() => (data ? groupSessions(data) : []), [data]);
   const sidebarState = data?.sidebar ?? EMPTY_STATE;
@@ -181,12 +181,7 @@ export function FolderSidebar({
   );
 
   const toggle = React.useCallback((cwd: string, expanded: boolean) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (expanded) next.delete(cwd);
-      else next.add(cwd);
-      return next;
-    });
+    setExpandedOverrides((prev) => ({ ...prev, [cwd]: expanded }));
   }, []);
 
   return (
@@ -291,7 +286,7 @@ export function FolderSidebar({
                         group={group}
                         current={here}
                         badge={folderBadge(group, live, sessions)}
-                        expanded={!collapsed.has(group.cwd)}
+                        expanded={expandedOverrides[group.cwd] ?? (group.sessions.length > 0 || here)}
                         onToggle={(expanded) => toggle(group.cwd, expanded)}
                         onNewSession={() => onNewSession(group.cwd)}
                       >
@@ -665,12 +660,7 @@ function SessionRow({
           ) : null}
 
           <div
-            className={cn(
-              "flex shrink-0 items-center gap-0.5 motion-safe:transition-opacity",
-              current
-                ? "opacity-100"
-                : "[@media(hover:hover)]:opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100",
-            )}
+            className="flex shrink-0 items-center gap-0.5 motion-safe:transition-opacity [@media(hover:hover)]:opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100"
           >
             <Button
               isIconOnly

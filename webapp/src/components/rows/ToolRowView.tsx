@@ -5,10 +5,10 @@ import { firstLine, type ToolRow } from "@/lib/transcript";
 
 const STATUS_COPY: Record<
   ToolRow["status"],
-  { label: string; color: "accent" | "success" | "danger" }
+  { label: string; color: "default" | "danger" }
 > = {
-  running: { label: "Running", color: "accent" },
-  ok: { label: "Succeeded", color: "success" },
+  running: { label: "Running", color: "default" },
+  ok: { label: "Succeeded", color: "default" },
   failed: { label: "Failed", color: "danger" },
 };
 
