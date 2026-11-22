@@ -256,19 +256,21 @@ def _snapshot_runtime(tmp_path: Path, manifest: dict[str, Any]) -> AgentRuntime:
     )
 
 
-def test_snapshot_skip_surfaces_as_a_warning(tmp_path: Path) -> None:
-    """A snapshot that drops state has to say so; silently losing a variable is worse."""
+def test_snapshot_skip_logs_to_debug(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """A snapshot that drops unpickleable values logs to debug rather than emitting a warning."""
+    import logging
+
     rt = _snapshot_runtime(
         tmp_path,
         {"saved": ["data"], "skipped": ["conn (socket: TypeError: cannot pickle 'socket' object)"]},
     )
 
-    with pytest.warns(RuntimeWarning) as caught:
+    with caplog.at_level(logging.DEBUG):
         rt.persist()
         rt.wait_snapshot()
 
-    assert "Kernel snapshot skipped 1 value" in str(caught[0].message)
-    assert "conn (socket" in str(caught[0].message)
+    assert "Kernel snapshot skipped 1 value" in caplog.text
+    assert "conn (socket" in caplog.text
 
 
 def test_snapshot_without_skips_is_silent(tmp_path: Path) -> None:
