@@ -763,3 +763,72 @@ def test_acp_session_load_closes_kernel_on_restore_failure(
     assert len(created_kernels) == 1
     assert created_kernels[0].started is True
     assert created_kernels[0].closed is True
+
+
+def test_acp_prompt_records_cell_meta_and_persists(tmp_path: Path, monkeypatch) -> None:
+    from quartz.core.session import Session
+
+    monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
+    out_buf = io.StringIO()
+    server = ACPServer(_make_fake_client, in_stream=io.StringIO(""), out_stream=out_buf)
+    res = server._handle_session_new({"cwd": str(tmp_path)})
+    sid = res["sessionId"]
+
+    # Run a prompt that invokes ipython (from _make_fake_client)
+    res_prompt = server._handle_session_prompt(
+        {"sessionId": sid, "prompt": [{"type": "text", "text": "Compute 21*2"}]}
+    )
+    assert res_prompt == {"stopReason": "end_turn"}
+
+    # Verify that cell metadata was recorded on the active session
+    state = server._sessions[sid]
+    assert hasattr(state.session, "cell_meta")
+    assert "tc1" in state.session.cell_meta
+    assert state.session.cell_meta["tc1"]["ok"] is True
+
+    # Close kernel cleanly
+    server._retire_session(state)
+
+    # Verify metadata was persisted to disk and survives reload
+    loaded_session, _ = Session.load(sid)
+    assert "tc1" in loaded_session.cell_meta
+    assert loaded_session.cell_meta["tc1"]["ok"] is True
+
+
+def test_acp_custom_build_runtime_and_runner(tmp_path: Path, monkeypatch) -> None:
+    from quartz.bootstrap import BootstrapOptions
+    from quartz.core.runtime import AgentRuntime
+    from quartz.core.turn import TurnOutcome, TurnStatus
+
+    monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
+    built_options = []
+    run_turns = []
+
+    def mock_build(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
+        built_options.append(options)
+        # Use real build_runtime
+        from quartz.bootstrap import build_runtime
+        return build_runtime(options)
+
+    def mock_runner(rt: AgentRuntime, view, **kwargs) -> TurnOutcome:
+        run_turns.append(rt)
+        return TurnOutcome(status=TurnStatus.OK, tokens=5, elapsed_s=0.1)
+
+    server = ACPServer(
+        _make_fake_client,
+        build_runtime_fn=mock_build,
+        turn_runner=mock_runner,
+        in_stream=io.StringIO(""),
+        out_stream=io.StringIO(),
+    )
+    res = server._handle_session_new({"cwd": str(tmp_path)})
+    sid = res["sessionId"]
+    assert len(built_options) == 1
+    assert built_options[0].origin == "acp"
+    assert built_options[0].transport == "acp"
+
+    res_prompt = server._handle_session_prompt({"sessionId": sid, "prompt": "test"})
+    assert res_prompt == {"stopReason": "end_turn"}
+    assert len(run_turns) == 1
+
+    server._retire_session(server._sessions[sid])

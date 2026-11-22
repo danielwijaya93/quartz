@@ -12,12 +12,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
 
+from quartz.bootstrap import BootstrapOptions, build_runtime
 from quartz.core.compact import DEFAULT_KEEP_RECENT_TOKENS
-from quartz.core.events import TurnObserver
 from quartz.core.images import content_to_text
 from quartz.core.loop import TurnAborted, TurnUsage, agent_loop
-from quartz.core.prompt import build_system_prompt
+from quartz.core.runtime import AgentRuntime
 from quartz.core.session import Session
+from quartz.core.turn import TurnOutcome, TurnStatus, TurnView, run_interactive_turn
 from quartz.kernel.client import CellResult, KernelClient
 
 PROTOCOL_VERSION = 1
@@ -25,14 +26,53 @@ PROTOCOL_VERSION = 1
 
 @dataclasses.dataclass
 class _ActiveSession:
-    session: Session
-    kernel: KernelClient
-    cwd: Path
-    system_prompt: str
-    messages: list[dict[str, Any]]
-    usage: TurnUsage
+    runtime: AgentRuntime
+    system_prompt_base: str
     prompt_lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
     abort_event: threading.Event = dataclasses.field(default_factory=threading.Event)
+
+    @property
+    def session(self) -> Session:
+        return self.runtime.active_session
+
+    @property
+    def kernel(self) -> KernelClient:
+        return self.runtime.kernel
+
+    @property
+    def cwd(self) -> Path:
+        return self.runtime.cwd
+
+    @property
+    def system_prompt(self) -> str:
+        return self.runtime.system_prompt
+
+    @system_prompt.setter
+    def system_prompt(self, value: str) -> None:
+        self.runtime.system_prompt = value
+
+    @property
+    def messages(self) -> list[dict[str, Any]]:
+        return self.runtime.messages
+
+    @messages.setter
+    def messages(self, value: list[dict[str, Any]]) -> None:
+        self.runtime.messages = value
+
+    @property
+    def usage(self) -> TurnUsage:
+        return self.runtime.usage_stats
+
+    @usage.setter
+    def usage(self, value: TurnUsage) -> None:
+        self.runtime.usage_stats = value
+
+    def apply_system_prompt_append(self, append: str) -> None:
+        clean = append.strip()
+        if clean:
+            self.runtime.system_prompt = f"{self.system_prompt_base}\n\n{clean}"
+        else:
+            self.runtime.system_prompt = self.system_prompt_base
 
 
 def _extract_prompt_content(prompt: Any) -> str | list[dict[str, Any]]:
@@ -96,7 +136,7 @@ def _image_content_blocks(images: list[dict[str, str]]) -> list[dict[str, Any]]:
     ]
 
 
-class _AcpObserver(TurnObserver):
+class _AcpObserver(TurnView):
     """Streams turn events to the ACP client as ``session/update`` notifications.
 
     Only the events ACP renders today are implemented. ``on_status``,
@@ -105,12 +145,21 @@ class _AcpObserver(TurnObserver):
     compaction is a tracked follow-up.
     """
 
-    def __init__(self, server: ACPServer, session_id: str) -> None:
+    def __init__(
+        self,
+        server: ACPServer,
+        session_id: str,
+        runtime: AgentRuntime | None = None,
+    ) -> None:
+        super().__init__()
         self._server = server
         self._session_id = session_id
+        self._runtime = runtime
         self._tc_map: dict[str, str] = {}
+        self._pending_tools: dict[str, tuple[str, float]] = {}
 
     def on_text_delta(self, text: str) -> None:
+        self.streamed_any[0] = True
         self._server._send_update(
             self._session_id,
             {
@@ -119,9 +168,22 @@ class _AcpObserver(TurnObserver):
             },
         )
 
+    def show_final(self, answer: str) -> None:
+        if answer:
+            self._server._send_update(
+                self._session_id,
+                {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": answer},
+                },
+            )
+
     def on_tool_call(self, tool_call_id: str, code: str) -> None:
+        import time as _time
+
         acp_tc_id = tool_call_id or f"tc_{uuid.uuid4().hex[:8]}"
         self._tc_map[tool_call_id] = acp_tc_id
+        self._pending_tools[tool_call_id] = (code, _time.monotonic())
         self._server._send_update(
             self._session_id,
             {
@@ -135,6 +197,13 @@ class _AcpObserver(TurnObserver):
         )
 
     def on_tool_result(self, tool_call_id: str, cell: CellResult) -> None:
+        import time as _time
+
+        code, started = self._pending_tools.pop(tool_call_id, ("", _time.monotonic()))
+        duration_s = _time.monotonic() - started
+        if self._runtime is not None:
+            self._runtime.cell_history.append((code, cell, duration_s))
+
         acp_tc_id = self._tc_map.pop(tool_call_id, tool_call_id or f"tc_{uuid.uuid4().hex[:8]}")
         update: dict[str, Any] = {
             "sessionUpdate": "tool_call_update",
@@ -153,8 +222,10 @@ class ACPServer:
 
     def __init__(
         self,
-        client_factory: Callable[[], tuple[Any, ...]],
+        client_factory: Callable[[], tuple[Any, ...]] | None = None,
         *,
+        build_runtime_fn: Callable[[BootstrapOptions], tuple[AgentRuntime, bool]] | None = None,
+        turn_runner: Callable[..., TurnOutcome] = run_interactive_turn,
         in_stream: TextIO | None = None,
         out_stream: TextIO | None = None,
         max_context_tokens: int | None = None,
@@ -164,6 +235,8 @@ class ACPServer:
         background_check_every: int = 0,
     ) -> None:
         self._client_factory = client_factory
+        self._build_runtime_fn = build_runtime_fn or build_runtime
+        self._runner = turn_runner
         self._in = in_stream or sys.stdin
         self._out = out_stream or sys.stdout
         self._write_lock = threading.Lock()
@@ -176,20 +249,31 @@ class ACPServer:
         self._background_check_every = background_check_every
         self._client: Any = None
         self._client_lock = threading.Lock()
+        self._provider_name = ""
         self._model = ""
         self._effort: str | None = None
 
     def _ensure_client(self) -> tuple[Any, str, str | None]:
         with self._client_lock:
-            if self._client is None:
+            if self._client is None and self._client_factory is not None:
                 result = self._client_factory()
                 if len(result) == 5:
-                    self._client, _, self._model, self._effort, resolved_ctx = result
+                    self._client, self._provider_name, self._model, self._effort, resolved_ctx = result
                     if resolved_ctx is not None:
                         self._max_context_tokens = int(resolved_ctx)
                 else:
-                    self._client, _, self._model, self._effort = result
+                    self._client, self._provider_name, self._model, self._effort = result[:4]
             return self._client, self._model, self._effort
+
+    def _ensure_client_tuple(self) -> tuple[Any, str, str, str | None, int | None]:
+        self._ensure_client()
+        return (
+            self._client,
+            self._provider_name,
+            self._model,
+            self._effort,
+            self._max_context_tokens,
+        )
 
     def _send(self, payload: dict[str, Any]) -> None:
         line = json.dumps(payload, ensure_ascii=False)
@@ -241,7 +325,13 @@ class ACPServer:
         self._abort_session(state)
         acquired = state.prompt_lock.acquire(timeout=wait)
         try:
+            state.runtime.wait_snapshot()
+            if state.runtime.messages and not state.runtime.headless and state.runtime.kernel.dirty:
+                with contextlib.suppress(Exception):
+                    state.runtime.active_session.save_kernel(state.runtime.kernel)
             state.kernel.close()
+            with contextlib.suppress(Exception):
+                state.runtime.client.close()
         finally:
             if acquired:
                 state.prompt_lock.release()
@@ -249,78 +339,75 @@ class ACPServer:
     def _handle_session_new(self, params: dict[str, Any]) -> dict[str, Any]:
         raw_cwd = params.get("cwd")
         cwd = Path(raw_cwd).expanduser().resolve() if raw_cwd else Path.cwd().resolve()
-        kernel = KernelClient(cwd=cwd)
-        kernel.start()
-        kernel.configure(headless=False, background_check_every=self._background_check_every)
-        try:
-            session = Session.create(cwd)
-            system_prompt = build_system_prompt(cwd)
-            append = _extract_system_prompt_append(params)
-            if append:
-                system_prompt = f"{system_prompt}\n\n{append}"
-            state = _ActiveSession(
-                session=session,
-                kernel=kernel,
-                cwd=cwd,
-                system_prompt=system_prompt,
-                messages=[],
-                usage=TurnUsage(),
-            )
-            with self._sessions_lock:
-                old_state = self._sessions.pop(session.id, None)
-                self._sessions[session.id] = state
-            if old_state is not None:
-                self._retire_session(old_state)
-            return {"sessionId": session.id}
-        except BaseException:
-            kernel.close()
-            raise
+        factory = self._ensure_client_tuple if self._client_factory is not None else None
+        options = BootstrapOptions(
+            cwd=cwd,
+            origin="acp",
+            transport="acp",
+            headless=False,
+            progress_every=self._progress_every,
+            background_check_every=self._background_check_every,
+            compact_reserve_tokens=self._compact_reserve_tokens,
+            keep_recent_tokens=self._keep_recent_tokens,
+            max_context_tokens=self._max_context_tokens,
+            client_factory=factory,
+            kernel_factory=KernelClient,
+        )
+        runtime, _ = self._build_runtime_fn(options)
+        state = _ActiveSession(runtime=runtime, system_prompt_base=runtime.system_prompt)
+        append = _extract_system_prompt_append(params)
+        if append:
+            state.apply_system_prompt_append(append)
+
+        with self._sessions_lock:
+            old_state = self._sessions.pop(runtime.active_session.id, None)
+            self._sessions[runtime.active_session.id] = state
+        if old_state is not None:
+            self._retire_session(old_state)
+        return {"sessionId": runtime.active_session.id}
 
     def _handle_session_load(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = str(params.get("sessionId", "")).strip()
         if not session_id:
             raise ValueError("Missing sessionId")
-        session, messages = Session.load(session_id)
         raw_cwd = params.get("cwd")
         cwd = Path(raw_cwd).expanduser().resolve() if raw_cwd else Path.cwd().resolve()
 
-        kernel = KernelClient(cwd=cwd)
-        kernel.start()
-        kernel.configure(headless=False, background_check_every=self._background_check_every)
-        try:
-            restored_notice = session.restore_kernel(kernel, root=cwd)
-            if restored_notice:
-                messages.append({"role": "user", "content": restored_notice})
+        factory = self._ensure_client_tuple if self._client_factory is not None else None
+        options = BootstrapOptions(
+            cwd=cwd,
+            resume_id=session_id,
+            origin="acp",
+            transport="acp",
+            headless=False,
+            progress_every=self._progress_every,
+            background_check_every=self._background_check_every,
+            compact_reserve_tokens=self._compact_reserve_tokens,
+            keep_recent_tokens=self._keep_recent_tokens,
+            max_context_tokens=self._max_context_tokens,
+            client_factory=factory,
+            kernel_factory=KernelClient,
+        )
+        runtime, _ = self._build_runtime_fn(options)
+        state = _ActiveSession(runtime=runtime, system_prompt_base=runtime.system_prompt)
+        append = _extract_system_prompt_append(params)
+        if append:
+            state.apply_system_prompt_append(append)
 
-            system_prompt = build_system_prompt(cwd)
-            append = _extract_system_prompt_append(params)
-            if append:
-                system_prompt = f"{system_prompt}\n\n{append}"
-            state = _ActiveSession(
-                session=session,
-                kernel=kernel,
-                cwd=cwd,
-                system_prompt=system_prompt,
-                messages=messages,
-                usage=TurnUsage.from_dict(session.last_usage),
-            )
-            with self._sessions_lock:
-                old_state = self._sessions.pop(session.id, None)
-                self._sessions[session.id] = state
-            if old_state is not None:
-                self._retire_session(old_state)
-        except BaseException:
-            kernel.close()
-            raise
+        with self._sessions_lock:
+            old_state = self._sessions.pop(runtime.active_session.id, None)
+            self._sessions[runtime.active_session.id] = state
+        if old_state is not None:
+            self._retire_session(old_state)
 
-        for msg in messages:
+        for msg in runtime.messages:
             role = msg.get("role")
             content = msg.get("content")
             if not content:
                 continue
             if role == "user":
                 self._send_update(
-                    session.id,
+                    runtime.active_session.id,
                     {
                         "sessionUpdate": "user_message_chunk",
                         "content": {"type": "text", "text": content_to_text(content)},
@@ -328,14 +415,14 @@ class ACPServer:
                 )
             elif role == "assistant":
                 self._send_update(
-                    session.id,
+                    runtime.active_session.id,
                     {
                         "sessionUpdate": "agent_message_chunk",
                         "content": {"type": "text", "text": str(content)},
                     },
                 )
 
-        return {"sessionId": session.id}
+        return {"sessionId": runtime.active_session.id}
 
     def _handle_session_list(self, params: dict[str, Any]) -> dict[str, Any]:
         raw_cwd = params.get("cwd")
@@ -358,37 +445,21 @@ class ACPServer:
         with state.prompt_lock:
             state.abort_event.clear()
             prompt_content = _extract_prompt_content(params.get("prompt"))
-            state.messages.append({"role": "user", "content": prompt_content})
+            state.runtime.messages.append({"role": "user", "content": prompt_content})
 
-            client, model, effort = self._ensure_client()
-            observer = _AcpObserver(self, session_id)
+            observer = _AcpObserver(self, session_id, runtime=state.runtime)
+            outcome = self._runner(
+                state.runtime,
+                observer,
+                abort_event=state.abort_event,
+                loop_fn=agent_loop,
+            )
 
-            try:
-                _, updated_msgs, _ = agent_loop(
-                    client,
-                    model,
-                    state.system_prompt,
-                    state.messages,
-                    state.kernel,
-                    max_context_tokens=self._max_context_tokens or 128_000,
-                    compact_reserve_tokens=self._compact_reserve_tokens,
-                    keep_recent_tokens=self._keep_recent_tokens,
-                    observer=observer,
-                    usage_stats=state.usage,
-                    initial_prompt_tokens=state.usage.prompt_tokens,
-                    effort=effort,
-                    abort_event=state.abort_event,
-                    progress_every=self._progress_every,
-                )
-                state.messages = updated_msgs
-                state.session.save_messages(state.messages)
-                if state.usage.prompt_tokens > 0 or state.usage.total_prompt_tokens > 0:
-                    state.session.save_usage(state.usage.to_dict())
-                state.session.save_kernel(state.kernel)
-                return {"stopReason": "end_turn"}
-            except (KeyboardInterrupt, TurnAborted):
-                state.session.save_messages(state.messages)
+            if outcome.status == TurnStatus.ERROR and outcome.error is not None:
+                raise outcome.error
+            if outcome.status in (TurnStatus.ABORTED, TurnStatus.INTERRUPTED):
                 return {"stopReason": "cancelled"}
+            return {"stopReason": "end_turn"}
 
     def _handle_session_cancel(self, params: dict[str, Any]) -> None:
         session_id = str(params.get("sessionId", "")).strip()
@@ -475,9 +546,12 @@ class ACPServer:
             with self._sessions_lock:
                 for state in self._sessions.values():
                     try:
-                        if state.messages:
+                        state.runtime.wait_snapshot()
+                        if state.messages and not state.runtime.headless and state.kernel.dirty:
                             state.session.save_kernel(state.kernel)
                     except Exception:
                         pass
                     state.kernel.close()
+                    with contextlib.suppress(Exception):
+                        state.runtime.client.close()
                 self._sessions.clear()
