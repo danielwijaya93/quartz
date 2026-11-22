@@ -170,8 +170,9 @@ def load_mcp_servers(
 ) -> dict[str, dict[str, Any]]:
     """Discover enabled MCP servers: global config (or MCP_CONFIG) plus trusted `<cwd>/.quartz/mcp.json`.
 
-    Global entries always take precedence over project entries of the same name.
-    Untrusted projects' `.quartz/mcp.json` files are skipped with a warning.
+    Trusted project `.quartz/mcp.json` entries override global entries of the same name
+    (matching `.quartz/helpers.py`). Untrusted projects' `.quartz/mcp.json` files are
+    skipped with a warning.
     """
     global_raw = load_raw_mcp_config()
     merged = dict(global_raw)
@@ -180,9 +181,7 @@ def load_mcp_servers(
         if project_path != default_mcp_config_path() and project_path.is_file():
             is_trusted = is_project_trusted(cwd) if trusted is None else trusted
             if is_trusted:
-                for name, spec in load_raw_mcp_config(project_path).items():
-                    if name not in global_raw:
-                        merged[name] = spec
+                merged.update(load_raw_mcp_config(project_path))
             else:
                 warnings.warn(
                     f"Skipped untrusted project MCP config at {project_path}. "

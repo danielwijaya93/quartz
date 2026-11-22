@@ -155,3 +155,36 @@ def test_trusted_projects_persistence_and_env_override(
     monkeypatch.setenv("QUARTZ_TRUST_PROJECT", "1")
     assert is_project_trusted(untrusted) is True
     assert str(untrusted.resolve()) not in load_trusted_projects()
+
+
+def test_project_trust_files_and_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from quartz.settings import project_trust_files, project_trust_status
+
+    cfg = tmp_path / "config.json"
+    monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(cfg))
+    monkeypatch.delenv("QUARTZ_TRUST_PROJECT", raising=False)
+    monkeypatch.setenv("QUARTZ_GLOBAL_HELPERS", str(tmp_path / "global_helpers.py"))
+    monkeypatch.setenv("MCP_CONFIG", str(tmp_path / "global_mcp.json"))
+
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    assert project_trust_files(clean) == []
+    assert project_trust_status(clean)["needsTrust"] is False
+
+    proj = tmp_path / "proj"
+    (proj / ".quartz").mkdir(parents=True)
+    (proj / ".quartz" / "helpers.py").write_text("def hi(): return 1\n", encoding="utf-8")
+    (proj / ".quartz" / "mcp.json").write_text('{"mcpServers": {}}\n', encoding="utf-8")
+
+    status = project_trust_status(proj)
+    assert status["cwd"] == str(proj.resolve())
+    assert status["trusted"] is False
+    assert status["files"] == [".quartz/helpers.py", ".quartz/mcp.json"]
+    assert status["needsTrust"] is True
+
+    trust_project(proj)
+    after = project_trust_status(proj)
+    assert after["trusted"] is True
+    assert after["needsTrust"] is False

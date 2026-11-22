@@ -236,6 +236,49 @@ def trust_project(cwd: Path | str, path: Path | None = None) -> Path:
     return update_config_json(_add, path=path)
 
 
+def project_trust_files(cwd: Path | str) -> list[str]:
+    """Return project-local `.quartz/` files in `cwd` that require trust."""
+    target = Path(cwd).expanduser().resolve()
+    files: list[str] = []
+
+    env_helpers = os.getenv("QUARTZ_GLOBAL_HELPERS")
+    global_helpers = (
+        Path(env_helpers).expanduser() if env_helpers else Path.home() / ".quartz" / "helpers.py"
+    ).resolve()
+    project_helpers = target / ".quartz" / "helpers.py"
+    try:
+        if project_helpers.is_file() and project_helpers.resolve() != global_helpers:
+            files.append(".quartz/helpers.py")
+    except OSError:
+        pass
+
+    env_mcp = os.getenv("MCP_CONFIG")
+    global_mcp = (
+        Path(env_mcp).expanduser() if env_mcp else Path.home() / ".quartz" / "mcp.json"
+    ).resolve()
+    project_mcp = target / ".quartz" / "mcp.json"
+    try:
+        if project_mcp.is_file() and project_mcp.resolve() != global_mcp:
+            files.append(".quartz/mcp.json")
+    except OSError:
+        pass
+
+    return files
+
+
+def project_trust_status(cwd: Path | str, path: Path | None = None) -> dict[str, Any]:
+    """Return `{cwd, trusted, files, needsTrust}` for `cwd`."""
+    target = Path(cwd).expanduser().resolve()
+    files = project_trust_files(target)
+    trusted = is_project_trusted(target, path=path)
+    return {
+        "cwd": str(target),
+        "trusted": trusted,
+        "files": files,
+        "needsTrust": bool(files) and not trusted,
+    }
+
+
 def save_settings(settings: Settings, path: Path | None = None) -> Path:
     """Persist settings, merging into the existing config (preserves provider/model/effort)."""
 

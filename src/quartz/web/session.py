@@ -33,6 +33,7 @@ from quartz.core.commands import (
 )
 from quartz.core.images import ImageAttachment, build_user_content
 from quartz.core.session import Session
+from quartz.settings import project_trust_status, trust_project
 from quartz.core.turn import TurnOutcome, TurnStatus, run_interactive_turn
 from quartz.web.bridge import Frame, Push, WebObserver
 
@@ -204,6 +205,19 @@ class WebSession:
             raise ValueError("Invalid sessionId")
         self._retire()
         self._swap(*self._build(cleaned, self._resume_cwd(cleaned)))
+
+    def trust_current_project(self) -> None:
+        """Persist trust for the active session's cwd and rebuild the runtime."""
+        with self._lock:
+            if self._turn is not None:
+                raise TurnBusyError("Cannot trust and reload while a turn is running.")
+        runtime = self.runtime
+        target_cwd = runtime.cwd
+        sid = runtime.active_session.id
+        has_log = runtime.active_session.jsonl_path.is_file()
+        trust_project(target_cwd)
+        self._retire()
+        self._swap(*self._build(sid if has_log else None, target_cwd))
 
     def _resume_cwd(self, session_id: str) -> Path:
         """The folder to resume in: the log's own `meta.cwd`, or the server's.
@@ -581,6 +595,7 @@ class WebSession:
             # on the writer's screen is on the reader's too -- and then appends the
             # live deltas that follow, rather than showing a reply that restarts.
             "streamingText": streaming,
+            "projectTrust": project_trust_status(runtime.cwd),
             "commands": self.commands(),
         }
 

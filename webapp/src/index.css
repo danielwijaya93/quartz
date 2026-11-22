@@ -371,3 +371,13 @@
     border-color: transparent !important;
   }
 }
+
+/* Stop scroll gestures in native modal dialogs from chaining to the page behind them. */
+dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+}

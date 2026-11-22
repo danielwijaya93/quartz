@@ -15,7 +15,7 @@ from rich.text import Text
 from quartz.bootstrap import BootstrapOptions, build_runtime
 from quartz.tui.commands import _handle_slash_command
 from quartz.errors import CredentialError, EndpointConfigError, SessionNotFoundError
-from quartz.settings import load_settings
+from quartz.settings import load_settings, project_trust_status, trust_project
 from quartz.core.images import (
     ImageAttachment,
     build_user_content,
@@ -188,6 +188,31 @@ def _bootstrap_options(args: argparse.Namespace) -> BootstrapOptions:
     )
 
 
+def _maybe_prompt_project_trust(args: argparse.Namespace) -> None:
+    """Prompt once in interactive TTY mode when an untrusted folder has `.quartz/` config."""
+    if args.prompt or args.acp or getattr(args, "trust_project", False):
+        return
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return
+    cwd = args.cwd.expanduser().resolve()
+    status = project_trust_status(cwd)
+    if not status["needsTrust"]:
+        return
+
+    from quartz.tui.modals import _pick_option
+
+    found = ", ".join(status["files"])
+    choice = _pick_option(
+        f"Trust {_short_path(cwd)}? Found {found}",
+        [
+            ("trust", "Yes, trust this folder (remember and load .quartz/ config)"),
+            ("skip", "No, keep untrusted for now (skip .quartz/ config)"),
+        ],
+    )
+    if choice == "trust":
+        trust_project(cwd)
+
+
 def _build_runtime(args: argparse.Namespace) -> tuple[AgentRuntime, bool]:
     """Build the runtime for a terminal run, or exit 1 with the same red line as before.
 
@@ -343,6 +368,7 @@ def main() -> None:
         server.serve()
         return
 
+    _maybe_prompt_project_trust(args)
     rt, resumed = _build_runtime(args)
     try:
         if args.prompt:

@@ -201,12 +201,12 @@ def test_global_mcp_config_wins_over_project_and_untrusted_is_skipped(
     assert set(untrusted_servers) == {"a", "b", "c"}
     assert "d" not in untrusted_servers
 
-    # Trusted project: new server 'd' is added, but global 'a' and 'b' cannot be overridden/disabled.
+    # Trusted project: new server 'd' is added, 'a' overrides global, 'b' is disabled.
     monkeypatch.setenv("QUARTZ_TRUST_PROJECT", "1")
     servers = load_mcp_servers(project)
-    assert servers["a"]["command"] == "ga"
-    assert "b" in servers
-    assert set(servers) == {"a", "b", "c", "d"}
+    assert servers["a"]["command"] == "pa"
+    assert "b" not in servers
+    assert set(servers) == {"a", "c", "d"}
     assert set(load_mcp_servers()) == {"a", "b", "c"}
     assert set(load_mcp_servers(tmp_path / "empty")) == {"a", "b", "c"}
 

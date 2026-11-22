@@ -16,6 +16,7 @@ import type {
   CommandResult,
   ImageAttachment,
   Message,
+  ProjectTrustState,
   ServerMessage,
   TurnEndStatus,
 } from "../protocol";
@@ -148,6 +149,7 @@ export interface SessionMeta {
   model: string;
   effort: string;
   commands: Command[];
+  projectTrust: ProjectTrustState | null;
 }
 
 export interface TranscriptState {
@@ -179,6 +181,7 @@ export const EMPTY_SESSION: SessionMeta = {
   model: "",
   effort: "",
   commands: [],
+  projectTrust: null,
 };
 
 const INITIAL_ROWS: Row[] = [];
@@ -636,6 +639,7 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
           model: message.model,
           effort: message.effort,
           commands: message.commands,
+          projectTrust: message.projectTrust ?? null,
         },
         status: message.turnRunning ? merged.status : null,
       };

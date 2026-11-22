@@ -8,6 +8,7 @@ import { FolderSidebar } from "./components/FolderSidebar";
 import { SidebarDrawer } from "./components/SidebarDrawer";
 import { FolderPicker } from "./components/FolderPicker";
 import { SessionArchiveDialog } from "./components/SessionArchiveDialog";
+import { TrustFolderDialog } from "./components/TrustFolderDialog";
 import { useQuartz } from "./useQuartz";
 import { useCommandPalette } from "./lib/useCommandPalette";
 import { useOpenUISystemPrompt, useRichUiMode } from "./lib/useRichUi";
@@ -51,6 +52,13 @@ export function App(): React.ReactElement {
 
   const [picker, setPicker] = React.useState<PickerMode | null>(null);
   const [archiveOpen, setArchiveOpen] = React.useState(false);
+  const [dismissedTrustCwds, setDismissedTrustCwds] = React.useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const projectTrust = quartz.state.session.projectTrust;
+  const trustPromptOpen = Boolean(
+    projectTrust?.needsTrust && !dismissedTrustCwds.has(projectTrust.cwd),
+  );
 
   /**
    * The control the archive dialog was opened from.
@@ -225,6 +233,17 @@ export function App(): React.ReactElement {
         onImport={sidebar.importSession}
         onRestore={sidebar.restore}
         returnFocusTo={archiveOpener}
+      />
+
+      <TrustFolderDialog
+        open={trustPromptOpen}
+        cwd={projectTrust?.cwd ?? ""}
+        files={projectTrust?.files ?? []}
+        onTrust={() => quartz.trustProject()}
+        onDismiss={() => {
+          if (!projectTrust) return;
+          setDismissedTrustCwds((prev) => new Set(prev).add(projectTrust.cwd));
+        }}
       />
     </div>
   );
