@@ -205,17 +205,7 @@ _PORT_SUGGEST_SPAN = 20
 
 
 def _can_bind(host: str, port: int) -> bool:
-    """Whether a TCP listener could take ``host:port`` right now.
-
-    Two probes, strict first. The plain bind is what catches a held port on every
-    platform -- ``SO_REUSEADDR`` can let that bind through on some of them, which
-    would turn a conflict into a false all-clear. The second probe then clears a
-    port that is merely lingering in ``TIME_WAIT`` after a restart: uvicorn sets
-    the option itself in its own ``bind_socket``, so it would bind there and
-    refusing would be a false alarm.
-    """
-    if _bind_once(host, port, reuse=False):
-        return True
+    """Whether a TCP listener could take ``host:port`` right now."""
     return _bind_once(host, port, reuse=True)
 
 
@@ -463,12 +453,20 @@ def _handle_web_cli(argv: list[str]) -> None:
         action="store_true",
         help="API-only: serve no built client, for use with `npm run dev` in webapp/.",
     )
+    parser.add_argument(
+        "--trust-project",
+        action="store_true",
+        help="Trust project-local .quartz/helpers.py and .quartz/mcp.json in --cwd.",
+    )
     args = parser.parse_args(argv)
 
     cwd = args.cwd.expanduser().resolve()
     if not cwd.is_dir():
         console.print(f"[red]Error: --cwd is not a directory: {escape(str(cwd))}[/red]")
         sys.exit(2)
+
+    if args.trust_project:
+        os.environ["QUARTZ_TRUST_PROJECT"] = "1"
 
     # Probe the bind before anything is built or served: a doomed server that
     # prints a URL and then dies reads as "Quartz started" for as long as it takes
@@ -551,16 +549,18 @@ def _open_browser_when_ready(host: str, port: int, timeout: float = 15.0) -> Non
     import webbrowser
 
     target = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
-    url = f"http://{target}:{port}/"
+    url_host = f"[{target}]" if ":" in target else target
+    url = f"http://{url_host}:{port}/"
 
     def _wait() -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-                probe.settimeout(0.25)
-                if probe.connect_ex((target, port)) == 0:
+            try:
+                with socket.create_connection((target, port), timeout=0.25):
                     webbrowser.open(url)
                     return
+            except OSError:
+                pass
             time.sleep(0.1)
 
     threading.Thread(target=_wait, name="quartz-web-open", daemon=True).start()

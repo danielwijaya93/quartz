@@ -276,3 +276,58 @@ def test_an_aborted_turn_keeps_what_it_had_already_written(tmp_path: Path) -> No
     assert assistant, "the aborted turn's text was discarded"
     assert "Loom weaving began" in str(assistant[-1]["content"])
     assert "interrupted" in str(assistant[-1]["content"])
+
+
+def test_streaming_text_resets_on_tool_call_between_steps(tmp_path: Path) -> None:
+    gate = threading.Event()
+    started = threading.Event()
+
+    def runner(rt: AgentRuntime, view: Any, **_: Any) -> TurnOutcome:
+        del rt
+        view.on_text_delta("Step 1")
+        view.on_tool_call("call-1", "1+1")
+        view.on_text_delta("Step 2")
+        started.set()
+        gate.wait(timeout=5.0)
+        return TurnOutcome(TurnStatus.OK, elapsed_s=0.0)
+
+    runtime = _runtime(tmp_path)
+    session = WebSession(
+        build=lambda session_id, cwd=None: (runtime, False), cwd=tmp_path, runner=runner
+    )
+    _loaded(session)
+    session.start_turn("go", [])
+    try:
+        assert started.wait(timeout=5.0)
+        assert session.snapshot()["streamingText"] == "Step 2"
+    finally:
+        gate.set()
+        _wait_until(lambda: session.turn_running is False)
+
+
+def test_retire_waits_for_snapshot_and_closes_client(tmp_path: Path) -> None:
+    events: list[str] = []
+
+    class _TrackedClient:
+        def close(self) -> None:
+            events.append("client_close")
+
+    runtime = _runtime(tmp_path)
+    runtime.client = _TrackedClient()  # type: ignore[assignment]
+    runtime.wait_snapshot = lambda: events.append("wait_snapshot")  # type: ignore[method-assign]
+    runtime.kernel.dirty = True  # type: ignore[misc]
+    runtime.messages.append({"role": "user", "content": "hi"})
+    runtime.active_session.save_kernel = lambda k: events.append("save_kernel")  # type: ignore[method-assign]
+    orig_kernel_close = runtime.kernel.close
+
+    def _kernel_close() -> None:
+        events.append("kernel_close")
+        orig_kernel_close()
+
+    runtime.kernel.close = _kernel_close  # type: ignore[method-assign]
+
+    session = WebSession(build=lambda session_id, cwd=None: (runtime, False), cwd=tmp_path)
+    _loaded(session)
+    session.close()
+
+    assert events == ["wait_snapshot", "save_kernel", "kernel_close", "client_close"]

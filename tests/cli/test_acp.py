@@ -716,3 +716,47 @@ def test_acp_session_list_cursor_pagination(tmp_path: Path, monkeypatch) -> None
     # Unknown cursor degrades to an empty page, not an error.
     page3, _ = Session.list_all(cwd, cursor="no-such-session")
     assert page3 == []
+
+
+def test_acp_session_load_closes_kernel_on_restore_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import quartz.cli.acp as acp_mod
+    from quartz.core.session import Session
+
+    monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
+    s = Session.create(tmp_path)
+    s.save_messages([{"role": "user", "content": "hi"}])
+
+    created_kernels: list[Any] = []
+
+    class _TrackingKernel:
+        def __init__(self, cwd: Path) -> None:
+            self.cwd = cwd
+            self.started = False
+            self.closed = False
+            created_kernels.append(self)
+
+        def start(self) -> None:
+            self.started = True
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(acp_mod, "KernelClient", _TrackingKernel)
+    monkeypatch.setattr(
+        Session,
+        "restore_kernel",
+        lambda self, kernel, root=None: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    server = ACPServer(_make_fake_client, in_stream=io.StringIO(), out_stream=io.StringIO())
+    try:
+        server._handle_session_load({"sessionId": s.id, "cwd": str(tmp_path)})
+        assert False, "expected RuntimeError"
+    except RuntimeError:
+        pass
+
+    assert len(created_kernels) == 1
+    assert created_kernels[0].started is True
+    assert created_kernels[0].closed is True

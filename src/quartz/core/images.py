@@ -111,9 +111,16 @@ def _read_clipboard_with(kind: str, list_cmd: list[str], fetch_cmd: list[str]) -
 
 def load_clipboard_image() -> ImageAttachment:
     """Capture an image from the system clipboard (Wayland wl-paste or X11 xclip)."""
+    last_exc: Exception | None = None
     for tool, kind, list_cmd, fetch_cmd in _CLIPBOARD_TOOLS:
-        if shutil.which(tool):
+        if not shutil.which(tool):
+            continue
+        try:
             return _read_clipboard_with(kind, list_cmd, fetch_cmd)
+        except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
+            last_exc = exc
+    if last_exc is not None:
+        raise last_exc
     raise RuntimeError("Clipboard image paste requires 'wl-paste' (Wayland) or 'xclip' (X11).")
 
 

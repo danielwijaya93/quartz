@@ -409,3 +409,37 @@ def test_adapter_maps_trust_project_flag() -> None:
     assert opts.trust_project is True
     default_opts = cli._bootstrap_options(_namespace())
     assert default_opts.trust_project is False
+
+
+def test_resuming_old_session_restores_and_preserves_its_snapshot(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import time
+
+    from quartz.core.session import Session
+
+    monkeypatch.setattr(bootstrap, "build_provider", _stub_provider)
+    sessions_dir = env / "sessions"
+    sess = Session.create(env, sessions_dir=sessions_dir)
+    sess.save_messages([{"role": "user", "content": "hi"}])
+    snap_dir = sessions_dir / f"{sess.id}.snapshot"
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    (snap_dir / "state.pkl").write_bytes(b"snapshot")
+
+    old_ts = time.time() - 10 * 86400
+    os.utime(sess.jsonl_path, (old_ts, old_ts))
+    os.utime(snap_dir, (old_ts, old_ts))
+
+    restored_calls: list[str] = []
+    monkeypatch.setattr(
+        Session,
+        "restore_kernel",
+        lambda self, k, root=None: restored_calls.append(self.id) or "[restored]",
+    )
+
+    rt, resumed = bootstrap.build_runtime(_options(env, resume_id=sess.id))
+    assert resumed is True
+    assert rt.active_session.id == sess.id
+    assert restored_calls == [sess.id]
+    assert snap_dir.is_dir()

@@ -99,6 +99,7 @@ def prune_snapshots(
     *,
     dry_run: bool = False,
     now: float | None = None,
+    exclude_ids: set[str] | frozenset[str] = frozenset(),
 ) -> PruneResult:
     """Delete kernel snapshots whose session has not been touched in `older_than_days`.
 
@@ -122,7 +123,7 @@ def prune_snapshots(
     errors = 0
 
     for snap in sorted(root.glob("*.snapshot")):
-        if not snap.is_dir() or snap.is_symlink():
+        if not snap.is_dir() or snap.is_symlink() or snap.stem in exclude_ids:
             continue
         # The session's own mtime, not the snapshot's: a session resumed yesterday
         # rewrites its snapshot but its `.jsonl` is what a user would call "recent".
@@ -160,7 +161,7 @@ def _is_dir(path: str) -> bool:
 
 @dataclasses.dataclass(frozen=True)
 class _SessionFacts:
-    """The three things a session list needs, without loading the transcript.
+    """What a session list needs, without loading the full transcript.
 
     `origin` is `"cli"` when the record has none, which is what every session
     written before the field existed is: a terminal session.
@@ -169,6 +170,36 @@ class _SessionFacts:
     has_messages: bool
     cwd: str | None
     origin: str
+    preview: str = ""
+
+
+def _safe_mtime(path: Path) -> float | None:
+    """Return mtime for `path`, or None if the file vanished or is unreadable."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _sorted_jsonl_files(root: Path) -> list[tuple[Path, float]]:
+    """Return `(path, mtime)` pairs sorted newest-first, skipping vanished files."""
+    items: list[tuple[Path, float]] = []
+    for path in root.glob("*.jsonl"):
+        mtime = _safe_mtime(path)
+        if mtime is not None:
+            items.append((path, mtime))
+    items.sort(key=lambda item: item[1], reverse=True)
+    return items
+
+
+def _preview_from_message(msg: Any) -> str:
+    """Extract a one-line preview from a user message dict, or `""`."""
+    if not isinstance(msg, dict) or msg.get("role") != "user":
+        return ""
+    text = content_to_text(msg.get("content", "")).strip().replace("\n", " ")
+    if text and not text.startswith("["):
+        return (text[:70] + "...") if len(text) > 70 else text
+    return ""
 
 
 def _resolve_session_paths(session_id: str, sessions_dir: Path) -> tuple[Path, Path]:
@@ -242,11 +273,12 @@ class Session:
 
     @classmethod
     def _inspect_session(cls, jsonl_path: Path) -> _SessionFacts:
-        """Read what a listing needs from a session JSONL file, cheaply."""
+        """Read what a listing needs from a session JSONL file in a single pass."""
         has_msgs = False
         session_cwd: str | None = None
         origin = ORIGIN_CLI
         seen_meta = False
+        preview = ""
         try:
             with jsonl_path.open("r", encoding="utf-8") as fh:
                 for raw_line in fh:
@@ -260,13 +292,22 @@ class Session:
                         session_cwd = rec.get("cwd")
                         raw_origin = rec.get("origin")
                         origin = raw_origin if raw_origin in _ORIGINS else ORIGIN_CLI
-                    elif rec_type in ("message", "compaction"):
+                    elif rec_type == "message":
                         has_msgs = True
-                    if session_cwd is not None and has_msgs:
+                        if not preview:
+                            preview = _preview_from_message(rec.get("message"))
+                    elif rec_type == "compaction":
+                        has_msgs = True
+                        if not preview:
+                            for msg in rec.get("messages") or ():
+                                preview = _preview_from_message(msg)
+                                if preview:
+                                    break
+                    if seen_meta and has_msgs and preview:
                         break
         except (OSError, json.JSONDecodeError):
-            return _SessionFacts(False, None, ORIGIN_CLI)
-        return _SessionFacts(has_msgs, session_cwd, origin)
+            return _SessionFacts(False, None, ORIGIN_CLI, "")
+        return _SessionFacts(has_msgs, session_cwd, origin, preview)
 
     @classmethod
     def recorded_cwd(cls, session_id: str, sessions_dir: Path | None = None) -> str | None:
@@ -294,8 +335,7 @@ class Session:
         if not root.is_dir():
             return None
         target_cwd = str(cwd.resolve()) if cwd is not None else None
-        files = sorted(root.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-        for f in files:
+        for f, _mtime in _sorted_jsonl_files(root):
             facts = cls._inspect_session(f)
             if not facts.has_messages:
                 continue
@@ -313,9 +353,8 @@ class Session:
         if not root.is_dir():
             return []
         target_cwd = str(cwd.resolve())
-        files = sorted(root.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
         results: list[dict[str, Any]] = []
-        for f in files:
+        for f, mtime_val in _sorted_jsonl_files(root):
             session_cwd: str | None = None
             msgs: list[dict[str, Any]] = []
             try:
@@ -349,7 +388,7 @@ class Session:
                 ),
                 "",
             )
-            mtime = datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            mtime = datetime.fromtimestamp(mtime_val).strftime("%Y-%m-%d %H:%M")
             results.append(
                 {
                     "id": f.stem,
@@ -389,11 +428,10 @@ class Session:
         if not root.is_dir():
             return [], None
         target_cwd = str(cwd.resolve()) if cwd is not None else None
-        files = sorted(root.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
         results: list[dict[str, Any]] = []
         seen_cursor = cursor is None
         next_cursor: str | None = None
-        for f in files:
+        for f, mtime in _sorted_jsonl_files(root):
             if not seen_cursor:
                 if f.stem == cursor:
                     seen_cursor = True
@@ -403,8 +441,6 @@ class Session:
                 continue
             if target_cwd is not None and facts.cwd != target_cwd:
                 continue
-            preview = cls._session_preview(f)
-            mtime = f.stat().st_mtime
             entry: dict[str, Any] = {
                 "sessionId": f.stem,
                 "cwd": facts.cwd,
@@ -412,39 +448,14 @@ class Session:
                 "origin": facts.origin,
                 "cwdExists": _is_dir(facts.cwd),
             }
-            if preview:
-                entry["title"] = preview
+            if facts.preview:
+                entry["title"] = facts.preview
             if limit is None or len(results) < limit:
                 results.append(entry)
             else:
                 next_cursor = results[-1]["sessionId"] if results else None
                 break
         return results, next_cursor
-
-    @classmethod
-    def _session_preview(cls, jsonl_path: Path) -> str:
-        """Best-effort one-line preview from the first non-empty user message."""
-        try:
-            with jsonl_path.open("r", encoding="utf-8") as fh:
-                for raw_line in fh:
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rec = json.loads(line)
-                    except json.JSONDecodeError:
-                        return ""
-                    if rec.get("type") != "message":
-                        continue
-                    msg = rec.get("message")
-                    if not isinstance(msg, dict) or msg.get("role") != "user":
-                        continue
-                    text = content_to_text(msg.get("content", "")).strip().replace("\n", " ")
-                    if text and not text.startswith("["):
-                        return (text[:70] + "...") if len(text) > 70 else text
-        except OSError:
-            return ""
-        return ""
 
     @classmethod
     def load(cls, session_id: str, sessions_dir: Path | None = None) -> tuple[Session, list[dict[str, Any]]]:
@@ -475,6 +486,7 @@ class Session:
                     session.steering_indices.add(len(messages) - 1)
             elif rec_type == "compaction" and isinstance(record.get("messages"), list):
                 messages = list(record["messages"])
+                session.steering_indices.clear()
                 ui_meta = record.get("ui_meta")
                 if isinstance(ui_meta, dict):
                     if isinstance(ui_meta.get("cell_meta"), dict):
@@ -544,6 +556,7 @@ class Session:
             for i in range(self._persisted_count)
         )
         if compacted or prefix_changed:
+            self.steering_indices.clear()
             rec: dict[str, Any] = {"type": "compaction", "messages": messages}
             if self.cell_meta or self.steering_indices:
                 rec["ui_meta"] = {

@@ -32,12 +32,16 @@ class FakeKernel:
 
     def __init__(self) -> None:
         self.interrupts = 0
+        self.restarts = 0
         self.closed = False
         self.jobs: list[dict[str, object]] = []
         self.vars: dict[str, str] = {}
 
     def interrupt(self) -> None:
         self.interrupts += 1
+
+    def restart(self) -> None:
+        self.restarts += 1
 
     def close(self) -> None:
         self.closed = True

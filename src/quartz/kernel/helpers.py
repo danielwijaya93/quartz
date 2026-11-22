@@ -137,11 +137,12 @@ def _rg_python(pattern: str, path: str, glob: str | None, max_hits: int, fixed: 
 
 def rg(pattern: str, path: str = ".", glob: str | None = None, max_hits: int = 100, fixed: bool = False) -> str:
     """Search files for a regex pattern (or literal string if fixed=True) and return `file:line:text` matches."""
-    if not Path(path).expanduser().exists():
+    expanded_path = str(Path(path).expanduser())
+    if not Path(expanded_path).exists():
         return f"Path not found: {path}"
     if shutil.which("rg"):
-        return _rg_external(pattern, path, glob, max_hits, fixed)
-    return _rg_python(pattern, path, glob, max_hits, fixed)
+        return _rg_external(pattern, expanded_path, glob, max_hits, fixed)
+    return _rg_python(pattern, expanded_path, glob, max_hits, fixed)
 
 
 def read(path: str, start: int = 1, end: int = 200) -> str:

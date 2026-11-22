@@ -134,15 +134,6 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
         if kernel_err:
             raise kernel_err[0]
 
-        # Snapshot pruning is opportunistic housekeeping, not a startup step: it runs
-        # after the session resolves so a resumed session's own snapshot is already
-        # known-good, and every failure is swallowed so a read-only or vanishing
-        # sessions dir can never stop a user from starting work.
-        try:
-            prune_snapshots(default_sessions_dir(), older_than_days=settings.snapshot_retention_days)
-        except Exception:  # noqa: BLE001 - housekeeping must not break startup
-            pass
-
         messages: list[dict[str, Any]] = []
         resumed = False
         if options.cont or options.resume_id:
@@ -159,6 +150,19 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
                 messages.append({"role": "user", "content": restored_notice})
         else:
             active_session = Session.create(cwd, origin=options.origin)
+
+        # Snapshot pruning is opportunistic housekeeping, not a startup step: it runs
+        # after the session resolves and restores so a resumed session's own snapshot
+        # is never deleted, and every failure is swallowed so a read-only or vanishing
+        # sessions dir can never stop a user from starting work.
+        try:
+            prune_snapshots(
+                default_sessions_dir(),
+                older_than_days=settings.snapshot_retention_days,
+                exclude_ids={active_session.id},
+            )
+        except Exception:  # noqa: BLE001 - housekeeping must not break startup
+            pass
 
         runtime = AgentRuntime(
             cwd=cwd,
