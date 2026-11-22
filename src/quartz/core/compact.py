@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from quartz.providers.base import LLMProvider
 
 from quartz.core.images import content_to_text
-from quartz.kernel.client import KernelClient
+from quartz.kernel.base import KernelIntrospector
 
 COMPACT_SYSTEM_PROMPT = (
     "You are summarizing an earlier portion of a coding agent's conversation. "
@@ -287,7 +287,7 @@ def compact_messages(
     client: LLMProvider,
     model: str,
     messages: list[dict[str, Any]],
-    kernel: KernelClient,
+    kernel: KernelIntrospector,
     *,
     budget_tokens: int | None = None,
     keep_recent_tokens: int = DEFAULT_KEEP_RECENT_TOKENS,

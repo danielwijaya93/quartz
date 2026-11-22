@@ -17,7 +17,7 @@ from quartz.core.compact import (
 from quartz.core.images import ImageAttachment
 from quartz.core.loop import TurnUsage
 from quartz.core.session import Session
-from quartz.kernel.client import CellResult, KernelClient
+from quartz.kernel.base import CellResult, Kernel
 from quartz.providers.base import LLMProvider
 
 
@@ -26,7 +26,7 @@ class AgentRuntime:
     """Mutable session and UI state for one CLI invocation."""
 
     cwd: Path
-    kernel: KernelClient
+    kernel: Kernel
     client: LLMProvider
     provider_name: str
     model: str
