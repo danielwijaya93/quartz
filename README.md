@@ -251,6 +251,21 @@ Sessions started from the browser are ordinary Quartz sessions: they live in the
 same JSONL log with the same kernel snapshots, so `quartz -c` resumes one and the
 web client can load a terminal session.
 
+The page is **folder-first**, so nothing above needs a terminal. A collapsible
+sidebar lists workspaces (a `cwd`) and the sessions in each one; `+` on a folder
+starts a session there, `+ New` opens a tap-through folder picker (breadcrumbs, a
+filter over the current listing, "New folder"), and clicking a session loads its
+transcript. Sessions can be renamed and archived in place.
+
+The sidebar lists sessions **started in the browser**, plus any session you
+explicitly import. Importing is never automatic: the "Not in sidebar" dialog lists
+everything else, terminal sessions included, with one button per row. Archiving
+hides a row and nothing more — the transcript stays in `~/.quartz/sessions/*.jsonl`
+untouched, and Restore brings it back. That state is the browser's own, in
+`~/.quartz/web/sidebar.json`; the terminal never reads it. `origin` in a session's
+own log (the first line) records which transport created it, so deleting the
+sidebar file loses labels and imports, not history.
+
 **There is no authentication.** The server is a local, single-user tool. Keep
 `--host` on loopback unless you know what is in front of it.
 
@@ -285,11 +300,13 @@ src/quartz/
              `-p` headless mode, flags), `subcommands.py` parses the `mcp` / `auth` /
              `web` arguments and nothing else, `acp.py` is the ACP JSON-RPC 2.0 stdio
              server.
-  web/       app.py  session.py  bridge.py
+  web/       app.py  session.py  bridge.py  sidebar.py  files.py
              The browser transport. `app.py` is the FastAPI app (routes, the one
              WebSocket, static SPA serving), `session.py` owns the runtime and the turn
-             on its own thread, and `bridge.py` is the `TurnObserver` that turns all
-             seven turn events into wire frames.
+             on its own thread, `bridge.py` is the `TurnObserver` that turns all seven
+             turn events into wire frames, `sidebar.py` is the sidebar's own state
+             (`~/.quartz/web/sidebar.json`) and `files.py` the directory listing behind
+             the folder picker.
 webapp/      Vite + React client for `quartz web` (static build, served by the server).
   core/      loop.py  turn.py  events.py  runtime.py  session.py  compact.py
              prompt.py  images.py

@@ -396,7 +396,14 @@ function mergeHistory(state: TranscriptState, messages: Message[]): TranscriptSt
 export function reduce(state: TranscriptState, message: ServerMessage): TranscriptState {
   switch (message.type) {
     case "session_state": {
-      const merged = mergeHistory(state, message.messages);
+      // History rows are identified by their position in *this* session's log, so a
+      // different session's history reuses the same ids. Merging it into what is on
+      // screen would drop every message it shares by position and interleave the
+      // rest -- the sidebar switching sessions is what makes that reachable.
+      const switched =
+        state.session.sessionId !== "" && state.session.sessionId !== message.sessionId;
+      const base = switched ? { ...initialState, session: state.session } : state;
+      const merged = mergeHistory(base, message.messages);
       return {
         ...merged,
         turnRunning: message.turnRunning,

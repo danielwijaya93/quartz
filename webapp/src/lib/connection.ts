@@ -254,8 +254,9 @@ export class Connection {
     return this.send(arg === undefined || arg === "" ? { type: "command", name: bare } : { type: "command", name: bare, arg });
   }
 
-  sendNewSession(): boolean {
-    return this.send({ type: "new_session" });
+  /** Start a fresh session, in `cwd` when the sidebar picked a folder. */
+  sendNewSession(cwd?: string): boolean {
+    return this.send(cwd === undefined ? { type: "new_session" } : { type: "new_session", cwd });
   }
 
   sendLoadSession(sessionId: string): boolean {

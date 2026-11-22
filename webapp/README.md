@@ -91,6 +91,11 @@ src/
     openui/                prompt generation and openui-lang detection
     announcements.ts       rows -> the coarse events a screen reader should hear
     commandText.ts         columnar `kind: "text"` bodies (e.g. /help) -> lists
+    sidebar.ts             pure sidebar model: visibility rule, folder grouping, ages
+    folderPicker.ts        pure picker model: current-listing filter, breadcrumbs
+    sidebarApi.ts          the sidebar/fs endpoints; every mutation returns a snapshot
+    useSidebar.ts          the sidebar's server state, one payload and one load
+    useMediaQuery.ts       rail on a wide screen, drawer on a phone
   components/
     Markdown.tsx           streaming-aware markdown + theme-aware highlighting
     HeaderBar.tsx          session chips, connection chip, Rich UI toggle, theme, New
@@ -102,6 +107,9 @@ src/
     StatusLine.tsx         spinner + status label / reconnect banner
     Composer.tsx           auto-grow textarea, steer-vs-prompt, image attach
     CommandPalette.tsx     Modal + fuzzy filter over session_state.commands
+    FolderSidebar.tsx      folder-first session list: workspaces -> sessions, hover actions
+    FolderPicker.tsx       tap-through folder chooser (breadcrumbs, filter, mkdir)
+    SessionArchiveDialog.tsx  "Not in sidebar": hidden sessions and terminal imports
     rows/                  one component per row kind
 mock/
   script.mjs               the scripted session, pure frame builders

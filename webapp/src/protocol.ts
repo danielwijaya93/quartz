@@ -71,13 +71,18 @@ export type ClientMessage =
    * prompt here when Rich UI is on and omits it when Rich UI is off, so the model
    * is only ever told to emit openui-lang when the renderer is available.
    * Set once for the session; re-sent when the preference changes.
+   *
+   * `cwd` is where the initial session should run, for the folder-first sidebar.
+   * It is honoured only while no session exists yet: `hello` is re-sent on every
+   * preference change, and a re-sent path must not move a live session.
    */
-  | { type: "hello"; clientVersion: number; systemPromptAppend?: string }
+  | { type: "hello"; clientVersion: number; systemPromptAppend?: string; cwd?: string }
   | { type: "prompt"; text: string; images?: ImageAttachment[] }
   | { type: "steer"; text: string }
   | { type: "cancel" }
   | { type: "command"; name: string; arg?: string }
-  | { type: "new_session" }
+  /** `cwd` is the folder picked in the sidebar; omit it for the server's own. */
+  | { type: "new_session"; cwd?: string }
   | { type: "load_session"; sessionId: string };
 
 /* ------------------------------------------------------- server -> client */

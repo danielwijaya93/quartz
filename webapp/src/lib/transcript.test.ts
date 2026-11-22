@@ -413,6 +413,28 @@ describe("session_state and reconnect", () => {
     ]);
   });
 
+  it("retires the previous session's rows when the session id changes", () => {
+    // Switching sessions from the sidebar replays `session_state` for another log,
+    // whose history rows carry the same positional ids. Merging would silently drop
+    // the first message of the new session and leave the old answer on screen.
+    const other: ServerMessage = {
+      ...history,
+      sessionId: "s-2",
+      cwd: "/elsewhere",
+      messages: [
+        { role: "user", content: "other prompt" },
+        { role: "assistant", content: "other answer" },
+      ],
+    };
+
+    const state = fold([history, other]);
+
+    expect(state.session).toMatchObject({ sessionId: "s-2", cwd: "/elsewhere" });
+    expect(state.rows.map((row) => row.kind)).toEqual(["user", "assistant"]);
+    expect(state.rows[0]).toMatchObject({ kind: "user", text: "other prompt" });
+    expect(state.rows[1]).toMatchObject({ kind: "assistant", text: "other answer" });
+  });
+
   it("does not duplicate rows when the same history replays", () => {
     const once = fold([history]);
     const twice = fold([history], once);

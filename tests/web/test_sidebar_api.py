@@ -208,6 +208,11 @@ def test_fs_list_returns_directories_and_a_breadcrumb(app_client: AppClient, tmp
     # Directories only: a file never appears, so its contents are unreachable.
     assert [entry["name"] for entry in body["entries"]] == ["alpha", "beta"]
     assert all(entry["isDir"] is True for entry in body["entries"])
+    # Each row carries its own full path, so the client never joins strings itself.
+    assert [entry["path"] for entry in body["entries"]] == [
+        str(tmp_path / "alpha"),
+        str(tmp_path / "beta"),
+    ]
     assert [crumb["name"] for crumb in body["parents"]][-1] == tmp_path.name
     assert body["parents"][-1]["path"] == str(tmp_path)
     assert body["parents"][0]["path"] == "/"

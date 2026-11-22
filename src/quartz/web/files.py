@@ -35,14 +35,20 @@ __all__ = [
 
 @dataclasses.dataclass(frozen=True)
 class DirectoryEntry:
-    """One row of the picker. `is_dir` is always true today, and stays in the wire
-    shape so the client never has to assume it."""
+    """One row of the picker.
+
+    `path` is the whole child path, so the client never joins a name onto a parent:
+    a client that built paths from strings would be one escaping bug away from
+    reading a different directory than the row it drew. `is_dir` is always true
+    today, and stays in the wire shape so the client never has to assume it.
+    """
 
     name: str
+    path: str
     is_dir: bool = True
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "isDir": self.is_dir}
+        return {"name": self.name, "path": self.path, "isDir": self.is_dir}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -117,7 +123,7 @@ def list_directories(raw: Any, fallback: Path) -> DirectoryListing:
     return DirectoryListing(
         path=str(path),
         parents=_breadcrumbs(path),
-        entries=[DirectoryEntry(name=name) for name in names],
+        entries=[DirectoryEntry(name=name, path=str(path / name)) for name in names],
     )
 
 

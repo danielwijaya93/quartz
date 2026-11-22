@@ -263,8 +263,12 @@ smaller, checkable one.
 
 ```json
 {"path": "/home/x", "parents": [{"name": "home", "path": "/home"}],
- "entries": [{"name": "project", "isDir": true}], "error": null}
+ "entries": [{"name": "project", "path": "/home/x/project", "isDir": true}], "error": null}
 ```
+
+Each entry carries its own full `path` so the client never joins a name onto a
+parent: a client that assembled paths from strings would be one escaping bug away
+from opening a different directory than the row it drew.
 
 What bounds it:
 

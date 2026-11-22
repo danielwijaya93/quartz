@@ -20,7 +20,10 @@ export interface QuartzApi {
   steer: (text: string) => void;
   cancel: () => void;
   runCommand: (name: string, arg?: string) => void;
-  newSession: () => void;
+  /** Start a fresh session. `cwd` is the folder the sidebar picked, if any. */
+  newSession: (cwd?: string) => void;
+  /** Resume a session from the sidebar. Its directory comes from its own log. */
+  loadSession: (sessionId: string) => void;
   /** Persist an OpenUI surface's form state onto the row that rendered it. */
   setFormState: (id: string, formState: Record<string, unknown>) => void;
 }
@@ -94,9 +97,16 @@ export function useQuartz(url?: string, systemPromptAppend = ""): QuartzApi {
     connectionRef.current?.sendCommand(name, arg);
   }, []);
 
-  const newSession = React.useCallback(() => {
+  const newSession = React.useCallback((cwd?: string) => {
     setState((prev) => ({ ...initialState, session: prev.session }));
-    connectionRef.current?.sendNewSession();
+    connectionRef.current?.sendNewSession(cwd);
+  }, []);
+
+  const loadSession = React.useCallback((sessionId: string) => {
+    // No local reset here: the reducer retires the old transcript when
+    // `session_state` arrives for a different session id, which also covers a
+    // session switched from somewhere else.
+    connectionRef.current?.sendLoadSession(sessionId);
   }, []);
 
   const setFormState = React.useCallback(
@@ -106,5 +116,15 @@ export function useQuartz(url?: string, systemPromptAppend = ""): QuartzApi {
     [],
   );
 
-  return { state, status, prompt, steer, cancel, runCommand, newSession, setFormState };
+  return {
+    state,
+    status,
+    prompt,
+    steer,
+    cancel,
+    runCommand,
+    newSession,
+    loadSession,
+    setFormState,
+  };
 }
