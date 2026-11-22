@@ -117,8 +117,16 @@ def get_antigravity_version() -> str:
     return best
 
 
+DEFAULT_CLI_USER_AGENT = (
+    "antigravity/cli/1.5.5 (aidev_client; os_type=linux; arch=amd64; cl=982146307; auth_method=consumer)"
+)
+
+
 def antigravity_user_agent() -> str:
-    return f"antigravity/{get_antigravity_version()} linux/amd64"
+    override = os.getenv("QUARTZ_ANTIGRAVITY_USER_AGENT") or os.getenv("ANTIGRAVITY_USER_AGENT")
+    if override and override.strip():
+        return override.strip()
+    return DEFAULT_CLI_USER_AGENT
 
 
 def generate_pkce() -> tuple[str, str]:

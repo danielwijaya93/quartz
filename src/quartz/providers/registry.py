@@ -80,12 +80,21 @@ PROVIDERS: dict[str, ProviderSpec] = {
         backend="google",
         auth_type="oauth",
         models=(
+            "gemini-4-hydrogen",
+            "gemini-4-neon",
+            "gemini-4-argon",
+            "gemini-3.8-flash",
             "gemini-3.8-flash-medium",
             "gemini-3.8-flash-high",
             "gemini-3.8-flash-low",
             "gemini-3-flash",
             "gemini-2.5-pro",
             "gemini-2.5-flash",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-sonnet-4-6",
+            "claude-opus-4-6",
+            "gpt-oss-120b",
         ),
         efforts=("low", "medium", "high", "xhigh"),
         default_model="gemini-3.8-flash-medium",
@@ -115,6 +124,26 @@ MODEL_CONTEXT_TOKENS: dict[str, int] = {
     "anthropic/claude-sonnet-4": 200_000,
     "openai/gpt-4.1": 1_047_576,
     "google/gemini-2.5-flash": 1_048_576,
+    "gemini-4-hydrogen": 1_048_576,
+    "gemini-4-neon": 1_048_576,
+    "gemini-4-argon": 1_048_576,
+    "gemini-4-hydrogen-high": 1_048_576,
+    "gemini-4-hydrogen-medium": 1_048_576,
+    "gemini-4-hydrogen-low": 1_048_576,
+    "gemini-4-hydrogen-xhigh": 1_048_576,
+    "gemini-4-neon-high": 1_048_576,
+    "gemini-4-neon-medium": 1_048_576,
+    "gemini-4-neon-low": 1_048_576,
+    "gemini-4-neon-xhigh": 1_048_576,
+    "gemini-4-argon-high": 1_048_576,
+    "gemini-4-argon-medium": 1_048_576,
+    "gemini-4-argon-low": 1_048_576,
+    "gemini-3.8-flash": 1_048_576,
+    "claude-opus-5-5": 200_000,
+    "claude-sonnet-5-5": 200_000,
+    "claude-sonnet-4-6": 200_000,
+    "claude-opus-4-6": 200_000,
+    "gpt-oss-120b": 128_000,
     "gemini-3.8-flash-medium": 1_048_576,
     "gemini-3.8-flash-high": 1_048_576,
     "gemini-3.8-flash-low": 1_048_576,
@@ -281,6 +310,12 @@ def clear_models_cache() -> None:
         _MODELS_CACHE.clear()
     with _EFFORT_CACHE_LOCK:
         _MODEL_DETAILS_CACHE.clear()
+    try:
+        from quartz.providers.google import clear_antigravity_catalog_cache
+
+        clear_antigravity_catalog_cache()
+    except ImportError:
+        pass
 
 
 def discover_models(
@@ -297,7 +332,10 @@ def discover_models(
     spec = PROVIDERS.get(provider)
     fallback = list(spec.models) if spec else []
     if spec is not None and spec.backend == "google":
-        return fallback, None
+        from quartz.providers.google import discover_antigravity_models
+
+        discovered = discover_antigravity_models(use_cache=use_cache, timeout=timeout_s)
+        return (discovered, None) if discovered else (fallback, None)
 
     owned_client: LLMProvider | None = None
     cache_key: tuple[str, str] | None = None
