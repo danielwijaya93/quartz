@@ -99,7 +99,7 @@ export function TurnTray({
         isExpanded={open}
         onExpandedChange={handleExpandedChange}
         className={cn(
-          "overflow-hidden rounded-xl transition-colors",
+          "overflow-hidden rounded-lg transition-colors",
           open
             ? "border border-border/70 bg-surface-secondary/35"
             : "border border-transparent bg-transparent hover:bg-surface-secondary/35",
@@ -109,7 +109,7 @@ export function TurnTray({
           {/* The visible text *is* the accessible name: an aria-label would hide
               the failure count from a screen reader, which is the one thing this
               header must never do. `aria-expanded` already says it opens. */}
-          <Disclosure.Trigger className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-xs text-muted">
+          <Disclosure.Trigger className="flex min-h-0 w-full cursor-pointer items-center gap-2 px-2 py-1 text-left text-xs text-muted">
             <Sparkles
               aria-hidden="true"
               className={cn(

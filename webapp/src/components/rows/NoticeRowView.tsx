@@ -35,7 +35,7 @@ export function BashNoticeRowView({ row }: { row: BashNoticeRow }): React.ReactE
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         aria-expanded={open}
-        className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors hover:bg-surface-secondary/40 hover:text-foreground"
+        className="flex min-h-0 w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-0.5 text-left transition-colors hover:bg-surface-secondary/40 hover:text-foreground"
       >
         <ChevronRight
           aria-hidden="true"
@@ -77,7 +77,7 @@ export function SystemNoticeRowView({ row }: { row: SystemNoticeRow }): React.Re
         disabled={!hasBody}
         onClick={() => setOpen((prev) => !prev)}
         aria-expanded={hasBody ? open : undefined}
-        className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors hover:bg-surface-secondary/40 hover:text-foreground disabled:cursor-default disabled:hover:bg-transparent"
+        className="flex min-h-0 w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-0.5 text-left transition-colors hover:bg-surface-secondary/40 hover:text-foreground disabled:cursor-default disabled:hover:bg-transparent"
       >
         {hasBody ? (
           <ChevronRight
