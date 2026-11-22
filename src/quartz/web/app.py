@@ -282,6 +282,88 @@ def create_app(
         )
         return JSONResponse(listing.to_dict())
 
+    # -- model picker ------------------------------------------------------
+
+    @app.get("/api/models")
+    async def get_models() -> JSONResponse:
+        """List current model, configured providers, and available models."""
+        from quartz.providers.registry import PROVIDERS, discover_models, policy_efforts
+        from quartz.providers.selection import _provider_ready, _provider_status_label
+
+        if not session.built:
+            await asyncio.to_thread(session.ensure_runtime)
+
+        current = {
+            "provider": session.runtime.provider_name,
+            "model": session.runtime.model,
+            "effort": session.runtime.effort,
+        }
+
+        providers_data: list[dict[str, Any]] = []
+        for pname, spec in PROVIDERS.items():
+            ready = _provider_ready(pname)
+            status = _provider_status_label(pname)
+            models, _ = await asyncio.to_thread(discover_models, pname)
+            efforts = list(policy_efforts(pname, spec.default_model) or spec.efforts)
+            providers_data.append(
+                {
+                    "id": pname,
+                    "label": spec.label,
+                    "ready": ready,
+                    "status": status,
+                    "models": models,
+                    "efforts": efforts,
+                    "defaultModel": spec.default_model,
+                    "defaultEffort": spec.default_effort,
+                }
+            )
+
+        return JSONResponse(
+            {
+                "current": current,
+                "providers": providers_data,
+            }
+        )
+
+    @app.post("/api/models/select")
+    async def select_model(request: Request) -> JSONResponse:
+        """Switch the session's active provider, model, and effort."""
+        from quartz.core.commands import apply_model_switch
+
+        if not session.built:
+            await asyncio.to_thread(session.ensure_runtime)
+
+        body = await _json_body(request)
+        provider = body.get("provider")
+        model = body.get("model")
+        effort = body.get("effort")
+
+        if not provider or not isinstance(provider, str):
+            return _bad_request("provider is required")
+
+        ok, msg = await asyncio.to_thread(
+            apply_model_switch,
+            session.runtime,
+            provider,
+            model if isinstance(model, str) else None,
+            effort if isinstance(effort, str) else None,
+        )
+
+        if not ok:
+            return JSONResponse({"ok": False, "error": msg}, status_code=400)
+
+        session.emit(session.snapshot())
+
+        return JSONResponse(
+            {
+                "ok": True,
+                "provider": session.runtime.provider_name,
+                "model": session.runtime.model,
+                "effort": session.runtime.effort,
+                "message": msg,
+            }
+        )
+
     @app.websocket("/ws")
     async def websocket(socket: WebSocket) -> None:
         if not _is_allowed_origin(
@@ -424,6 +506,8 @@ async def _dispatch(
             name = str(message.get("name") or "")
             arg = str(message.get("arg") or "")
             before_id = session.runtime.active_session.id
+            before_model = session.runtime.model
+            before_effort = session.runtime.effort
             ok, result = await asyncio.to_thread(session.run_command, name, arg)
             push(
                 {
@@ -433,7 +517,11 @@ async def _dispatch(
                     "result": _command_payload(result),
                 }
             )
-            if session.runtime.active_session.id != before_id:
+            if (
+                session.runtime.active_session.id != before_id
+                or session.runtime.model != before_model
+                or session.runtime.effort != before_effort
+            ):
                 push(session.snapshot())
 
         elif kind == "new_session":

@@ -9,6 +9,7 @@ import { SidebarDrawer } from "./components/SidebarDrawer";
 import { FolderPicker } from "./components/FolderPicker";
 import { SessionArchiveDialog } from "./components/SessionArchiveDialog";
 import { TrustFolderDialog } from "./components/TrustFolderDialog";
+import { ModelPickerDialog } from "./components/ModelPickerDialog";
 import { useQuartz } from "./useQuartz";
 import { useCommandPalette } from "./lib/useCommandPalette";
 import { useOpenUISystemPrompt, useRichUiMode } from "./lib/useRichUi";
@@ -52,6 +53,7 @@ export function App(): React.ReactElement {
 
   const [picker, setPicker] = React.useState<PickerMode | null>(null);
   const [archiveOpen, setArchiveOpen] = React.useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = React.useState(false);
   const [dismissedTrustCwds, setDismissedTrustCwds] = React.useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -100,6 +102,18 @@ export function App(): React.ReactElement {
   const onSubmit = React.useCallback(
     (text: string, images: ImageAttachment[]) => {
       quartz.prompt(text, images);
+    },
+    [quartz],
+  );
+
+  const handleRunCommand = React.useCallback(
+    (name: string, arg?: string) => {
+      const cleaned = name.trim().toLowerCase();
+      if (cleaned === "model" && (!arg || arg.trim() === "")) {
+        setModelPickerOpen(true);
+        return;
+      }
+      quartz.runCommand(name, arg);
     },
     [quartz],
   );
@@ -170,6 +184,7 @@ export function App(): React.ReactElement {
             else setPicker("session");
           }}
           onChangeFolder={() => setPicker("session")}
+          onOpenModelPicker={() => setModelPickerOpen(true)}
           sidebarOpen={sidebarOpen}
           onToggleSidebar={() => setSidebarOpen((open) => !open)}
         />
@@ -194,7 +209,7 @@ export function App(): React.ReactElement {
           onSubmit={onSubmit}
           onSteer={quartz.steer}
           onCancel={quartz.cancel}
-          onRunCommand={quartz.runCommand}
+          onRunCommand={handleRunCommand}
           onOpenPalette={palette.openPalette}
           textareaRef={composerRef}
         />
@@ -204,7 +219,7 @@ export function App(): React.ReactElement {
         open={palette.open}
         commands={quartz.state.session.commands}
         onOpenChange={palette.onOpenChange}
-        onRun={quartz.runCommand}
+        onRun={handleRunCommand}
       />
 
       <FolderPicker
@@ -244,6 +259,13 @@ export function App(): React.ReactElement {
           if (!projectTrust) return;
           setDismissedTrustCwds((prev) => new Set(prev).add(projectTrust.cwd));
         }}
+      />
+
+      <ModelPickerDialog
+        open={modelPickerOpen}
+        onOpenChange={setModelPickerOpen}
+        currentModel={quartz.state.session.model}
+        currentEffort={quartz.state.session.effort}
       />
     </div>
   );
