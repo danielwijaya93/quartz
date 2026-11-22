@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Button, Chip, Disclosure, Spinner, cn } from "@heroui/react";
+import { Button, Disclosure, Spinner, cn } from "@heroui/react";
 import {
   ArchiveRestore,
   ChevronRight,
@@ -196,11 +196,11 @@ export function FolderSidebar({
         "flex h-full min-h-0 flex-col bg-background",
         // The drawer's size and position belong to `SidebarDrawer`, which also owns
         // Escape and focus: a rail is a column, a drawer is a panel over the page.
-        drawer ? "w-full border-r border-separator" : "w-72 shrink-0 border-r border-separator",
+        drawer ? "w-full border-r border-separator" : "w-64 shrink-0 border-r border-separator",
       )}
     >
-      <div className="flex shrink-0 items-center gap-1 border-b border-separator px-2 py-2">
-        <h2 className="min-w-0 flex-1 truncate px-1 text-xs font-semibold uppercase tracking-wider text-muted">
+      <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-separator/70 px-2">
+        <h2 className="min-w-0 flex-1 truncate px-1 text-[11px] font-semibold uppercase tracking-wider text-muted">
           Workspaces
         </h2>
         <Button
@@ -209,11 +209,19 @@ export function FolderSidebar({
           variant="ghost"
           aria-label="Add a folder to the sidebar"
           onPress={onNewFolder}
+          className="size-6 min-w-6 text-muted hover:text-foreground"
         >
-          <FolderPlus aria-hidden="true" className="size-4" />
+          <FolderPlus aria-hidden="true" className="size-3.5" />
         </Button>
-        <Button isIconOnly size="sm" variant="ghost" aria-label="Refresh sessions" onPress={onReload}>
-          <RefreshCw aria-hidden="true" className="size-4" />
+        <Button
+          isIconOnly
+          size="sm"
+          variant="ghost"
+          aria-label="Refresh sessions"
+          onPress={onReload}
+          className="size-6 min-w-6 text-muted hover:text-foreground"
+        >
+          <RefreshCw aria-hidden="true" className="size-3.5" />
         </Button>
         <Button
           isIconOnly
@@ -221,8 +229,9 @@ export function FolderSidebar({
           variant="ghost"
           aria-label="Open the session archive"
           onPress={onOpenArchive}
+          className="size-6 min-w-6 text-muted hover:text-foreground"
         >
-          <ArchiveRestore aria-hidden="true" className="size-4" />
+          <ArchiveRestore aria-hidden="true" className="size-3.5" />
         </Button>
         {drawer ? (
           <Button
@@ -231,13 +240,14 @@ export function FolderSidebar({
             variant="ghost"
             aria-label="Close the session sidebar"
             onPress={onClose}
+            className="size-6 min-w-6 text-muted hover:text-foreground"
           >
-            <X aria-hidden="true" className="size-4" />
+            <X aria-hidden="true" className="size-3.5" />
           </Button>
         ) : null}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5">
         {error !== null ? (
           <div role="alert" className="rounded-xl border border-danger/40 bg-danger-soft p-3 text-sm">
             <p className="font-medium text-foreground">Could not load sessions</p>
@@ -271,7 +281,7 @@ export function FolderSidebar({
               <EmptySidebar onOpenFolder={onOpenFolder} onOpenArchive={onOpenArchive} />
             )
             : (
-              <ul className="space-y-1">
+              <ul className="space-y-0.5">
                 {groups.map((group) => {
                   const here = group.cwd === current;
                   return (
@@ -284,7 +294,7 @@ export function FolderSidebar({
                         onToggle={(expanded) => toggle(group.cwd, expanded)}
                         onNewSession={() => onNewSession(group.cwd)}
                       >
-                        {group.sessions.map((session, index) => (
+                        {group.sessions.map((session) => (
                           <SessionRow
                             key={session.sessionId}
                             session={session}
@@ -297,7 +307,6 @@ export function FolderSidebar({
                               currentSessionId !== "" &&
                               session.sessionId === currentSessionId
                             }
-                            last={index === group.sessions.length - 1}
                             onSelect={() => onSelectSession(session.sessionId)}
                             onRename={(title) =>
                               void rename(
@@ -395,13 +404,13 @@ function ActionNotice({
   return (
     <div
       className={cn(
-        "flex items-center gap-1.5 rounded-lg border px-2 py-1.5",
+        "flex items-center gap-1.5 rounded-md border px-2 py-1",
         failed ? "border-danger/40 bg-danger-soft" : "border-border bg-surface",
       )}
     >
       <p
         className={cn(
-          "min-w-0 flex-1 text-[11px] leading-snug break-words",
+          "min-w-0 flex-1 text-[11px] leading-tight break-words",
           failed ? "text-danger-soft-foreground" : "text-foreground",
         )}
       >
@@ -412,7 +421,7 @@ function ActionNotice({
         variant={failed ? "outline" : "ghost"}
         isDisabled={busy}
         onPress={onUndo}
-        className="shrink-0 text-[11px]"
+        className="h-6 shrink-0 px-1.5 text-[11px]"
       >
         <Undo2 aria-hidden="true" className="size-3" />
         {failed ? "Try again" : "Undo"}
@@ -423,7 +432,7 @@ function ActionNotice({
         variant="ghost"
         aria-label="Dismiss notification"
         onPress={onDismiss}
-        className="shrink-0"
+        className="size-5 min-w-5 shrink-0 p-0 text-muted hover:text-foreground"
       >
         <X aria-hidden="true" className="size-3" />
       </Button>
@@ -492,39 +501,37 @@ function WorkspaceRow({
     <Disclosure
       isExpanded={expanded}
       onExpandedChange={onToggle}
-      className={cn("rounded-lg", current ? "bg-accent-soft" : "hover:bg-surface-secondary")}
+      className="rounded-md"
     >
-      <div className="group/workspace flex items-center gap-0.5 pl-0.5 pr-1">
+      <div className="group/workspace flex items-center gap-0.5 rounded-md transition-colors hover:bg-surface-secondary/60">
         <Disclosure.Heading className="min-w-0 flex-1">
           <Disclosure.Trigger
             aria-label={`${group.label} folder`}
             aria-current={current ? "true" : undefined}
-            className="flex min-h-9 w-full cursor-pointer items-center gap-1 rounded-md px-1 py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+            className="flex h-7 min-h-7 w-full cursor-pointer items-center gap-1 rounded-md px-1.5 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
           >
             <ChevronRight
               aria-hidden="true"
               className={cn(
-                "size-3.5 shrink-0 text-muted motion-safe:transition-transform",
+                "size-3 shrink-0 text-muted/70 motion-safe:transition-transform",
                 expanded && "rotate-90",
               )}
             />
             <span
               className={cn(
-                "min-w-0 truncate text-sm",
-                current && "font-medium text-accent-soft-foreground",
+                "min-w-0 truncate text-[12px]",
+                current ? "font-semibold text-accent-soft-foreground" : "font-medium text-foreground/80",
               )}
               title={group.cwd}
             >
               {group.label}
             </span>
             {count > 0 ? (
-              <Chip size="sm" variant="soft" color="default" className="ml-auto shrink-0">
+              <span className="ml-auto shrink-0 rounded px-1 text-[10px] tabular-nums text-meta">
                 {count}
-              </Chip>
+              </span>
             ) : badge === null ? null : (
-              // 11px and a token with room to spare: this used to be 10px at
-              // 4.4:1, which is under the floor for text this small.
-              <span className="ml-auto shrink-0 text-[11px] uppercase tracking-wide text-meta">
+              <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wide text-meta">
                 {badge}
               </span>
             )}
@@ -536,19 +543,17 @@ function WorkspaceRow({
           variant="ghost"
           aria-label={`Start a new session in ${group.label}`}
           onPress={onNewSession}
-          // Visible by default: a phone has no hover, so a hover-only "+" is a
-          // feature nobody on a touch screen can reach.
-          className="shrink-0 motion-safe:transition-opacity [@media(hover:hover)]:opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100"
+          className="size-5 min-w-5 h-5 w-5 shrink-0 rounded p-0 text-muted hover:text-foreground hover:bg-surface-secondary motion-safe:transition-opacity [@media(hover:hover)]:opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100 mr-1"
         >
-          <Plus aria-hidden="true" className="size-3.5" />
+          <Plus aria-hidden="true" className="size-3" />
         </Button>
       </div>
       <Disclosure.Content>
-        <Disclosure.Body className="ml-3">
+        <Disclosure.Body className="mt-0.5 space-y-0.5 pl-2.5">
           {count === 0 ? (
-            <p className="py-1 pl-4 text-xs text-muted">No sessions in this folder yet.</p>
+            <p className="py-1 pl-2 text-[11px] text-muted">No sessions in this folder yet.</p>
           ) : (
-            <ul>{children}</ul>
+            <ul className="space-y-0.5">{children}</ul>
           )}
         </Disclosure.Body>
       </Disclosure.Content>
@@ -560,7 +565,6 @@ function SessionRow({
   session,
   sidebar,
   current,
-  last,
   onSelect,
   onRename,
   onHide,
@@ -568,7 +572,6 @@ function SessionRow({
   session: SidebarSession;
   sidebar: SidebarState;
   current: boolean;
-  last: boolean;
   onSelect: () => void;
   onRename: (title: string) => void;
   onHide: () => void;
@@ -600,26 +603,14 @@ function SessionRow({
   };
 
   return (
-    <li className="relative pl-4">
-      {/* Tree connectors, so a session reads as belonging to the folder above it. */}
-      {!last ? (
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute top-0 bottom-0 left-0 w-px bg-border"
-        />
-      ) : null}
-      <span
-        aria-hidden="true"
-        className="pointer-events-none absolute top-0 left-0 h-4 w-3 rounded-bl-[4px] border-b border-l border-border"
-      />
-
+    <li className="relative">
       {renaming ? (
         <form
           onSubmit={(event) => {
             event.preventDefault();
             commit();
           }}
-          className="flex items-center gap-1 rounded-md bg-surface-secondary px-1.5 py-1"
+          className="flex h-7 min-h-7 items-center gap-1 rounded-md bg-surface-secondary px-1.5"
         >
           <label htmlFor={inputId} className="sr-only">
             Session title
@@ -636,23 +627,23 @@ function SessionRow({
               }
             }}
             onBlur={commit}
-            className="min-w-0 flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-xs text-foreground"
+            className="min-w-0 flex-1 rounded border border-focus bg-background px-1.5 py-0.5 text-[12px] text-foreground outline-none"
           />
         </form>
       ) : (
         <div
           className={cn(
-            "group/session relative flex min-h-9 items-center gap-1 rounded-md pr-1 transition-colors",
+            "group/session relative flex h-7 min-h-7 items-center gap-1 rounded-md px-1.5 transition-colors",
             current
               ? "bg-accent-soft font-medium text-accent-soft-foreground"
-              : "hover:bg-surface-secondary",
+              : "text-muted hover:text-foreground hover:bg-surface-secondary/60",
           )}
         >
           <button
             type="button"
             onClick={onSelect}
             aria-current={current ? "true" : undefined}
-            className="flex min-h-9 min-w-0 flex-1 cursor-pointer items-center rounded-md px-1.5 text-left text-[13px] focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none"
+            className="flex h-7 min-h-7 min-w-0 flex-1 cursor-pointer items-center truncate text-left text-[12px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
           >
             <span className="truncate" title={`${title}${age ? ` · ${age} old` : ""}`}>
               {title}
@@ -662,22 +653,15 @@ function SessionRow({
           {age ? (
             <span
               aria-hidden="true"
-              // 11px at `--meta` (>= 5:1 in both themes) instead of 10px at
-              // `--muted`'s 4.4:1, which is where "6h" stopped being readable.
-              className="shrink-0 text-[11px] text-meta tabular-nums group-hover/session:hidden group-focus-within/session:hidden"
+              className="shrink-0 text-[10px] text-meta tabular-nums group-hover/session:hidden group-focus-within/session:hidden"
             >
               {age}
             </span>
           ) : null}
 
-          {/* Hover on a mouse, `focus-within` for a keyboard: the row's actions are
-              always the next tab stop, never mouse-only. The current row shows them
-              without being asked -- on a desktop nobody hovers a row to discover
-              that Rename exists, and this is the one row you are already working in,
-              so it is what makes the affordance discoverable everywhere else. */}
           <div
             className={cn(
-              "flex shrink-0 items-center motion-safe:transition-opacity",
+              "flex shrink-0 items-center gap-0.5 motion-safe:transition-opacity",
               current
                 ? "opacity-100"
                 : "[@media(hover:hover)]:opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100",
@@ -689,8 +673,9 @@ function SessionRow({
               variant="ghost"
               aria-label={`Rename session ${title}`}
               onPress={startRename}
+              className="size-5 min-w-5 h-5 w-5 rounded p-0 text-muted hover:text-foreground hover:bg-surface-secondary"
             >
-              <Pencil aria-hidden="true" className="size-3" />
+              <Pencil aria-hidden="true" className="size-2.5" />
             </Button>
             <Button
               isIconOnly
@@ -698,8 +683,9 @@ function SessionRow({
               variant="ghost"
               aria-label={`Hide session ${title} from the sidebar`}
               onPress={onHide}
+              className="size-5 min-w-5 h-5 w-5 rounded p-0 text-muted hover:text-foreground hover:bg-surface-secondary"
             >
-              <X aria-hidden="true" className="size-3" />
+              <X aria-hidden="true" className="size-2.5" />
             </Button>
           </div>
         </div>
