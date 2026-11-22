@@ -17,12 +17,14 @@ import asyncio
 import contextlib
 import json
 import os
-from collections.abc import AsyncIterator, Callable
+import threading
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from quartz.core.session import Session
@@ -143,6 +145,7 @@ def create_app(
     app.state.cwd = cwd
 
     store_ref: SidebarStore | None = None
+    store_lock = threading.Lock()
 
     def store() -> SidebarStore:
         """The sidebar state, loaded on first use.
@@ -153,9 +156,30 @@ def create_app(
         into the developer's real sidebar.
         """
         nonlocal store_ref
-        if store_ref is None:
-            store_ref = SidebarStore.load(default_sidebar_path())
-        return store_ref
+        with store_lock:
+            if store_ref is None:
+                store_ref = SidebarStore.load(default_sidebar_path())
+            return store_ref
+
+    @app.middleware("http")
+    async def _security_middleware(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        if request.method == "POST" and request.url.path.startswith("/api/"):
+            if not _is_allowed_origin(
+                request.headers.get("origin"),
+                request.headers.get("host"),
+                dev=dev,
+            ):
+                return JSONResponse({"error": "Forbidden origin"}, status_code=403)
+            content_type = request.headers.get("content-type", "")
+            media_type = content_type.split(";", 1)[0].strip().lower()
+            if media_type != "application/json":
+                return JSONResponse(
+                    {"error": "Content-Type must be application/json"},
+                    status_code=415,
+                )
+        return await call_next(request)
 
     def sidebar_snapshot() -> dict[str, Any]:
         """Every known session across every cwd, plus the whole sidebar state.
@@ -260,6 +284,13 @@ def create_app(
 
     @app.websocket("/ws")
     async def websocket(socket: WebSocket) -> None:
+        if not _is_allowed_origin(
+            socket.headers.get("origin"),
+            socket.headers.get("host"),
+            dev=dev,
+        ):
+            await socket.close(code=1008)
+            return
         await socket.accept()
         outbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         loop = asyncio.get_running_loop()
@@ -377,7 +408,7 @@ async def _dispatch(
                     }
                 )
                 return
-            session.start_turn(text, _attachments(message.get("images")), push)
+            session.start_turn(text, _attachments(message.get("images")))
 
         elif kind == "steer":
             text = str(message.get("text") or "").strip()
@@ -509,11 +540,73 @@ async def _json_body(request: Request) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _is_allowed_origin(
+    origin: str | None, host_header: str | None, *, dev: bool = False
+) -> bool:
+    """Validate an HTTP/WebSocket `Origin` header against the request `Host`.
+
+    Non-browser clients (tests, CLI tools) omit `Origin` and are allowed.
+    Browser requests carrying an `Origin` must match `Host` (or be an
+    equivalent loopback origin when `Host` itself is loopback).
+    """
+    if origin is None:
+        return True
+    cleaned = origin.strip()
+    if not cleaned or cleaned.lower() == "null":
+        return False
+    try:
+        parsed_origin = urlsplit(cleaned)
+        origin_port = parsed_origin.port
+    except ValueError:
+        return False
+    if parsed_origin.scheme.lower() not in ("http", "https", "ws", "wss") or not parsed_origin.netloc:
+        return False
+
+    origin_netloc = parsed_origin.netloc.lower()
+    origin_host = (parsed_origin.hostname or "").lower()
+    if not origin_host:
+        return False
+
+    if host_header:
+        host_clean = host_header.strip().lower()
+        if origin_netloc == host_clean:
+            return True
+        try:
+            parsed_host = urlsplit(f"//{host_clean}")
+            host_name = (parsed_host.hostname or "").lower()
+            host_port = parsed_host.port
+        except ValueError:
+            return False
+    else:
+        host_name = ""
+        host_port = None
+
+    if origin_host in _LOOPBACK_HOSTS and host_name in _LOOPBACK_HOSTS:
+        if dev:
+            return True
+        return origin_port == host_port
+
+    return False
+
+
 def _session_id(body: dict[str, Any]) -> str | None:
     value = body.get("sessionId")
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str):
         return None
-    return value.strip()
+    cleaned = value.strip()
+    if (
+        not cleaned
+        or "/" in cleaned
+        or "\\" in cleaned
+        or "\x00" in cleaned
+        or cleaned in (".", "..")
+        or ".." in cleaned
+    ):
+        return None
+    return cleaned
 
 
 def _bad_request(message: str) -> JSONResponse:

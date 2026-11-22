@@ -290,3 +290,58 @@ def test_fs_mkdir_rejects_a_relative_parent(app_client: AppClient, tmp_path: Pat
     assert body["error"]
     # Nothing was created next to the server's own working directory.
     assert not (Path("sessions") / "x").exists()
+
+
+# -- origin, content-type & sessionId hardening ------------------------
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Origin": "https://evil.example"},
+        {"Origin": "null"},
+        {"Host": "127.0.0.1:5199", "Origin": "http://localhost:9999"},
+        {"Host": "100.64.0.1:5199", "Origin": "http://localhost:5199"},
+    ],
+)
+def test_post_api_rejects_disallowed_origin(
+    app_client: AppClient, headers: dict[str, str]
+) -> None:
+    response = app_client.client.post(
+        "/api/sessions/hide", json={"sessionId": "s1"}, headers=headers
+    )
+    assert response.status_code == 403
+
+
+def test_post_api_allows_matching_loopback_origin(
+    app_client: AppClient, tmp_path: Path
+) -> None:
+    sessions_dir = tmp_path / "sessions"
+    session_id = _make_session(tmp_path, sessions_dir)
+    response = app_client.client.post(
+        "/api/sessions/hide",
+        json={"sessionId": session_id},
+        headers={"Host": "127.0.0.1:5199", "Origin": "http://localhost:5199"},
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("content_type", ["text/plain", "application/x-www-form-urlencoded", ""])
+def test_post_api_rejects_non_json_content_type(
+    app_client: AppClient, content_type: str
+) -> None:
+    headers = {"Content-Type": content_type} if content_type else {}
+    response = app_client.client.post(
+        "/api/sessions/hide",
+        content='{"sessionId": "s1"}',
+        headers=headers,
+    )
+    assert response.status_code == 415
+
+
+@pytest.mark.parametrize("bad_id", ["../escape", "a/b", "a\\b", ".."])
+def test_mutations_reject_path_traversal_session_id(
+    app_client: AppClient, bad_id: str
+) -> None:
+    response = app_client.client.post("/api/sessions/hide", json={"sessionId": bad_id})
+    assert response.status_code == 400

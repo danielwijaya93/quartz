@@ -195,8 +195,18 @@ class WebSession:
         the system prompt, `AgentRuntime.cwd` and `session_state.cwd` all agree with
         the transcript the browser is about to show.
         """
+        cleaned = session_id.strip()
+        if (
+            not cleaned
+            or "/" in cleaned
+            or "\\" in cleaned
+            or "\x00" in cleaned
+            or cleaned in (".", "..")
+            or ".." in cleaned
+        ):
+            raise ValueError("Invalid sessionId")
         self._retire()
-        self._swap(*self._build(session_id, self._resume_cwd(session_id)))
+        self._swap(*self._build(cleaned, self._resume_cwd(cleaned)))
 
     def _resume_cwd(self, session_id: str) -> Path:
         """The folder to resume in: the log's own `meta.cwd`, or the server's.
@@ -376,7 +386,7 @@ class WebSession:
         with self._lock:
             return self._turn is not None
 
-    def start_turn(self, text: str, images: list[ImageAttachment], push: Push) -> str:
+    def start_turn(self, text: str, images: list[ImageAttachment]) -> str:
         """Record the user message and run one turn on its own thread.
 
         Returns the turn id. Raises `TurnBusyError` if a turn is already running:
@@ -474,10 +484,15 @@ class WebSession:
         """Abort the running turn the same way `Esc` does in the terminal."""
         with self._lock:
             turn = self._turn
+            runtime = self._runtime
         if turn is None:
             return False
         turn.abort.set()
-        self.runtime.kernel.interrupt()
+        if runtime is not None:
+            try:
+                runtime.kernel.interrupt()
+            except Exception:  # noqa: BLE001 - an already-dead kernel is not an error
+                pass
         return True
 
     def _abort_and_join(self, timeout: float = 10.0) -> None:

@@ -25,6 +25,7 @@ import dataclasses
 import json
 import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -51,8 +52,8 @@ def default_sidebar_path() -> Path:
     directory; a user never needs it.
     """
     env = os.getenv("QUARTZ_WEB_SIDEBAR")
-    if env:
-        return Path(env).expanduser().resolve()
+    if env and env.strip():
+        return Path(env.strip()).expanduser().resolve()
     return (Path.home() / ".quartz" / "web" / "sidebar.json")
 
 
@@ -144,6 +145,7 @@ class SidebarStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._lock = threading.RLock()
         self.state = self._read(path)
 
     @classmethod
@@ -162,34 +164,39 @@ class SidebarStore:
 
     def hide(self, session_id: str) -> None:
         """Stop listing a session. Nothing on disk is touched but this file."""
-        self.state.hidden_sessions.add(session_id)
-        self.save()
+        with self._lock:
+            self.state.hidden_sessions.add(session_id)
+            self.save()
 
     def restore(self, session_id: str) -> None:
-        self.state.hidden_sessions.discard(session_id)
-        self.save()
+        with self._lock:
+            self.state.hidden_sessions.discard(session_id)
+            self.save()
 
     def import_session(self, session_id: str) -> None:
         """List a session the user explicitly asked for (usually a terminal one)."""
-        self.state.imported_sessions.add(session_id)
-        self.save()
+        with self._lock:
+            self.state.imported_sessions.add(session_id)
+            self.save()
 
     def rename(self, session_id: str, title: str) -> None:
         """Store a display title. An empty title clears the rename."""
         cleaned = title.strip()
-        if cleaned:
-            self.state.renames[session_id] = cleaned
-        else:
-            self.state.renames.pop(session_id, None)
-        self.save()
+        with self._lock:
+            if cleaned:
+                self.state.renames[session_id] = cleaned
+            else:
+                self.state.renames.pop(session_id, None)
+            self.save()
 
     def add_workspace(self, cwd: str, label: str = "") -> None:
         """Add a folder by hand. Idempotent, because the picker can land twice."""
-        existing = {workspace.cwd for workspace in self.state.workspaces}
-        if cwd in existing:
-            return
-        self.state.workspaces.append(Workspace(cwd=cwd, label=label or Path(cwd).name))
-        self.save()
+        with self._lock:
+            existing = {workspace.cwd for workspace in self.state.workspaces}
+            if cwd in existing:
+                return
+            self.state.workspaces.append(Workspace(cwd=cwd, label=label or Path(cwd).name))
+            self.save()
 
     # -- persistence -------------------------------------------------------
 
@@ -201,21 +208,22 @@ class SidebarStore:
         new one -- never a truncated one. Called on every mutation: this file is a
         few hundred bytes and a lost sidebar is more annoying than a few writes.
         """
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(self.state.to_dict(), indent=2, sort_keys=False) + "\n"
-        handle, tmp_name = tempfile.mkstemp(
-            dir=str(self.path.parent), prefix=f"{self.path.name}.", suffix=".tmp"
-        )
-        try:
-            with os.fdopen(handle, "w", encoding="utf-8") as fh:
-                fh.write(payload)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp_name, self.path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_name)
-            raise
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(self.state.to_dict(), indent=2, sort_keys=False) + "\n"
+            handle, tmp_name = tempfile.mkstemp(
+                dir=str(self.path.parent), prefix=f"{self.path.name}.", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(handle, "w", encoding="utf-8") as fh:
+                    fh.write(payload)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp_name, self.path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_name)
+                raise
 
 
 def is_visible(session: dict[str, Any], state: SidebarState) -> bool:
