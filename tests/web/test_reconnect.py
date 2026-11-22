@@ -112,7 +112,7 @@ def test_a_detached_turn_is_not_aborted_by_the_detach_itself(tmp_path: Path) -> 
     sink: list[dict[str, Any]] = []
     _loaded(session)
     session.attach(sink.append)
-    session.start_turn("long job", [], sink.append)
+    session.start_turn("long job", [])
     session.detach(sink.append)
 
     time.sleep(0.2)
@@ -140,7 +140,7 @@ def test_a_second_socket_receives_the_turn_it_missed(tmp_path: Path) -> None:
     first: list[dict[str, Any]] = []
     _loaded(session)
     session.attach(first.append)
-    session.start_turn("job", [], first.append)
+    session.start_turn("job", [])
     session.detach(first.append)
 
     second: list[dict[str, Any]] = []
@@ -171,7 +171,7 @@ def test_the_pending_answer_is_readable_while_it_is_written(tmp_path: Path) -> N
         del frame
 
     session.attach(sink)
-    session.start_turn("job", [], sink)
+    session.start_turn("job", [])
     session.emit({"type": "text_delta", "text": "half an "})
     session.emit({"type": "text_delta", "text": "answer"})
 
@@ -201,7 +201,7 @@ def test_the_grace_is_cancelled_by_a_reconnect(tmp_path: Path) -> None:
         del frame
 
     session.attach(sink)
-    session.start_turn("job", [], sink)
+    session.start_turn("job", [])
     session.detach(sink)
 
     session.begin_grace(timeout=0.05)
@@ -233,7 +233,7 @@ def test_the_grace_stops_a_turn_nobody_came_back_for(tmp_path: Path) -> None:
         del frame
 
     session.attach(sink)
-    session.start_turn("job", [], sink)
+    session.start_turn("job", [])
     session.detach(sink)
 
     session.begin_grace(timeout=0.05)
@@ -263,7 +263,7 @@ def test_an_aborted_turn_keeps_what_it_had_already_written(tmp_path: Path) -> No
         del frame
 
     session.attach(sink)
-    session.start_turn("job", [], sink)
+    session.start_turn("job", [])
 
     # The tab went away, and nobody came back: the grace is what ends it.
     session.detach(sink)

@@ -109,7 +109,11 @@ def _runner(rt: AgentRuntime, observer: Any, *, abort_event: Any = None, steerin
 async def _run(host: str, port: int, cwd: Path) -> int:
     import websockets
 
-    app = create_app(build=lambda sid: (_runtime(cwd), False), cwd=cwd, runner=_runner)
+    app = create_app(
+        build=lambda sid, target_cwd=None: (_runtime(target_cwd or cwd), False),
+        cwd=cwd,
+        runner=_runner,
+    )
     server = uvicorn.Server(
         uvicorn.Config(app, host=host, port=port, log_level="error", lifespan="on")
     )

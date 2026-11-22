@@ -529,3 +529,69 @@ def test_a_hand_built_app_never_writes_into_the_real_home(
 
     leaked = sorted(str(path.relative_to(sentinel)) for path in sentinel.rglob("*"))
     assert leaked == [], f"the app wrote into the real home: {leaked}"
+
+
+# -- origin & path-traversal hardening ---------------------------------
+
+
+@pytest.mark.parametrize(
+    ("headers"),
+    [
+        {"Origin": "https://evil.example"},
+        {"Origin": "null"},
+        {"Host": "127.0.0.1:8000", "Origin": "http://localhost:9999"},
+        {"Host": "100.64.0.1:8000", "Origin": "http://localhost:8000"},
+    ],
+)
+def test_websocket_rejects_disallowed_origin(
+    app_client: AppClient, headers: dict[str, str]
+) -> None:
+    with pytest.raises(Exception):
+        with app_client.client.websocket_connect("/ws", headers=headers):
+            pass
+
+
+@pytest.mark.parametrize(
+    ("headers"),
+    [
+        {"Host": "127.0.0.1:8000", "Origin": "http://127.0.0.1:8000"},
+        {"Host": "127.0.0.1:8000", "Origin": "http://localhost:8000"},
+        {"Host": "100.64.0.1:8000", "Origin": "http://100.64.0.1:8000"},
+    ],
+)
+def test_websocket_allows_same_origin_and_matching_loopback(
+    app_client: AppClient, wire: Any, headers: dict[str, str]
+) -> None:
+    with app_client.client.websocket_connect("/ws", headers=headers) as socket:
+        state = wire.hello(socket)
+    assert state["type"] == "session_state"
+
+
+def test_websocket_allows_cross_port_loopback_in_dev_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime: Any, wire: Any
+) -> None:
+    monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setenv("QUARTZ_WEB_SIDEBAR", str(tmp_path / "web-sidebar.json"))
+    app = create_app(
+        build=lambda session_id, cwd=None: (runtime, False),
+        cwd=tmp_path,
+        static_dir=tmp_path / "missing",
+        dev=True,
+    )
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/ws",
+            headers={"Host": "127.0.0.1:5199", "Origin": "http://localhost:5173"},
+        ) as socket:
+            state = wire.hello(socket)
+    assert state["type"] == "session_state"
+
+
+def test_load_session_rejects_path_traversal(app_client: AppClient, wire: Any) -> None:
+    with app_client.client.websocket_connect("/ws") as socket:
+        wire.hello(socket)
+        socket.send_json({"type": "load_session", "sessionId": "../../etc/passwd"})
+        frames = wire.drain(socket, until="error")
+
+    assert frames[-1]["fatal"] is False
+    assert "Invalid sessionId" in frames[-1]["message"]
