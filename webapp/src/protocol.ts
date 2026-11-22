@@ -101,6 +101,14 @@ export interface SessionStateMessage {
   effort: string;
   messages: Message[];
   turnRunning: boolean;
+  /**
+   * The answer the running turn has written but not yet committed to `messages`.
+   *
+   * A client that connects mid-turn draws this, so the prose already on the
+   * writer's screen is on the reader's too; the live deltas that follow append to
+   * it. Empty when no turn is running, and absent from an older server.
+   */
+  streamingText?: string;
   commands: Command[];
 }
 

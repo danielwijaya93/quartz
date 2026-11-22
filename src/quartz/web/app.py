@@ -265,8 +265,17 @@ def create_app(
         loop = asyncio.get_running_loop()
 
         def push(frame: dict[str, Any]) -> None:
-            """Hand a frame to the writer. Safe from a turn thread."""
-            loop.call_soon_threadsafe(outbox.put_nowait, frame)
+            """Hand a frame to the writer. Safe from a turn thread.
+
+            A socket that has closed is not an error: the loop is going away and
+            `outbox` with it, and the turn is expected to outlive this call.
+            """
+            try:
+                loop.call_soon_threadsafe(outbox.put_nowait, frame)
+            except RuntimeError:
+                # The loop this socket belonged to has stopped. Whoever is listening
+                # next will get the state on reconnect; nothing to do here.
+                pass
 
         async def write() -> None:
             while True:
@@ -277,6 +286,10 @@ def create_app(
                     return
 
         writer = asyncio.create_task(write())
+        # From here until the socket closes, this connection is one of the session's
+        # listeners -- possibly the second one, if a phone reconnected while a turn
+        # from the previous socket was still running.
+        session.attach(push)
         try:
             while True:
                 raw = await socket.receive_text()
@@ -295,10 +308,14 @@ def create_app(
         except WebSocketDisconnect:
             pass
         finally:
-            # A closed tab must not leave a turn running against a kernel nobody is
-            # reading. The turn is aborted and drained; the kernel stays alive so a
-            # reconnect reconciles instead of losing the session.
-            await asyncio.to_thread(session._abort_and_join)  # noqa: SLF001 - same package
+            # A disconnecting tab is usually a phone putting its screen down, not a
+            # person giving up: the same page comes back seconds later and asks where
+            # the answer got to. So the frame sink is dropped and the turn is left
+            # running; `begin_grace` stops it only if nobody comes back within
+            # RECONNECT_GRACE_S, and the kernel stays alive either way so a reconnect
+            # reconciles instead of losing the session.
+            session.detach(push)
+            session.begin_grace()
             writer.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await writer
@@ -328,13 +345,20 @@ async def _dispatch(
     try:
         if kind == "hello":
             await _ensure(session, push, resolve_cwd(message.get("cwd"), session.cwd))
+            # Tell the session where this kernel is rooted, so a turn that outlives
+            # this socket can still settle its message correctly.
+            session.note_root(session.runtime.cwd)
             await asyncio.to_thread(_remember_workspace, sidebar, session)
             # A client-supplied system-prompt append, the web twin of ACP's
             # `_meta.quartz.systemPrompt.append`. Applied after the runtime exists,
             # and re-applied whenever the client re-sends `hello`, so the Rich UI
             # toggle takes effect on the next turn of the same session.
             session.set_system_prompt_append(_system_prompt_append(message))
-            push(session.snapshot())
+            snapshot = session.snapshot()
+            push(snapshot)
+            # A tab that just (re)connected in the middle of a turn is told what the
+            # turn is doing, and what it has written so far, in ordinary frames.
+            _replay_live_turn(session, snapshot, push)
 
         elif kind == "prompt":
             text = str(message.get("text") or "").strip()
@@ -412,6 +436,31 @@ async def _dispatch(
         push({"type": "error", "message": str(exc), "fatal": False})
     except Exception as exc:  # noqa: BLE001 - one bad frame must not kill the socket
         push({"type": "error", "message": f"{exc.__class__.__name__}: {exc}", "fatal": False})
+
+
+def _replay_live_turn(
+    session: WebSession,
+    snapshot: dict[str, Any],
+    push: Callable[[dict[str, Any]], None],
+) -> None:
+    """Retell the turn in flight as frames, for a client that just arrived.
+
+    A turn has a live shape the browser needs -- "a turn is running", the status
+    line -- and the text already written is `streamingText` on the snapshot itself,
+    not a delta. It deliberately does *not* arrive as a `text_delta`: the turn thread
+    is still emitting deltas, and two sources appending to the same row could
+    duplicate the characters that were written between measuring the text and
+    sending it. One snapshot field is atomic; a delta is a race.
+    """
+    if not snapshot.get("turnRunning"):
+        return
+    turn_id = session.turn_id
+    if turn_id is None:
+        return
+    push({"type": "turn_start", "turnId": turn_id})
+    label = session.turn_status
+    if label:
+        push({"type": "status", "label": label})
 
 
 async def _ensure(

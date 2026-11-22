@@ -1112,3 +1112,105 @@ describe("following the stream", () => {
     expect(sameConversation([user("u1", "hi")], [])).toBe(false);
   });
 });
+
+describe("a reconnect in the middle of a turn", () => {
+  /**
+   * The bug this covers: a phone's screen turns off, the socket dies, and the page
+   * comes back while the answer is still being written. History stops at the prompt
+   * (the loop commits an assistant message only when a step ends), so the reconnected
+   * page showed the question and then nothing -- "the chat no longer updates".
+   */
+  it("draws the text the running turn has already written", () => {
+    const state = fold([
+      {
+        type: "session_state",
+        sessionId: "s",
+        cwd: "/r",
+        model: "m",
+        effort: "e",
+        turnRunning: true,
+        commands: [],
+        messages: [{ role: "user", content: "tell me about looms" }],
+        streamingText: "The loom is one of the oldest",
+      },
+    ]);
+    const assistant = state.rows.filter((row) => row.kind === "assistant");
+    expect(assistant.map((row) => row.text)).toEqual(["The loom is one of the oldest"]);
+    expect(state.turnRunning).toBe(true);
+  });
+
+  it("keeps appending live deltas to the text it reconnected with", () => {
+    const state = fold([
+      {
+        type: "session_state",
+        sessionId: "s",
+        cwd: "/r",
+        model: "m",
+        effort: "e",
+        turnRunning: true,
+        commands: [],
+        messages: [{ role: "user", content: "q" }],
+        streamingText: "The loom is",
+      },
+      { type: "text_delta", text: " one of the oldest tools." },
+    ]);
+    const assistant = state.rows.filter((row) => row.kind === "assistant");
+    expect(assistant.map((row) => row.text)).toEqual(["The loom is one of the oldest tools."]);
+  });
+
+  it("does not duplicate text history already carries", () => {
+    // The step committed while the socket was down: the snapshot has both the
+    // message and the live text of the next step starting from scratch.
+    const state = fold([
+      {
+        type: "session_state",
+        sessionId: "s",
+        cwd: "/r",
+        model: "m",
+        effort: "e",
+        turnRunning: true,
+        commands: [],
+        messages: [
+          { role: "user", content: "q" },
+          { role: "assistant", content: "First paragraph." },
+        ],
+        streamingText: "First paragraph.",
+      },
+    ]);
+    const assistant = state.rows.filter((row) => row.kind === "assistant");
+    expect(assistant.map((row) => row.text)).toEqual(["First paragraph."]);
+  });
+
+  it("ignores an absent or empty field, so an older server still works", () => {
+    const state = fold([
+      {
+        type: "session_state",
+        sessionId: "s",
+        cwd: "/r",
+        model: "m",
+        effort: "e",
+        turnRunning: false,
+        commands: [],
+        messages: [{ role: "user", content: "q" }],
+      },
+    ]);
+    expect(state.rows.filter((row) => row.kind === "assistant")).toHaveLength(0);
+  });
+
+  it("does not touch a transcript when no turn is running", () => {
+    const state = fold([
+      {
+        type: "session_state",
+        sessionId: "s",
+        cwd: "/r",
+        model: "m",
+        effort: "e",
+        turnRunning: false,
+        commands: [],
+        messages: [{ role: "user", content: "q" }],
+        streamingText: "",
+      },
+    ]);
+    expect(state.rows.filter((row) => row.kind === "assistant")).toHaveLength(0);
+  });
+});

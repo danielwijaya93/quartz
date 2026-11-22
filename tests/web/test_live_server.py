@@ -111,8 +111,13 @@ def live_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     thread.join(timeout=15)
 
 
-def test_a_real_socket_close_aborts_the_turn(live_server: Any) -> None:
-    """Closing the tab mid-turn must abort the turn, not leave it running."""
+def test_a_real_socket_close_keeps_the_turn_running(live_server: Any) -> None:
+    """Closing the tab mid-turn must NOT abort it: a phone is not a resignation.
+
+    The answer is still being written, and the same page comes back seconds later.
+    Only the grace expiring with nobody attached may stop it (covered by
+    `test_web.reconnect`).
+    """
     url, runtime, state, websockets = live_server
 
     async def scenario() -> list[str]:
@@ -130,13 +135,70 @@ def test_a_real_socket_close_aborts_the_turn(live_server: Any) -> None:
     seen = asyncio.run(scenario())
     assert "turn_start" in seen
 
-    deadline = time.monotonic() + 15.0
-    while not state["aborted"] and time.monotonic() < deadline:
-        time.sleep(0.02)
-
-    assert state["aborted"] is True
-    # The kernel outlives the tab: a reconnect reconciles the session instead.
+    # Give the close handler time to run, then assert it changed nothing.
+    time.sleep(0.5)
+    assert state["aborted"] is False
+    # The kernel outlives the tab either way: a reconnect reconciles the session.
     assert runtime.kernel.closed is False  # type: ignore[attr-defined]
+
+    # And the turn is still reachable: a reconnect sees it running, and the answer
+    # it produced is still the text the turn is writing.
+    async def reconnect() -> dict[str, Any]:
+        async with websockets.connect(url, max_size=None) as socket:
+            await socket.send(json.dumps({"type": "hello", "clientVersion": 1}))
+            while True:
+                frame = json.loads(await asyncio.wait_for(socket.recv(), timeout=10))
+                if frame["type"] == "session_state":
+                    return frame
+
+    snapshot = asyncio.run(reconnect())
+    assert snapshot["turnRunning"] is True
+
+
+def test_reconnecting_mid_turn_reattaches_instead_of_blocking(live_server: Any) -> None:
+    """The race: a fast reconnect must be able to steer or prompt, not be refused.
+
+    A phone waking sends `hello` before the old socket's close handler has finished
+    aborting anything. That used to leave `turnRunning` true forever behind a socket
+    nobody owned, and every later prompt answered "a turn is already running" -- the
+    page looked connected and never moved again.
+    """
+    url, _runtime_, _state, websockets = live_server
+
+    async def scenario() -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        first = await websockets.connect(url, max_size=None)
+        await first.send(json.dumps({"type": "hello", "clientVersion": 1}))
+        await first.send(json.dumps({"type": "prompt", "text": "long job"}))
+        while True:
+            frame = json.loads(await asyncio.wait_for(first.recv(), timeout=10))
+            if frame["type"] == "turn_start":
+                break
+        await first.close()
+
+        # Reconnect immediately, with no pause for the close handler.
+        second = await websockets.connect(url, max_size=None)
+        await second.send(json.dumps({"type": "hello", "clientVersion": 1}))
+        snapshot: dict[str, Any] = {}
+        replayed: list[dict[str, Any]] = []
+        for _ in range(12):
+            frame = json.loads(await asyncio.wait_for(second.recv(), timeout=10))
+            if frame["type"] == "session_state":
+                snapshot = frame
+                # Keep reading: the live turn is retold after the snapshot.
+                continue
+            replayed.append(frame)
+            if frame["type"] in ("turn_start", "status", "text_delta"):
+                break
+        await second.close()
+        return snapshot, replayed
+
+    snapshot, replayed = asyncio.run(scenario())
+
+    # The turn is owned by the session, not by the dead socket, and the new socket
+    # is told about it rather than being handed a frozen "running".
+    assert snapshot["turnRunning"] is True
+    assert [f["type"] for f in replayed], "the live turn was not retold to the new socket"
+    assert replayed[0]["type"] == "turn_start"
 
 
 def test_the_health_route_answers_over_a_real_server(live_server: Any) -> None:
