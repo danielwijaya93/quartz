@@ -9,6 +9,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from quartz.core.background import format_bash_events
 from quartz.core.compact import (
     DEFAULT_KEEP_RECENT_TOKENS,
     CompactionReason,
@@ -144,34 +145,16 @@ TOOLS = [
 ]
 
 
-def format_bash_done_events(events: list[dict[str, Any]]) -> str | None:
-    """Format background bash_done events as Unharnessed-style harness notices."""
-    notices: list[str] = []
-    for ev in events:
-        if ev.get("event") != "bash_done":
-            continue
-        pid = ev.get("pid")
-        exit_code = ev.get("exit_code")
-        duration = ev.get("duration")
-        cmd = ev.get("command", "")
-        timed_out = ev.get("timed_out", False)
-        tail = (ev.get("tail") or "").rstrip()
-
-        header = f"[bash-done pid:{pid} exit:{exit_code} duration:{duration}s"
-        if timed_out:
-            header += " timed_out:true"
-        header += f"]\ncommand: {cmd}"
-        if tail:
-            header += f"\ntail:\n{tail}"
-        notices.append(header)
-
-    return "\n\n".join(notices) if notices else None
-
-
 def drain_bash_events(kernel: KernelClient, messages: list[dict[str, Any]]) -> str | None:
-    """Drain pending kernel events and append a [bash-done] notice to messages if any."""
+    """Drain pending kernel events and append any background notice to ``messages``.
+
+    Two kinds arrive here: ``bash_done`` when a job finishes, and ``bash_status``
+    when a running job crossed the status-check period. Both are harness notices
+    and both take the user role, which is the only role the wire lets the harness
+    inject with (see ``core/background.py``).
+    """
     events = kernel.drain_events()
-    notice = format_bash_done_events(events)
+    notice = format_bash_events(events)
     if notice:
         messages.append({"role": "user", "content": notice})
     return notice

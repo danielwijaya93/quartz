@@ -743,6 +743,9 @@ def test_acp_session_load_closes_kernel_on_restore_failure(
         def close(self) -> None:
             self.closed = True
 
+        def configure(self, **kwargs: Any) -> None:
+            self.configured = dict(kwargs)
+
     monkeypatch.setattr(acp_mod, "KernelClient", _TrackingKernel)
     monkeypatch.setattr(
         Session,

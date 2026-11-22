@@ -172,7 +172,7 @@ can slow a turn down but never wedge it.
 | `/prompt` | Show the assembled system prompt. |
 | `/reset` | Clear history, start a new session, and restart the kernel. |
 | `/jobs` | List running background `bash()` jobs with elapsed time and output tail. |
-| `/settings` | Show or change user preferences: `reserve`, `keep_recent`, `progress` (stored in `~/.quartz/config.json`). |
+| `/settings` | Show or change user preferences: `reserve`, `keep_recent`, `progress`, `bg` (stored in `~/.quartz/config.json`). |
 | `/help` | Show available slash commands. |
 | `/exit` | Exit the agent. Alias: `/quit`. |
 
@@ -186,7 +186,6 @@ can slow a turn down but never wedge it.
 | `-c, --continue` | Resume the most recent session. |
 | `-r, --resume ID` | Resume a specific session by ID. |
 | `--fork` | Fork the resumed session into a new session ID (requires `-r` or `-c`). |
-| `--background-wait SECONDS` | Max seconds to wait for background `bash()` in `-p` mode (default `600`, `0` disables). |
 | `--provider PROVIDER` | LLM provider backend (default: `auto`). |
 | `--model MODEL` | Override `MODEL` from the environment. |
 | `--effort EFFORT` | Reasoning effort level (e.g. `low`, `medium`, `high`, `max`, `xhigh`). |
@@ -195,6 +194,7 @@ can slow a turn down but never wedge it.
 | `--show-thinking` | Show the reasoning trace (same as `Ctrl+T`). |
 | `--show-details` | Show full tool-call details (same as `Ctrl+O`). |
 | `--progress-every N` | Ask the model to update you every N `ipython` calls (`0` disables). Default: on interactively, off for `-p`. |
+| `--background-check-every SECONDS` | Report on a running background job every N seconds (`0` disables). Default `300` interactively; off for `-p`, where `bash()` runs inline. |
 
 ### Subcommands
 

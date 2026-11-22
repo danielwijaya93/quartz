@@ -13,22 +13,22 @@ from rich.markup import escape
 from rich.text import Text
 
 from quartz.bootstrap import BootstrapOptions, build_runtime
-from quartz.tui.commands import _handle_slash_command
-from quartz.errors import CredentialError, EndpointConfigError, SessionNotFoundError
-from quartz.settings import load_settings, project_trust_status, trust_project
+from quartz.cli.subcommands import _handle_auth_cli, _handle_mcp_cli
 from quartz.core.images import (
     ImageAttachment,
     build_user_content,
     extract_inline_image_mentions,
     load_image_file,
 )
-from quartz.tui.dock import InteractiveDock
-from quartz.core.loop import drain_bash_events, format_bash_done_events
-from quartz.providers.registry import PROVIDERS, resolve_context_tokens
+from quartz.core.loop import drain_bash_events
 from quartz.core.runtime import AgentRuntime
 from quartz.core.turn import TurnStatus, run_interactive_turn, run_turn
+from quartz.errors import CredentialError, EndpointConfigError, SessionNotFoundError
+from quartz.providers.registry import PROVIDERS, resolve_context_tokens
 from quartz.providers.selection import build_provider
-from quartz.cli.subcommands import _handle_auth_cli, _handle_mcp_cli
+from quartz.settings import load_settings, project_trust_status, trust_project
+from quartz.tui.commands import _handle_slash_command
+from quartz.tui.dock import InteractiveDock
 from quartz.tui.render import (
     _active_printer,
     _format_turn_footer,
@@ -52,9 +52,7 @@ def _emit_bash_notice(rt: AgentRuntime, notice: str) -> None:
     rt.messages.append({"role": "user", "content": notice})
 
 
-def _run_headless(
-    rt: AgentRuntime, prompt: str, image_args: list[str], background_wait: float
-) -> None:
+def _run_headless(rt: AgentRuntime, prompt: str, image_args: list[str]) -> None:
     cli_images: list[ImageAttachment] = []
     for raw_img in image_args:
         img_path = Path(raw_img).expanduser()
@@ -73,19 +71,10 @@ def _run_headless(
     rt.messages.append({"role": "user", "content": build_user_content(prompt, cli_images)})
     _, rt.messages, _ = _run_turn(rt)
     rt.persist()
-
-    while background_wait > 0 and (
-        rt.kernel.has_pending_events() or rt.kernel.running_bash_count() > 0
-    ):
-        events = rt.kernel.wait_for_events(timeout=background_wait)
-        if not events:
-            break
-        notice = format_bash_done_events(events)
-        if not notice:
-            continue
-        _emit_bash_notice(rt, notice)
-        _, rt.messages, _ = _run_turn(rt)
-        rt.persist()
+    # Nothing to wait for afterwards: a `-p` kernel runs `bash()` inline, so by the
+    # time the turn returns, every command it started has already finished and its
+    # output is in the transcript. The old `--background-wait` loop existed only to
+    # service jobs that outlived their turn, which headless no longer creates.
 
 
 def _run_interactive(rt: AgentRuntime, resumed: bool) -> None:
@@ -184,6 +173,7 @@ def _bootstrap_options(args: argparse.Namespace) -> BootstrapOptions:
         show_thinking=args.show_thinking,
         show_details=args.show_details,
         progress_every=args.progress_every,
+        background_check_every=args.background_check_every,
         trust_project=getattr(args, "trust_project", False),
     )
 
@@ -292,10 +282,14 @@ def main() -> None:
     parser.add_argument("-r", "--resume", metavar="ID", help="Resume a specific session by ID.")
     parser.add_argument("--fork", action="store_true", help="Fork the resumed session into a new session ID.")
     parser.add_argument(
-        "--background-wait",
-        type=float,
-        default=600.0,
-        help="Max seconds to wait for background bash() commands in -p mode (0 to disable).",
+        "--background-check-every",
+        type=int,
+        metavar="SECONDS",
+        default=None,
+        help=(
+            "Report on a running background job every N seconds (0 disables). "
+            "Default: on in interactive sessions, off for -p."
+        ),
     )
     parser.add_argument(
         "--provider",
@@ -364,6 +358,7 @@ def main() -> None:
             compact_reserve_tokens=compact_reserve_tokens,
             keep_recent_tokens=keep_recent_tokens,
             progress_every=_settings.progress_every,
+            background_check_every=_settings.background_check_every,
         )
         server.serve()
         return
@@ -372,7 +367,7 @@ def main() -> None:
     rt, resumed = _build_runtime(args)
     try:
         if args.prompt:
-            _run_headless(rt, args.prompt, args.image, args.background_wait)
+            _run_headless(rt, args.prompt, args.image)
         else:
             _run_interactive(rt, resumed)
     finally:

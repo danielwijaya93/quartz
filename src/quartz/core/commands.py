@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from quartz.core.loop import TurnUsage
 from quartz.core.session import Session
 from quartz.settings import (
+    DEFAULT_BACKGROUND_CHECK_EVERY,
     DEFAULT_COMPACT_RESERVE_TOKENS,
     DEFAULT_KEEP_RECENT_TOKENS,
     DEFAULT_PROGRESS_EVERY,
@@ -33,6 +34,7 @@ from quartz.settings import (
     load_settings,
     save_settings,
     settings_as_dict,
+    validate_background_check_every,
     validate_progress_every,
     validate_tokens,
 )
@@ -550,18 +552,21 @@ _SETTING_ALIASES: dict[str, str] = {
     "keep_recent_tokens": "keep",
     "progress": "progress",
     "progress_every": "progress",
+    "bg": "bg",
+    "background": "bg",
+    "background_check_every": "bg",
 }
 
 _SETTINGS_USAGE = (
     "Usage: /settings reserve <tokens> | /settings keep <tokens> | "
-    "/settings progress <n> | /settings reset | /settings list"
+    "/settings progress <n> | /settings bg <seconds> | /settings reset | /settings list"
 )
 
 
 @COMMAND_REGISTRY.register(
     "/settings",
     "Show or update user preferences (stored in ~/.quartz/config.json)",
-    usage="[reserve|keep <tokens>|progress <n>|reset|list]",
+    usage="[reserve|keep <tokens>|progress <n>|bg <seconds>|reset|list]",
     immediate=True,
 )
 def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
@@ -573,6 +578,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
         compact_reserve_tokens=rt.compact_reserve_tokens,
         keep_recent_tokens=rt.keep_recent_tokens,
         progress_every=rt.progress_every,
+        background_check_every=rt.background_check_every,
     )
     parts = (arg or "").split()
     if parts:
@@ -585,7 +591,9 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
             f"keep_recent_tokens: {current.keep_recent_tokens:,} "
             f"(default {DEFAULT_KEEP_RECENT_TOKENS:,})\n"
             f"progress_every: {current.progress_every} "
-            f"(default {DEFAULT_PROGRESS_EVERY}, 0 disables; off in -p)\n\n"
+            f"(default {DEFAULT_PROGRESS_EVERY}, 0 disables; off in -p)\n"
+            f"background_check_every: {current.background_check_every}s "
+            f"(default {DEFAULT_BACKGROUND_CHECK_EVERY}s, 0 disables; off in -p)\n\n"
             f"Stored in {config_file_path()}\n\n"
             f"{_SETTINGS_USAGE}",
             title="Settings",
@@ -604,11 +612,13 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
         rt.compact_reserve_tokens = defaults.compact_reserve_tokens
         rt.keep_recent_tokens = defaults.keep_recent_tokens
         rt.progress_every = defaults.progress_every
+        rt.background_check_every = defaults.background_check_every
         return CommandResult.text(
             f"Reset settings to defaults. "
             f"reserve_tokens = {defaults.compact_reserve_tokens:,}, "
             f"keep_recent_tokens = {defaults.keep_recent_tokens:,}, "
-            f"progress_every = {defaults.progress_every}."
+            f"progress_every = {defaults.progress_every}, "
+            f"background_check_every = {defaults.background_check_every}s."
         )
 
     if parts[0] == "progress" and len(parts) == 2:
@@ -629,12 +639,42 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 compact_reserve_tokens=current.compact_reserve_tokens,
                 keep_recent_tokens=current.keep_recent_tokens,
                 progress_every=every,
+                background_check_every=current.background_check_every,
             )
         )
         rt.progress_every = every
         state = "off" if every == 0 else f"every {every} ipython calls"
         return CommandResult.text(
             f"Saved. progress_every = {every} ({state}). Applies from your next message."
+        )
+
+    if parts[0] == "bg" and len(parts) == 2:
+        try:
+            every = int(parts[1])
+        except ValueError:
+            return CommandResult.error(
+                f"Invalid value {parts[1]!r}: expected a number of seconds.",
+                body="Usage: /settings bg <seconds> (0 disables status checks)",
+            )
+        if not validate_background_check_every(every):
+            return CommandResult.error(
+                f"Invalid value {every}: must be between 0 and 86,400 seconds.",
+                body="Usage: /settings bg <seconds> (0 disables status checks)",
+            )
+        save_settings(
+            Settings(
+                compact_reserve_tokens=current.compact_reserve_tokens,
+                keep_recent_tokens=current.keep_recent_tokens,
+                progress_every=current.progress_every,
+                background_check_every=every,
+            )
+        )
+        rt.background_check_every = every
+        # The worker owns the clock, so it has to be told; a restart re-applies it.
+        rt.kernel.configure(background_check_every=every)
+        state = "off" if every == 0 else f"every {every}s while a job runs"
+        return CommandResult.text(
+            f"Saved. background_check_every = {every}s ({state}). Applies from your next message."
         )
 
     if parts[0] in ("reserve", "keep") and len(parts) == 2:
@@ -655,6 +695,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 compact_reserve_tokens=value,
                 keep_recent_tokens=current.keep_recent_tokens,
                 progress_every=current.progress_every,
+                background_check_every=current.background_check_every,
             )
             rt.compact_reserve_tokens = value
             label = "reserve_tokens"
@@ -663,6 +704,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 compact_reserve_tokens=current.compact_reserve_tokens,
                 keep_recent_tokens=value,
                 progress_every=current.progress_every,
+                background_check_every=current.background_check_every,
             )
             rt.keep_recent_tokens = value
             label = "keep_recent_tokens"

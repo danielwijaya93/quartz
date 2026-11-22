@@ -451,10 +451,12 @@ def format_helpers_for_prompt(loaded: LoadedHelpers) -> str:
         "## REPL Functions",
         "- `bash(command, timeout=600) -> BashHandle`: runs a shell command in the background; "
         "`await handle -> BashResult(.exit_code, .output, .duration)`. Also `.pid`, `.running`, "
-        "`.tail(n=50)`, `.output()`, `.poll()`, `.kill()`. Commands outliving a cell emit `[bash-done]`. "
+        "`.tail(n=50)`, `.output()`, `.poll()`, `.kill()`. Commands outliving a cell emit `[bash-done]`, "
+        "and a job still running after the status-check period emits `[bash-status]` with elapsed time and a "
+        "short output tail: a prompt to tell the user how it is going, not a request to stop it. "
         "MUST use `bash()` (never `subprocess.Popen`/`sh()`) to launch forked `quartz -p` workers, "
         "or the harness will never wake you on completion — prefer `launch_worker(prompt_file, cwd, session_id)` "
-        "which wraps `bash()` with correct quoting and guarantees `[bash-done]` delivery.",
+        "which wraps `bash()` with correct quoting and guarantees `[bash-done]` delivery. A `-p` run has no background jobs: there `bash()` finishes inside the cell and `launch_worker` is refused.",
         "- `ls(path='.')`, `find(pattern='*', path='.', limit=200)`, `rg(pattern, path='.', glob=None, max_hits=100, fixed=False)` "
         "(use raw strings r'...' for regex patterns with backslashes to avoid Python SyntaxWarning, or fixed=True for literal string search)",
 

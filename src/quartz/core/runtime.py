@@ -15,10 +15,10 @@ from quartz.core.compact import (
     estimate_text_tokens,
 )
 from quartz.core.images import ImageAttachment
-from quartz.kernel.client import CellResult, KernelClient
 from quartz.core.loop import TurnUsage
-from quartz.providers.base import LLMProvider
 from quartz.core.session import Session
+from quartz.kernel.client import CellResult, KernelClient
+from quartz.providers.base import LLMProvider
 
 
 @dataclasses.dataclass
@@ -44,6 +44,8 @@ class AgentRuntime:
     show_thinking: bool = False
     show_details: bool = False
     progress_every: int = 0
+    #: Seconds between status reports for a running background job (``0`` disables).
+    background_check_every: int = 0
     #: Which transport is serving this runtime: ``"cli"`` or ``"web"``. A command with
     #: a terminal-shaped answer and a browser-shaped one branches on this, because the
     #: session's `origin` cannot answer it: a *terminal* session opened in the browser

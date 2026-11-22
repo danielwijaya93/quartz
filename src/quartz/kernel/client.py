@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import atexit
-from collections import deque
 import dataclasses
 import json
 import os
@@ -14,6 +13,7 @@ import sys
 import threading
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +61,11 @@ class KernelClient:
         self._atexit_registered = False
         self.dirty = False
         self._restart_notice: str | None = None
+        #: Runtime options pushed into the worker (see :meth:`configure`). Kept here
+        #: rather than only in the subprocess so a restarted kernel gets them again.
+        self._headless = False
+        self._background_check_every = 0.0
+        self._configured = False
 
     def start(self, timeout: float = 10.0) -> None:
         if self._proc is not None and self._proc.poll() is None:
@@ -106,6 +111,37 @@ class KernelClient:
             self.close()
             stderr_out = "".join(self._stderr_tail)
             raise RuntimeError(f"Python kernel failed to start within {timeout}s. {stderr_out}")
+        if self._configured:
+            self._push_configure()
+
+    def configure(self, *, headless: bool | None = None, background_check_every: float | None = None) -> None:
+        """Push run options into the worker, now and after any later restart.
+
+        ``headless`` tells the worker to run ``bash()`` inline and refuse
+        ``launch_worker``; ``background_check_every`` is the period at which it
+        reports a still-running job (``0`` disables).
+        """
+        if headless is not None:
+            self._headless = bool(headless)
+        if background_check_every is not None:
+            self._background_check_every = max(0.0, float(background_check_every))
+        self._configured = True
+        self._push_configure()
+
+    def _push_configure(self) -> None:
+        if self._proc is None or self._proc.poll() is not None:
+            return
+        payload: dict[str, Any] = {
+            "type": "configure",
+            "headless": self._headless,
+            "background_check_every": self._background_check_every,
+        }
+        try:
+            self._request(payload, timeout=5.0)
+        except Exception:
+            # Configuration is best-effort: a worker that does not answer must not
+            # stop a session from starting. The defaults it keeps are the safe ones.
+            pass
 
     def _read_stderr_loop(self, stderr_pipe: Any) -> None:
         try:
@@ -205,6 +241,11 @@ class KernelClient:
 
     def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
         self.dirty = True
+        # A headless cell waits for the `bash()` jobs it started (see
+        # `KernelWorker._run_cell_jobs_inline`), so the client must not time it out
+        # first: the command's own `timeout=` is what bounds the wait there.
+        if self._headless:
+            timeout = None
         resp = self._request({"type": "exec", "code": code}, timeout=timeout)
         notice = self.consume_restart_notice()
         prefix = f"{notice}\n" if notice else ""
