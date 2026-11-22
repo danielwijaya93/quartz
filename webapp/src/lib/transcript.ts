@@ -148,6 +148,8 @@ export interface SessionMeta {
   cwd: string;
   model: string;
   effort: string;
+  contextPct?: number;
+  maxContextTokens?: number;
   commands: Command[];
   projectTrust: ProjectTrustState | null;
 }
@@ -180,6 +182,8 @@ export const EMPTY_SESSION: SessionMeta = {
   cwd: "",
   model: "",
   effort: "",
+  contextPct: 0,
+  maxContextTokens: 0,
   commands: [],
   projectTrust: null,
 };
@@ -638,6 +642,8 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
           cwd: message.cwd,
           model: message.model,
           effort: message.effort,
+          contextPct: message.contextPct ?? 0,
+          maxContextTokens: message.maxContextTokens ?? 0,
           commands: message.commands,
           projectTrust: message.projectTrust ?? null,
         },
@@ -750,6 +756,16 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
           turnId: null,
           turnRunning: false,
           status: null,
+          session:
+            message.contextPct !== undefined || message.maxContextTokens !== undefined
+              ? {
+                  ...state.session,
+                  ...(message.contextPct !== undefined ? { contextPct: message.contextPct } : {}),
+                  ...(message.maxContextTokens !== undefined
+                    ? { maxContextTokens: message.maxContextTokens }
+                    : {}),
+                }
+              : state.session,
         },
         {
           kind: "turn_end",

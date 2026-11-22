@@ -29,6 +29,62 @@ export function formatEffortLabel(effort: string): string {
   return EFFORT_LABELS[key] ?? `${key.charAt(0).toUpperCase()}${key.slice(1)}`;
 }
 
+function formatTokenWindow(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
+  return String(tokens);
+}
+
+function ContextRing({
+  pct,
+  maxTokens,
+}: {
+  pct: number;
+  maxTokens?: number;
+}): React.ReactElement {
+  const clamped = Math.max(0, Math.min(100, pct));
+  const radius = 7;
+  const circumference = 2 * Math.PI * radius;
+  const dashOffset = circumference * (1 - clamped / 100);
+  const label = maxTokens && maxTokens > 0
+    ? `Context: ${pct.toFixed(1)}% of ${formatTokenWindow(maxTokens)}`
+    : `Context: ${pct.toFixed(1)}%`;
+  const toneClass =
+    clamped >= 90 ? "text-danger" : clamped >= 75 ? "text-warning" : "text-muted";
+
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      title={label}
+      className={cn("inline-flex size-6 shrink-0 items-center justify-center", toneClass)}
+    >
+      <svg viewBox="0 0 18 18" className="size-4 -rotate-90" aria-hidden="true">
+        <circle
+          cx="9"
+          cy="9"
+          r={radius}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeOpacity={0.2}
+        />
+        <circle
+          cx="9"
+          cy="9"
+          r={radius}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={dashOffset}
+        />
+      </svg>
+    </span>
+  );
+}
+
 export interface ComposerProps {
   connection: ConnectionStatus;
   turnRunning: boolean;
@@ -37,6 +93,8 @@ export interface ComposerProps {
   commands?: readonly Command[];
   model?: string;
   effort?: string;
+  contextPct?: number;
+  maxContextTokens?: number;
   onOpenModelPicker?: () => void;
   onSubmit: (text: string, images: ImageAttachment[]) => void;
   onSteer: (text: string) => void;
@@ -87,6 +145,8 @@ export function Composer({
   commands = [],
   model,
   effort,
+  contextPct,
+  maxContextTokens,
   onOpenModelPicker,
   onSubmit,
   onSteer,
@@ -581,6 +641,9 @@ export function Composer({
                   ) : null}
                   <ChevronDown aria-hidden="true" className="size-3 shrink-0 text-muted/70" />
                 </button>
+              ) : null}
+              {contextPct !== undefined ? (
+                <ContextRing pct={contextPct} maxTokens={maxContextTokens} />
               ) : null}
               {turnRunning ? (
                 <Button

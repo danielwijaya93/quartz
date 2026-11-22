@@ -265,6 +265,17 @@ describe("Composer", () => {
     expect(onOpenModelPicker).toHaveBeenCalledTimes(1);
   });
 
+  it("renders the context usage ring with percentage and window tooltip", () => {
+    setup({
+      model: "gemini-4-hydrogen",
+      effort: "medium",
+      contextPct: 23.5,
+      maxContextTokens: 1_000_000,
+      onOpenModelPicker: vi.fn(),
+    });
+    expect(screen.getByRole("img", { name: "Context: 23.5% of 1.0M" })).toBeInTheDocument();
+  });
+
   it("runs /reset via onRunCommand", async () => {
     const user = userEvent.setup();
     const onRunCommand = vi.fn();
