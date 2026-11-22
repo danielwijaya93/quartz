@@ -5,6 +5,7 @@ import {
   failedToolCount,
   stepLabel,
   toolRunLabel,
+  turnSummary,
   type Turn,
   type TurnStep,
 } from "@/lib/transcript";
@@ -40,8 +41,10 @@ function statusLabel(step: TurnStep, failed: number): string {
  * The answer is the page; this is the drawer the tool calls went into. It is
  * collapsed always - the header carries the progress instead of opening itself -
  * because an auto-expanding drawer moves the answer while it is being read. One
- * line per turn either way: "Thinking", "Running read_csv", or "4 steps · 2
- * failed".
+ * line per turn either way, and the two states say different things on purpose:
+ * while the turn runs the header is the progress ("Thinking", "Running read_csv");
+ * once it settles it is the work that came of it ("Thought, 4 tools"), never a
+ * count of the rows inside it.
  */
 export function TurnTray({
   turn,
@@ -61,8 +64,10 @@ export function TurnTray({
 
   const current = turn.steps[turn.steps.length - 1];
   const failed = failedToolCount(turn);
-  const settledLabel = `${turn.steps.length} ${turn.steps.length === 1 ? "step" : "steps"}`;
-  const label = turn.live && current !== undefined ? stepLabel(current) : settledLabel;
+  // "1 step" over a body reading "Used 4 tools" counted the same work twice, in two
+  // units, and put the meaningless number first. The settled header names the work
+  // instead: see `turnSummary`.
+  const label = turn.live && current !== undefined ? stepLabel(current) : turnSummary(turn);
 
   const handleScroll = React.useCallback((): void => {
     const node = listRef.current;

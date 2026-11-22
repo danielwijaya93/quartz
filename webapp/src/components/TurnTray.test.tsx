@@ -55,7 +55,7 @@ describe("TurnTray", () => {
     const user = userEvent.setup();
     render(tray(turnOf([thinking("k1", "a"), tool("t1"), assistant("a1", "answer")])));
 
-    const header = screen.getByRole("button", { name: /2 steps/ });
+    const header = screen.getByRole("button", { name: /Thought, 1 tool/ });
     expect(header).toHaveAttribute("aria-expanded", "false");
 
     const panelId = header.getAttribute("aria-controls");
@@ -79,7 +79,7 @@ describe("TurnTray", () => {
     expect(header).toHaveAttribute("aria-expanded", "false");
 
     rerender(tray(turnOf([thinking("k1", "a"), tool("t1"), assistant("a1", "done")])));
-    expect(screen.getByRole("button", { name: /2 steps/ })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /Thought, 1 tool/ })).toHaveAttribute(
       "aria-expanded",
       "false",
     );
@@ -92,10 +92,11 @@ describe("TurnTray", () => {
     // One busy line per turn: the tool's own short label, not a spinner per call.
     rerender(tray(turnOf([thinking("k1", "a"), tool("t1", "running", "read_csv('x')")], true)));
     expect(screen.getByRole("button", { name: /Running read_csv/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /2 steps/ })).toBeNull();
+    // No settled summary either: the header is still reporting the live step.
+    expect(screen.queryByRole("button", { name: /Thought/ })).toBeNull();
   });
 
-  it("settles to a short count", () => {
+  it("settles to what the turn did, not to how many steps it took", () => {
     render(
       tray(
         turnOf([
@@ -108,7 +109,10 @@ describe("TurnTray", () => {
         ]),
       ),
     );
-    expect(screen.getByRole("button", { name: /4 steps/ })).toBeInTheDocument();
+    // Six rows became four steps, which is not a fact about anything: two tools
+    // ran and the model thought first. One count, in the unit of the work.
+    expect(screen.getByRole("button", { name: /Thought, 2 tools/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /step/ })).toBeNull();
   });
 
   it("surfaces failed tools in the collapsed header, without expanding", () => {
@@ -125,7 +129,7 @@ describe("TurnTray", () => {
 
     // The count is part of the header's accessible name: an aria-label would
     // have hidden it from a screen reader.
-    const header = screen.getByRole("button", { name: /1 step.*2 failed/ });
+    const header = screen.getByRole("button", { name: /3 tools.*2 failed/ });
     expect(header).toHaveAttribute("aria-expanded", "false");
     const failed = within(header).getByText("2 failed");
     // Silent failure is the one thing this design may not do, so the count is
@@ -146,7 +150,7 @@ describe("TurnTray", () => {
       ),
     );
 
-    await user.click(screen.getByRole("button", { name: /3 steps/ }));
+    await user.click(screen.getByRole("button", { name: /2 tools/ }));
     const [first, second] = screen.getAllByRole("button", { name: /Used 1 tool/ });
     expect(first).toBeDefined();
     expect(second).toBeDefined();
@@ -167,7 +171,7 @@ describe("TurnTray", () => {
 
     // Two rows, one step, one line: the tray folds the boundary the stream made.
     expect(screen.queryByRole("button", { name: /Thinking, 2 lines/ })).toBeNull();
-    await user.click(screen.getByRole("button", { name: /1 step/ }));
+    await user.click(screen.getByRole("button", { name: /Thought/ }));
 
     const line = screen.getByRole("button", { name: /Thinking, 3 lines/ });
     await user.click(line);
@@ -180,7 +184,7 @@ describe("TurnTray", () => {
       tray(turnOf([thinking("k1", "a"), tool("t1"), assistant("a1", "answer")])),
     );
 
-    await user.click(screen.getByRole("button", { name: /2 steps/ }));
+    await user.click(screen.getByRole("button", { name: /Thought, 1 tool/ }));
     const thought = screen.getByRole("button", { name: /Thinking, 1 lines/ });
     await user.click(thought);
     expect(thought).toHaveAttribute("aria-expanded", "true");
@@ -197,7 +201,7 @@ describe("TurnTray", () => {
       ),
     );
 
-    await user.click(screen.getByRole("button", { name: /2 steps/ }));
+    await user.click(screen.getByRole("button", { name: /Thought, 1 tool/ }));
     const steps = screen.getByTestId("turn-tray-steps");
 
     expect(steps.children).toHaveLength(2);

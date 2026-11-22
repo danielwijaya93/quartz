@@ -67,6 +67,25 @@ export interface BashNoticeRow {
   text: string;
 }
 
+/**
+ * A notice the *application* wrote, drawn in the transcript's left column.
+ *
+ * The harness speaks in `user` messages because that is the only role the wire
+ * lets it inject with: a resumed session opens with a `[python-state-restored]`
+ * message, a finished background job arrives as `[bash-done pid:…]`, a scheduled
+ * checkpoint as `[progress]`. Those are the harness talking, not the reader, and
+ * rendering them right-aligned in a "You" bubble attributes the application's
+ * words to the person using it.
+ */
+export interface SystemNoticeRow {
+  kind: "system_notice";
+  id: string;
+  /** The bracketed tag without its brackets: `python-state-restored`. */
+  tag: string;
+  /** Everything after the tag line: the part a person reads. */
+  text: string;
+}
+
 export interface SteeringRow {
   kind: "steering";
   id: string;
@@ -113,6 +132,7 @@ export type Row =
   | ThinkingRow
   | ToolRow
   | BashNoticeRow
+  | SystemNoticeRow
   | SteeringRow
   | CompactionRow
   | ErrorRow
@@ -301,11 +321,69 @@ function commandName(name: string): string {
   return name.startsWith("/") ? name.slice(1) : name;
 }
 
+/**
+ * A harness notice read out of a user message.
+ *
+ * The tag is kept whole (`bash-done pid:4821 exit:0 duration:1.2s`) because its
+ * attributes are the useful half of the line; `text` is the body underneath it.
+ */
+export interface HarnessNotice {
+  /** The bracketed tag, brackets stripped. */
+  tag: string;
+  /** Everything after the tag's line, trimmed. */
+  text: string;
+}
+
+/**
+ * The tag line of a harness notice: `[python-state-restored]`,
+ * `[bash-done pid:4821 exit:0]`.
+ */
+const HARNESS_NOTICE = /^\[([a-z][a-z0-9]*(?:-[a-z0-9]+){0,6}(?:\s[^\]\n]*)?)\]\s*\n?/;
+
+/**
+ * Read a harness notice out of a user message, or null when the user really spoke.
+ *
+ * `quartz` injects its own notices through the only role it has - `user` - and the
+ * system prompt states the convention: "Messages starting with `[<kind>]` come from
+ * the harness." (`core/prompt.py`.) The browser may use the same rule the model
+ * does, which is why this is a pattern rather than a list of the three tags that
+ * exist today: a fourth notice must arrive as a notice, not as a user bubble.
+ *
+ * Two characters keep a reader's own words out of it: the tag has to start at the
+ * very first byte of the message and be at least three characters long, so "[x]
+ * try this" is still something a person typed.
+ */
+export function parseHarnessNotice(text: string): HarnessNotice | null {
+  const match = HARNESS_NOTICE.exec(text);
+  const tag = match?.[1];
+  if (match === null || tag === undefined) return null;
+  const name = tag.split(/\s/)[0] ?? "";
+  if (name.length < 3) return null;
+  // A one-line notice ("[progress] Update the user now") carries its sentence
+  // after the tag; a multiline one carries it below. A bare tag is a notice with
+  // nothing to add, and the tag alone is the whole message.
+  return { tag, text: text.slice(match[0].length).trim() };
+}
+
 /** Flatten a stored message into the rows it represents. */
 function rowsFromMessage(message: Message, index: number): Row[] {
   const text = typeof message.content === "string" ? message.content : "";
   switch (message.role) {
-    case "user":
+    case "user": {
+      // History carries harness notices as user messages; classifying them here is
+      // what stops a resumed session from opening with the application quoted as
+      // if the reader had said it.
+      const notice = parseHarnessNotice(text);
+      if (notice !== null) {
+        return [
+          {
+            kind: "system_notice",
+            id: `history-notice-${index}`,
+            tag: notice.tag,
+            text: notice.text,
+          },
+        ];
+      }
       return [
         {
           kind: "user",
@@ -314,6 +392,7 @@ function rowsFromMessage(message: Message, index: number): Row[] {
           images: [],
         },
       ];
+    }
     case "assistant": {
       const rows: Row[] = [];
       if (text.trim()) {
@@ -679,6 +758,53 @@ export function stepLabel(step: TurnStep): string {
   }
 }
 
+/** The words a live tray header uses, lowercased: the vocabulary it owns. */
+const TRAY_STATUS_WORDS: ReadonlySet<string> = new Set(["thinking", "running", "writing"]);
+
+/**
+ * Whether a server status label is news the turn tray is already telling.
+ *
+ * Two lines claim the same moment otherwise: the tray header says "Thinking"
+ * (pulsing, with the transcript's one live region) while `StatusLine` prints the
+ * server's own label, "Thinking... · running", with a second spinner. Both are
+ * true, neither adds anything, and together they read as two turns doing two
+ * things. The tray owns "what the turn is doing", so a label that opens with one
+ * of its words is not drawn again - and anything else the server has to say
+ * ("Compacting context…") still is.
+ */
+export function trayOwnsStatus(label: string | null, turnRunning: boolean): boolean {
+  if (!turnRunning || label === null) return false;
+  const first = label.trim().toLowerCase().split(/\s+/)[0] ?? "";
+  return TRAY_STATUS_WORDS.has(first.replace(/[.…:]+$/, ""));
+}
+
+/**
+ * What a settled turn did, in one phrase.
+ *
+ * The collapsed header used to count *steps* ("1 step") over a body that counted
+ * *tools* ("Used 4 tools"): two units for one idea, and the smaller number was the
+ * one a reader saw first. So the header names the work itself - "Thought",
+ * "4 tools", or both - and never how many rows the tray happens to hold.
+ *
+ * Failed calls are counted separately, by `failedToolCount`: they are the one thing
+ * that must be visible without opening anything. Interim narration is not counted
+ * at all - it is the answer arriving in pieces, not work to audit.
+ */
+export function turnSummary(turn: Turn): string {
+  let thought = false;
+  let tools = 0;
+  for (const step of turn.steps) {
+    if (step.kind === "thinking") thought = true;
+    else if (step.kind === "tool_run") tools += step.rows.length;
+  }
+  const parts: string[] = [];
+  if (thought) parts.push("Thought");
+  if (tools > 0) parts.push(`${tools} ${tools === 1 ? "tool" : "tools"}`);
+  // Every row that can make a step also makes one of the two parts above, so this
+  // is only reached by an empty turn - and a header may never be blank.
+  return parts.length === 0 ? "Answered" : parts.join(", ");
+}
+
 /**
  * Failed tool calls anywhere in the turn.
  *
@@ -772,9 +898,9 @@ function buildTurn(rows: readonly (AssistantRow | ThinkingRow | ToolRow)[]): Tur
  * Fold the flat row list into turns.
  *
  * Only rows a turn can produce - assistant, thinking, tool - are folded. Every
- * other kind (`user`, `bash_notice`, `steering`, `compaction`, `error`,
- * `command`, `turn_end`) is a marker *between* turns: it closes the open turn
- * and is returned in place, so those keep rendering exactly as before.
+ * other kind (`user`, `bash_notice`, `system_notice`, `steering`, `compaction`,
+ * `error`, `command`, `turn_end`) is a marker *between* turns: it closes the open
+ * turn and is returned in place, so those keep rendering exactly as before.
  */
 export function groupTurns(rows: readonly Row[], options: GroupOptions = {}): TranscriptItem[] {
   const items: TranscriptItem[] = [];
@@ -814,4 +940,66 @@ export function lineCount(text: string): number {
 /** Rough token estimate used only for display next to thinking. */
 export function approxTokens(text: string): number {
   return Math.ceil(text.length / 4);
+}
+
+/* ------------------------------------------------------- follow the stream */
+
+/**
+ * The newest row the *reader* spoke, or null when they have not spoken yet.
+ *
+ * Scrolling decisions read the row stream rather than a prop: a prompt sent from
+ * the composer, from the command palette, or by an OpenUI form submit all land as
+ * a `user` row, so "the reader just sent something" is a fact about the log, not
+ * about which component happened to call the send.
+ */
+export function lastUserRowId(rows: readonly Row[]): string | null {
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index];
+    if (row !== undefined && row.kind === "user") return row.id;
+  }
+  return null;
+}
+
+/** The part of a row that carries what it says, for identity-by-content. */
+function spokenText(row: Row): string {
+  switch (row.kind) {
+    case "user":
+    case "assistant":
+    case "thinking":
+    case "bash_notice":
+    case "steering":
+    case "system_notice":
+      return row.text;
+    case "tool":
+      return `${row.code}\u0000${row.output}`;
+    case "compaction":
+      return row.summary;
+    case "error":
+      return row.message;
+    case "turn_end":
+      return `${row.status}\u0000${row.tokens}\u0000${row.elapsedMs}`;
+    case "command":
+      return `${row.name}\u0000${row.ok}`;
+  }
+}
+
+/**
+ * Whether two row lists are the same conversation.
+ *
+ * `session_state` for another session replaces the log wholesale. Row *ids* cannot
+ * answer this on their own: history rows are identified by their position in a
+ * session, so two sessions both open with `history-user-0`, and an id-only check
+ * would call every switch "more of the same". Identity plus what the row says can:
+ * growth keeps a row exactly as it was, a switch replaces its words.
+ */
+export function sameConversation(previous: readonly Row[], next: readonly Row[]): boolean {
+  // Nothing to compare yet: a first render is not a switch.
+  if (previous.length === 0) return true;
+  // An emptied log is a new session, not a shrinking one.
+  if (next.length === 0) return false;
+  const before = new Map(previous.map((row) => [row.id, row]));
+  return next.some((row) => {
+    const was = before.get(row.id);
+    return was !== undefined && was.kind === row.kind && spokenText(was) === spokenText(row);
+  });
 }
