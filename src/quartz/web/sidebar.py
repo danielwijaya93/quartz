@@ -79,7 +79,7 @@ class SidebarState:
 
     hidden_sessions: set[str] = dataclasses.field(default_factory=set)
     imported_sessions: set[str] = dataclasses.field(default_factory=set)
-    pinned_sessions: set[str] = dataclasses.field(default_factory=set)
+    pinned_sessions: list[str] = dataclasses.field(default_factory=list)
     renames: dict[str, str] = dataclasses.field(default_factory=dict)
     workspaces: list[Workspace] = dataclasses.field(default_factory=list)
 
@@ -89,7 +89,7 @@ class SidebarState:
             "version": SIDEBAR_VERSION,
             "hiddenSessions": sorted(self.hidden_sessions),
             "importedSessions": sorted(self.imported_sessions),
-            "pinnedSessions": sorted(self.pinned_sessions),
+            "pinnedSessions": list(self.pinned_sessions),
             "renames": {key: self.renames[key] for key in sorted(self.renames)},
             "workspaces": [workspace.to_dict() for workspace in self.workspaces],
         }
@@ -126,7 +126,7 @@ class SidebarState:
         return cls(
             hidden_sessions=_str_set(raw.get("hiddenSessions")),
             imported_sessions=_str_set(raw.get("importedSessions")),
-            pinned_sessions=_str_set(raw.get("pinnedSessions")),
+            pinned_sessions=_str_list(raw.get("pinnedSessions")),
             renames=renames,
             workspaces=workspaces,
         )
@@ -136,6 +136,18 @@ def _str_set(raw: Any) -> set[str]:
     if not isinstance(raw, list):
         return set()
     return {item for item in raw if isinstance(item, str) and item}
+
+
+def _str_list(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item and item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
 
 
 class SidebarStore:
@@ -185,14 +197,18 @@ class SidebarStore:
     def pin(self, session_id: str) -> None:
         """Pin a session to the top of the sidebar."""
         with self._lock:
-            self.state.pinned_sessions.add(session_id)
-            self.save()
+            if session_id not in self.state.pinned_sessions:
+                self.state.pinned_sessions.append(session_id)
+                self.save()
 
     def unpin(self, session_id: str) -> None:
         """Remove a session from the pinned section."""
         with self._lock:
-            self.state.pinned_sessions.discard(session_id)
-            self.save()
+            if session_id in self.state.pinned_sessions:
+                self.state.pinned_sessions = [
+                    sid for sid in self.state.pinned_sessions if sid != session_id
+                ]
+                self.save()
 
     def rename(self, session_id: str, title: str) -> None:
         """Store a display title. An empty title clears the rename."""
@@ -294,7 +310,7 @@ def sidebar_payload(rows: list[dict[str, Any]], state: SidebarState) -> dict[str
             "version": SIDEBAR_VERSION,
             "hiddenSessions": sorted(state.hidden_sessions),
             "importedSessions": sorted(state.imported_sessions),
-            "pinnedSessions": sorted(state.pinned_sessions),
+            "pinnedSessions": list(state.pinned_sessions),
             "renames": {key: state.renames[key] for key in sorted(state.renames)},
             "workspaces": workspaces,
         },

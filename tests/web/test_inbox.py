@@ -57,27 +57,22 @@ def test_background_turn_end_adds_done_and_clears_on_attach(tmp_path: Path) -> N
         assert items[0]["title"] == "Fix the bug"
         assert any(f.get("type") == "inbox_state" and len(f["items"]) == 1 for f in events)
 
-        # Attaching marks "done" as read instead of removing it.
+        # Attaching auto-clears "done" from the inbox.
         s1.attach(lambda _f: None)
-        read_items = manager.inbox_items()
-        assert len(read_items) == 1
-        assert read_items[0]["sessionId"] == sid1
-        assert read_items[0]["read"] is True
+        assert manager.inbox_items() == []
 
-        # Starting a new turn (replying) clears it from the inbox while running.
+        # Attached follow-up turns do not re-add "done" to the inbox.
         release.clear()
         s1.start_turn("Follow up", [])
         assert manager.inbox_items() == []
         release.set()
         _wait_turn(s1)
-        after_items = manager.inbox_items()
-        assert len(after_items) == 1
-        assert after_items[0]["read"] is True
+        assert manager.inbox_items() == []
     finally:
         manager.close_all()
 
 
-def test_foreground_turn_end_adds_read_item_and_clears_on_reply(tmp_path: Path) -> None:
+def test_foreground_turn_end_does_not_add_inbox_item(tmp_path: Path) -> None:
     release = threading.Event()
 
     def runner(rt: Any, observer: Any, **_kw: Any) -> TurnOutcome:
@@ -87,24 +82,12 @@ def test_foreground_turn_end_adds_read_item_and_clears_on_reply(tmp_path: Path) 
     manager = SessionManager(_build_factory(tmp_path), cwd=tmp_path, runner=runner)
     try:
         s1 = manager.create_session(tmp_path)
-        sid1 = s1.runtime.active_session.id
         s1.attach(lambda _f: None)
         s1.start_turn("Hello", [])
         release.set()
         _wait_turn(s1)
 
-        items = manager.inbox_items()
-        assert len(items) == 1
-        assert items[0]["sessionId"] == sid1
-        assert items[0]["kind"] == "done"
-        assert items[0]["read"] is True
-
-        # Replying clears it from the inbox.
-        release.clear()
-        s1.start_turn("Next", [])
         assert manager.inbox_items() == []
-        release.set()
-        _wait_turn(s1)
     finally:
         manager.close_all()
 
@@ -200,32 +183,25 @@ def test_hello_replays_non_empty_inbox_after_refresh(tmp_path: Path) -> None:
     assert second["items"][0]["sessionId"] == sid_bg
 
 
-def test_dismiss_and_clear_read_inbox(tmp_path: Path) -> None:
+def test_dismiss_inbox_item(tmp_path: Path) -> None:
     def runner(rt: Any, observer: Any, **_kw: Any) -> TurnOutcome:
         return TurnOutcome(TurnStatus.OK)
 
     manager = SessionManager(_build_factory(tmp_path), cwd=tmp_path, runner=runner)
     try:
         s_read = manager.create_session(tmp_path)
-        sid_read = s_read.runtime.active_session.id
         s_read.start_turn("Read task", [])
         _wait_turn(s_read)
-        s_read.attach(lambda _f: None)
+        s_read.attach(lambda _f: None)  # auto-cleared on attach
 
         s_unread = manager.create_session(tmp_path)
         sid_unread = s_unread.runtime.active_session.id
         s_unread.start_turn("Unread task", [])
         _wait_turn(s_unread)
 
-        # Unread items sort before read items.
         items = manager.inbox_items()
-        assert [i["sessionId"] for i in items] == [sid_unread, sid_read]
+        assert [i["sessionId"] for i in items] == [sid_unread]
         assert items[0]["read"] is False
-        assert items[1]["read"] is True
-
-        # clear_read_inbox removes only read items.
-        assert manager.clear_read_inbox() == 1
-        assert [i["sessionId"] for i in manager.inbox_items()] == [sid_unread]
 
         # dismiss_inbox_item removes unread item.
         assert manager.dismiss_inbox_item(sid_unread) is True
@@ -235,7 +211,7 @@ def test_dismiss_and_clear_read_inbox(tmp_path: Path) -> None:
         manager.close_all()
 
 
-def test_websocket_inbox_dismiss_and_clear_read(tmp_path: Path) -> None:
+def test_websocket_inbox_dismiss(tmp_path: Path) -> None:
     def runner(rt: Any, observer: Any, **_kw: Any) -> TurnOutcome:
         return TurnOutcome(TurnStatus.OK)
 
@@ -244,10 +220,9 @@ def test_websocket_inbox_dismiss_and_clear_read(tmp_path: Path) -> None:
     manager: SessionManager = app.state.manager
 
     s1 = manager.create_session(tmp_path)
-    sid1 = s1.runtime.active_session.id
     s1.start_turn("Task 1", [])
     _wait_turn(s1)
-    s1.attach(lambda _f: None)
+    s1.attach(lambda _f: None)  # auto-cleared on attach
 
     s2 = manager.create_session(tmp_path)
     sid2 = s2.runtime.active_session.id
@@ -260,12 +235,7 @@ def test_websocket_inbox_dismiss_and_clear_read(tmp_path: Path) -> None:
         ws.send_json({"type": "hello", "clientVersion": 1, "sessionId": sid_fg})
         _ = ws.receive_json()  # session_state
         initial = ws.receive_json()  # inbox_state
-        assert len(initial["items"]) == 2
-
-        ws.send_json({"type": "inbox_clear_read"})
-        after_clear = ws.receive_json()
-        assert after_clear["type"] == "inbox_state"
-        assert [i["sessionId"] for i in after_clear["items"]] == [sid2]
+        assert [i["sessionId"] for i in initial["items"]] == [sid2]
 
         ws.send_json({"type": "inbox_dismiss", "sessionId": sid2})
         after_dismiss = ws.receive_json()
