@@ -1,5 +1,6 @@
 import * as React from "react";
 import { ServerUrlCard } from "./ServerUrlCard";
+import { isNativeCapacitor } from "../lib/serverUrl";
 import { BiometricLockCard } from "./BiometricLockCard";
 import { apiUrl } from "../lib/serverUrl";
 import { Button, Input } from "@heroui/react";
@@ -78,6 +79,7 @@ export function SettingsView({
   const [savingKey, setSavingKey] = React.useState<string | null>(null);
   const [status, setStatus] = React.useState<{ ok: boolean; text: string } | null>(null);
   const [serverVersion, setServerVersion] = React.useState<string | null>(null);
+  const isNative = isNativeCapacitor();
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -246,14 +248,16 @@ export function SettingsView({
         ) : null}
 
         <section
-          aria-label="Browser notifications"
+          aria-label={isNative ? "App notifications" : "Browser notifications"}
           className="rounded-xl border border-border bg-surface/50 px-4 py-3"
         >
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
                 <Bell aria-hidden="true" className="size-3.5 text-muted" />
-                <p className="text-sm font-medium text-foreground">Browser notifications</p>
+                <p className="text-sm font-medium text-foreground">
+                  {isNative ? "App notifications" : "Browser notifications"}
+                </p>
               </div>
               <p className="mt-0.5 text-xs text-muted">
                 {notifications.env.needsHttps
@@ -261,14 +265,18 @@ export function SettingsView({
                   : notifications.env.needsHomeScreen
                     ? "On iPhone or iPad, tap Share → Add to Home Screen, then open Quartz from your Home Screen."
                     : notifications.env.permission === "denied"
-                      ? "Blocked in browser settings. Allow notifications for this site to enable them."
+                      ? isNative
+                        ? "Blocked in Android app settings. Allow notifications for Quartz to enable them."
+                        : "Blocked in browser settings. Allow notifications for this site to enable them."
                       : !notifications.env.supported
                         ? "Not supported in this browser."
                         : notifications.env.permission === "granted" && notifications.enabled
                           ? "Enabled — alerts when a turn finishes, needs approval, or a background job ends while inactive."
                           : notifications.env.permission === "default"
                             ? "Allow notifications to get alerts when Quartz is in the background."
-                            : "Paused for this browser."}
+                            : isNative
+                              ? "Paused on this device."
+                              : "Paused for this browser."}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2">

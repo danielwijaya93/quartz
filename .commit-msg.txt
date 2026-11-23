@@ -1,8 +1,5 @@
-feat: unified versioning across Core/TUI, Web, and Android + versioned APK names
+fix(android): show "App notifications" instead of "Browser notifications" in Settings
 
-- Expose __version__ in src/quartz/__init__.py (reads pyproject.toml / package metadata).
-- Add -V / --version flag to `quartz` CLI and `"version"` field to `/api/health`.
-- Add scripts/bump_version.py to bump pyproject.toml and webapp/package.json together.
-- Inject VITE_APP_VERSION and VITE_APP_BUILD in webapp/vite.config.ts and display App + Server versions in SettingsView.
-- Update webapp/android/app/build.gradle to read versionName from package.json, compute versionCode from git commit count, and output quartz-v<version>-b<build>.apk.
-- Update webapp/scripts/build-apk.sh, .github/workflows/ci.yml, and AGENTS.md for versioned APK filenames.
+- Render "App notifications", "Blocked in Android app settings...", and "Paused on this device." when running inside Capacitor.
+- Add unit test in SettingsView.test.tsx.
+- Bump unified Quartz version to 0.1.1.
