@@ -182,6 +182,9 @@ export function Composer({
   const localRef = React.useRef<HTMLTextAreaElement | null>(null);
   const textareaRef = forwardedRef ?? localRef;
   const fileRef = React.useRef<HTMLInputElement | null>(null);
+  const cmdListRef = React.useRef<HTMLUListElement | null>(null);
+  const fileListRef = React.useRef<HTMLUListElement | null>(null);
+  const keyboardNavRef = React.useRef(false);
 
   const offline = connection !== "connected";
   const blocked = fatalError !== null;
@@ -221,6 +224,20 @@ export function Composer({
   React.useEffect(() => {
     setActiveFile(0);
   }, [atMention?.query]);
+
+  React.useEffect(() => {
+    if (!slashOpen || !keyboardNavRef.current) return;
+    keyboardNavRef.current = false;
+    const selected = cmdListRef.current?.querySelector<HTMLElement>('[aria-selected="true"]');
+    selected?.scrollIntoView?.({ block: "nearest" });
+  }, [slashOpen, activeCmd]);
+
+  React.useEffect(() => {
+    if (!atOpen || !keyboardNavRef.current) return;
+    keyboardNavRef.current = false;
+    const selected = fileListRef.current?.querySelector<HTMLElement>('[aria-selected="true"]');
+    selected?.scrollIntoView?.({ block: "nearest" });
+  }, [atOpen, activeFile]);
 
   React.useEffect(() => {
     if (!atOpen || !cwd || filesByCwd[cwd] !== undefined) return;
@@ -395,6 +412,7 @@ export function Composer({
       if (slashOpen) {
         if (event.key === "ArrowDown") {
           event.preventDefault();
+          keyboardNavRef.current = true;
           setActiveCmd((prev) =>
             inlineCommands.length === 0 ? 0 : (prev + 1) % inlineCommands.length,
           );
@@ -402,6 +420,7 @@ export function Composer({
         }
         if (event.key === "ArrowUp") {
           event.preventDefault();
+          keyboardNavRef.current = true;
           setActiveCmd((prev) =>
             inlineCommands.length === 0
               ? 0
@@ -426,11 +445,13 @@ export function Composer({
       if (atOpen) {
         if (event.key === "ArrowDown") {
           event.preventDefault();
+          keyboardNavRef.current = true;
           setActiveFile((prev) => (mentionFiles.length === 0 ? 0 : (prev + 1) % mentionFiles.length));
           return;
         }
         if (event.key === "ArrowUp") {
           event.preventDefault();
+          keyboardNavRef.current = true;
           setActiveFile((prev) =>
             mentionFiles.length === 0 ? 0 : (prev - 1 + mentionFiles.length) % mentionFiles.length,
           );
@@ -554,6 +575,7 @@ export function Composer({
               </p>
             ) : (
               <ul
+                ref={cmdListRef}
                 id="inline-command-list"
                 role="listbox"
                 aria-label="Available commands"
@@ -569,7 +591,10 @@ export function Composer({
                       role="option"
                       aria-selected={selected}
                       data-selected={selected}
-                      onMouseEnter={() => setActiveCmd(index)}
+                      onMouseEnter={() => {
+                        keyboardNavRef.current = false;
+                        setActiveCmd(index);
+                      }}
                       onMouseDown={(event) => {
                         event.preventDefault();
                         runInlineCommand(command.name);
@@ -626,6 +651,7 @@ export function Composer({
               </p>
             ) : (
               <ul
+                ref={fileListRef}
                 id="inline-file-list"
                 role="listbox"
                 aria-label="Matching workspace files"
@@ -638,7 +664,10 @@ export function Composer({
                       key={filePath}
                       role="option"
                       aria-selected={selected}
-                      onMouseEnter={() => setActiveFile(index)}
+                      onMouseEnter={() => {
+                        keyboardNavRef.current = false;
+                        setActiveFile(index);
+                      }}
                       onMouseDown={(event) => {
                         event.preventDefault();
                         selectMention(filePath);
