@@ -278,6 +278,29 @@ quartz web --host 100.x.y.z     # reachable at http://100.x.y.z:8765 from the ph
 
 The transport has no authentication, so keep the bind on a private network.
 
+#### What the Android build adds over the browser
+
+Five things the WebView can gain that a Chrome tab cannot, all native-side and all
+optional:
+
+| Behaviour | Why the browser cannot | Where |
+| --- | --- | --- |
+| **Foreground service during a turn** | Chrome discards backgrounded tabs; the socket dies and a long turn looks dead | `QuartzKeepAliveService.java`, started on `turnRunning` |
+| **Local notifications on turn end** | The native build has no service worker and no `window.Notification`, so it would silently notify nobody | `lib/nativeNotifications.ts` (uses `@capacitor/local-notifications`) |
+| **Share-sheet intake** | A web page cannot receive an `ACTION_SEND` share | `MainActivity.handleShareIntent` + `lib/useNativeShell.ts` |
+| **Back button closes overlays** | A tab has no hardware Back; Android Back exiting the app mid-dialog is jarring | `useNativeShell` → `handleAndroidBack` |
+| **Biometric lock** | A phone handed to someone is a shell prompt, since Quartz Web has no auth | `QuartzNativePlugin.authenticate`, Settings toggle |
+
+Notifications are **local**, not Firebase: the app is a live WebSocket client bounded to
+its server, so the turn result is already in the process when the turn ends, and the
+foreground service is what keeps that process schedulable. `@capacitor/push-notifications`
+and FCM would add one thing this does not — a notification after Android has actually
+killed the app — at the cost of a Firebase project, a `google-services.json`, and server
+push plumbing. Add it if that case matters.
+
+The native plugin itself is deliberately small (`QuartzNativePlugin.java`): keep-alive,
+biometrics, and the pending share. Anything that is plain web API stays in the web layer.
+
 Sessions started from the browser are ordinary Quartz sessions: they live in the
 same JSONL log with the same kernel snapshots, so `quartz -c` resumes one and the
 web client can load a terminal session.

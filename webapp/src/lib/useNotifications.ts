@@ -1,5 +1,7 @@
 import * as React from "react";
 import type { ServerMessage } from "../protocol";
+import { clearNativeNotifications } from "./nativeNotifications";
+import { isNativeCapacitor } from "./serverUrl";
 import {
   detectNotificationEnvironment,
   formatNotificationForFrame,
@@ -48,6 +50,9 @@ export function useNotifications(): NotificationsController {
       if (document.visibilityState === "visible" || document.hasFocus()) {
         unreadRef.current = 0;
         setDocumentUnreadBadge(0);
+        // Coming back to the app is a read receipt: drop the shade entry too, so the
+        // notification does not outlive the thing it was about.
+        if (isNativeCapacitor()) void clearNativeNotifications();
       }
       setEnv(detectNotificationEnvironment());
     };
@@ -70,8 +75,10 @@ export function useNotifications(): NotificationsController {
     unreadRef.current += 1;
     setDocumentUnreadBadge(unreadRef.current);
     // When Web Push is active, sw.js delivers the OS notification via the push
-    // channel (which also wakes the worker when the phone is backgrounded).
-    if (!pushEndpointRef.current) {
+    // channel (which also wakes the worker when the phone is backgrounded). In a
+    // native shell there is no service worker at all, so the local notification is
+    // the delivery -- and it is not suppressed by a stale push endpoint.
+    if (isNativeCapacitor() || !pushEndpointRef.current) {
       void showBrowserNotification(payload);
     }
   }, []);
@@ -92,6 +99,11 @@ export function useNotifications(): NotificationsController {
     setEnv(refreshed);
     writeNotificationsEnabled(true);
     setEnabledState(true);
+    if (isNativeCapacitor()) {
+      // Native delivery is a local notification; there is no push subscription to make.
+      pushEndpointRef.current = null;
+      return;
+    }
     if (refreshed.supported && refreshed.permission === "granted") {
       pushEndpointRef.current = await subscribeToWebPush();
     }
@@ -106,6 +118,13 @@ export function useNotifications(): NotificationsController {
     setEnv(refreshed);
     if (!refreshed.supported || refreshed.permission !== "granted") {
       return false;
+    }
+    if (isNativeCapacitor()) {
+      return showBrowserNotification({
+        title: "Quartz",
+        body: "Notifications are working on this device.",
+        tag: "quartz-test",
+      });
     }
     if (!pushEndpointRef.current) {
       pushEndpointRef.current = await subscribeToWebPush();

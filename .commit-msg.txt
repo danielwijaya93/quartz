@@ -1,0 +1,28 @@
+feat(android): keep alive, local notifications, share intake, back, biometrics
+
+The packaged app was strictly not-better than the browser: same SPA, no
+notifications, and Chrome discarded the tab the same way. These are the five
+things a WebView can do that a tab cannot.
+
+- Foreground service while a turn runs (QuartzKeepAliveService). Android freezes
+  a backgrounded process, so a long turn looked dead until the app was reopened.
+  Started on turnRunning, stopped when it ends.
+- Local notifications on turn end, error, permission request and bg job finish.
+  The native build has no service worker and no window.Notification, so
+  formatNotificationForFrame was producing payloads nobody delivered; the same
+  payloads now go through @capacitor/local-notifications with a stable id per
+  tag so a burst replaces instead of stacking.
+- Share-sheet intake: ACTION_SEND text or a link arrives in the composer draft,
+  appended rather than replacing, so a share lands next to a half-typed prompt.
+- Back button closes the overlay on top (palette, picker, dialogs, drawer) and
+  only leaves the app when nothing is open.
+- Optional biometric lock, off by default, with an unlock prompt on launch and
+  on return to the foreground. Enabling it requires one successful prompt.
+
+Deliberately local notifications, not Firebase: the turn result is already in
+the process, and FCM would only add delivery after Android has killed the app.
+That gap is documented rather than pretended away.
+
+Verified: 526 webapp tests (18 new), 885 Python tests, typecheck, and
+assembleDebug produces an APK carrying the service, the SEND filter and the
+POST_NOTIFICATIONS / FOREGROUND_SERVICE / USE_BIOMETRIC permissions.
