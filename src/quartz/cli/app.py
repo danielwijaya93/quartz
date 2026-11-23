@@ -24,6 +24,7 @@ from quartz.core.loop import drain_bash_events
 from quartz.core.runtime import AgentRuntime
 from quartz.core.turn import TurnStatus, run_interactive_turn, run_turn
 from quartz.errors import CredentialError, EndpointConfigError, SessionNotFoundError
+from quartz.kernel.sandbox import SandboxUnavailableError
 from quartz.providers.registry import PROVIDERS, resolve_context_tokens
 from quartz.providers.selection import build_provider
 from quartz.settings import load_settings, project_trust_status, trust_project
@@ -178,6 +179,7 @@ def _bootstrap_options(args: argparse.Namespace) -> BootstrapOptions:
         progress_every=args.progress_every,
         background_check_every=args.background_check_every,
         trust_project=getattr(args, "trust_project", False),
+        sandbox=getattr(args, "sandbox", None),
     )
 
 
@@ -217,7 +219,7 @@ def _build_runtime(args: argparse.Namespace) -> tuple[AgentRuntime, bool]:
     except SessionNotFoundError as exc:
         console.print(f"[red]Error: No previous session found for {escape(_short_path(exc.cwd))}.[/red]")
         sys.exit(1)
-    except (CredentialError, EndpointConfigError, FileNotFoundError) as exc:
+    except (CredentialError, EndpointConfigError, FileNotFoundError, SandboxUnavailableError) as exc:
         console.print(f"[red]Error: {escape(str(exc))}[/red]")
         sys.exit(1)
 
@@ -336,6 +338,20 @@ def main() -> None:
         "--trust-project",
         action="store_true",
         help="Trust the project in --cwd (allows .quartz/helpers.py and .quartz/mcp.json) and persist to config.",
+    )
+    sb_group = parser.add_mutually_exclusive_group()
+    sb_group.add_argument(
+        "--sandbox",
+        dest="sandbox",
+        action="store_true",
+        default=None,
+        help="Run the kernel inside the OS sandbox (default).",
+    )
+    sb_group.add_argument(
+        "--sandbox-off",
+        dest="sandbox",
+        action="store_false",
+        help="Disable the OS sandbox for this session.",
     )
     args = parser.parse_args()
 

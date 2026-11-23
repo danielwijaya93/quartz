@@ -20,12 +20,19 @@ from pathlib import Path
 from typing import Any
 
 from quartz.kernel.base import CellResult
+from quartz.kernel.sandbox import SandboxConfig, sandbox_env_overrides, wrap_command
 
 
 class KernelClient:
     """Manages a persistent `kernel_worker` subprocess over JSONL."""
 
-    def __init__(self, cwd: Path | None = None) -> None:
+    def __init__(
+        self,
+        cwd: Path | None = None,
+        *,
+        sandbox: bool = False,
+        sandbox_config: SandboxConfig | None = None,
+    ) -> None:
         self.cwd = (cwd or Path.cwd()).resolve()
         self._proc: subprocess.Popen[str] | None = None
         self._pending: dict[str, queue.Queue[dict[str, Any]]] = {}
@@ -49,6 +56,11 @@ class KernelClient:
         self._headless = False
         self._background_check_every = 0.0
         self._configured = False
+        self._sandbox_config: SandboxConfig = sandbox_config or SandboxConfig(enabled=sandbox)
+
+    def enable_sandbox(self, config: SandboxConfig | None = None) -> None:
+        """Enable OS-level sandboxing for the kernel subprocess (must be called before start)."""
+        self._sandbox_config = config or SandboxConfig(enabled=True)
 
     def start(self, timeout: float = 10.0) -> None:
         if self._proc is not None and self._proc.poll() is None:
@@ -65,8 +77,13 @@ class KernelClient:
         existing_pp = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = f"{pkg_root}{os.pathsep}{existing_pp}" if existing_pp else pkg_root
 
+        cmd = [sys.executable, "-u", "-m", "quartz.kernel.worker"]
+        if self._sandbox_config.enabled:
+            cmd = wrap_command(cmd, self.cwd, self._sandbox_config)
+            env.update(sandbox_env_overrides())
+
         self._proc = subprocess.Popen(
-            [sys.executable, "-u", "-m", "quartz.kernel.worker"],
+            cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

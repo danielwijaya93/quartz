@@ -459,6 +459,20 @@ def _handle_web_cli(argv: list[str]) -> None:
         action="store_true",
         help="Trust project-local .quartz/helpers.py and .quartz/mcp.json in --cwd.",
     )
+    sb_group = parser.add_mutually_exclusive_group()
+    sb_group.add_argument(
+        "--sandbox",
+        dest="sandbox",
+        action="store_true",
+        default=None,
+        help="Run the kernel inside the OS sandbox (default).",
+    )
+    sb_group.add_argument(
+        "--sandbox-off",
+        dest="sandbox",
+        action="store_false",
+        help="Disable the OS sandbox for this session.",
+    )
     args = parser.parse_args(argv)
 
     cwd = args.cwd.expanduser().resolve()
@@ -512,6 +526,7 @@ def _handle_web_cli(argv: list[str]) -> None:
                 plain_output=False,
                 origin="web",
                 transport="web",
+                sandbox=args.sandbox,
             )
         )
 
