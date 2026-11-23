@@ -140,8 +140,10 @@ def test_prompt_discovery(tmp_path: Path) -> None:
     assert "Global rule: be concise." in prompt
     assert "Always use pytest." in prompt
     assert prompt.index("Global rule: be concise.") < prompt.index("Always use pytest.")
-    assert "`demo-skill`" in prompt
-    assert "A demo skill for testing" in prompt
+    assert "1 skill(s) available" in prompt
+    assert "find_skills(query)" in prompt
+    assert "`demo-skill`" not in prompt
+    assert "A demo skill for testing" not in prompt
     assert "ignored-skill" not in prompt
     assert "Details here." not in prompt
 
@@ -358,6 +360,28 @@ def test_multiline_skill_frontmatter_discovery(tmp_path: Path) -> None:
     assert len(found) == 1
     assert found[0][0] == "demo-skill"
     assert found[0][1] == "First line of description and second line."
+
+
+def test_find_skills_helper(tmp_path: Path) -> None:
+    from quartz.kernel.helpers import find_skills
+
+    skills_dir = tmp_path / "skills"
+    for name, desc in [
+        ("pdf-reader", "Extract text and tables from PDF files"),
+        ("xlsx-editor", "Create and edit Excel spreadsheets"),
+        ("docx-writer", "Generate Word documents"),
+    ]:
+        sdir = skills_dir / name
+        sdir.mkdir(parents=True)
+        (sdir / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {desc}\n---\n", encoding="utf-8")
+
+    hits = find_skills("excel", skills_dir=skills_dir)
+    assert len(hits) == 1
+    assert hits[0]["name"] == "xlsx-editor"
+    assert hits[0]["path"].endswith("xlsx-editor/SKILL.md")
+
+    limited = find_skills("", skills_dir=skills_dir, limit=2)
+    assert len(limited) == 2
 
 
 def test_compact_messages_summarizes_and_keeps_kernel(tmp_path: Path) -> None:

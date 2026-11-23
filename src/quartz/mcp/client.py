@@ -387,9 +387,10 @@ class MCPManager:
             await stack.aclose()
             raise
 
-    async def list_tools(self, server: str | None = None) -> list[dict[str, Any]]:
-        """List tools from one MCP server or all configured servers."""
-        target_servers = [server] if server is not None else self.list_servers()
+    async def _list_tools_for(self, target_servers: list[str]) -> list[dict[str, Any]]:
+        """Fetch tools for `target_servers` and persist them to the local cache."""
+        if not target_servers:
+            return []
 
         async def _fetch_one(srv: str) -> list[dict[str, Any]]:
             session = await self._get_session(srv)
@@ -415,6 +416,7 @@ class MCPManager:
             cache_updates[srv] = [
                 {
                     "name": t["name"],
+                    "description": t.get("description", ""),
                     "args": list((t.get("inputSchema") or {}).get("properties", {}).keys()),
                 }
                 for t in batch
@@ -423,15 +425,40 @@ class MCPManager:
             save_mcp_tool_cache(cache_updates)
         return [item for batch in batches for item in batch]
 
-    async def search_tools(self, query: str) -> list[dict[str, Any]]:
-        """Search MCP tools by keyword across all configured servers."""
+    async def list_tools(self, server: str | None = None) -> list[dict[str, Any]]:
+        """List tools from one MCP server or all configured servers."""
+        target_servers = [server] if server is not None else self.list_servers()
+        return await self._list_tools_for(target_servers)
+
+    async def search_tools(self, query: str, *, refresh: bool = False) -> list[dict[str, Any]]:
+        """Search MCP tools by keyword across configured servers (cache-first unless refresh=True)."""
         terms = [t.lower() for t in query.split() if t.strip()]
-        all_tools = await self.list_tools()
+        configured = self.list_servers()
+        if refresh:
+            all_tools = await self._list_tools_for(configured)
+        else:
+            cache = load_mcp_tool_cache()
+            uncached = [srv for srv in configured if srv not in cache]
+            if uncached:
+                await self._list_tools_for(uncached)
+                cache = load_mcp_tool_cache()
+            all_tools = [
+                {
+                    "server": srv,
+                    "name": t["name"],
+                    "description": t.get("description", ""),
+                    "args": t.get("args", []),
+                }
+                for srv in configured
+                for t in cache.get(srv, [])
+                if isinstance(t, dict) and t.get("name")
+            ]
         if not terms:
             return all_tools
         matched: list[dict[str, Any]] = []
         for tool in all_tools:
-            haystack = f"{tool['server']} {tool['name']} {tool['description']}".lower()
+            args_str = " ".join(str(a) for a in tool.get("args", []))
+            haystack = f"{tool['server']} {tool['name']} {tool['description']} {args_str}".lower()
             if all(t in haystack for t in terms):
                 matched.append(tool)
         return matched

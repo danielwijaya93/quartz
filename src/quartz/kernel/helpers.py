@@ -278,6 +278,85 @@ PROTECTED_NAMES: frozenset[str] = frozenset({
     "_",
 })
 
+def _parse_skill_frontmatter(skill_md: Path) -> tuple[str, str] | None:
+    """Extract (name, description) from a SKILL.md YAML frontmatter block."""
+    try:
+        content = skill_md.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    match = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
+    if not match:
+        return None
+
+    frontmatter = match.group(1)
+    name = ""
+    description = ""
+    lines = frontmatter.splitlines()
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        if line.startswith("name:"):
+            name = line.split(":", 1)[1].strip().strip("\"'")
+        elif line.startswith("description:"):
+            raw_val = line.split(":", 1)[1].strip()
+            if raw_val in (">", ">-", "|", "|-"):
+                block_lines: list[str] = []
+                idx += 1
+                while idx < len(lines):
+                    cont = lines[idx]
+                    if cont and not cont[0].isspace():
+                        idx -= 1
+                        break
+                    stripped = cont.strip()
+                    if stripped:
+                        block_lines.append(stripped)
+                    idx += 1
+                description = " ".join(block_lines)
+            else:
+                description = raw_val.strip("\"'")
+        idx += 1
+    if not name:
+        name = skill_md.parent.name
+    return (name, description)
+
+
+def discover_skills(skills_dir: Path | None = None) -> list[tuple[str, str, Path]]:
+    """Discover SKILL.md files exclusively from ~/.agents/skills."""
+    root = (skills_dir or (Path.home() / ".agents" / "skills")).expanduser()
+    if not root.is_dir():
+        return []
+
+    skills_by_name: dict[str, tuple[str, str, Path]] = {}
+    for entry in sorted(root.iterdir()):
+        skill_md = entry / "SKILL.md"
+        if entry.is_dir() and skill_md.is_file():
+            parsed = _parse_skill_frontmatter(skill_md)
+            if parsed:
+                name, desc = parsed
+                skills_by_name[name] = (name, desc, skill_md)
+    return list(skills_by_name.values())
+
+
+def find_skills(
+    query: str = "",
+    skills_dir: Path | None = None,
+    limit: int = 20,
+) -> list[dict[str, str]]:
+    """Search installed skills by keyword and return matching {name, description, path} entries."""
+    terms = [t.lower() for t in query.split() if t.strip()]
+    matches: list[dict[str, str]] = []
+    for name, desc, path in discover_skills(skills_dir=skills_dir):
+        if terms:
+            haystack = f"{name} {desc}".lower()
+            if not all(t in haystack for t in terms):
+                continue
+        matches.append({"name": name, "description": desc, "path": str(path)})
+        if limit > 0 and len(matches) >= limit:
+            break
+    return matches
+
+
 BUILTIN_HELPERS: dict[str, Callable[..., Any]] = {
     "ls": ls,
     "find": find,
@@ -286,6 +365,7 @@ BUILTIN_HELPERS: dict[str, Callable[..., Any]] = {
     "edit": edit,
     "write": write,
     "view_image": view_image,
+    "find_skills": find_skills,
 }
 
 def _check_python_source(path: Path, content: str) -> list[str]:
@@ -460,7 +540,7 @@ def format_helpers_for_prompt(loaded: LoadedHelpers) -> str:
         "- `ls(path='.')`, `find(pattern='*', path='.', limit=200)`, `rg(pattern, path='.', glob=None, max_hits=100, fixed=False)` "
         "(use raw strings r'...' for regex patterns with backslashes to avoid Python SyntaxWarning, or fixed=True for literal string search)",
 
-        "- `read(path, start=1, end=200)`, `edit(path, old, new)`, `write(path, content)`, `view_image(path)`, `gather(*coros)`",
+        "- `read(path, start=1, end=200)`, `edit(path, old, new)`, `write(path, content)`, `view_image(path)`, `find_skills(query='', limit=20)`, `gather(*coros)`",
         "- Python stdlib modules (e.g. `Path`, `os`, `json`, `re`, `datetime`, `subprocess`, `collections`, etc.) "
         "are auto-imported on attribute access in `<ipython>` cells, while explicit imports are still required "
         "when writing or editing project `.py` files.",

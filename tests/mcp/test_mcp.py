@@ -53,7 +53,10 @@ def test_mcp_in_kernel_and_prompt(tmp_path: Path, monkeypatch) -> None:
 
     prompt = build_system_prompt(tmp_path)
     assert "## MCP Servers" in prompt
-    assert "`demo`" in prompt
+    assert "1 MCP server(s) configured" in prompt
+    assert "mcp.list_servers()" in prompt
+    assert "await mcp.search_tools(query)" in prompt
+    assert "`demo`" not in prompt
     assert "await mcp.call_tool" in prompt
 
     kernel = KernelClient(cwd=tmp_path)
@@ -288,3 +291,33 @@ def test_call_tool_timeout_drops_session(tmp_path: Path) -> None:
     assert asyncio.run(ok.call_tool("s", "fast", {})) == {"ok": "fast"}
     assert ok._call_timeout("s") == 5.0
     assert ok._call_timeout("missing") == 60.0
+
+
+def test_search_tools_uses_cache_without_connecting(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+    from quartz.mcp.client import MCPManager, save_mcp_tool_cache
+
+    cache_path = tmp_path / "mcp_cache.json"
+    monkeypatch.setattr("quartz.mcp.client.default_mcp_cache_path", lambda: cache_path)
+    save_mcp_tool_cache(
+        {
+            "cached_srv": [
+                {"name": "fetch_invoice", "description": "Download PDF invoice", "args": ["invoice_id"]},
+                {"name": "ping", "description": "Health check", "args": []},
+            ]
+        },
+        cache_path,
+    )
+
+    mgr = MCPManager(cwd=tmp_path)
+    mgr._servers = lambda: {"cached_srv": {"command": "nonexistent"}}  # type: ignore[method-assign]
+
+    async def _fail_connect(server: str):
+        raise AssertionError(f"Should not connect to cached server {server}")
+
+    mgr._get_session = _fail_connect  # type: ignore[method-assign]
+
+    hits = asyncio.run(mgr.search_tools("invoice"))
+    assert len(hits) == 1
+    assert hits[0]["server"] == "cached_srv"
+    assert hits[0]["name"] == "fetch_invoice"
