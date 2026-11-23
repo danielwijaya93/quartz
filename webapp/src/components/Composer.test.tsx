@@ -453,4 +453,25 @@ describe("Composer", () => {
       HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
     }
   });
+
+  it("does not auto-focus the textarea on mount or when turnRunning changes", () => {
+    const props: React.ComponentProps<typeof Composer> = {
+      connection: "connected",
+      turnRunning: false,
+      fatalError: null,
+      onSubmit: vi.fn(),
+      onSteer: vi.fn(),
+      onCancel: vi.fn(),
+      onOpenPalette: vi.fn(),
+    };
+    const { rerender } = render(<Composer {...props} />);
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+    expect(textarea).not.toHaveFocus();
+
+    rerender(<Composer {...props} turnRunning={true} />);
+    expect(screen.getByRole("textbox", { name: "Steer the running turn" })).not.toHaveFocus();
+
+    rerender(<Composer {...props} turnRunning={false} />);
+    expect(screen.getByRole("textbox", { name: "Prompt quartz" })).not.toHaveFocus();
+  });
 });

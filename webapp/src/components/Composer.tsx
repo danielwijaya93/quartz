@@ -324,11 +324,6 @@ export function Composer({
     node.setSelectionRange(end, end);
   }, [caretAtEnd, text, textareaRef]);
 
-  // The composer owns focus: this is a keyboard tool, and losing focus after a
-  // submit is the single most common papercut in chat UIs.
-  React.useEffect(() => {
-    if (!disabled) textareaRef.current?.focus();
-  }, [disabled, turnRunning, textareaRef]);
 
   const runInlineCommand = React.useCallback(
     (name: string, arg?: string) => {
