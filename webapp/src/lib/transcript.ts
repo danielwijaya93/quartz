@@ -181,6 +181,13 @@ export interface TranscriptState {
    */
   openRowId: string | null;
   session: SessionMeta;
+  idlePrompts?: IdleSessionPrompt[];
+}
+
+export interface IdleSessionPrompt {
+  sessionId: string;
+  cwd: string;
+  idleSeconds: number;
 }
 
 export const EMPTY_SESSION: SessionMeta = {
@@ -655,6 +662,9 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
       return {
         ...merged,
         turnRunning: message.turnRunning,
+        ...(state.idlePrompts && state.idlePrompts.length > 0
+          ? { idlePrompts: state.idlePrompts.filter((p) => p.sessionId !== message.sessionId) }
+          : {}),
         session: {
           sessionId: message.sessionId,
           cwd: message.cwd,
@@ -857,6 +867,23 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
         }),
         fatalError: message.fatal ? message.message : state.fatalError,
       };
+
+    case "idle_session_prompt": {
+      const existing = state.idlePrompts ?? [];
+      const next = existing.filter((p) => p.sessionId !== message.sessionId);
+      next.push({
+        sessionId: message.sessionId,
+        cwd: message.cwd,
+        idleSeconds: message.idleSeconds,
+      });
+      return { ...state, idlePrompts: next };
+    }
+
+    case "idle_session_resolved": {
+      const existing = state.idlePrompts ?? [];
+      const next = existing.filter((p) => p.sessionId !== message.sessionId);
+      return next.length === existing.length ? state : { ...state, idlePrompts: next };
+    }
 
     case "command_result":
       return appendRow(state, {

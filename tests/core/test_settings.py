@@ -95,6 +95,7 @@ def test_settings_as_dict() -> None:
         "keep_recent_tokens": 2_000,
         "progress_every": 7,
         "background_check_every": 45,
+        "web_idle_hours": 2,
     }
 
 

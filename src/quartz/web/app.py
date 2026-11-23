@@ -37,6 +37,7 @@ from quartz.web.files import (
 )
 from quartz.web.session import (
     BuildRuntime,
+    SessionManager,
     TurnBusyError,
     TurnRunner,
     WebSession,
@@ -128,16 +129,17 @@ def create_app(
     whole server without a kernel, a provider or an API key -- which is also how the
     frame-parity test asserts that every `TurnObserver` hook reaches the wire.
     """
-    session = WebSession(build, cwd=cwd, runner=runner)
+    manager = SessionManager(build, cwd=cwd, runner=runner)
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        """Close the kernel on shutdown, on a thread: `close` blocks on a join."""
+        """Start the idle watcher and close every live kernel on shutdown."""
+        manager.start_watcher()
         try:
             yield
         finally:
             with contextlib.suppress(Exception):
-                await asyncio.to_thread(session.close)
+                await asyncio.to_thread(manager.close_all)
 
     app = FastAPI(
         title="quartz web",
@@ -146,7 +148,8 @@ def create_app(
         openapi_url=None,
         lifespan=lifespan,
     )
-    app.state.session = session
+    app.state.manager = manager
+    app.state.session = manager.current_session
     app.state.cwd = cwd
 
     store_ref: SidebarStore | None = None
@@ -212,11 +215,13 @@ def create_app(
 
     @app.get("/api/health")
     async def health() -> JSONResponse:
+        current = manager.current_session
         return JSONResponse(
             {
                 "status": "ok",
-                "built": session.built,
-                "turnRunning": session.turn_running,
+                "built": current.built,
+                "turnRunning": any(ws.turn_running for ws in manager.all_sessions()),
+                "activeSessions": len(manager.all_sessions()),
                 "cwd": str(cwd),
             }
         )
@@ -229,24 +234,28 @@ def create_app(
             DEFAULT_COMPACT_RESERVE_TOKENS,
             DEFAULT_KEEP_RECENT_TOKENS,
             DEFAULT_PROGRESS_EVERY,
+            DEFAULT_WEB_IDLE_HOURS,
             load_settings,
         )
 
-        if session.built:
-            rt = session.runtime
+        loaded = await asyncio.to_thread(load_settings)
+        current = manager.current_session
+        if current.built:
+            rt = current.runtime
             values = {
                 "reserve": rt.compact_reserve_tokens,
                 "keep": rt.keep_recent_tokens,
                 "progress": rt.progress_every,
                 "bg": rt.background_check_every,
+                "idle": loaded.web_idle_hours,
             }
         else:
-            loaded = await asyncio.to_thread(load_settings)
             values = {
                 "reserve": loaded.compact_reserve_tokens,
                 "keep": loaded.keep_recent_tokens,
                 "progress": loaded.progress_every,
                 "bg": loaded.background_check_every,
+                "idle": loaded.web_idle_hours,
             }
         return JSONResponse(
             {
@@ -256,6 +265,7 @@ def create_app(
                     "keep": DEFAULT_KEEP_RECENT_TOKENS,
                     "progress": DEFAULT_PROGRESS_EVERY,
                     "bg": DEFAULT_BACKGROUND_CHECK_EVERY,
+                    "idle": DEFAULT_WEB_IDLE_HOURS,
                 },
                 "configPath": str(config_file_path()),
             }
@@ -263,6 +273,8 @@ def create_app(
 
     @app.post("/api/settings")
     async def update_settings(request: Request) -> JSONResponse:
+        from quartz.settings import load_settings
+
         try:
             payload = await request.json()
         except Exception:
@@ -274,15 +286,16 @@ def create_app(
         arg = "reset" if key == "reset" else f"{key} {value}".strip()
         if not arg:
             return JSONResponse({"error": "Missing setting key"}, status_code=400)
-        if not session.built:
-            await asyncio.to_thread(session.ensure)
-        ok, result = await asyncio.to_thread(session.run_command, "settings", arg)
+        current = await asyncio.to_thread(manager.ensure_default_session)
+        app.state.session = current
+        ok, result = await asyncio.to_thread(current.run_command, "settings", arg)
         if not ok:
             return JSONResponse(
                 {"ok": False, "error": getattr(result, "message", None) or "Invalid setting"},
                 status_code=400,
             )
-        rt = session.runtime
+        rt = current.runtime
+        loaded = await asyncio.to_thread(load_settings)
         return JSONResponse(
             {
                 "ok": True,
@@ -292,6 +305,7 @@ def create_app(
                     "keep": rt.keep_recent_tokens,
                     "progress": rt.progress_every,
                     "bg": rt.background_check_every,
+                    "idle": loaded.web_idle_hours,
                 },
             }
         )
@@ -322,10 +336,11 @@ def create_app(
         return {"configPath": str(cfg_path), "servers": servers}
 
     def _reload_session_mcp() -> None:
-        if session.built:
-            from quartz.core.commands import reload_runtime_mcp
+        from quartz.core.commands import reload_runtime_mcp
 
-            reload_runtime_mcp(session.runtime)
+        for ws in manager.all_sessions():
+            if ws.built:
+                reload_runtime_mcp(ws.runtime)
 
     @app.get("/api/mcp")
     async def get_mcp() -> JSONResponse:
@@ -437,12 +452,13 @@ def create_app(
         return JSONResponse({"ok": True, **snap})
 
     @app.get("/api/jobs")
-    async def list_jobs() -> JSONResponse:
-        if not session.built:
+    async def list_jobs(session_id: str | None = Query(default=None, alias="sessionId")) -> JSONResponse:
+        target = manager.get_session(session_id)
+        if target is None or not target.built:
             return JSONResponse({"jobs": []})
         from quartz.kernel.actions import describe_job_label
 
-        jobs_fn = getattr(session.runtime.kernel, "running_bash_jobs", None)
+        jobs_fn = getattr(target.runtime.kernel, "running_bash_jobs", None)
         raw_jobs = await asyncio.to_thread(lambda: list(jobs_fn()) if callable(jobs_fn) else [])
         out = []
         for job in raw_jobs:
@@ -458,10 +474,11 @@ def create_app(
         return JSONResponse({"jobs": out})
 
     @app.get("/api/jobs/{pid}/tail")
-    async def job_tail(pid: int) -> JSONResponse:
-        if not session.built:
+    async def job_tail(pid: int, session_id: str | None = Query(default=None, alias="sessionId")) -> JSONResponse:
+        target = manager.get_session(session_id)
+        if target is None or not target.built:
             return JSONResponse({"error": "No active runtime"}, status_code=404)
-        tail_fn = getattr(session.runtime.kernel, "bash_tail", None)
+        tail_fn = getattr(target.runtime.kernel, "bash_tail", None)
         if not callable(tail_fn):
             return JSONResponse({"error": "Job tail unavailable"}, status_code=404)
         tail = await asyncio.to_thread(tail_fn, pid)
@@ -470,10 +487,11 @@ def create_app(
         return JSONResponse({"pid": pid, "tail": tail})
 
     @app.post("/api/jobs/{pid}/kill")
-    async def job_kill(pid: int) -> JSONResponse:
-        if not session.built:
+    async def job_kill(pid: int, session_id: str | None = Query(default=None, alias="sessionId")) -> JSONResponse:
+        target = manager.get_session(session_id)
+        if target is None or not target.built:
             return JSONResponse({"error": "No active runtime"}, status_code=404)
-        kill_fn = getattr(session.runtime.kernel, "kill_bash", None)
+        kill_fn = getattr(target.runtime.kernel, "kill_bash", None)
         if not callable(kill_fn):
             return JSONResponse({"error": "Job kill unavailable"}, status_code=404)
         killed = await asyncio.to_thread(kill_fn, pid)
@@ -551,7 +569,8 @@ def create_app(
         limit: int = 2000,
     ) -> JSONResponse:
         """Relative file paths inside the active workspace for `@file` autocomplete."""
-        active_cwd = session.runtime.cwd if session.built else cwd
+        current = manager.current_session
+        active_cwd = current.runtime.cwd if current.built else cwd
         target = workspace_cwd or str(active_cwd)
         payload = await asyncio.to_thread(list_workspace_files, target, active_cwd, limit)
         return JSONResponse(payload)
@@ -559,7 +578,7 @@ def create_app(
     # -- model picker ------------------------------------------------------
 
     @app.get("/api/models")
-    async def get_models() -> JSONResponse:
+    async def get_models(session_id: str | None = Query(default=None, alias="sessionId")) -> JSONResponse:
         """List current model, configured providers, and available models."""
         from quartz.providers.registry import (
             PROVIDERS,
@@ -569,13 +588,15 @@ def create_app(
         )
         from quartz.providers.selection import _provider_ready, _provider_status_label
 
-        if not session.built:
-            await asyncio.to_thread(session.ensure_runtime)
+        target = manager.get_session(session_id)
+        if target is None or not target.built:
+            target = await asyncio.to_thread(manager.ensure_default_session)
+            app.state.session = target
 
         current = {
-            "provider": session.runtime.provider_name,
-            "model": session.runtime.model,
-            "effort": session.runtime.effort,
+            "provider": target.runtime.provider_name,
+            "model": target.runtime.model,
+            "effort": target.runtime.effort,
         }
 
         def _load_provider(pname: str, spec: Any) -> dict[str, Any]:
@@ -618,10 +639,13 @@ def create_app(
         """Switch the session's active provider, model, and effort."""
         from quartz.core.commands import apply_model_switch
 
-        if not session.built:
-            await asyncio.to_thread(session.ensure_runtime)
-
         body = await _json_body(request)
+        session_id = body.get("sessionId")
+        target = manager.get_session(session_id if isinstance(session_id, str) else None)
+        if target is None or not target.built:
+            target = await asyncio.to_thread(manager.ensure_default_session)
+            app.state.session = target
+
         provider = body.get("provider")
         model = body.get("model")
         effort = body.get("effort")
@@ -631,7 +655,7 @@ def create_app(
 
         ok, msg = await asyncio.to_thread(
             apply_model_switch,
-            session.runtime,
+            target.runtime,
             provider,
             model if isinstance(model, str) else None,
             effort if isinstance(effort, str) else None,
@@ -640,14 +664,14 @@ def create_app(
         if not ok:
             return JSONResponse({"ok": False, "error": msg}, status_code=400)
 
-        session.emit(session.snapshot())
+        target.emit(target.snapshot())
 
         return JSONResponse(
             {
                 "ok": True,
-                "provider": session.runtime.provider_name,
-                "model": session.runtime.model,
-                "effort": session.runtime.effort,
+                "provider": target.runtime.provider_name,
+                "model": target.runtime.model,
+                "effort": target.runtime.effort,
                 "message": msg,
             }
         )
@@ -687,10 +711,8 @@ def create_app(
                     return
 
         writer = asyncio.create_task(write())
-        # From here until the socket closes, this connection is one of the session's
-        # listeners -- possibly the second one, if a phone reconnected while a turn
-        # from the previous socket was still running.
-        session.attach(push)
+        conn = _ConnState()
+        manager.register_sink(push)
         try:
             while True:
                 raw = await socket.receive_text()
@@ -705,18 +727,20 @@ def create_app(
                 if not isinstance(message, dict):
                     push({"type": "error", "message": "Frame must be an object.", "fatal": False})
                     continue
-                await _dispatch(session, socket, message, push, store)
+                await _dispatch(manager, conn, app, socket, message, push, store)
         except WebSocketDisconnect:
             pass
         finally:
-            # A disconnecting tab is usually a phone putting its screen down, not a
-            # person giving up: the same page comes back seconds later and asks where
-            # the answer got to. So the frame sink is dropped and the turn is left
-            # running; `begin_grace` stops it only if nobody comes back within
-            # RECONNECT_GRACE_S, and the kernel stays alive either way so a reconnect
-            # reconciles instead of losing the session.
-            session.detach(push)
-            session.begin_grace()
+            manager.unregister_sink(push)
+            if conn.session is not None:
+                # A disconnecting tab is usually a phone putting its screen down, not a
+                # person giving up: the same page comes back seconds later and asks where
+                # the answer got to. So the frame sink is dropped and the turn is left
+                # running; `begin_grace` stops it only if nobody comes back within
+                # RECONNECT_GRACE_S, and the kernel stays alive either way so a reconnect
+                # reconciles instead of losing the session.
+                conn.session.detach(push)
+                conn.session.begin_grace()
             writer.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await writer
@@ -734,8 +758,51 @@ def create_app(
     return app
 
 
+class _ConnState:
+    """Per-WebSocket active session pointer."""
+
+    def __init__(self) -> None:
+        self.session: WebSession | None = None
+
+
+def _switch_connection(
+    conn: _ConnState,
+    target: WebSession,
+    push: Callable[[dict[str, Any]], None],
+    app: FastAPI,
+) -> None:
+    """Move this WebSocket connection to `target` without retiring the old session."""
+    if conn.session is not target:
+        if conn.session is not None:
+            conn.session.detach(push)
+        target.attach(push)
+        conn.session = target
+    app.state.session = target
+
+
+async def _ensure_conn_session(
+    manager: SessionManager,
+    conn: _ConnState,
+    push: Callable[[dict[str, Any]], None],
+    app: FastAPI,
+    cwd: Path | None = None,
+) -> WebSession:
+    """Ensure this connection has a built `WebSession`, reporting build errors fatally."""
+    if conn.session is not None and conn.session.built:
+        return conn.session
+    try:
+        target = await asyncio.to_thread(manager.ensure_default_session, cwd)
+    except Exception as exc:  # noqa: BLE001 - surfaced to the browser, on purpose
+        push({"type": "error", "message": f"{exc.__class__.__name__}: {exc}", "fatal": True})
+        raise _AlreadyReported from exc
+    _switch_connection(conn, target, push, app)
+    return target
+
+
 async def _dispatch(
-    session: WebSession,
+    manager: SessionManager,
+    conn: _ConnState,
+    app: FastAPI,
     socket: WebSocket,
     message: dict[str, Any],
     push: Callable[[dict[str, Any]], None],
@@ -745,18 +812,32 @@ async def _dispatch(
     kind = message.get("type")
     try:
         if kind == "hello":
-            await _ensure(session, push, resolve_cwd(message.get("cwd"), session.cwd))
+            manager.set_system_prompt_append(_system_prompt_append(message))
+            requested_id = message.get("sessionId")
+            session: WebSession | None = None
+            if isinstance(requested_id, str) and requested_id.strip():
+                with contextlib.suppress(Exception):
+                    session = await asyncio.to_thread(
+                        manager.get_or_load_session, requested_id.strip()
+                    )
+            if session is None:
+                session = await _ensure_conn_session(
+                    manager,
+                    conn,
+                    push,
+                    app,
+                    resolve_cwd(message.get("cwd"), manager.cwd),
+                )
+            else:
+                _switch_connection(conn, session, push, app)
             await asyncio.to_thread(_remember_workspace, sidebar, session)
-            # A client-supplied system-prompt append, the web twin of ACP's
-            # `_meta.quartz.systemPrompt.append`. Applied after the runtime exists,
-            # and re-applied whenever the client re-sends `hello`, so the Rich UI
-            # toggle takes effect on the next turn of the same session.
-            session.set_system_prompt_append(_system_prompt_append(message))
             snapshot = session.snapshot()
             push(snapshot)
             # A tab that just (re)connected in the middle of a turn is told what the
             # turn is doing, and what it has written so far, in ordinary frames.
             _replay_live_turn(session, snapshot, push)
+            for idle_frame in manager.pending_idle_prompts():
+                push(idle_frame)
 
         elif kind == "prompt":
             text = str(message.get("text") or "").strip()
@@ -764,7 +845,7 @@ async def _dispatch(
             if not text and not images:
                 push({"type": "error", "message": "Empty prompt.", "fatal": False})
                 return
-            await _ensure(session, push)
+            session = await _ensure_conn_session(manager, conn, push, app)
             if session.turn_running:
                 # The protocol rejects rather than queues: a queued prompt would
                 # arrive with context the user has already moved past.
@@ -782,15 +863,15 @@ async def _dispatch(
             text = str(message.get("text") or "").strip()
             if not text:
                 return
-            await _ensure(session, push)
+            session = await _ensure_conn_session(manager, conn, push, app)
             session.steer(text)
 
         elif kind == "cancel":
-            await _ensure(session, push)
+            session = await _ensure_conn_session(manager, conn, push, app)
             session.cancel()
 
         elif kind == "command":
-            await _ensure(session, push)
+            session = await _ensure_conn_session(manager, conn, push, app)
             name = str(message.get("name") or "")
             arg = str(message.get("arg") or "")
             before_id = session.runtime.active_session.id
@@ -816,9 +897,9 @@ async def _dispatch(
             # A folder picked in the browser. `None` means "the server's directory",
             # and an unusable value falls back to it rather than failing the frame.
             target = message.get("cwd")
-            resolved_cwd = None if target is None else resolve_cwd(target, session.cwd)
-            await _ensure(session, push)
-            await asyncio.to_thread(session.new_session, resolved_cwd)
+            resolved_cwd = None if target is None else resolve_cwd(target, manager.cwd)
+            session = await asyncio.to_thread(manager.create_session, resolved_cwd)
+            _switch_connection(conn, session, push, app)
             await asyncio.to_thread(_remember_workspace, sidebar, session)
             push(session.snapshot())
 
@@ -827,21 +908,33 @@ async def _dispatch(
             if not session_id:
                 push({"type": "error", "message": "Missing sessionId.", "fatal": False})
                 return
-            await asyncio.to_thread(session.load_session, session_id)
-            push(session.snapshot())
+            session = await asyncio.to_thread(manager.get_or_load_session, session_id)
+            _switch_connection(conn, session, push, app)
+            snapshot = session.snapshot()
+            push(snapshot)
+            _replay_live_turn(session, snapshot, push)
 
         elif kind == "trust_project":
-            await _ensure(session, push)
+            session = await _ensure_conn_session(manager, conn, push, app)
             await asyncio.to_thread(session.trust_current_project)
             push(session.snapshot())
 
         elif kind == "permission_response":
+            session = await _ensure_conn_session(manager, conn, push, app)
             request_id = str(message.get("requestId") or "").strip()
             decision = str(message.get("decision") or "reject").strip()
             if not request_id:
                 push({"type": "error", "message": "Missing requestId.", "fatal": False})
                 return
             await asyncio.to_thread(session.resolve_permission, request_id, decision)
+
+        elif kind == "idle_session_response":
+            session_id = str(message.get("sessionId") or "").strip()
+            action = str(message.get("action") or "").strip()
+            if not session_id:
+                push({"type": "error", "message": "Missing sessionId.", "fatal": False})
+                return
+            await asyncio.to_thread(manager.resolve_idle_prompt, session_id, action)
 
         else:
             push({"type": "error", "message": f"Unknown frame type: {kind}", "fatal": False})

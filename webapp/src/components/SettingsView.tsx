@@ -8,18 +8,20 @@ interface SettingsPayload {
     keep: number;
     progress: number;
     bg: number;
+    idle?: number;
   };
   defaults: {
     reserve: number;
     keep: number;
     progress: number;
     bg: number;
+    idle?: number;
   };
   configPath: string;
 }
 
 const SETTING_FIELDS: readonly {
-  key: "reserve" | "keep" | "progress" | "bg";
+  key: "reserve" | "keep" | "progress" | "bg" | "idle";
   label: string;
   hint: (def: number) => string;
 }[] = [
@@ -42,6 +44,11 @@ const SETTING_FIELDS: readonly {
     key: "bg",
     label: "Background check interval (seconds)",
     hint: (def) => `Default ${def}s, 0 disables`,
+  },
+  {
+    key: "idle",
+    label: "Idle session check interval (hours)",
+    hint: (def) => `Default ${def}h, 0 disables`,
   },
 ];
 
@@ -73,6 +80,7 @@ export function SettingsView({
         keep: String(payload.values.keep),
         progress: String(payload.values.progress),
         bg: String(payload.values.bg),
+        idle: String(payload.values.idle ?? payload.defaults.idle ?? 2),
       });
     } catch {
       setStatus({ ok: false, text: "Could not load settings." });
@@ -111,6 +119,7 @@ export function SettingsView({
           keep: String(body.values.keep),
           progress: String(body.values.progress),
           bg: String(body.values.bg),
+          idle: String(body.values.idle ?? data?.defaults.idle ?? 2),
         });
       }
       setStatus({ ok: true, text: body.message || "Saved." });
@@ -166,7 +175,7 @@ export function SettingsView({
         ) : data ? (
           <div className="divide-y divide-separator rounded-xl border border-border bg-surface/50">
             {SETTING_FIELDS.map((field) => {
-              const current = String(data.values[field.key]);
+              const current = String(data.values[field.key] ?? data.defaults[field.key] ?? 0);
               const val = drafts[field.key] ?? current;
               const dirty = val.trim() !== current;
               return (
@@ -176,7 +185,7 @@ export function SettingsView({
                 >
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-foreground">{field.label}</p>
-                    <p className="text-xs text-muted">{field.hint(data.defaults[field.key])}</p>
+                    <p className="text-xs text-muted">{field.hint(data.defaults[field.key] ?? 0)}</p>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     <Input

@@ -97,7 +97,13 @@ export type ClientMessage =
    * It is honoured only while no session exists yet: `hello` is re-sent on every
    * preference change, and a re-sent path must not move a live session.
    */
-  | { type: "hello"; clientVersion: number; systemPromptAppend?: string; cwd?: string }
+  | {
+      type: "hello";
+      clientVersion: number;
+      systemPromptAppend?: string;
+      cwd?: string;
+      sessionId?: string;
+    }
   | { type: "prompt"; text: string; images?: ImageAttachment[] }
   | { type: "steer"; text: string }
   | { type: "cancel" }
@@ -106,7 +112,8 @@ export type ClientMessage =
   | { type: "new_session"; cwd?: string }
   | { type: "load_session"; sessionId: string }
   | { type: "trust_project" }
-  | { type: "permission_response"; requestId: string; decision: PermissionDecision };
+  | { type: "permission_response"; requestId: string; decision: PermissionDecision }
+  | { type: "idle_session_response"; sessionId: string; action: "keep" | "close" };
 
 export interface ProjectTrustState {
   cwd: string;
@@ -188,6 +195,13 @@ export type ServerMessage =
       scope: string;
     }
   | { type: "permission_resolved"; requestId: string; decision: PermissionDecision }
+  | {
+      type: "idle_session_prompt";
+      sessionId: string;
+      cwd: string;
+      idleSeconds: number;
+    }
+  | { type: "idle_session_resolved"; sessionId: string; action: "keep" | "close" }
   | { type: "error"; message: string; fatal: boolean }
   | { type: "command_result"; name: string; ok: boolean; result: CommandResult };
 
@@ -210,6 +224,8 @@ const SERVER_MESSAGE_TYPES: ReadonlySet<string> = new Set<ServerMessageType>([
   "turn_end",
   "permission_request",
   "permission_resolved",
+  "idle_session_prompt",
+  "idle_session_resolved",
   "error",
   "command_result",
 ]);

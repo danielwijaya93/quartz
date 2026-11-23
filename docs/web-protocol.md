@@ -42,14 +42,15 @@ Every message is a flat object with a `type` string discriminator.
 
 | `type` | Fields | Meaning |
 | --- | --- | --- |
-| `hello` | `clientVersion: int`, `systemPromptAppend?: str`, `cwd?: str` | First message. Server replies `session_state`. Also sets the system-prompt append (see *System prompt append*). `cwd` (see *Choosing a working directory*) picks where the *initial* session runs; ignored once a runtime exists. Re-sending it is how a client changes the append mid-session. |
+| `hello` | `clientVersion: int`, `systemPromptAppend?: str`, `cwd?: str`, `sessionId?: str` | First message. Server replies `session_state`. Also sets the system-prompt append (see *System prompt append*). `cwd` (see *Choosing a working directory*) picks where the *initial* session runs; `sessionId` reattaches to a specific session on reconnect. Re-sending it is how a client changes the append mid-session. |
 | `prompt` | `text: str`, `images?: [{mimeType, data}]` | Start a turn. Rejected with `error` if a turn is running. |
 | `steer` | `text: str` | Inject a steering message into the running turn. |
 | `cancel` | — | Abort the running turn. |
 | `command` | `name: str`, `arg?: str` | Run a slash command (see *Commands*). Name has no leading `/`. |
-| `new_session` | `cwd?: str` | Retire the current session, create a fresh one, in `cwd` when given (see *Choosing a working directory*). |
+| `new_session` | `cwd?: str` | Detach from the current session (keeping it alive in the server pool) and create a fresh one, in `cwd` when given (see *Choosing a working directory*). |
 | `trust_project` | _(none)_ | Persist trust for the active session's `cwd`, retire & rebuild the runtime so `.quartz/` config loads, and push `session_state`. |
-| `load_session` | `sessionId: str` | Retire the current session, load `sessionId`. |
+| `load_session` | `sessionId: str` | Detach from the current session (keeping it alive) and attach to `sessionId` (reusing its live runtime if active, or loading it from disk). |
+| `idle_session_response` | `sessionId: str`, `action: "keep" \| "close"` | Respond to an `idle_session_prompt` to either reset the idle timer or close the backgrounded session. |
 
 ### Server → Client
 
@@ -68,6 +69,8 @@ Turn lifecycle:
 | `steering` | `text: str` |
 | `compaction` | `summary: str`, `messagesBefore: int`, `messagesAfter: int`, `tokensBefore: int`, `tokensAfter: int` |
 | `turn_end` | `status: "ok" \| "aborted" \| "interrupted" \| "error"`, `tokens: int`, `elapsedMs: int`, `error?: str` |
+| `idle_session_prompt` | `sessionId: str`, `cwd: str`, `idleSeconds: int` |
+| `idle_session_resolved` | `sessionId: str`, `action: "keep" \| "close"` |
 | `error` | `message: str`, `fatal: bool` |
 | `command_result` | `name: str`, `ok: bool`, `result: CommandResult` |
 

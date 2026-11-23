@@ -20,6 +20,7 @@ import os
 import queue
 import subprocess
 import threading
+import time
 import uuid
 import weakref
 from collections.abc import Callable
@@ -45,6 +46,7 @@ __all__ = [
     "BuildRuntime",
     "NoActiveTurnError",
     "RECONNECT_GRACE_S",
+    "SessionManager",
     "TurnBusyError",
     "WebSession",
 ]
@@ -143,6 +145,8 @@ class WebSession:
         self._pending_permission: dict[str, Any] | None = None
         self._perm_event: threading.Event | None = None
         self._perm_decision: str | None = None
+        self._last_active_at: float = time.monotonic()
+        self._idle_prompted_at: float | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -242,7 +246,12 @@ class WebSession:
         self._runtime = runtime
         owner = self._system_prompt_base_owner
         if owner is None or owner() is not runtime:
-            self._system_prompt_base = runtime.system_prompt
+            base = runtime.system_prompt
+            if self._system_prompt_append:
+                suffix = f"\n\n{self._system_prompt_append}"
+                if base.endswith(suffix):
+                    base = base[: -len(suffix)]
+            self._system_prompt_base = base
             self._system_prompt_base_owner = weakref.ref(runtime)
         self._apply_system_prompt_append()
         set_cb = getattr(runtime.kernel, "set_bg_count_callback", None)
@@ -344,6 +353,31 @@ class WebSession:
 
     # -- who is watching ---------------------------------------------------
 
+    @property
+    def last_active_at(self) -> float:
+        with self._lock:
+            return self._last_active_at
+
+    @property
+    def idle_prompted_at(self) -> float | None:
+        with self._lock:
+            return self._idle_prompted_at
+
+    @idle_prompted_at.setter
+    def idle_prompted_at(self, value: float | None) -> None:
+        with self._lock:
+            self._idle_prompted_at = value
+
+    def mark_active(self, now: float | None = None) -> None:
+        """Record user or turn activity and clear any pending idle prompt."""
+        with self._lock:
+            self._last_active_at = time.monotonic() if now is None else now
+            self._idle_prompted_at = None
+
+    def keep_alive(self, now: float | None = None) -> None:
+        """Reset the idle timer after the user chooses to keep this session."""
+        self.mark_active(now=now)
+
     def attach(self, push: Push) -> None:
         """Register the socket that should receive this session's frames.
 
@@ -355,6 +389,8 @@ class WebSession:
         self.detach(push)
         with self._lock:
             self._sinks.add(push)
+            self._last_active_at = time.monotonic()
+            self._idle_prompted_at = None
 
     def detach(self, push: Push) -> None:
         """Stop sending to one socket, without deciding anything yet.
@@ -461,6 +497,7 @@ class WebSession:
         the protocol says reject, not queue, because a queued prompt would arrive
         with context the user has already changed.
         """
+        self.mark_active()
         runtime = self.runtime
         with self._lock:
             if self._turn is not None:
@@ -516,6 +553,7 @@ class WebSession:
             with self._lock:
                 if self._turn is turn:
                     self._turn = None
+                self._last_active_at = time.monotonic()
 
     def _settle_streamed_text(self, outcome: TurnOutcome) -> None:
         """Keep what the turn wrote, when the turn is stopped before it can save itself.
@@ -550,6 +588,7 @@ class WebSession:
             pass
 
     def steer(self, text: str) -> None:
+        self.mark_active()
         with self._lock:
             turn = self._turn
         if turn is None:
@@ -558,6 +597,7 @@ class WebSession:
 
     def cancel(self) -> bool:
         """Abort the running turn the same way `Esc` does in the terminal."""
+        self.mark_active()
         with self._lock:
             turn = self._turn
             runtime = self._runtime
@@ -626,6 +666,7 @@ class WebSession:
                 f"/{cleaned} needs the kernel, which the running turn is using.",
                 body="Wait for the turn to finish, or press Esc to abort it.",
             )
+        self.mark_active()
         result = command.handler(self.runtime, arg.strip())
         if result is None:
             # Only `exits` commands say nothing; in a browser there is nothing to
@@ -750,3 +791,292 @@ def _turn_end_frame(
     if outcome.error is not None:
         frame["error"] = str(outcome.error) or outcome.error.__class__.__name__
     return frame
+
+
+def _validate_session_id(session_id: str) -> str:
+    cleaned = session_id.strip()
+    if (
+        not cleaned
+        or "/" in cleaned
+        or "\\" in cleaned
+        or "\x00" in cleaned
+        or cleaned in (".", "..")
+        or ".." in cleaned
+    ):
+        raise ValueError("Invalid sessionId")
+    return cleaned
+
+
+class SessionManager:
+    """Pool of live `WebSession` instances and the idle-session watcher.
+
+    Switching sessions in `quartz web` detaches the browser tab from the current
+    session and attaches it to the target session without aborting running turns
+    or closing kernels. Backgrounded sessions stay alive until the user closes
+    them (either directly or in response to an idle prompt) or the server exits.
+    """
+
+    def __init__(
+        self,
+        build: BuildRuntime,
+        *,
+        cwd: Path,
+        runner: TurnRunner = run_interactive_turn,
+        idle_hours: float | None = None,
+        check_interval_s: float = 60.0,
+    ) -> None:
+        self._build = build
+        self._cwd = cwd
+        self._runner = runner
+        self._lock = threading.RLock()
+        self._sessions: dict[str, WebSession] = {}
+        self._current_id: str | None = None
+        self._placeholder: WebSession | None = None
+        self._system_prompt_append = ""
+        self._global_sinks: set[Push] = set()
+        self._idle_hours_override = idle_hours
+        self._check_interval_s = max(0.05, float(check_interval_s))
+        self._watcher_timer: threading.Timer | None = None
+        self._closed = False
+
+    @property
+    def cwd(self) -> Path:
+        return self._cwd
+
+    @property
+    def current_session(self) -> WebSession:
+        """Most recently active session, or a lazy unbuilt placeholder."""
+        with self._lock:
+            if self._current_id and self._current_id in self._sessions:
+                return self._sessions[self._current_id]
+            if self._sessions:
+                first_id = next(iter(self._sessions))
+                self._current_id = first_id
+                return self._sessions[first_id]
+            if self._placeholder is None:
+                self._placeholder = WebSession(self._build, cwd=self._cwd, runner=self._runner)
+                self._placeholder.set_system_prompt_append(self._system_prompt_append)
+            return self._placeholder
+
+    def get_session(self, session_id: str | None = None) -> WebSession | None:
+        with self._lock:
+            if session_id is None:
+                return self.current_session
+            return self._sessions.get(session_id)
+
+    def all_sessions(self) -> list[WebSession]:
+        with self._lock:
+            return list(self._sessions.values())
+
+    def set_system_prompt_append(self, append: str) -> None:
+        cleaned = append.strip()
+        with self._lock:
+            self._system_prompt_append = cleaned
+            sessions = list(self._sessions.values())
+            placeholder = self._placeholder
+        for ws in sessions:
+            ws.set_system_prompt_append(cleaned)
+        if placeholder is not None:
+            placeholder.set_system_prompt_append(cleaned)
+
+    def ensure_default_session(self, cwd: Path | None = None) -> WebSession:
+        """Return the current live session, or build the initial one in `cwd`."""
+        with self._lock:
+            if self._current_id and self._current_id in self._sessions:
+                ws = self._sessions[self._current_id]
+                if ws.built:
+                    return ws
+            if self._sessions:
+                sid, ws = next(iter(self._sessions.items()))
+                self._current_id = sid
+                return ws
+            ws = self._placeholder or WebSession(self._build, cwd=self._cwd, runner=self._runner)
+            self._placeholder = None
+            ws.set_system_prompt_append(self._system_prompt_append)
+        ws.ensure_runtime(cwd)
+        sid = ws.runtime.active_session.id
+        with self._lock:
+            self._sessions[sid] = ws
+            self._current_id = sid
+        return ws
+
+    def create_session(self, cwd: Path | None = None) -> WebSession:
+        """Build a fresh `WebSession` in `cwd` without retiring existing sessions."""
+        ws = WebSession(self._build, cwd=self._cwd, runner=self._runner)
+        with self._lock:
+            ws.set_system_prompt_append(self._system_prompt_append)
+        ws.ensure_runtime(cwd)
+        sid = ws.runtime.active_session.id
+        with self._lock:
+            self._sessions[sid] = ws
+            self._current_id = sid
+        return ws
+
+    def get_or_load_session(self, session_id: str) -> WebSession:
+        """Return the live `WebSession` for `session_id`, or load it into the pool."""
+        cleaned = _validate_session_id(session_id)
+        with self._lock:
+            existing = self._sessions.get(cleaned)
+            if existing is not None and existing.built:
+                self._current_id = cleaned
+                existing.mark_active()
+                return existing
+            append = self._system_prompt_append
+        ws = WebSession(self._build, cwd=self._cwd, runner=self._runner)
+        ws.set_system_prompt_append(append)
+        ws.load_session(cleaned)
+        with self._lock:
+            # Another thread may have loaded the same session while we were building.
+            race = self._sessions.get(cleaned)
+            if race is not None and race.built:
+                ws.close()
+                self._current_id = cleaned
+                race.mark_active()
+                return race
+            self._sessions[cleaned] = ws
+            self._current_id = cleaned
+        return ws
+
+    def register_sink(self, push: Push) -> None:
+        with self._lock:
+            self._global_sinks.add(push)
+
+    def unregister_sink(self, push: Push) -> None:
+        with self._lock:
+            self._global_sinks.discard(push)
+
+    def _broadcast(self, frame: Frame) -> None:
+        with self._lock:
+            sinks = tuple(self._global_sinks)
+        for sink in sinks:
+            try:
+                sink(frame)
+            except Exception:  # noqa: BLE001 - dead socket
+                self.unregister_sink(sink)
+
+    def _idle_hours(self) -> float:
+        if self._idle_hours_override is not None:
+            return float(self._idle_hours_override)
+        from quartz.settings import load_settings
+
+        return float(load_settings().web_idle_hours)
+
+    def start_watcher(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._schedule_watcher_locked()
+
+    def _schedule_watcher_locked(self) -> None:
+        if self._watcher_timer is not None:
+            self._watcher_timer.cancel()
+        if self._closed:
+            return
+        timer = threading.Timer(self._check_interval_s, self._on_watcher_tick)
+        timer.daemon = True
+        self._watcher_timer = timer
+        timer.start()
+
+    def _on_watcher_tick(self) -> None:
+        try:
+            self.check_idle_sessions()
+        finally:
+            with self._lock:
+                if not self._closed:
+                    self._schedule_watcher_locked()
+
+    def stop_watcher(self) -> None:
+        with self._lock:
+            timer, self._watcher_timer = self._watcher_timer, None
+        if timer is not None:
+            timer.cancel()
+
+    def check_idle_sessions(self, now: float | None = None) -> list[Frame]:
+        """Check for idle backgrounded sessions and prompt the user in the browser."""
+        hours = self._idle_hours()
+        if hours <= 0:
+            return []
+        threshold_s = hours * 3600.0
+        current_time = time.monotonic() if now is None else now
+        frames: list[Frame] = []
+        with self._lock:
+            items = list(self._sessions.items())
+        for sid, ws in items:
+            if not ws.built or ws.turn_running or ws.attached:
+                continue
+            if ws.idle_prompted_at is not None:
+                continue
+            idle_s = current_time - ws.last_active_at
+            if idle_s >= threshold_s:
+                ws.idle_prompted_at = current_time
+                frame: Frame = {
+                    "type": "idle_session_prompt",
+                    "sessionId": sid,
+                    "cwd": str(ws.runtime.cwd),
+                    "idleSeconds": int(idle_s),
+                }
+                frames.append(frame)
+                self._broadcast(frame)
+        return frames
+
+    def pending_idle_prompts(self, now: float | None = None) -> list[Frame]:
+        """Return any idle prompts still awaiting a user decision."""
+        current_time = time.monotonic() if now is None else now
+        frames: list[Frame] = []
+        with self._lock:
+            items = list(self._sessions.items())
+        for sid, ws in items:
+            if not ws.built or ws.turn_running or ws.attached:
+                continue
+            if ws.idle_prompted_at is None:
+                continue
+            frames.append(
+                {
+                    "type": "idle_session_prompt",
+                    "sessionId": sid,
+                    "cwd": str(ws.runtime.cwd),
+                    "idleSeconds": max(0, int(current_time - ws.last_active_at)),
+                }
+            )
+        return frames
+
+    def resolve_idle_prompt(self, session_id: str, action: str) -> bool:
+        """Handle a user's keep/close choice for an idle backgrounded session."""
+        if action not in ("keep", "close"):
+            raise ValueError(f"Invalid idle session action: {action!r}")
+        with self._lock:
+            ws = self._sessions.get(session_id)
+            if ws is None:
+                return False
+            if action == "keep":
+                ws.keep_alive()
+            else:
+                self._sessions.pop(session_id, None)
+                if self._current_id == session_id:
+                    self._current_id = next(iter(self._sessions), None)
+        if action == "close":
+            ws.close()
+        self._broadcast(
+            {
+                "type": "idle_session_resolved",
+                "sessionId": session_id,
+                "action": action,
+            }
+        )
+        return True
+
+    def close_all(self) -> None:
+        """Stop the watcher and close every live session."""
+        with self._lock:
+            self._closed = True
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+            placeholder, self._placeholder = self._placeholder, None
+            self._current_id = None
+        self.stop_watcher()
+        for ws in sessions:
+            with contextlib.suppress(Exception):
+                ws.close()
+        if placeholder is not None:
+            with contextlib.suppress(Exception):
+                placeholder.close()

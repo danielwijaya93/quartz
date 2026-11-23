@@ -85,6 +85,7 @@ export class Connection {
    * re-sends `hello`, which is the protocol's idempotent "here is my config" frame.
    */
   private systemPromptAppend = "";
+  private currentSessionId: string | undefined = undefined;
 
   private attempt = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -157,6 +158,9 @@ export class Connection {
       if (typeof event.data !== "string") return;
       const message = parseServerMessage(event.data);
       if (!message) return;
+      if (message.type === "session_state" && message.sessionId) {
+        this.currentSessionId = message.sessionId;
+      }
       this.emit("message", message);
     };
 
@@ -215,11 +219,13 @@ export class Connection {
 
   sendHello(): boolean {
     const append = this.systemPromptAppend;
-    return this.send(
-      append === ""
-        ? { type: "hello", clientVersion: CLIENT_VERSION }
-        : { type: "hello", clientVersion: CLIENT_VERSION, systemPromptAppend: append },
-    );
+    const frame: ClientMessage = {
+      type: "hello",
+      clientVersion: CLIENT_VERSION,
+      ...(append === "" ? {} : { systemPromptAppend: append }),
+      ...(this.currentSessionId ? { sessionId: this.currentSessionId } : {}),
+    };
+    return this.send(frame);
   }
 
   /**
@@ -256,6 +262,7 @@ export class Connection {
 
   /** Start a fresh session, in `cwd` when the sidebar picked a folder. */
   sendNewSession(cwd?: string): boolean {
+    this.currentSessionId = undefined;
     return this.send(cwd === undefined ? { type: "new_session" } : { type: "new_session", cwd });
   }
 
@@ -271,7 +278,12 @@ export class Connection {
   }
 
   sendLoadSession(sessionId: string): boolean {
+    this.currentSessionId = sessionId;
     return this.send({ type: "load_session", sessionId });
+  }
+
+  sendIdleSessionResponse(sessionId: string, action: "keep" | "close"): boolean {
+    return this.send({ type: "idle_session_response", sessionId, action });
   }
 }
 

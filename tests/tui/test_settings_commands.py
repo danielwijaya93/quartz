@@ -109,6 +109,7 @@ def test_settings_progress_edit_preserves_compaction_values(
         "keep_recent_tokens": 32_000,
         "progress_every": 7,
         "background_check_every": 0,
+        "web_idle_hours": 2,
     }
 
 

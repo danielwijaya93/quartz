@@ -11,6 +11,7 @@ import {
   lastUserRowId,
   lineCount,
   parseHarnessNotice,
+  reduce,
   reduceAll,
   resetIdCounter,
   sameConversation,
@@ -1363,6 +1364,35 @@ describe("a reconnect in the middle of a turn", () => {
       files: [".quartz/helpers.py"],
       needsTrust: true,
     });
+  });
+
+  it("tracks and resolves idle_session_prompt frames", () => {
+    const prompted = fold([
+      { type: "idle_session_prompt", sessionId: "s-1", cwd: "/repo", idleSeconds: 7200 },
+      { type: "idle_session_prompt", sessionId: "s-2", cwd: "/other", idleSeconds: 7500 },
+    ]);
+    expect(prompted.idlePrompts).toHaveLength(2);
+
+    const resolved = reduce(prompted, {
+      type: "idle_session_resolved",
+      sessionId: "s-1",
+      action: "keep",
+    });
+    expect(resolved.idlePrompts).toEqual([
+      { sessionId: "s-2", cwd: "/other", idleSeconds: 7500 },
+    ]);
+
+    const switched = reduce(resolved, {
+      type: "session_state",
+      sessionId: "s-2",
+      cwd: "/other",
+      model: "m",
+      effort: "e",
+      turnRunning: false,
+      commands: [],
+      messages: [],
+    });
+    expect(switched.idlePrompts).toEqual([]);
   });
 });
 
