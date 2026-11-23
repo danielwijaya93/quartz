@@ -1,0 +1,15 @@
+# Android build output and machine-local config. The Gradle wrapper, manifest,
+# launcher icons and cap sync'd assets are committed; everything below is either
+# reproducible or specific to one machine.
+*.iml
+.gradle/
+local.properties
+.idea/
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.keystore
+!debug.keystore

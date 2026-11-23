@@ -642,6 +642,63 @@ def test_websocket_allows_same_origin_and_matching_loopback(
     assert state["type"] == "session_state"
 
 
+
+def test_websocket_allows_native_shell_origin(app_client: AppClient, wire: Any) -> None:
+    """A packaged native shell is not served from this host, so `Origin` never matches.
+
+    Without an allowlist the WebView's socket is closed 1008 and the app cannot talk
+    to the server it was pointed at -- which is the whole feature.
+    """
+    for origin in ("http://localhost", "capacitor://localhost", "http://app.quartz.local"):
+        with app_client.client.websocket_connect(
+            "/ws", headers={"Host": "100.64.0.1:8000", "Origin": origin}
+        ) as socket:
+            state = wire.hello(socket)
+        assert state["type"] == "session_state"
+
+
+def test_allowed_origins_env_extends_the_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
+    from quartz.web.app import native_origins
+
+    monkeypatch.setenv("QUARTZ_ALLOWED_ORIGINS", "https://proxy.example, http://other.local/")
+    origins = native_origins()
+    assert "https://proxy.example" in origins
+    assert "http://other.local" in origins
+    # The built-in set is still there: the variable adds, it does not replace.
+    assert "capacitor://localhost" in origins
+
+
+def test_native_origin_gets_cors_headers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime: Any
+) -> None:
+    """A cross-origin POST from the shell needs ACAO, and so does its preflight."""
+    monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setenv("QUARTZ_WEB_SIDEBAR", str(tmp_path / "web-sidebar.json"))
+    app = create_app(
+        build=lambda session_id, cwd=None: (runtime, False),
+        cwd=tmp_path,
+        static_dir=tmp_path / "missing",
+    )
+    with TestClient(app) as client:
+        preflight = client.options(
+            "/api/settings",
+            headers={
+                "Origin": "http://localhost",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        assert preflight.status_code == 200
+        assert preflight.headers["access-control-allow-origin"] == "http://localhost"
+
+        answer = client.post(
+            "/api/settings",
+            json={},
+            headers={"Origin": "http://localhost", "Host": "100.64.0.1:8000"},
+        )
+        assert answer.headers["access-control-allow-origin"] == "http://localhost"
+
+
 def test_websocket_allows_cross_port_loopback_in_dev_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime: Any, wire: Any
 ) -> None:

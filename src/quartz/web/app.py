@@ -24,6 +24,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -837,6 +838,20 @@ def create_app(
             with contextlib.suppress(asyncio.CancelledError):
                 await writer
 
+    # Cross-origin by nature: a native shell serves the SPA from its own scheme and
+    # calls `/api/*` on this host, which needs `Access-Control-Allow-Origin` and a
+    # preflight answer. Registered last so it is the outermost layer: a 403 from the
+    # security middleware above must still carry the header, or the WebView reports
+    # an opaque CORS failure instead of the real reason.
+    allowed = sorted(native_origins())
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type"],
+        max_age=600,
+    )
+
     static = resolve_static_dir(static_dir)
     if static is not None:
         app.mount("/", StaticFiles(directory=str(static), html=True), name="spa")
@@ -1145,6 +1160,32 @@ async def _json_body(request: Request) -> dict[str, Any]:
 
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
+# Origins a packaged native shell sends. A Capacitor WebView is not served from the
+# Quartz host, so its `Origin` can never match `Host`: without an allowlist every
+# POST would 403 and every `/ws` upgrade would close 1008. These are browser-authored
+# origins, not attacker-chosen ones -- a page at evil.example cannot claim them --
+# so listing them is the same trust the loopback rule already grants.
+_NATIVE_SHELL_ORIGINS = frozenset(
+    {
+        "http://localhost",
+        "https://localhost",
+        "capacitor://localhost",
+        "http://app.quartz.local",
+        "https://app.quartz.local",
+    }
+)
+
+
+def native_origins() -> frozenset[str]:
+    """Origins allowed to call this server from a packaged native shell.
+
+    `QUARTZ_ALLOWED_ORIGINS` (comma-separated) extends the built-in set, for a shell
+    that changed its `hostname` in `capacitor.config.ts` or a reverse proxy in front.
+    """
+    extra = os.environ.get("QUARTZ_ALLOWED_ORIGINS", "")
+    parsed = {item.strip().rstrip("/").lower() for item in extra.split(",") if item.strip()}
+    return _NATIVE_SHELL_ORIGINS | frozenset(parsed)
+
 
 def _is_allowed_origin(
     origin: str | None, host_header: str | None, *, dev: bool = False
@@ -1160,6 +1201,8 @@ def _is_allowed_origin(
     cleaned = origin.strip()
     if not cleaned or cleaned.lower() == "null":
         return False
+    if cleaned.rstrip("/").lower() in native_origins():
+        return True
     try:
         parsed_origin = urlsplit(cleaned)
         origin_port = parsed_origin.port

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { apiUrl } from "../lib/serverUrl";
 import { Button } from "@heroui/react";
 import { Eye, RefreshCw, Square, X } from "lucide-react";
 
@@ -37,7 +38,7 @@ export function JobsTray({
   const load = React.useCallback(async () => {
     setLoading(true);
     try {
-      const resp = await fetch("/api/jobs");
+      const resp = await fetch(apiUrl("/api/jobs"));
       if (!resp.ok) throw new Error("Failed to load jobs");
       const data = (await resp.json()) as { jobs?: JobItem[] };
       setJobs(Array.isArray(data.jobs) ? data.jobs : []);
@@ -68,7 +69,7 @@ export function JobsTray({
     }
     setBusyPid(pid);
     try {
-      const resp = await fetch(`/api/jobs/${encodeURIComponent(pid)}/tail`);
+      const resp = await fetch(apiUrl(`/api/jobs/${encodeURIComponent(pid)}/tail`));
       if (!resp.ok) {
         setTails((prev) => ({ ...prev, [pid]: "(output tail unavailable)" }));
       } else {
@@ -86,7 +87,7 @@ export function JobsTray({
   const killJob = async (pid: string): Promise<void> => {
     setBusyPid(pid);
     try {
-      await fetch(`/api/jobs/${encodeURIComponent(pid)}/kill`, { method: "POST" });
+      await fetch(apiUrl(`/api/jobs/${encodeURIComponent(pid)}/kill`), { method: "POST" });
       await load();
     } finally {
       setBusyPid(null);

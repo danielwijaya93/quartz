@@ -25,3 +25,8 @@ webapp/coverage/
 # Editor swap files
 *.swp
 *.swo
+
+# Capacitor copies the built SPA into the Android project; it is a build artifact.
+webapp/android/app/src/main/assets/public/
+webapp/android/app/src/main/assets/capacitor.config.json
+webapp/android/app/src/main/assets/capacitor.plugins.json

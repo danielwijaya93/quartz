@@ -1,4 +1,6 @@
 import * as React from "react";
+import { ServerUrlCard } from "./ServerUrlCard";
+import { apiUrl } from "../lib/serverUrl";
 import { Button, Input } from "@heroui/react";
 import { ArrowLeft, Bell, RotateCcw } from "lucide-react";
 import {
@@ -79,7 +81,7 @@ export function SettingsView({
     setLoading(true);
     setStatus(null);
     try {
-      const resp = await fetch("/api/settings");
+      const resp = await fetch(apiUrl("/api/settings"));
       if (!resp.ok) throw new Error("Failed to load settings");
       const payload = (await resp.json()) as SettingsPayload;
       setData(payload);
@@ -105,7 +107,7 @@ export function SettingsView({
     setSavingKey(key);
     setStatus(null);
     try {
-      const resp = await fetch("/api/settings", {
+      const resp = await fetch(apiUrl("/api/settings"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(key === "reset" ? { key: "reset" } : { key, value }),
@@ -170,6 +172,8 @@ export function SettingsView({
             Reset to defaults
           </Button>
         </div>
+
+        <ServerUrlCard />
 
         <div>
           <h1 className="text-lg font-semibold tracking-tight text-foreground">Settings</h1>
