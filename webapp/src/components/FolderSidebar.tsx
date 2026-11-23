@@ -18,7 +18,6 @@ import {
 import { ThemeToggle } from "./ThemeToggle";
 import {
   currentWorkspaceCwd,
-  directoryLabel,
   displayTitle,
   EMPTY_SIDEBAR,
   filterWorkspaceGroups,
