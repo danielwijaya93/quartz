@@ -83,6 +83,8 @@ class KernelClient:
         self._permission_lock = threading.Lock()
         self._permission_waiting_count = 0
         self._permission_waiting_lock = threading.Lock()
+        self._host_cancel_events: dict[str, threading.Event] = {}
+        self._host_cancel_lock = threading.Lock()
         self._host_mcp: Any = None
         self._host_loop: asyncio.AbstractEventLoop | None = None
         self._host_thread: threading.Thread | None = None
@@ -175,8 +177,19 @@ class KernelClient:
                     arguments=params.get("arguments"),
                 )
             elif method == "bridge.exec":
-                loop = asyncio.get_running_loop()
-                result = await loop.run_in_executor(None, self._exec_bridge_sync, params)
+                cancel_ev = threading.Event()
+                if req_id:
+                    with self._host_cancel_lock:
+                        self._host_cancel_events[req_id] = cancel_ev
+                try:
+                    loop = asyncio.get_running_loop()
+                    result = await loop.run_in_executor(
+                        None, lambda: self._exec_bridge_sync(params, cancel_event=cancel_ev)
+                    )
+                finally:
+                    if req_id:
+                        with self._host_cancel_lock:
+                            self._host_cancel_events.pop(req_id, None)
             else:
                 raise ValueError(f"Unknown host RPC method: {method!r}")
 
@@ -204,10 +217,14 @@ class KernelClient:
         finally:
             _HOST_IMAGE_SINK.reset(token)
 
-    def _exec_bridge_sync(self, params: dict[str, Any]) -> dict[str, Any]:
+    def _exec_bridge_sync(
+        self, params: dict[str, Any], *, cancel_event: threading.Event | None = None
+    ) -> dict[str, Any]:
         tool = str(params.get("tool", ""))
         if tool not in {"git", "gh"}:
             return {"exit_code": 126, "stdout": "", "stderr": f"Unsupported bridge tool: {tool!r}\n"}
+        if cancel_event is not None and cancel_event.is_set():
+            return {"exit_code": 126, "stdout": "", "stderr": "Host bridge request cancelled.\n"}
         raw_argv = params.get("argv")
         argv = [str(a) for a in raw_argv] if isinstance(raw_argv, list) else []
         target_cwd = validate_bridge_cwd(params.get("cwd"), self.cwd)
@@ -218,9 +235,12 @@ class KernelClient:
             cwd=str(target_cwd),
             scope=scope,
             command_display=format_command_display(tool, argv),
+            cancel_event=cancel_event,
         )
 
         with self._permission_lock:
+            if cancel_event is not None and cancel_event.is_set():
+                return {"exit_code": 126, "stdout": "", "stderr": "Host bridge request cancelled.\n"}
             allowed = self._permission_policy.is_allowed(scope)
             if not allowed:
                 handler = self._permission_handler
@@ -240,6 +260,8 @@ class KernelClient:
                 finally:
                     with self._permission_waiting_lock:
                         self._permission_waiting_count -= 1
+                if cancel_event is not None and cancel_event.is_set():
+                    return {"exit_code": 126, "stdout": "", "stderr": "Host bridge request cancelled.\n"}
                 allowed = self._permission_policy.record(scope, decision)
 
         if not allowed:
@@ -248,6 +270,8 @@ class KernelClient:
                 "stdout": "",
                 "stderr": f"Permission rejected by user: '{req.command_display}'\n",
             }
+        if cancel_event is not None and cancel_event.is_set():
+            return {"exit_code": 126, "stdout": "", "stderr": "Host bridge request cancelled.\n"}
 
         real_bin = find_real_binary(tool)
         if not real_bin:
@@ -400,6 +424,13 @@ class KernelClient:
                 self._running_bash_jobs = [dict(j) for j in jobs if isinstance(j, dict)] if isinstance(jobs, list) else []
             elif msg_type == "host_request":
                 self._dispatch_host_request(msg)
+            elif msg_type == "host_cancel":
+                cancel_id = str(msg.get("id") or "")
+                if cancel_id:
+                    with self._host_cancel_lock:
+                        cancel_ev = self._host_cancel_events.get(cancel_id)
+                    if cancel_ev is not None:
+                        cancel_ev.set()
             elif msg_type == "event":
                 with self._events_cond:
                     self._events.append(msg)
@@ -423,6 +454,9 @@ class KernelClient:
         self._ready_event.set()
         with self._events_cond:
             self._events_cond.notify_all()
+        with self._host_cancel_lock:
+            for cancel_ev in self._host_cancel_events.values():
+                cancel_ev.set()
         with self._pending_lock:
             for q in self._pending.values():
                 q.put({"type": "error", "error": "Kernel process exited unexpectedly"})
