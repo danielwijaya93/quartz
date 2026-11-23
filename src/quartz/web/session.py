@@ -18,6 +18,7 @@ import contextlib
 import dataclasses
 import os
 import queue
+import subprocess
 import threading
 import uuid
 import weakref
@@ -612,7 +613,44 @@ class WebSession:
             "projectTrust": project_trust_status(runtime.cwd),
             "commands": self.commands(),
             "bgCount": int(getattr(runtime.kernel, "running_bash_count", lambda: 0)()),
+            "gitBranch": _git_branch(runtime.cwd),
         }
+
+
+def _git_branch(cwd: Path) -> str | None:
+    """Return the active git branch (or short SHA when detached) for *cwd*, if any."""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    branch = proc.stdout.strip()
+    if not branch:
+        return None
+    if branch == "HEAD":
+        try:
+            sha_proc = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=1.5,
+                check=False,
+            )
+            if sha_proc.returncode == 0 and sha_proc.stdout.strip():
+                return sha_proc.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return None
+    return branch
 
 def resolve_cwd(raw: object, fallback: Path) -> Path:
     """Read a client-supplied working directory, tolerating anything malformed.

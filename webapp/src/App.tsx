@@ -16,6 +16,7 @@ import { useQuartz } from "./useQuartz";
 import { useCommandPalette } from "./lib/useCommandPalette";
 import { useOpenUISystemPrompt, useRichUiMode } from "./lib/useRichUi";
 import { useSidebar } from "./lib/useSidebar";
+import type { SessionActivity } from "./lib/sidebar";
 import { useMediaQuery } from "./lib/useMediaQuery";
 import { useOpenUIThemeMirror } from "./lib/theme";
 import { wantsRichUi } from "./lib/richUi";
@@ -95,14 +96,58 @@ export function App(): React.ReactElement {
     if (sessionId) sidebar.reload();
   }, [sessionId, sidebar.reload]);
 
+  const [sessionActivity, setSessionActivity] = React.useState<
+    Readonly<Record<string, SessionActivity>>
+  >({});
+
   // A session becomes listable as soon as the first prompt is persisted on
   // turn start, and its title/updatedAt may settle at turn end, so reload on
-  // both transitions.
+  // both transitions and update per-session live activity state.
   const wasRunning = React.useRef(false);
   React.useEffect(() => {
-    if (wasRunning.current !== quartz.state.turnRunning) sidebar.reload();
-    wasRunning.current = quartz.state.turnRunning;
-  }, [quartz.state.turnRunning, sidebar.reload]);
+    const running = quartz.state.turnRunning;
+    if (wasRunning.current !== running) sidebar.reload();
+
+    if (sessionId) {
+      if (running) {
+        setSessionActivity((prev) => ({
+          ...prev,
+          [sessionId]: { status: "running", unread: false },
+        }));
+      } else if (wasRunning.current) {
+        const lastRow = quartz.state.rows[quartz.state.rows.length - 1];
+        const failed =
+          quartz.state.fatalError !== null ||
+          lastRow?.kind === "error" ||
+          (lastRow?.kind === "turn_end" && lastRow.status === "error");
+        const unread = typeof document !== "undefined" && document.hidden;
+        setSessionActivity((prev) => ({
+          ...prev,
+          [sessionId]: { status: failed ? "error" : "done", unread },
+        }));
+      }
+    }
+    wasRunning.current = running;
+  }, [
+    quartz.state.turnRunning,
+    quartz.state.fatalError,
+    quartz.state.rows,
+    sessionId,
+    sidebar.reload,
+  ]);
+
+  React.useEffect(() => {
+    const onFocus = (): void => {
+      if (!sessionId) return;
+      setSessionActivity((prev) => {
+        const current = prev[sessionId];
+        if (!current || !current.unread) return prev;
+        return { ...prev, [sessionId]: { ...current, unread: false } };
+      });
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [sessionId]);
 
   const onSubmit = React.useCallback(
     (text: string, images: ImageAttachment[]) => {
@@ -143,6 +188,11 @@ export function App(): React.ReactElement {
 
   const selectSession = React.useCallback(
     (id: string) => {
+      setSessionActivity((prev) => {
+        const current = prev[id];
+        if (!current || !current.unread) return prev;
+        return { ...prev, [id]: { ...current, unread: false } };
+      });
       quartz.loadSession(id);
       if (narrow) closeSidebar();
     },
@@ -176,6 +226,7 @@ export function App(): React.ReactElement {
     onHide: sidebar.hide,
     onRestore: sidebar.restore,
     onOpenArchive: openArchive,
+    sessionActivity,
   };
 
   return (

@@ -9,6 +9,7 @@ import {
   displayTitle,
   EMPTY_SIDEBAR,
   filterArchiveEntries,
+  filterWorkspaceGroups,
   folderBadge,
   formatAge,
   groupArchive,
@@ -498,5 +499,51 @@ describe("parseSidebarPayload", () => {
     expect(() => parseSidebarPayload({ sidebar: {} })).toThrow(/no sessions array/);
     expect(() => parseSidebarPayload(null)).toThrow(/Malformed/);
     expect(() => parseSidebarPayload({ sessions: ["nope"], sidebar: {} })).toThrow(/Malformed/);
+  });
+});
+
+describe("filterWorkspaceGroups", () => {
+  const s1 = session({
+    sessionId: "s1",
+    cwd: "/work/alpha",
+    title: "Fix login race",
+    updatedAt: "2026-01-02T10:00:00Z",
+  });
+  const s2 = session({
+    sessionId: "s2",
+    cwd: "/work/alpha",
+    title: "Add dark mode",
+    updatedAt: "2026-01-02T09:00:00Z",
+  });
+  const s3 = session({
+    sessionId: "s3",
+    cwd: "/work/beta",
+    title: "Deploy script",
+    updatedAt: "2026-01-02T08:00:00Z",
+  });
+  const groups = groupSessions({
+    sessions: [s1, s2, s3],
+    sidebar: EMPTY_SIDEBAR,
+  });
+
+  it("returns all groups for an empty or whitespace query", () => {
+    expect(filterWorkspaceGroups(groups, "", EMPTY_SIDEBAR)).toHaveLength(2);
+    expect(filterWorkspaceGroups(groups, "   ", EMPTY_SIDEBAR)).toHaveLength(2);
+  });
+
+  it("keeps all sessions in a folder when the folder name matches", () => {
+    const result = filterWorkspaceGroups(groups, "alpha", EMPTY_SIDEBAR);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.sessions.map((s) => s.sessionId)).toEqual(["s1", "s2"]);
+  });
+
+  it("filters sessions by title and omits groups with no matches", () => {
+    const result = filterWorkspaceGroups(groups, "login", EMPTY_SIDEBAR);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.sessions.map((s) => s.sessionId)).toEqual(["s1"]);
+  });
+
+  it("returns an empty array when nothing matches", () => {
+    expect(filterWorkspaceGroups(groups, "nonexistent", EMPTY_SIDEBAR)).toEqual([]);
   });
 });

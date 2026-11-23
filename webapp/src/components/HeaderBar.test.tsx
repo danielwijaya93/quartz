@@ -101,4 +101,10 @@ describe("HeaderBar", () => {
     );
     expect(onChangeFolder).toHaveBeenCalledTimes(1);
   });
+
+  it("renders the git branch chip when gitBranch is present", () => {
+    renderHeader({ session: { ...SESSION, gitBranch: "feat/p0-ui" } });
+    expect(screen.getByLabelText("Git branch feat/p0-ui")).toBeInTheDocument();
+    expect(screen.getByText("feat/p0-ui")).toBeInTheDocument();
+  });
 });

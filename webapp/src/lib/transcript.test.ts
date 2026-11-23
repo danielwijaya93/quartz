@@ -6,6 +6,8 @@ import {
   groupTurns,
   initialState,
   isTurn,
+  isUnifiedDiff,
+  parseDiffStats,
   lastUserRowId,
   lineCount,
   parseHarnessNotice,
@@ -15,6 +17,7 @@ import {
   setRowFormState,
   stepLabel,
   trayOwnsStatus,
+  turnDiffStats,
   turnSummary,
   type AssistantRow,
   type Row,
@@ -1360,5 +1363,50 @@ describe("a reconnect in the middle of a turn", () => {
       files: [".quartz/helpers.py"],
       needsTrust: true,
     });
+  });
+});
+
+describe("diff parsing and turn elapsed time", () => {
+  const SAMPLE_DIFF = [
+    "--- a/src/app.ts",
+    "+++ b/src/app.ts",
+    "@@ -1,3 +1,4 @@",
+    " const x = 1;",
+    "-const y = 2;",
+    "+const y = 3;",
+    "+const z = 4;",
+  ].join("\n");
+
+  it("detects unified diffs and counts additions/deletions", () => {
+    expect(isUnifiedDiff(SAMPLE_DIFF)).toBe(true);
+    expect(isUnifiedDiff("plain output")).toBe(false);
+    expect(parseDiffStats(SAMPLE_DIFF)).toEqual({ additions: 2, deletions: 1 });
+    expect(parseDiffStats("plain output")).toBeNull();
+  });
+
+  it("aggregates diff stats across a turn's tools and attaches turn_end elapsedMs", () => {
+    const toolRow: ToolRow = {
+      kind: "tool",
+      id: "t1",
+      code: "edit_file()",
+      status: "ok",
+      output: SAMPLE_DIFF,
+      durationMs: 120,
+      images: [],
+      actions: null,
+    };
+    const endRow: Row = {
+      kind: "turn_end",
+      id: "end1",
+      status: "ok",
+      tokens: 100,
+      elapsedMs: 4200,
+    };
+    const items = groupTurns([toolRow, endRow]);
+    expect(items).toHaveLength(2);
+    const turn = items[0] as Turn;
+    expect(isTurn(turn)).toBe(true);
+    expect(turn.elapsedMs).toBe(4200);
+    expect(turnDiffStats(turn)).toEqual({ additions: 2, deletions: 1 });
   });
 });

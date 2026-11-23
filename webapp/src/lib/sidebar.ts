@@ -509,3 +509,44 @@ export function formatAge(iso: string, now: number = Date.now()): string {
   if (days < 30) return `${days}d`;
   return `${Math.floor(days / 30)}mo`;
 }
+
+/* ----------------------------------------------------- search & live status */
+
+export type SessionActivityStatus = "idle" | "running" | "done" | "error";
+
+export interface SessionActivity {
+  status: SessionActivityStatus;
+  unread: boolean;
+}
+
+/**
+ * Filter workspace groups by a free-text query across folder labels, paths, and
+ * session titles. When a folder itself matches, all of its sessions remain visible;
+ * otherwise only matching sessions are kept and empty groups are omitted.
+ */
+export function filterWorkspaceGroups(
+  groups: readonly WorkspaceGroup[],
+  query: string,
+  sidebar: SidebarState,
+): WorkspaceGroup[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === "") return [...groups];
+
+  const filtered: WorkspaceGroup[] = [];
+  for (const group of groups) {
+    const folderMatches =
+      group.label.toLowerCase().includes(needle) ||
+      group.cwd.toLowerCase().includes(needle);
+    if (folderMatches) {
+      filtered.push(group);
+      continue;
+    }
+    const matchingSessions = group.sessions.filter((session) =>
+      displayTitle(session, sidebar).toLowerCase().includes(needle),
+    );
+    if (matchingSessions.length > 0) {
+      filtered.push({ ...group, sessions: matchingSessions });
+    }
+  }
+  return filtered;
+}

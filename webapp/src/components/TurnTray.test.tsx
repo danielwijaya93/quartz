@@ -271,4 +271,37 @@ describe("TurnTray", () => {
     rerender(tray(live([thinking("k1", "a"), tool("t1"), assistant("a1", "more")])));
     expect(node.scrollTop).toBe(0);
   });
+
+  it("shows elapsed time and diff stats in the settled header and color-codes unified diffs", async () => {
+    const user = userEvent.setup();
+    const diffOutput = [
+      "--- a/file.ts",
+      "+++ b/file.ts",
+      "@@ -1,2 +1,2 @@",
+      "-old line",
+      "+new line",
+    ].join("\n");
+    const diffTool: ToolRow = {
+      kind: "tool",
+      id: "tdiff",
+      code: "edit_file()",
+      status: "ok",
+      output: diffOutput,
+      durationMs: 50,
+      images: [],
+      actions: null,
+    };
+    const settled = { ...turnOf([diffTool]), elapsedMs: 4200 };
+    render(tray(settled));
+
+    const header = screen.getByRole("button", { name: /1 tool/ });
+    expect(header).toHaveTextContent("4.2s");
+    expect(header).toHaveTextContent("+1 -1");
+
+    await user.click(header);
+    await user.click(screen.getByRole("button", { name: /Used 1 tool/ }));
+    await user.click(screen.getByRole("button", { name: /Tool call, Succeeded/ }));
+    expect(screen.getByText("+new line").className).toContain("text-success");
+    expect(screen.getByText("-old line").className).toContain("text-danger");
+  });
 });

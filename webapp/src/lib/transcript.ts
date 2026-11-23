@@ -154,6 +154,7 @@ export interface SessionMeta {
   projectTrust: ProjectTrustState | null;
   bgCount?: number;
   bgFailed?: number;
+  gitBranch?: string | null;
 }
 
 export interface TranscriptState {
@@ -188,6 +189,7 @@ export const EMPTY_SESSION: SessionMeta = {
   maxContextTokens: 0,
   commands: [],
   projectTrust: null,
+  gitBranch: null,
 };
 
 const INITIAL_ROWS: Row[] = [];
@@ -660,6 +662,7 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
           commands: message.commands,
           projectTrust: message.projectTrust ?? null,
           bgCount: message.bgCount ?? 0,
+          gitBranch: message.gitBranch ?? null,
         },
         status: message.turnRunning ? merged.status : null,
       };
@@ -882,6 +885,8 @@ export interface Turn {
   answer: AssistantRow | null;
   /** The turn is running: the tray header shows the current step instead of a count. */
   live: boolean;
+  /** Total elapsed turn duration in milliseconds when settled. */
+  elapsedMs?: number | null;
 }
 
 /** A transcript renders as a mix of turns and rows that stand on their own. */
@@ -1122,6 +1127,12 @@ export function groupTurns(rows: readonly Row[], options: GroupOptions = {}): Tr
       continue;
     }
     closeTurn();
+    if (row.kind === "turn_end" && row.elapsedMs > 0) {
+      const prev = items[items.length - 1];
+      if (prev !== undefined && isTurn(prev) && prev.elapsedMs == null) {
+        items[items.length - 1] = { ...prev, elapsedMs: row.elapsedMs };
+      }
+    }
     items.push(row);
   }
   closeTurn();
@@ -1133,6 +1144,70 @@ export function groupTurns(rows: readonly Row[], options: GroupOptions = {}): Tr
     items[items.length - 1] = { ...last, live: true };
   }
   return items;
+}
+
+export interface DiffStats {
+  additions: number;
+  deletions: number;
+}
+
+/** True when *text* looks like a unified diff (hunk header or file header pair). */
+export function isUnifiedDiff(text: string): boolean {
+  if (!text) return false;
+  const lines = text.split("\n");
+  let hasHunk = false;
+  let hasMinusHeader = false;
+  let hasPlusHeader = false;
+  for (const line of lines) {
+    if (/^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@/.test(line)) {
+      hasHunk = true;
+      break;
+    }
+    if (line.startsWith("--- ")) hasMinusHeader = true;
+    else if (line.startsWith("+++ ")) hasPlusHeader = true;
+  }
+  return hasHunk || (hasMinusHeader && hasPlusHeader);
+}
+
+/** Count added and removed lines inside a unified diff string. */
+export function parseDiffStats(text: string): DiffStats | null {
+  if (!isUnifiedDiff(text)) return null;
+  let additions = 0;
+  let deletions = 0;
+  let inHunk = false;
+  for (const line of text.split("\n")) {
+    if (line.startsWith("@@ ")) {
+      inHunk = true;
+      continue;
+    }
+    if (line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("diff --git ")) {
+      inHunk = false;
+      continue;
+    }
+    if (!inHunk) continue;
+    if (line.startsWith("+")) additions += 1;
+    else if (line.startsWith("-")) deletions += 1;
+  }
+  if (additions === 0 && deletions === 0) return null;
+  return { additions, deletions };
+}
+
+/** Aggregate unified-diff additions/deletions across all tool outputs in a turn. */
+export function turnDiffStats(turn: Turn): DiffStats | null {
+  let additions = 0;
+  let deletions = 0;
+  for (const step of turn.steps) {
+    if (step.kind !== "tool_run") continue;
+    for (const row of step.rows) {
+      const stats = parseDiffStats(row.output);
+      if (stats) {
+        additions += stats.additions;
+        deletions += stats.deletions;
+      }
+    }
+  }
+  if (additions === 0 && deletions === 0) return null;
+  return { additions, deletions };
 }
 
 /** Count lines in a thinking blob, for the disclosure's summary. */

@@ -127,6 +127,7 @@ export interface SessionStateMessage {
   projectTrust?: ProjectTrustState;
   commands: Command[];
   bgCount?: number;
+  gitBranch?: string | null;
 }
 
 export type ServerMessage =

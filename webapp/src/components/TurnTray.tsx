@@ -5,6 +5,7 @@ import {
   failedToolCount,
   stepLabel,
   toolRunLabel,
+  turnDiffStats,
   turnSummary,
   type Turn,
   type TurnStep,
@@ -64,6 +65,13 @@ export function TurnTray({
 
   const current = turn.steps[turn.steps.length - 1];
   const failed = failedToolCount(turn);
+  const diffStats = turn.live ? null : turnDiffStats(turn);
+  const elapsedLabel =
+    !turn.live && turn.elapsedMs != null && turn.elapsedMs > 0
+      ? turn.elapsedMs < 1000
+        ? `${Math.round(turn.elapsedMs)}ms`
+        : `${(turn.elapsedMs / 1000).toFixed(1)}s`
+      : null;
   // "1 step" over a body reading "Used 4 tools" counted the same work twice, in two
   // units, and put the meaningless number first. The settled header names the work
   // instead: see `turnSummary`.
@@ -125,6 +133,18 @@ export function TurnTray({
                 </span>
                 <span className="shrink-0 font-medium text-danger">{failed} failed</span>
               </>
+            ) : null}
+            {diffStats ? (
+              <span
+                aria-label={`${diffStats.additions} additions, ${diffStats.deletions} deletions`}
+                className="shrink-0 font-mono text-[11px] tabular-nums"
+              >
+                <span className="text-success">+{diffStats.additions}</span>{" "}
+                <span className="text-danger">-{diffStats.deletions}</span>
+              </span>
+            ) : null}
+            {elapsedLabel ? (
+              <span className="shrink-0 text-[11px] tabular-nums text-meta">{elapsedLabel}</span>
             ) : null}
             <span className="sr-only">Toggle turn details</span>
             <Disclosure.Indicator className="ml-auto size-3.5 shrink-0" />

@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Card, Chip, Disclosure, Spinner } from "@heroui/react";
 import { Check, X } from "lucide-react";
-import { firstLine, type ToolRow } from "@/lib/transcript";
+import { firstLine, isUnifiedDiff, parseDiffStats, type ToolRow } from "@/lib/transcript";
 
 const STATUS_COPY: Record<
   ToolRow["status"],
@@ -44,12 +44,47 @@ function actionChips(actions: Record<string, unknown> | null): string[] {
  * came back. Collapsed by default because the answer is the point - except when
  * it failed or produced an image, where the body *is* the information.
  */
+function DiffOutput({ text }: { text: string }): React.ReactElement {
+  const lines = text.split("\n");
+  return (
+    <pre className="max-h-80 overflow-auto rounded-md border border-border bg-surface-secondary py-1.5 font-mono text-xs leading-relaxed">
+      <code>
+        {lines.map((line, index) => {
+          const isHeader =
+            line.startsWith("--- ") ||
+            line.startsWith("+++ ") ||
+            line.startsWith("diff --git ");
+          const isHunk = line.startsWith("@@ ");
+          const isAdd = !isHeader && line.startsWith("+");
+          const isDel = !isHeader && line.startsWith("-");
+          const tone = isHunk
+            ? "bg-accent-soft/45 text-accent"
+            : isHeader
+              ? "font-semibold text-foreground"
+              : isAdd
+                ? "bg-success/10 text-success"
+                : isDel
+                  ? "bg-danger/10 text-danger"
+                  : "text-surface-secondary-foreground";
+          return (
+            <span key={index} className={`block whitespace-pre px-3 ${tone}`}>
+              {line === "" ? " " : line}
+            </span>
+          );
+        })}
+      </code>
+    </pre>
+  );
+}
+
 export function ToolRowView({ row }: { row: ToolRow }): React.ReactElement {
   const chips = actionChips(row.actions);
   const hasBody = row.code !== "" || row.output !== "" || row.images.length > 0;
   const failed = row.status === "failed";
   const defaultOpen = failed || row.images.length > 0;
   const status = STATUS_COPY[row.status];
+  const diffStats = parseDiffStats(row.output);
+  const showDiff = !failed && isUnifiedDiff(row.output);
 
   return (
     <Card
@@ -81,6 +116,15 @@ export function ToolRowView({ row }: { row: ToolRow }): React.ReactElement {
             <code className="min-w-0 flex-1 truncate font-mono text-xs text-muted">
               {firstLine(row.code) || (row.status === "running" ? "…" : "No code")}
             </code>
+            {diffStats ? (
+              <span
+                aria-label={`${diffStats.additions} additions, ${diffStats.deletions} deletions`}
+                className="shrink-0 font-mono text-[11px] tabular-nums"
+              >
+                <span className="text-success">+{diffStats.additions}</span>{" "}
+                <span className="text-danger">-{diffStats.deletions}</span>
+              </span>
+            ) : null}
             {row.durationMs !== null ? (
               <span className="shrink-0 text-xs tabular-nums text-muted">
                 {formatDuration(row.durationMs)}
@@ -96,15 +140,19 @@ export function ToolRowView({ row }: { row: ToolRow }): React.ReactElement {
               </pre>
             ) : null}
             {row.output ? (
-              <pre
-                className={
-                  failed
-                    ? "max-h-80 overflow-auto whitespace-pre-wrap rounded-md border border-danger/30 bg-background px-3 py-2 font-mono text-xs leading-relaxed text-foreground"
-                    : "max-h-80 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-surface-secondary px-3 py-2 font-mono text-xs leading-relaxed text-surface-secondary-foreground"
-                }
-              >
-                <code>{row.output}</code>
-              </pre>
+              showDiff ? (
+                <DiffOutput text={row.output} />
+              ) : (
+                <pre
+                  className={
+                    failed
+                      ? "max-h-80 overflow-auto whitespace-pre-wrap rounded-md border border-danger/30 bg-background px-3 py-2 font-mono text-xs leading-relaxed text-foreground"
+                      : "max-h-80 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-surface-secondary px-3 py-2 font-mono text-xs leading-relaxed text-surface-secondary-foreground"
+                  }
+                >
+                  <code>{row.output}</code>
+                </pre>
+              )
             ) : null}
             {row.images.length > 0 ? (
               <ul className="flex flex-wrap gap-2">
