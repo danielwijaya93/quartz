@@ -11,6 +11,7 @@ import { SessionArchiveDialog } from "./components/SessionArchiveDialog";
 import { TrustFolderDialog } from "./components/TrustFolderDialog";
 import { ModelPickerDialog } from "./components/ModelPickerDialog";
 import { SettingsView } from "./components/SettingsView";
+import { McpView } from "./components/McpView";
 import { JobsTray } from "./components/JobsTray";
 import { useQuartz } from "./useQuartz";
 import { useCommandPalette } from "./lib/useCommandPalette";
@@ -58,6 +59,7 @@ export function App(): React.ReactElement {
   const [archiveOpen, setArchiveOpen] = React.useState(false);
   const [modelPickerOpen, setModelPickerOpen] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [mcpOpen, setMcpOpen] = React.useState(false);
   const [jobsOpen, setJobsOpen] = React.useState(false);
   const [dismissedTrustCwds, setDismissedTrustCwds] = React.useState<ReadonlySet<string>>(
     () => new Set(),
@@ -164,7 +166,13 @@ export function App(): React.ReactElement {
         return;
       }
       if (cleaned === "settings" && (!arg || arg.trim() === "")) {
+        setMcpOpen(false);
         setSettingsOpen(true);
+        return;
+      }
+      if (cleaned === "mcp" && (!arg || arg.trim() === "")) {
+        setSettingsOpen(false);
+        setMcpOpen(true);
         return;
       }
       if (cleaned === "jobs" && (!arg || arg.trim() === "")) {
@@ -189,6 +197,7 @@ export function App(): React.ReactElement {
   const selectSession = React.useCallback(
     (id: string) => {
       setSettingsOpen(false);
+      setMcpOpen(false);
       setSessionActivity((prev) => {
         const current = prev[id];
         if (!current || !current.unread) return prev;
@@ -203,6 +212,7 @@ export function App(): React.ReactElement {
   const newSessionIn = React.useCallback(
     (cwd: string) => {
       setSettingsOpen(false);
+      setMcpOpen(false);
       quartz.newSession(cwd);
       if (narrow) closeSidebar();
     },
@@ -228,7 +238,14 @@ export function App(): React.ReactElement {
     onHide: sidebar.hide,
     onRestore: sidebar.restore,
     onOpenArchive: openArchive,
-    onOpenSettings: () => setSettingsOpen(true),
+    onOpenSettings: () => {
+      setMcpOpen(false);
+      setSettingsOpen(true);
+    },
+    onOpenMcp: () => {
+      setSettingsOpen(false);
+      setMcpOpen(true);
+    },
     sessionActivity,
   };
 
@@ -259,6 +276,13 @@ export function App(): React.ReactElement {
           <SettingsView
             onBack={() => {
               setSettingsOpen(false);
+              window.requestAnimationFrame(() => composerRef.current?.focus());
+            }}
+          />
+        ) : mcpOpen ? (
+          <McpView
+            onBack={() => {
+              setMcpOpen(false);
               window.requestAnimationFrame(() => composerRef.current?.focus());
             }}
           />

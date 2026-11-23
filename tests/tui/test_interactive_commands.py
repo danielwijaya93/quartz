@@ -157,3 +157,25 @@ def test_jobs_interactive_tail_and_kill(
     assert "3 passed in 0.5s" in out
     assert "Killed job pid 1234." in out
     assert "No background jobs running." in out
+
+
+def test_interactive_mcp_adds_and_toggles_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, captured_output: io.StringIO
+) -> None:
+    cfg = tmp_path / "mcp.json"
+    monkeypatch.setenv("MCP_CONFIG", str(cfg))
+    rt = _make_interactive_rt(tmp_path, monkeypatch)
+
+    picks = iter(["__add__", "http", "srv:exa", "toggle", None])
+    prompts = iter(["exa", "https://mcp.exa.ai/mcp", ""])
+
+    monkeypatch.setattr(commands, "_pick_option", lambda *a, **kw: next(picks))
+    monkeypatch.setattr(commands, "_prompt_input", lambda *a, **kw: next(prompts))
+
+    assert _handle_slash_command(rt, "/mcp") is False
+    out = captured_output.getvalue()
+    assert "Saved MCP server 'exa'" in out
+    assert "Disabled MCP server(s): exa" in out
+    saved = json.loads(cfg.read_text(encoding="utf-8"))
+    assert saved["mcpServers"]["exa"]["url"] == "https://mcp.exa.ai/mcp"
+    assert saved["mcpServers"]["exa"]["enabled"] is False
