@@ -45,6 +45,35 @@ describe("Composer", () => {
     expect(textarea).toHaveValue("line one\nline two");
   });
 
+  it("inserts a newline on Enter on coarse-pointer (mobile) devices instead of submitting", async () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query === "(pointer: coarse)",
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+    try {
+      const user = userEvent.setup();
+      const { onSubmit } = setup();
+      const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+      expect(textarea).toHaveAttribute("enterkeyhint", "enter");
+      await user.click(textarea);
+      await user.keyboard("line one{Enter}line two");
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(textarea).toHaveValue("line one\nline two");
+
+      await user.click(screen.getByRole("button", { name: "Send prompt" }));
+      expect(onSubmit).toHaveBeenCalledWith("line one\nline two", []);
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
+  });
+
   it("steers instead of prompting while a turn runs", async () => {
     const user = userEvent.setup();
     const { onSubmit, onSteer } = setup({ turnRunning: true });
