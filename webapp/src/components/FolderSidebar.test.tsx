@@ -639,6 +639,7 @@ describe("FolderSidebar's undo notice", () => {
     const pinnedRegion = screen.getByRole("region", { name: "Pinned" });
     expect(pinnedRegion).toBeInTheDocument();
     expect(within(pinnedRegion).getByText("Pinned task")).toBeInTheDocument();
+    expect(within(pinnedRegion).queryByText(/· api/)).not.toBeInTheDocument();
 
     await user.click(within(pinnedRegion).getByRole("button", { name: /^Pinned task/i }));
     expect(onSelectSession).toHaveBeenCalledWith("s1");
