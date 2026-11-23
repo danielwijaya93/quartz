@@ -2,6 +2,7 @@ import * as React from "react";
 import { Alert, Button, TextArea, cn } from "@heroui/react";
 import { ArrowUp, ChevronDown, CornerDownLeft, CornerDownRight, FileText, Plus, Square, X } from "lucide-react";
 import { PROMPT_HANDOFF_EVENT, isProseQuery, readPromptHandoff } from "@/lib/commandText";
+import { detectAtMention, filterMentionFiles, insertAtMention } from "@/lib/fileMentions";
 import { filterCommands, isTerminalOnly, orderCommands, parseCommandInput } from "./CommandPalette";
 import type { ConnectionStatus } from "@/lib/connection";
 import type { Command, ImageAttachment } from "@/protocol";
@@ -88,6 +89,7 @@ function ContextRing({
 
 export interface ComposerProps {
   connection: ConnectionStatus;
+  cwd?: string;
   turnRunning: boolean;
   /** Latched fatal error blocks submission, matching the server's stance. */
   fatalError: string | null;
@@ -144,6 +146,7 @@ async function readAsTextFile(file: File): Promise<AttachedFile> {
  */
 export function Composer({
   connection,
+  cwd = "",
   turnRunning,
   fatalError,
   commands = [],
@@ -170,6 +173,11 @@ export function Composer({
   const [caretAtEnd, setCaretAtEnd] = React.useState(false);
   const [slashDismissed, setSlashDismissed] = React.useState(false);
   const [activeCmd, setActiveCmd] = React.useState(0);
+  const [caretPos, setCaretPos] = React.useState(0);
+  const [atDismissed, setAtDismissed] = React.useState(false);
+  const [activeFile, setActiveFile] = React.useState(0);
+  const [filesByCwd, setFilesByCwd] = React.useState<Readonly<Record<string, string[]>>>({});
+  const [filesLoading, setFilesLoading] = React.useState(false);
   const [payloadError, setPayloadError] = React.useState<string | null>(null);
   const localRef = React.useRef<HTMLTextAreaElement | null>(null);
   const textareaRef = forwardedRef ?? localRef;
@@ -198,6 +206,62 @@ export function Composer({
   React.useEffect(() => {
     setActiveCmd(0);
   }, [slashQuery]);
+
+  const atMention = React.useMemo(
+    () => (slashOpen ? null : detectAtMention(text, caretPos)),
+    [slashOpen, text, caretPos],
+  );
+  const atOpen = !disabled && !slashOpen && !atDismissed && atMention !== null;
+  const workspaceFiles = filesByCwd[cwd] ?? [];
+  const mentionFiles = React.useMemo(
+    () => (atMention ? filterMentionFiles(workspaceFiles, atMention.query) : []),
+    [atMention, workspaceFiles],
+  );
+
+  React.useEffect(() => {
+    setActiveFile(0);
+  }, [atMention?.query]);
+
+  React.useEffect(() => {
+    if (!atOpen || !cwd || filesByCwd[cwd] !== undefined) return;
+    let cancelled = false;
+    setFilesLoading(true);
+    void fetch(`/api/workspace/files?cwd=${encodeURIComponent(cwd)}`)
+      .then((resp) => (resp.ok ? resp.json() : Promise.reject(new Error("failed"))))
+      .then((data: { files?: unknown }) => {
+        if (cancelled) return;
+        const list = Array.isArray(data.files)
+          ? data.files.filter((item): item is string => typeof item === "string")
+          : [];
+        setFilesByCwd((prev) => ({ ...prev, [cwd]: list }));
+      })
+      .catch(() => {
+        if (!cancelled) setFilesByCwd((prev) => ({ ...prev, [cwd]: [] }));
+      })
+      .finally(() => {
+        if (!cancelled) setFilesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [atOpen, cwd, filesByCwd]);
+
+  const selectMention = React.useCallback(
+    (filePath: string) => {
+      if (!atMention) return;
+      const { nextText, nextCaret } = insertAtMention(text, atMention, filePath);
+      setText(nextText);
+      setCaretPos(nextCaret);
+      setAtDismissed(false);
+      window.requestAnimationFrame(() => {
+        const node = textareaRef.current;
+        if (!node) return;
+        node.focus();
+        node.setSelectionRange(nextCaret, nextCaret);
+      });
+    },
+    [atMention, text, textareaRef],
+  );
 
   const resize = React.useCallback(() => {
     const node = textareaRef.current;
@@ -359,6 +423,33 @@ export function Composer({
           return;
         }
       }
+      if (atOpen) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          setActiveFile((prev) => (mentionFiles.length === 0 ? 0 : (prev + 1) % mentionFiles.length));
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          setActiveFile((prev) =>
+            mentionFiles.length === 0 ? 0 : (prev - 1 + mentionFiles.length) % mentionFiles.length,
+          );
+          return;
+        }
+        if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
+          const selected = mentionFiles[activeFile];
+          if (selected) {
+            event.preventDefault();
+            selectMention(selected);
+            return;
+          }
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setAtDismissed(true);
+          return;
+        }
+      }
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         submit();
@@ -401,12 +492,16 @@ export function Composer({
     },
     [
       activeCmd,
+      activeFile,
+      atOpen,
       commands.length,
       history,
       historyIndex,
       inlineCommands,
+      mentionFiles,
       onCancel,
       onOpenPalette,
+      selectMention,
       slashOpen,
       submit,
       text,
@@ -513,6 +608,61 @@ export function Composer({
           </div>
         ) : null}
 
+        {atOpen ? (
+          <div
+            role="region"
+            aria-label="Workspace files"
+            className="absolute right-0 bottom-full left-0 z-20 mb-2 overflow-hidden rounded-xl border border-border bg-surface shadow-lg"
+          >
+            <div className="flex items-center justify-between border-b border-separator px-3 py-2 text-xs text-muted">
+              <span className="font-medium text-foreground">Files</span>
+              <span>↑↓ navigate · Tab/Enter insert · Esc close</span>
+            </div>
+            {filesLoading && workspaceFiles.length === 0 ? (
+              <p className="px-3 py-4 text-center text-sm text-muted">Loading workspace files…</p>
+            ) : mentionFiles.length === 0 ? (
+              <p className="px-3 py-4 text-center text-sm text-muted">
+                No file matches “@{atMention?.query}”.
+              </p>
+            ) : (
+              <ul
+                id="inline-file-list"
+                role="listbox"
+                aria-label="Matching workspace files"
+                className="max-h-64 space-y-0.5 overflow-y-auto p-1.5"
+              >
+                {mentionFiles.map((filePath, index) => {
+                  const selected = index === activeFile;
+                  return (
+                    <li
+                      key={filePath}
+                      role="option"
+                      aria-selected={selected}
+                      onMouseEnter={() => setActiveFile(index)}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        selectMention(filePath);
+                      }}
+                      className={cn(
+                        "flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs transition-colors",
+                        selected
+                          ? "bg-accent-soft text-accent-soft-foreground"
+                          : "text-foreground hover:bg-surface-secondary/70",
+                      )}
+                    >
+                      <FileText aria-hidden="true" className="size-3.5 shrink-0 text-muted" />
+                      <span className="min-w-0 flex-1 truncate font-mono">{filePath}</span>
+                      {selected ? (
+                        <CornerDownLeft aria-hidden="true" className="size-3.5 shrink-0 text-muted" />
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        ) : null}
+
         {blocked ? (
           <Alert status="danger" role="alert">
             <Alert.Indicator />
@@ -589,9 +739,16 @@ export function Composer({
             value={text}
             disabled={disabled}
             onChange={(event) => {
-              setText(event.target.value);
+              const nextValue = event.target.value;
+              setText(nextValue);
+              setCaretPos(event.target.selectionStart ?? nextValue.length);
               setPayloadError(null);
               setSlashDismissed(false);
+              setAtDismissed(false);
+            }}
+            onSelect={(event) => {
+              const target = event.currentTarget;
+              setCaretPos(target.selectionStart ?? target.value.length);
             }}
             onKeyDown={onKeyDown}
             onPaste={(event) => {

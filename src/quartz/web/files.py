@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ __all__ = [
     "DirectoryListing",
     "create_directory",
     "list_directories",
+    "list_workspace_files",
     "resolve_directory",
 ]
 
@@ -172,3 +174,50 @@ def create_directory(raw: Any, name: Any, fallback: Path) -> DirectoryListing:
     except OSError as exc:
         return DirectoryListing(path=str(path), parents=[], entries=[], error=str(exc))
     return list_directories(str(path), fallback)
+
+
+_IGNORED_DIRS = frozenset(
+    {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", ".pytest_cache", ".ruff_cache"}
+)
+
+
+def list_workspace_files(raw_cwd: Any, fallback: Path, limit: int = 2000) -> dict[str, Any]:
+    """List relative file paths inside *raw_cwd* for `@file` autocomplete.
+
+    Uses `git ls-files --cached --others --exclude-standard` when *raw_cwd* is
+    inside a git repository (respecting `.gitignore`), falling back to a bounded
+    directory walk otherwise. Returns relative paths only, never file contents.
+    """
+    path, error = resolve_directory(raw_cwd, fallback)
+    if path is None or error is not None:
+        return {"cwd": str(raw_cwd or fallback), "files": [], "error": error}
+
+    capped = max(1, min(int(limit), 5000))
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+        if proc.returncode == 0:
+            files = [line for line in proc.stdout.splitlines() if line.strip()][:capped]
+            return {"cwd": str(path), "files": sorted(files)}
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    collected: list[str] = []
+    try:
+        for root_dir, dirnames, filenames in os.walk(path):
+            dirnames[:] = sorted(d for d in dirnames if d not in _IGNORED_DIRS)
+            rel_root = Path(root_dir).relative_to(path)
+            for name in sorted(filenames):
+                rel = name if rel_root == Path(".") else (rel_root / name).as_posix()
+                collected.append(rel)
+                if len(collected) >= capped:
+                    return {"cwd": str(path), "files": collected}
+    except OSError as exc:
+        return {"cwd": str(path), "files": [], "error": str(exc)}
+    return {"cwd": str(path), "files": collected}

@@ -268,6 +268,7 @@ export function App(): React.ReactElement {
         />
         <Composer
           connection={quartz.status}
+          cwd={quartz.state.session.cwd}
           turnRunning={quartz.state.turnRunning}
           fatalError={quartz.state.fatalError}
           commands={quartz.state.session.commands}
