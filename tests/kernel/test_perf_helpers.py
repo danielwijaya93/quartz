@@ -101,14 +101,14 @@ def test_parallel_cells_isolate_trailing_expr(tmp_path: Path) -> None:
         kernel.close()
 
 
-def test_kernel_suppresses_syntax_warning(tmp_path: Path) -> None:
+def test_kernel_captures_syntax_warning_in_cell_stderr(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
         # Cell code with invalid escape sequences "\." that triggers SyntaxWarning in Python 3.12+
         res = kernel.exec_cell('x = "\\."\nrg_like = "\\d+"\nx')
         assert res.ok
-        assert "SyntaxWarning" not in res.stderr
+        assert "SyntaxWarning" in res.stderr
         assert res.result == repr("\\.")
     finally:
         kernel.close()

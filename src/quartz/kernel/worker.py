@@ -670,8 +670,8 @@ class KernelWorker:
         safe_cid = re.sub(r"[^A-Za-z0-9_]", "_", cell_id or "cell")
         last_expr_key = f"__last_expr_{safe_cid}__"
         try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", category=SyntaxWarning)
+            with warnings.catch_warnings(record=True) as syntax_warnings:
+                warnings.simplefilter("always", category=SyntaxWarning)
                 tree = ast.parse(code, "<ipython>", "exec")
                 self._auto_import_for_ast(tree, code)
                 has_trailing_expr = bool(tree.body and isinstance(tree.body[-1], ast.Expr))
@@ -713,6 +713,9 @@ class KernelWorker:
                     _STDOUT_VAR.reset(tok_out)
                     _STDERR_VAR.reset(tok_err)
                     _IMAGES_VAR.reset(tok_img)
+            for w in syntax_warnings:
+                if issubclass(w.category, SyntaxWarning):
+                    stderr_buf.write(f"<ipython>:{w.lineno}: {w.category.__name__}: {w.message}\n")
         except KeyboardInterrupt:
             ok = False
             stderr_buf.write("KeyboardInterrupt: cell execution interrupted\n")

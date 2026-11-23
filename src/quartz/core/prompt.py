@@ -19,6 +19,7 @@ PROMPT_RULES = """## Rules
 - Batch and chain operations generously into one cell: read multiple related files, inspect state, make edits, and verify results together rather than executing piecemeal single-call turns.
 - Prioritize available REPL helpers and primitives over verbose standard-library boilerplate or multi-turn external commands.
 - Use `bash()` for long-running or background processes; do not block a cell with `sleep` or minutes-long awaits (let long jobs finish in the background).
+- Use raw strings (`r"..."`) for regexes or any string with backslashes (or `fixed=True` in `rg()` for literal searches) to avoid Python `SyntaxWarning`.
 - Follow `## Project Instructions` strictly."""
 
 
