@@ -169,18 +169,19 @@ export function App(): React.ReactElement {
 
   const mergedSessionActivity = React.useMemo(() => {
     const inbox = quartz.state.inbox;
-    if (!inbox || inbox.length === 0) return sessionActivity;
-    const next: Record<string, SessionActivity> = { ...sessionActivity };
+    if (inbox === undefined) return sessionActivity;
+    const next: Record<string, SessionActivity> = {};
     for (const item of inbox) {
-      const existing = next[item.sessionId];
-      if (existing?.status === "running") continue;
       next[item.sessionId] = {
-        status: item.kind,
+        status: item.kind === "working" ? "running" : item.kind,
         unread: item.kind === "permission" ? true : !item.read,
       };
     }
+    if (quartz.state.turnRunning && sessionId && !next[sessionId]) {
+      next[sessionId] = { status: "running", unread: false };
+    }
     return next;
-  }, [quartz.state.inbox, sessionActivity]);
+  }, [quartz.state.inbox, quartz.state.turnRunning, sessionActivity, sessionId]);
 
   // A session becomes listable as soon as the first prompt is persisted on
   // turn start, and its title/updatedAt may settle at turn end, so reload on
@@ -318,8 +319,6 @@ export function App(): React.ReactElement {
     onRename: sidebar.rename,
     onHide: sidebar.hide,
     onRestore: sidebar.restore,
-    onPin: sidebar.pin,
-    onUnpin: sidebar.unpin,
     onOpenArchive: openArchive,
     onOpenSettings: () => {
       setMcpOpen(false);
