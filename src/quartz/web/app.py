@@ -838,6 +838,9 @@ async def _dispatch(
             _replay_live_turn(session, snapshot, push)
             for idle_frame in manager.pending_idle_prompts():
                 push(idle_frame)
+            inbox_items = manager.inbox_items()
+            if inbox_items:
+                push({"type": "inbox_state", "items": inbox_items})
 
         elif kind == "prompt":
             text = str(message.get("text") or "").strip()

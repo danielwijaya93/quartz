@@ -1394,6 +1394,43 @@ describe("a reconnect in the middle of a turn", () => {
     });
     expect(switched.idlePrompts).toEqual([]);
   });
+
+  it("tracks inbox_state across session switches", () => {
+    const withInbox = reduce(initialState, {
+      type: "inbox_state",
+      items: [
+        {
+          sessionId: "s-bg",
+          cwd: "/repo",
+          title: "Background work",
+          kind: "permission",
+          updatedAt: "2026-01-01T00:00:00Z",
+          preview: "bash: ls",
+        },
+      ],
+    });
+    expect(withInbox.inbox).toHaveLength(1);
+    expect(withInbox.inbox?.[0]?.kind).toBe("permission");
+
+    // Switching sessions via session_state must not wipe global inbox.
+    const afterSwitch = reduce(withInbox, {
+      type: "session_state",
+      sessionId: "s-other",
+      cwd: "/other",
+      model: "m",
+      effort: "e",
+      turnRunning: false,
+      commands: [],
+      messages: [],
+    });
+    expect(afterSwitch.inbox).toHaveLength(1);
+
+    const cleared = reduce(afterSwitch, {
+      type: "inbox_state",
+      items: [],
+    });
+    expect(cleared.inbox).toEqual([]);
+  });
 });
 
 describe("diff parsing and turn elapsed time", () => {

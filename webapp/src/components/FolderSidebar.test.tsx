@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FolderSidebar, type FolderSidebarProps } from "./FolderSidebar";
 import { EMPTY_SIDEBAR, NOTICE_TIMEOUT_MS, type SidebarPayload, type SidebarSession } from "@/lib/sidebar";
@@ -496,5 +496,63 @@ describe("FolderSidebar's undo notice", () => {
     expect(screen.getByLabelText("Completed, unread")).toBeInTheDocument();
     const unreadTitle = screen.getByText("earlier prompt");
     expect(unreadTitle.className).toContain("font-semibold");
+  });
+
+  it("hides Inbox when empty", () => {
+    renderSidebar({
+      data: payload({
+        sessions: [session({ sessionId: "s1", title: "Fix auth", cwd: "/work/api" })],
+      }),
+      inbox: [],
+    });
+    expect(screen.queryByRole("region", { name: "Inbox" })).not.toBeInTheDocument();
+  });
+
+  it("renders Inbox items and selects session on click", async () => {
+    const user = userEvent.setup();
+    const onSelectSession = vi.fn();
+    renderSidebar({
+      data: payload({
+        sessions: [
+          session({ sessionId: "s1", title: "Fix auth", cwd: "/work/api" }),
+          session({ sessionId: "s2", title: "Write tests", cwd: "/work/web" }),
+        ],
+        sidebar: {
+          version: 1,
+          hiddenSessions: [],
+          importedSessions: [],
+          renames: { s2: "Renamed tests" },
+          workspaces: [],
+        },
+      }),
+      onSelectSession,
+      inbox: [
+        {
+          sessionId: "s1",
+          cwd: "/work/api",
+          title: "Fix auth",
+          kind: "permission",
+          updatedAt: new Date().toISOString(),
+          preview: "bash: npm test",
+        },
+        {
+          sessionId: "s2",
+          cwd: "/work/web",
+          title: "Write tests",
+          kind: "done",
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+    });
+
+    const inboxRegion = screen.getByRole("region", { name: "Inbox" });
+    expect(inboxRegion).toBeInTheDocument();
+    expect(within(inboxRegion).getByText("Permission needed")).toBeInTheDocument();
+    expect(within(inboxRegion).getByText("Turn finished")).toBeInTheDocument();
+    expect(within(inboxRegion).getByText("Renamed tests")).toBeInTheDocument();
+    expect(within(inboxRegion).getByText(/bash: npm test/)).toBeInTheDocument();
+
+    await user.click(within(inboxRegion).getByRole("button", { name: /Fix auth/i }));
+    expect(onSelectSession).toHaveBeenCalledWith("s1");
   });
 });

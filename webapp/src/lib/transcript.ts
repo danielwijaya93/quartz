@@ -15,6 +15,7 @@ import type {
   Command,
   CommandResult,
   ImageAttachment,
+  InboxItem,
   Message,
   PendingPermission,
   ProjectTrustState,
@@ -182,6 +183,7 @@ export interface TranscriptState {
   openRowId: string | null;
   session: SessionMeta;
   idlePrompts?: IdleSessionPrompt[];
+  inbox?: InboxItem[];
 }
 
 export interface IdleSessionPrompt {
@@ -884,6 +886,9 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
       const next = existing.filter((p) => p.sessionId !== message.sessionId);
       return next.length === existing.length ? state : { ...state, idlePrompts: next };
     }
+
+    case "inbox_state":
+      return { ...state, inbox: message.items };
 
     case "command_result":
       return appendRow(state, {

@@ -202,8 +202,20 @@ export type ServerMessage =
       idleSeconds: number;
     }
   | { type: "idle_session_resolved"; sessionId: string; action: "keep" | "close" }
+  | { type: "inbox_state"; items: InboxItem[] }
   | { type: "error"; message: string; fatal: boolean }
   | { type: "command_result"; name: string; ok: boolean; result: CommandResult };
+
+export type InboxItemKind = "permission" | "done" | "error";
+
+export interface InboxItem {
+  sessionId: string;
+  cwd: string;
+  title?: string;
+  kind: InboxItemKind;
+  updatedAt: string;
+  preview?: string;
+}
 
 export type ServerMessageType = ServerMessage["type"];
 
@@ -226,6 +238,7 @@ const SERVER_MESSAGE_TYPES: ReadonlySet<string> = new Set<ServerMessageType>([
   "permission_resolved",
   "idle_session_prompt",
   "idle_session_resolved",
+  "inbox_state",
   "error",
   "command_result",
 ]);
