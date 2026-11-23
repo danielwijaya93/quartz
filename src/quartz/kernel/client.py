@@ -171,7 +171,6 @@ class KernelClient:
                     str(params.get("server", "")),
                     str(params.get("tool", "")),
                     arguments=params.get("arguments"),
-                    timeout=float(params.get("timeout", 60.0)),
                 )
             elif method == "bridge.exec":
                 loop = asyncio.get_running_loop()
