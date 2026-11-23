@@ -507,3 +507,14 @@ def test_open_browser_when_ready_brackets_ipv6_host(
     subcommands._open_browser_when_ready("::1", 8765, timeout=1.0)
     assert probed == [("::1", 8765)]
     assert opened == ["http://[::1]:8765/"]
+
+
+def test_uvicorn_uses_forgiving_websocket_ping_timeouts(
+    web_env: Path, no_server: list[tuple[Any, ...]]
+) -> None:
+    """Brief phone screen-locks must not drop the WebSocket on uvicorn's 20s default."""
+    subcommands._handle_web_cli(["--cwd", str(web_env), "--port", "0"])
+    assert len(no_server) == 1
+    _args, kwargs = no_server[0]
+    assert kwargs["ws_ping_interval"] == 30.0
+    assert kwargs["ws_ping_timeout"] == 60.0

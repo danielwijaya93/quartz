@@ -52,9 +52,12 @@ export interface ConnectionOptions {
   backoffMs?: readonly number[];
   /** Set false to disable reconnect (tests that assert a dead connection). */
   reconnect?: boolean;
+  /** How long to wait for a server response on wake before treating an open socket as dead. */
+  wakeCheckTimeoutMs?: number;
 }
 
-const DEFAULT_BACKOFF_MS = [500, 1000, 2000, 4000, 8000] as const;
+const DEFAULT_BACKOFF_MS = [100, 300, 1000, 2000, 4000] as const;
+const DEFAULT_WAKE_CHECK_TIMEOUT_MS = 2500;
 
 const OPEN = 1;
 
@@ -69,6 +72,7 @@ export class Connection {
   private readonly socketFactory: SocketFactory;
   private readonly backoffMs: readonly number[];
   private readonly reconnectEnabled: boolean;
+  private readonly wakeCheckTimeoutMs: number;
 
   private socket: SocketLike | null = null;
   private listeners: { [K in keyof ConnectionEvents]: Set<Listener<ConnectionEvents[K]>> } = {
@@ -89,8 +93,20 @@ export class Connection {
 
   private attempt = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private wakeWatchdog: ReturnType<typeof setTimeout> | null = null;
+  private lifecycleAttached = false;
   private currentStatus: ConnectionStatus = "disconnected";
   private closedByUser = false;
+
+  private readonly onVisibilityChange = (): void => {
+    if (typeof document !== "undefined" && document.visibilityState === "visible") {
+      this.reconnectNow();
+    }
+  };
+
+  private readonly onOnline = (): void => {
+    this.reconnectNow();
+  };
 
   constructor(url: string, options: ConnectionOptions = {}) {
     this.url = url;
@@ -98,6 +114,7 @@ export class Connection {
       options.socketFactory ?? ((target: string) => new WebSocket(target) as unknown as SocketLike);
     this.backoffMs = options.backoffMs ?? DEFAULT_BACKOFF_MS;
     this.reconnectEnabled = options.reconnect ?? true;
+    this.wakeCheckTimeoutMs = options.wakeCheckTimeoutMs ?? DEFAULT_WAKE_CHECK_TIMEOUT_MS;
   }
 
   get status(): ConnectionStatus {
@@ -128,13 +145,57 @@ export class Connection {
 
   /* ------------------------------------------------------------- socket */
 
+  private attachLifecycle(): void {
+    if (this.lifecycleAttached) return;
+    this.lifecycleAttached = true;
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", this.onVisibilityChange);
+    }
+    if (typeof window !== "undefined") {
+      window.addEventListener("online", this.onOnline);
+    }
+  }
+
+  private detachLifecycle(): void {
+    if (!this.lifecycleAttached) return;
+    this.lifecycleAttached = false;
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", this.onVisibilityChange);
+    }
+    if (typeof window !== "undefined") {
+      window.removeEventListener("online", this.onOnline);
+    }
+  }
+
+  private clearWakeWatchdog(): void {
+    if (this.wakeWatchdog !== null) {
+      clearTimeout(this.wakeWatchdog);
+      this.wakeWatchdog = null;
+    }
+  }
+
+  private discardSocket(socket: SocketLike | null, code?: number, reason?: string): void {
+    if (!socket) return;
+    socket.onclose = null;
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onopen = null;
+    try {
+      socket.close(code, reason);
+    } catch {
+      // Ignore close errors on already-broken sockets.
+    }
+  }
+
   connect(): void {
     this.closedByUser = false;
+    this.attachLifecycle();
     if (this.socket && this.socket.readyState === OPEN) {
       this.sendHello();
       return;
     }
     this.clearTimer();
+    this.clearWakeWatchdog();
     this.setStatus("connecting");
 
     let socket: SocketLike;
@@ -149,12 +210,14 @@ export class Connection {
 
     socket.onopen = () => {
       this.attempt = 0;
+      this.clearWakeWatchdog();
       this.setStatus("connected");
       this.emit("open", undefined);
       this.sendHello();
     };
 
     socket.onmessage = (event) => {
+      this.clearWakeWatchdog();
       if (typeof event.data !== "string") return;
       const message = parseServerMessage(event.data);
       if (!message) return;
@@ -169,14 +232,48 @@ export class Connection {
     };
 
     socket.onclose = () => {
+      this.clearWakeWatchdog();
       this.socket = null;
       this.setStatus("disconnected");
       if (!this.closedByUser) this.scheduleReconnect();
     };
   }
 
+  /**
+   * Immediately verify or re-establish the connection (e.g. when a phone unlocks
+   * or the network comes back online).
+   */
+  reconnectNow(): void {
+    if (this.closedByUser || !this.reconnectEnabled) return;
+    this.clearTimer();
+    this.attempt = 0;
+
+    if (this.socket && this.socket.readyState === OPEN) {
+      if (!this.sendHello()) return;
+      this.clearWakeWatchdog();
+      this.wakeWatchdog = setTimeout(() => {
+        this.wakeWatchdog = null;
+        if (this.closedByUser) return;
+        const stale = this.socket;
+        this.socket = null;
+        this.discardSocket(stale);
+        this.attempt = 0;
+        this.connect();
+      }, this.wakeCheckTimeoutMs);
+      return;
+    }
+
+    if (this.socket) {
+      const stale = this.socket;
+      this.socket = null;
+      this.discardSocket(stale);
+    }
+    this.connect();
+  }
+
   private scheduleReconnect(): void {
     if (!this.reconnectEnabled || this.closedByUser) return;
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
     if (this.timer !== null) return;
     const delay = this.backoffMs[Math.min(this.attempt, this.backoffMs.length - 1)] ?? 1000;
     this.attempt += 1;
@@ -196,15 +293,11 @@ export class Connection {
   close(): void {
     this.closedByUser = true;
     this.clearTimer();
+    this.clearWakeWatchdog();
+    this.detachLifecycle();
     const socket = this.socket;
     this.socket = null;
-    if (socket) {
-      socket.onclose = null;
-      socket.onmessage = null;
-      socket.onerror = null;
-      socket.onopen = null;
-      socket.close(1000, "client closed");
-    }
+    this.discardSocket(socket, 1000, "client closed");
     this.setStatus("disconnected");
   }
 
@@ -213,8 +306,17 @@ export class Connection {
   private send(message: ClientMessage): boolean {
     const socket = this.socket;
     if (!socket || socket.readyState !== OPEN) return false;
-    socket.send(JSON.stringify(message));
-    return true;
+    try {
+      socket.send(JSON.stringify(message));
+      return true;
+    } catch {
+      this.clearWakeWatchdog();
+      this.socket = null;
+      this.discardSocket(socket);
+      this.setStatus("disconnected");
+      if (!this.closedByUser) this.scheduleReconnect();
+      return false;
+    }
   }
 
   sendHello(): boolean {

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { act, render, screen } from "@testing-library/react";
 import { StatusLine } from "./StatusLine";
 
 function renderLine(label: string | null, turnRunning: boolean): void {
@@ -42,9 +42,20 @@ describe("StatusLine", () => {
     expect(screen.queryByRole("status")).toBeNull();
   });
 
-  it("hands the slot to the connection banner when the socket is unhappy", () => {
-    render(<StatusLine label="Thinking..." status="disconnected" turnRunning />);
-    expect(screen.getByRole("status")).toHaveTextContent("Disconnected from Quartz");
-    expect(screen.queryByText(/Thinking/)).toBeNull();
+  it("hands the slot to the connection banner after the grace delay when the socket is unhappy", () => {
+    vi.useFakeTimers();
+    try {
+      render(<StatusLine label="Thinking..." status="disconnected" turnRunning />);
+      // Brief reconnects under 1.5s do not flash the banner.
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(screen.queryByText(/Thinking/)).toBeNull();
+
+      act(() => {
+        vi.advanceTimersByTime(1500);
+      });
+      expect(screen.getByRole("status")).toHaveTextContent("Disconnected from Quartz");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
