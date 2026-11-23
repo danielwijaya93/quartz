@@ -73,6 +73,33 @@ def test_format_push_payload() -> None:
     }
 
 
+def test_format_push_payload_compacts_long_and_multiline_bodies() -> None:
+    long_cmd = "python3 -c 'import os\nprint(1)' && " + "echo ok " * 25
+    perm = format_push_payload(
+        {"type": "permission_request", "requestId": "r2", "command": long_cmd}
+    )
+    assert perm is not None
+    assert "\n" not in perm["body"]
+    assert len(perm["body"]) <= 120
+    assert perm["body"].endswith("...")
+
+    bash = format_push_payload(
+        {"type": "bash_notice", "text": "line 1\n\n  line 2\n" + "x" * 150}
+    )
+    assert bash is not None
+    assert bash["body"].startswith("line 1 line 2 ")
+    assert len(bash["body"]) <= 120
+    assert bash["body"].endswith("...")
+
+    turn_err = format_push_payload(
+        {"type": "turn_end", "status": "error", "error": "line1\nline2 " + "z" * 150}
+    )
+    assert turn_err is not None
+    assert "\n" not in turn_err["body"]
+    assert len(turn_err["body"]) <= 120
+    assert turn_err["body"].endswith("...")
+
+
 def test_push_api_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("QUARTZ_WEB_PUSH", str(tmp_path / "push.json"))
     app = create_app(build=lambda _cwd: None, cwd=tmp_path)  # type: ignore[arg-type]

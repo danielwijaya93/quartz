@@ -274,6 +274,17 @@ export function setDocumentUnreadBadge(count: number): void {
   document.title = count > 0 ? `(${count}) ${DEFAULT_TITLE}` : DEFAULT_TITLE;
 }
 
+const MAX_NOTIFICATION_BODY_LENGTH = 120;
+
+export function compactNotificationBody(
+  text: string,
+  maxLength = MAX_NOTIFICATION_BODY_LENGTH,
+): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  if (collapsed.length <= maxLength) return collapsed;
+  return `${collapsed.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
 export function formatNotificationForFrame(
   message: ServerMessage,
 ): BrowserNotificationPayload | null {
@@ -288,9 +299,10 @@ export function formatNotificationForFrame(
         };
       }
       if (message.status === "error") {
+        const err = compactNotificationBody(message.error || "");
         return {
           title: "Quartz: Turn failed",
-          body: message.error || "An error occurred during the turn.",
+          body: err || "An error occurred during the turn.",
           tag: "quartz-turn",
         };
       }
@@ -299,19 +311,19 @@ export function formatNotificationForFrame(
     case "permission_request":
       return {
         title: "Quartz: Approval needed",
-        body: `Allow ${message.command}?`,
+        body: compactNotificationBody(`Allow ${message.command || message.tool || "action"}?`),
         tag: `quartz-permission-${message.requestId}`,
       };
     case "bash_notice":
       return {
         title: "Quartz: Background job finished",
-        body: message.text,
+        body: compactNotificationBody(message.text || "") || "A background job finished.",
         tag: "quartz-bash",
       };
     case "error":
       return {
         title: "Quartz: Error",
-        body: message.message,
+        body: compactNotificationBody(message.message || "") || "An error occurred.",
         tag: "quartz-error",
       };
     default:
