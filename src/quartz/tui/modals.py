@@ -297,6 +297,7 @@ def _run_standalone_modal(state: InlineModalState) -> str | None:
         full_screen=False,
         erase_when_done=True,
     )
+    app.ttimeoutlen = 0.05
     app_ref.append(app)
     return app.run()
 

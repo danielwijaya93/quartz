@@ -245,10 +245,11 @@ class InteractiveDock:
             style=DOCK_STYLE,
             full_screen=False,
             erase_when_done=True,
-            min_redraw_interval=0.05,
+            min_redraw_interval=0.016,
             input=input_device,
             output=output_device,
         )
+        self.app.ttimeoutlen = 0.05
         self._sync_output = supports_sync_output()
         if self._sync_output:
             install_sync_output(self.app.output)
@@ -359,6 +360,17 @@ class InteractiveDock:
             try:
                 if self.app.is_running:
                     self.app.layout.focus(win)
+            except Exception:
+                pass
+
+        self._call_on_loop(_do)
+
+    def _focus_and_invalidate(self, win: Window) -> None:
+        def _do() -> None:
+            try:
+                if self.app.is_running:
+                    self.app.layout.focus(win)
+                    self.app.invalidate()
             except Exception:
                 pass
 
@@ -516,8 +528,7 @@ class InteractiveDock:
         with self._lock:
             self._modal = state
         focus_win = self._modal_list_window if state.kind == "option" else self._modal_input_window
-        self._focus_window(focus_win)
-        self._invalidate()
+        self._focus_and_invalidate(focus_win)
         state.done.wait()
         return state.result
 
@@ -529,8 +540,7 @@ class InteractiveDock:
             modal.result = result
             modal.done.set()
         self.modal_buffer.reset()
-        self._focus_window(self._input_window)
-        self._invalidate()
+        self._focus_and_invalidate(self._input_window)
 
     def pick_option(
         self, title: str, options: list[tuple[str, str]], current: str | None = None

@@ -30,7 +30,6 @@ from quartz.mcp.client import (
     set_mcp_server_enabled,
 )
 from quartz.providers.registry import PROVIDERS
-from quartz.tui.provider_setup import _login_provider, _logout_provider, show_auth_status
 from quartz.tui.render import console
 
 __all__ = ["_handle_auth_cli", "_handle_mcp_cli", "_handle_prune_cli", "_handle_web_cli"]
@@ -53,6 +52,8 @@ def _handle_auth_cli(argv: list[str]) -> None:
     logout_p.add_argument("provider", nargs="?", choices=provider_choices, help="Provider to log out")
 
     args = parser.parse_args(argv)
+
+    from quartz.tui.provider_setup import _login_provider, _logout_provider, show_auth_status
 
     if args.action == "login":
         if not _login_provider(args.provider):
