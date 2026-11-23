@@ -466,4 +466,35 @@ describe("FolderSidebar's undo notice", () => {
 
     expect(props.onRename).toHaveBeenLastCalledWith("s1", "");
   });
+
+  it("filters sessions with the search input and clears the filter", async () => {
+    const user = userEvent.setup();
+    renderSidebar();
+
+    const search = screen.getByRole("searchbox", { name: "Filter sessions and folders" });
+    await user.type(search, "no-such-match");
+    expect(screen.getByText(/No matches for/)).toBeInTheDocument();
+
+    await user.click(screen.getAllByRole("button", { name: "Clear filter" })[0]!);
+    expect(screen.getByText("first prompt")).toBeInTheDocument();
+  });
+
+  it("renders status dots and bolds unread session titles", () => {
+    renderSidebar({
+      data: payload({
+        sessions: [
+          session({ sessionId: "s1" }),
+          session({ sessionId: "s2", title: "earlier prompt" }),
+        ],
+      }),
+      sessionActivity: {
+        s1: { status: "running", unread: false },
+        s2: { status: "done", unread: true },
+      },
+    });
+    expect(screen.getByLabelText("Running")).toBeInTheDocument();
+    expect(screen.getByLabelText("Completed, unread")).toBeInTheDocument();
+    const unreadTitle = screen.getByText("earlier prompt");
+    expect(unreadTitle.className).toContain("font-semibold");
+  });
 });

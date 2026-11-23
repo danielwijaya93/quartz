@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Button, Chip, cn } from "@heroui/react";
-import { ChevronDown, Folder, PanelLeft, Plus } from "lucide-react";
+import { ChevronDown, Folder, GitBranch, PanelLeft, Plus } from "lucide-react";
 import { RichUiToggle } from "./RichUiToggle";
 import type { ConnectionStatus } from "@/lib/connection";
 import type { RichUiMode } from "@/lib/richUi";
@@ -129,8 +129,25 @@ export function HeaderBar({
           /
         </span>
 
-        <ul className="flex min-w-0 flex-1 items-center overflow-hidden">
+        <ul className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
           <CwdChip cwd={session.cwd} onChangeFolder={onChangeFolder} />
+          {session.gitBranch ? (
+            <li className="hidden min-w-0 shrink-0 sm:flex">
+              <Chip
+                size="sm"
+                variant="soft"
+                color="default"
+                title={`Git branch: ${session.gitBranch}`}
+                aria-label={`Git branch ${session.gitBranch}`}
+                className="max-w-36 overflow-hidden bg-surface-secondary/50"
+              >
+                <GitBranch aria-hidden="true" className="mr-1 size-3 shrink-0 text-muted" />
+                <span className="truncate font-mono text-[11px] font-medium text-foreground/85">
+                  {session.gitBranch}
+                </span>
+              </Chip>
+            </li>
+          ) : null}
         </ul>
 
         <div className="ml-auto flex shrink-0 items-center justify-end gap-2">

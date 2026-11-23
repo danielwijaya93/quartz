@@ -8,6 +8,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Search,
   Undo2,
   X,
 } from "lucide-react";
@@ -15,12 +16,14 @@ import { ThemeToggle } from "./ThemeToggle";
 import {
   currentWorkspaceCwd,
   displayTitle,
+  filterWorkspaceGroups,
   folderBadge,
   formatAge,
   groupSessions,
   NOTICE_TIMEOUT_MS,
   type FolderBadge,
   type LiveSession,
+  type SessionActivity,
   type SidebarPayload,
   type SidebarSession,
   type SidebarState,
@@ -59,6 +62,8 @@ export interface FolderSidebarProps {
   /** The undo for a hide; the same request the archive's Restore makes. */
   onRestore: (sessionId: string) => Promise<boolean>;
   onOpenArchive: () => void;
+  /** Per-session live status (running / done / error / unread). */
+  sessionActivity?: Readonly<Record<string, SessionActivity>>;
 }
 
 const EMPTY_STATE: SidebarState = {
@@ -99,11 +104,18 @@ export function FolderSidebar({
   onHide,
   onRestore,
   onOpenArchive,
+  sessionActivity = {},
 }: FolderSidebarProps): React.ReactElement {
   const [expandedOverrides, setExpandedOverrides] = React.useState<Readonly<Record<string, boolean>>>({});
+  const [searchQuery, setSearchQuery] = React.useState("");
 
   const groups = React.useMemo(() => (data ? groupSessions(data) : []), [data]);
   const sidebarState = data?.sidebar ?? EMPTY_STATE;
+  const visibleGroups = React.useMemo(
+    () => filterWorkspaceGroups(groups, searchQuery, sidebarState),
+    [groups, searchQuery, sidebarState],
+  );
+  const searching = searchQuery.trim() !== "";
   const sessions = React.useMemo(() => data?.sessions ?? [], [data]);
   const drawer = variant === "drawer";
 
@@ -243,6 +255,33 @@ export function FolderSidebar({
         ) : null}
       </div>
 
+      <div className="shrink-0 border-b border-separator/50 px-2 py-1.5">
+        <div className="relative flex items-center">
+          <Search
+            aria-hidden="true"
+            className="pointer-events-none absolute left-2 size-3.5 text-muted"
+          />
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="Filter sessions…"
+            aria-label="Filter sessions and folders"
+            className="h-7 w-full rounded-md border border-border/60 bg-surface-secondary/50 pl-7 pr-6 text-xs text-foreground placeholder:text-muted/80 focus:border-focus focus:bg-background focus:outline-none"
+          />
+          {searchQuery !== "" ? (
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              aria-label="Clear filter"
+              className="absolute right-1.5 inline-flex size-4 cursor-pointer items-center justify-center rounded text-muted hover:text-foreground"
+            >
+              <X aria-hidden="true" className="size-3" />
+            </button>
+          ) : null}
+        </div>
+      </div>
+
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5">
         {error !== null ? (
           <div role="alert" className="rounded-xl border border-danger/40 bg-danger-soft p-3 text-sm">
@@ -276,9 +315,23 @@ export function FolderSidebar({
             ? (
               <EmptySidebar onOpenFolder={onOpenFolder} onOpenArchive={onOpenArchive} />
             )
-            : (
+            : visibleGroups.length === 0
+              ? (
+                <div className="px-2 py-4 text-center text-xs text-muted">
+                  <p>No matches for “{searchQuery.trim()}”.</p>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="mt-1.5 h-6 text-xs"
+                    onPress={() => setSearchQuery("")}
+                  >
+                    Clear filter
+                  </Button>
+                </div>
+              )
+              : (
               <ul className="space-y-0.5">
-                {groups.map((group) => {
+                {visibleGroups.map((group) => {
                   const here = group.cwd === current;
                   return (
                     <li key={group.cwd}>
@@ -286,7 +339,9 @@ export function FolderSidebar({
                         group={group}
                         current={here}
                         badge={folderBadge(group, live, sessions)}
-                        expanded={expandedOverrides[group.cwd] ?? (group.sessions.length > 0 || here)}
+                        expanded={
+                          searching || (expandedOverrides[group.cwd] ?? (group.sessions.length > 0 || here))
+                        }
                         onToggle={(expanded) => toggle(group.cwd, expanded)}
                         onNewSession={() => onNewSession(group.cwd)}
                       >
@@ -295,6 +350,7 @@ export function FolderSidebar({
                             key={session.sessionId}
                             session={session}
                             sidebar={sidebarState}
+                            activity={sessionActivity[session.sessionId]}
                             // Both halves: a row is current only while its own
                             // folder is the live one, so a row can never claim to
                             // be where the next prompt lands when its folder is not.
@@ -561,9 +617,46 @@ function WorkspaceRow({
   );
 }
 
+function SessionStatusDot({
+  activity,
+}: {
+  activity?: SessionActivity;
+}): React.ReactElement | null {
+  const status = activity?.status ?? "idle";
+  if (status === "running") {
+    return (
+      <span
+        aria-label="Running"
+        title="Running"
+        className="mr-1.5 size-1.5 shrink-0 rounded-full bg-accent motion-safe:animate-pulse"
+      />
+    );
+  }
+  if (status === "done") {
+    return (
+      <span
+        aria-label={activity?.unread ? "Completed, unread" : "Completed"}
+        title={activity?.unread ? "Completed (unread)" : "Completed"}
+        className="mr-1.5 size-1.5 shrink-0 rounded-full bg-success"
+      />
+    );
+  }
+  if (status === "error") {
+    return (
+      <span
+        aria-label="Failed"
+        title="Failed"
+        className="mr-1.5 size-1.5 shrink-0 rounded-full bg-danger"
+      />
+    );
+  }
+  return null;
+}
+
 function SessionRow({
   session,
   sidebar,
+  activity,
   current,
   onSelect,
   onRename,
@@ -571,6 +664,7 @@ function SessionRow({
 }: {
   session: SidebarSession;
   sidebar: SidebarState;
+  activity?: SessionActivity;
   current: boolean;
   onSelect: () => void;
   onRename: (title: string) => void;
@@ -645,7 +739,14 @@ function SessionRow({
             aria-current={current ? "true" : undefined}
             className="flex h-7 min-h-7 min-w-0 flex-1 cursor-pointer items-center truncate text-left text-[12px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
           >
-            <span className="truncate" title={`${title}${age ? ` · ${age} old` : ""}`}>
+            <SessionStatusDot activity={activity} />
+            <span
+              className={cn(
+                "truncate",
+                activity?.unread && !current && "font-semibold text-foreground",
+              )}
+              title={`${title}${age ? ` · ${age} old` : ""}`}
+            >
               {title}
             </span>
           </button>
