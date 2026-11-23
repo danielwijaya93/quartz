@@ -8,6 +8,7 @@ import { FolderSidebar } from "./components/FolderSidebar";
 import { SidebarDrawer } from "./components/SidebarDrawer";
 import { FolderPicker } from "./components/FolderPicker";
 import { SessionArchiveDialog } from "./components/SessionArchiveDialog";
+import { PermissionPromptCard } from "./components/PermissionPromptCard";
 import { TrustFolderDialog } from "./components/TrustFolderDialog";
 import { ModelPickerDialog } from "./components/ModelPickerDialog";
 import { SettingsView } from "./components/SettingsView";
@@ -309,6 +310,12 @@ export function App(): React.ReactElement {
                 window.requestAnimationFrame(() => composerRef.current?.focus());
               }}
             />
+            {quartz.state.session.pendingPermission ? (
+              <PermissionPromptCard
+                permission={quartz.state.session.pendingPermission}
+                onRespond={quartz.respondPermission}
+              />
+            ) : null}
             <Composer
               connection={quartz.status}
               cwd={quartz.state.session.cwd}

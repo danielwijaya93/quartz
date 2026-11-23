@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Button, Chip, cn } from "@heroui/react";
-import { ChevronDown, Folder, GitBranch, PanelLeft, Plus } from "lucide-react";
+import { ChevronDown, Folder, GitBranch, PanelLeft, Plus, Shield } from "lucide-react";
 import { RichUiToggle } from "./RichUiToggle";
 import type { ConnectionStatus } from "@/lib/connection";
 import type { RichUiMode } from "@/lib/richUi";
@@ -145,6 +145,21 @@ export function HeaderBar({
                 <span className="truncate font-mono text-[11px] font-medium text-foreground/85">
                   {session.gitBranch}
                 </span>
+              </Chip>
+            </li>
+          ) : null}
+          {session.sandboxed ? (
+            <li className="hidden min-w-0 shrink-0 md:flex">
+              <Chip
+                size="sm"
+                variant="soft"
+                color="success"
+                title="Kernel is running inside OS sandbox"
+                aria-label="Sandboxed"
+                className="bg-surface-secondary/50"
+              >
+                <Shield aria-hidden="true" className="mr-1 size-3 shrink-0 text-success" />
+                <span className="text-[11px] font-medium text-foreground/85">Sandboxed</span>
               </Chip>
             </li>
           ) : null}

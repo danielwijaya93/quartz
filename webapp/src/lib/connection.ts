@@ -263,6 +263,13 @@ export class Connection {
     return this.send({ type: "trust_project" });
   }
 
+  sendPermissionResponse(
+    requestId: string,
+    decision: "allow_once" | "allow_session" | "reject",
+  ): boolean {
+    return this.send({ type: "permission_response", requestId, decision });
+  }
+
   sendLoadSession(sessionId: string): boolean {
     return this.send({ type: "load_session", sessionId });
   }

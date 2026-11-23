@@ -12,7 +12,7 @@ import {
   setRowFormState,
   type TranscriptState,
 } from "./lib/transcript";
-import type { ImageAttachment } from "./protocol";
+import type { ImageAttachment, PermissionDecision } from "./protocol";
 
 export interface QuartzApi {
   state: TranscriptState;
@@ -27,6 +27,7 @@ export interface QuartzApi {
   loadSession: (sessionId: string) => void;
   /** Persist trust for the active session's folder and reload it. */
   trustProject: () => void;
+  respondPermission: (requestId: string, decision: PermissionDecision) => void;
   /** Persist an OpenUI surface's form state onto the row that rendered it. */
   setFormState: (id: string, formState: Record<string, unknown>) => void;
   /** Clear the failed background job badge once the user opens /jobs. */
@@ -118,6 +119,13 @@ export function useQuartz(url?: string, systemPromptAppend = ""): QuartzApi {
     connectionRef.current?.sendTrustProject();
   }, []);
 
+  const respondPermission = React.useCallback(
+    (requestId: string, decision: PermissionDecision) => {
+      connectionRef.current?.sendPermissionResponse(requestId, decision);
+    },
+    [],
+  );
+
   const setFormState = React.useCallback(
     (id: string, formState: Record<string, unknown>) => {
       setState((prev) => setRowFormState(prev, id, formState));
@@ -139,6 +147,7 @@ export function useQuartz(url?: string, systemPromptAppend = ""): QuartzApi {
     newSession,
     loadSession,
     trustProject,
+    respondPermission,
     setFormState,
     clearBgFailed,
   };

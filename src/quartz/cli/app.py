@@ -87,6 +87,19 @@ def _run_interactive(rt: AgentRuntime, resumed: bool) -> None:
         ).run()
         return
 
+    set_perm = getattr(rt.kernel, "set_permission_handler", None)
+    if callable(set_perm) and sys.stdin.isatty():
+        def _plain_permission(req: Any) -> str:
+            console.print(f"\n[yellow]Permission required:[/yellow] {escape(req.command_display)}")
+            console.print("  [1] Allow once  [2] Allow for session  [3] Reject")
+            ans = sys.stdin.readline().strip()
+            if ans == "1":
+                return "allow_once"
+            if ans == "2":
+                return "allow_session"
+            return "reject"
+        set_perm(_plain_permission)
+
     console.print(Text.assemble(("quartz", "bold"), (" v0.1.0 · Run /help for commands", "dim")))
 
     if resumed:
