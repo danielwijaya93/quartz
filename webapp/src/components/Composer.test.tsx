@@ -383,4 +383,30 @@ describe("Composer", () => {
     await user.click(screen.getByRole("button", { name: "Remove attachment 1" }));
     expect(screen.queryByRole("alert")).toBeNull();
   });
+
+  it("opens @file autocomplete on @, filters files, and inserts @path on Tab without submitting", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          cwd: "/repo",
+          files: ["README.md", "src/components/Composer.tsx", "src/App.tsx"],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const { onSubmit } = setup({ cwd: "/repo" });
+    const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+    await user.click(textarea);
+    await user.keyboard("check @comp");
+
+    const listbox = await screen.findByRole("listbox", { name: "Matching workspace files" });
+    expect(listbox).toBeInTheDocument();
+    expect(screen.getByText("src/components/Composer.tsx")).toBeInTheDocument();
+
+    await user.keyboard("{Tab}");
+    expect(textarea).toHaveValue("check @src/components/Composer.tsx ");
+    expect(onSubmit).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
 });

@@ -23,13 +23,18 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from quartz.core.session import Session
 from quartz.core.turn import run_interactive_turn
-from quartz.web.files import create_directory, list_directories, resolve_directory
+from quartz.web.files import (
+    create_directory,
+    list_directories,
+    list_workspace_files,
+    resolve_directory,
+)
 from quartz.web.session import (
     BuildRuntime,
     TurnBusyError,
@@ -399,6 +404,17 @@ def create_app(
             create_directory, body.get("path"), body.get("name"), cwd
         )
         return JSONResponse(listing.to_dict())
+
+    @app.get("/api/workspace/files")
+    async def workspace_files(
+        workspace_cwd: str | None = Query(default=None, alias="cwd"),
+        limit: int = 2000,
+    ) -> JSONResponse:
+        """Relative file paths inside the active workspace for `@file` autocomplete."""
+        active_cwd = session.runtime.cwd if session.built else cwd
+        target = workspace_cwd or str(active_cwd)
+        payload = await asyncio.to_thread(list_workspace_files, target, active_cwd, limit)
+        return JSONResponse(payload)
 
     # -- model picker ------------------------------------------------------
 
