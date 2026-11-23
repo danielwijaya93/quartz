@@ -503,4 +503,34 @@ describe("Composer", () => {
     rerender(<Composer {...props} turnRunning={false} />);
     expect(screen.getByRole("textbox", { name: "Prompt quartz" })).not.toHaveFocus();
   });
+
+  it("keeps the bg chip single-line, model picker truncatable, and Stop icon-only", () => {
+    setup({
+      turnRunning: true,
+      bgCount: 1,
+      bgFailed: 1,
+      model: "gemini-4-hydrogen",
+      effort: "medium",
+      contextPct: 12,
+      onOpenJobs: vi.fn(),
+      onOpenModelPicker: vi.fn(),
+    });
+
+    const bgBtn = screen.getByRole("button", {
+      name: "Background jobs: 1 running, 1 failed. Click to inspect.",
+    });
+    expect(bgBtn.className).toContain("whitespace-nowrap");
+    expect(bgBtn.className).toContain("shrink-0");
+    expect(bgBtn).toHaveTextContent("1 failed");
+    expect(bgBtn).toHaveTextContent("bg × 1 · 1 failed");
+
+    const modelBtn = screen.getByRole("button", {
+      name: "Switch model (current: gemini-4-hydrogen Med)",
+    });
+    expect(modelBtn.className).toContain("min-w-0");
+
+    const stopBtn = screen.getByRole("button", { name: "Cancel the running turn" });
+    expect(stopBtn.textContent).toBe("");
+    expect(stopBtn.className).toContain("shrink-0");
+  });
 });
