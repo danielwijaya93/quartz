@@ -102,10 +102,19 @@ describe("HeaderBar", () => {
     expect(onChangeFolder).toHaveBeenCalledTimes(1);
   });
 
-  it("renders the git branch chip when gitBranch is present", () => {
-    renderHeader({ session: { ...SESSION, gitBranch: "feat/p0-ui" } });
-    expect(screen.getByLabelText("Git branch feat/p0-ui")).toBeInTheDocument();
+  it("renders the git branch chip and sandbox toggle visibly on mobile", () => {
+    renderHeader({
+      session: { ...SESSION, gitBranch: "feat/p0-ui", sandboxed: true },
+      onToggleSandbox: vi.fn(),
+    });
+    const branchChip = screen.getByLabelText("Git branch feat/p0-ui");
+    expect(branchChip).toBeInTheDocument();
+    expect(branchChip.closest("li")).not.toHaveClass("hidden");
     expect(screen.getByText("feat/p0-ui")).toBeInTheDocument();
+
+    const sandboxBtn = screen.getByRole("button", { name: "Sandbox enabled — click to disable" });
+    expect(sandboxBtn.closest("li")).not.toHaveClass("hidden");
+    expect(screen.getByText("Sandboxed")).toHaveClass("hidden", "sm:inline");
   });
 
   it("shows Sandboxed in red with strikethrough when sandbox is off and toggles on click", async () => {

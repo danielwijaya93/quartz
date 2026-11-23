@@ -43,6 +43,7 @@ from quartz.web.session import (
     WebSession,
     resolve_cwd,
 )
+from quartz.web.push import PushStore, default_push_path, format_push_payload
 from quartz.web.sidebar import SidebarStore, default_sidebar_path, sidebar_payload
 
 __all__ = ["create_app", "resolve_static_dir"]
@@ -154,6 +155,22 @@ def create_app(
 
     store_ref: SidebarStore | None = None
     store_lock = threading.Lock()
+    push_ref: PushStore | None = None
+    push_lock = threading.Lock()
+
+    def push_store() -> PushStore:
+        nonlocal push_ref
+        with push_lock:
+            if push_ref is None:
+                push_ref = PushStore(default_push_path())
+            return push_ref
+
+    def _on_push_event(_ws: WebSession, frame: dict[str, Any]) -> None:
+        payload = format_push_payload(frame)
+        if payload is not None:
+            push_store().send_async(payload)
+
+    manager.set_push_hook(_on_push_event)
 
     def store() -> SidebarStore:
         """The sidebar state, loaded on first use.
@@ -212,6 +229,55 @@ def create_app(
             return sidebar_snapshot()
 
         return JSONResponse(await asyncio.to_thread(run))
+
+    @app.get("/api/push/vapid-key")
+    async def push_vapid_key() -> JSONResponse:
+        ps = await asyncio.to_thread(push_store)
+        return JSONResponse({"publicKey": ps.public_key})
+
+    @app.post("/api/push/subscribe")
+    async def push_subscribe(request: Request) -> JSONResponse:
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+        ps = await asyncio.to_thread(push_store)
+        ok = await asyncio.to_thread(ps.subscribe, body)
+        if not ok:
+            return JSONResponse({"error": "Invalid push subscription"}, status_code=400)
+        return JSONResponse({"ok": True, "subscriptions": ps.subscription_count()})
+
+    @app.post("/api/push/unsubscribe")
+    async def push_unsubscribe(request: Request) -> JSONResponse:
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+        endpoint = body.get("endpoint") if isinstance(body, dict) else None
+        ps = await asyncio.to_thread(push_store)
+        removed = await asyncio.to_thread(ps.unsubscribe, endpoint)
+        return JSONResponse({"ok": True, "removed": removed})
+
+    @app.post("/api/push/test")
+    async def push_test(request: Request) -> JSONResponse:
+        endpoint: str | None = None
+        with contextlib.suppress(Exception):
+            body = await request.json()
+            if isinstance(body, dict) and isinstance(body.get("endpoint"), str):
+                endpoint = body["endpoint"]
+        ps = await asyncio.to_thread(push_store)
+        sent = await asyncio.to_thread(
+            ps.send,
+            {
+                "title": "Quartz",
+                "body": "Mobile push notifications are working.",
+                "tag": "quartz-test",
+                "url": "/",
+                "force": True,
+            },
+            endpoint=endpoint,
+        )
+        return JSONResponse({"ok": sent > 0, "sent": sent})
 
     @app.get("/api/health")
     async def health() -> JSONResponse:
