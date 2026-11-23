@@ -10,6 +10,7 @@ import difflib
 import fnmatch
 import importlib.util
 import inspect
+import mimetypes
 import os
 import re
 import shutil
@@ -59,12 +60,49 @@ MAX_EDIT_DIFF_CHARS = 1_500
 _IMAGES_VAR: contextvars.ContextVar[list[dict[str, str]] | None] = contextvars.ContextVar(
     "quartz_images", default=None
 )
+_FILES_VAR: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.ContextVar(
+    "quartz_files", default=None
+)
+
+_EXTRA_MIME_TYPES: dict[str, str] = {
+    ".apk": "application/vnd.android.package-archive",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".csv": "text/csv",
+    ".md": "text/markdown",
+    ".jsonl": "application/x-ndjson",
+}
 
 
 def _record_cell_image(img: dict[str, str]) -> None:
     sink = _IMAGES_VAR.get()
     if sink is not None:
         sink.append(img)
+
+
+def _record_cell_file(file_meta: dict[str, Any]) -> None:
+    sink = _FILES_VAR.get()
+    if sink is not None:
+        sink.append(file_meta)
+
+
+def _format_file_size(size: int) -> str:
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    if size < 1024 * 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f} MB"
+    return f"{size / (1024 * 1024 * 1024):.1f} GB"
+
+
+def _guess_mime_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in _EXTRA_MIME_TYPES:
+        return _EXTRA_MIME_TYPES[suffix]
+    guessed, _ = mimetypes.guess_type(str(path))
+    return guessed or "application/octet-stream" 
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -311,6 +349,29 @@ def view_image(path: str) -> str:
     return f"Attached {att.label} ({att.mime_type}) for viewing"
 
 
+def attach_file(path: str, label: str | None = None) -> str:
+    """Attach any file from disk so the user can download or open it in the reply."""
+    p = Path(path).expanduser().resolve()
+    if not p.exists():
+        raise FileNotFoundError(f"No such file: {path}")
+    if p.is_dir():
+        raise IsADirectoryError(f"Expected a file, got a directory: {path}")
+    if not p.is_file():
+        raise OSError(f"Not a regular file: {path}")
+    size = p.stat().st_size
+    name = label.strip() if label and label.strip() else p.name
+    mime_type = _guess_mime_type(p)
+    _record_cell_file(
+        {
+            "path": str(p),
+            "name": name,
+            "mime_type": mime_type,
+            "size": size,
+        }
+    )
+    return f"Attached {name} ({mime_type}, {_format_file_size(size)}) for download"
+
+
 # --- Registry and Extensibility ---
 
 PROTECTED_NAMES: frozenset[str] = frozenset({
@@ -420,6 +481,7 @@ BUILTIN_HELPERS: dict[str, Callable[..., Any]] = {
     "edit": edit,
     "write": write,
     "view_image": view_image,
+    "attach_file": attach_file,
     "find_skills": find_skills,
 }
 
@@ -591,7 +653,7 @@ def format_helpers_for_prompt(loaded: LoadedHelpers) -> str:
         "- `ls(path='.')`, `find(pattern='*', path='.', limit=200)`, `rg(pattern, path='.', glob=None, max_hits=100, fixed=False)` "
         "(use raw strings r'...' for regex patterns with backslashes to avoid Python SyntaxWarning, or fixed=True for literal string search)",
 
-        "- `read(path, start=1, end=200)`, `edit(path, old, new)`, `write(path, content)`, `view_image(path)`, `find_skills(query='', limit=20)`, `gather(*coros)`",
+        "- `read(path, start=1, end=200)`, `edit(path, old, new)`, `write(path, content)`, `view_image(path)`, `attach_file(path, label=None)`, `find_skills(query='', limit=20)`, `gather(*coros)`",
         "- Python stdlib modules (e.g. `Path`, `os`, `json`, `re`, `datetime`, `subprocess`, `collections`, etc.) "
         "are auto-imported on attribute access in `<ipython>` cells, while explicit imports are still required "
         "when writing or editing project `.py` files.",

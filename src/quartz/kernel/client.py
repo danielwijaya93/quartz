@@ -549,6 +549,7 @@ class KernelClient:
             stderr=prefix + resp.get("stderr", ""),
             result=resp.get("result"),
             images=list(resp.get("images") or []),
+            files=list(resp.get("files") or []),
         )
 
     def list_helpers(self, timeout: float = 5.0) -> dict[str, Any]:
