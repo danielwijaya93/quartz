@@ -36,7 +36,7 @@ __all__ = [
 #: no call count: only the harness counts, and a number in the prompt gives the model
 #: arithmetic to reason about instead of words to write. Enforcement is the gate's
 #: job, so the notice does not have to threaten anything to be obeyed.
-PROGRESS_NOTICE = "[progress] Update the user now on the progress."
+PROGRESS_NOTICE = "[progress] Update the user now on the progress, then continue working, do not stop unless you are done or need user feedback."
 
 #: Returned as the tool result for calls made while an update is owed. It has to
 #: read as a message from the tool, because that is the channel the model is

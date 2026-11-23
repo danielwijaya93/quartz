@@ -236,7 +236,7 @@ def test_notice_is_one_line_and_names_no_call_count() -> None:
     text = notice["content"]
     assert notice["role"] == "user"
     assert text == PROGRESS_NOTICE
-    assert text.startswith("[progress] Update the user now on the progress.")
+    assert text.startswith("[progress] Update the user now on the progress,")
     # One line: every extra one is paid for at every checkpoint.
     assert "\n" not in text
     # Only the harness counts. A number here would also be stale the moment the gate

@@ -126,7 +126,7 @@ def test_replay_still_renders_done_and_progress_notices(
     replay_mod._replay_session(
         [
             {"role": "user", "content": "[bash-done pid:1 exit:0 duration:2s]\ncommand: make\n"},
-            {"role": "user", "content": "[progress] Update the user now on the progress."},
+            {"role": "user", "content": "[progress] Update the user now on the progress, then continue working, do not stop unless you are done or need user feedback."},
             {"role": "user", "content": "a real message"},
         ],
         [],
