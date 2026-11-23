@@ -27,6 +27,7 @@ import symtable
 import sys
 import tempfile
 import time
+import uuid
 import traceback
 import types
 import warnings
@@ -42,7 +43,7 @@ from quartz.kernel.helpers import (
     load_helpers,
 )
 from quartz.kernel.pycheck import unresolved_global_names
-from quartz.mcp.client import MCPManager
+from quartz.mcp.client import HostMCPProxy, MCPManager
 
 MAX_OUTPUT_CHARS = 128_000
 MAX_REPR_CHARS = 128_000
@@ -410,7 +411,13 @@ class KernelWorker:
         self.headless = False
         #: Status-check period for running jobs, in seconds (``0`` disables).
         self.background_check_every = 0.0
-        self.mcp = MCPManager(cwd=Path.cwd(), on_image=_record_cell_image)
+        self._host_pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        use_host_mcp = os.environ.get("QUARTZ_HOST_MCP") == "1"
+        self.mcp: MCPManager | HostMCPProxy
+        if use_host_mcp:
+            self.mcp = HostMCPProxy(self._host_rpc, on_image=_record_cell_image)
+        else:
+            self.mcp = MCPManager(cwd=Path.cwd(), on_image=_record_cell_image)
 
         if not isinstance(sys.stdout, _ContextStreamProxy):
             sys.stdout = _ContextStreamProxy(_STDOUT_VAR, sys.stdout)  # type: ignore[assignment]
@@ -447,12 +454,45 @@ class KernelWorker:
                 for k, v in self._default_bindings.items():
                     h.func.__globals__.setdefault(k, v)
 
-    def configure(self, *, headless: bool | None = None, background_check_every: float | None = None) -> None:
+    async def _host_rpc(
+        self,
+        method: str,
+        params: dict[str, Any],
+        timeout: float | None = 65.0,
+    ) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        req_id = uuid.uuid4().hex
+        fut: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._host_pending[req_id] = fut
+        try:
+            self._send(
+                {
+                    "type": "host_request",
+                    "id": req_id,
+                    "method": method,
+                    "params": params,
+                }
+            )
+            if timeout is not None:
+                return await asyncio.wait_for(fut, timeout=timeout)
+            return await fut
+        finally:
+            self._host_pending.pop(req_id, None)
+
+    def configure(
+        self,
+        *,
+        headless: bool | None = None,
+        background_check_every: float | None = None,
+        mcp_servers: list[str] | None = None,
+    ) -> None:
         """Apply client-side runtime options to this worker."""
         if headless is not None:
             self.headless = bool(headless)
         if background_check_every is not None:
             self.background_check_every = max(0.0, float(background_check_every))
+        if mcp_servers is not None and isinstance(self.mcp, HostMCPProxy):
+            self.mcp.set_servers(mcp_servers)
 
     def _start_bash(self, command: str, timeout: float | None = 600) -> BashHandle:
         """Start a shell command in the background and return a BashHandle immediately."""
@@ -1039,6 +1079,52 @@ async def _main() -> None:
     except (ValueError, OSError):
         pass
 
+    bridge_server: asyncio.AbstractServer | None = None
+    bridge_tmpdir: str | None = None
+    if os.environ.get("QUARTZ_HOST_BRIDGE") == "1":
+        import tempfile
+        from quartz.kernel.bridge import ensure_shim_dir
+
+        bridge_tmpdir = tempfile.mkdtemp(prefix="quartz-bridge-")
+        bridge_dir = Path(bridge_tmpdir)
+        shim_dir = ensure_shim_dir(bridge_dir / "shims", python_executable=sys.executable)
+        sock_path = bridge_dir / "bridge.sock"
+        os.environ["QUARTZ_HOST_BRIDGE_SOCK"] = str(sock_path)
+        os.environ["PATH"] = f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+
+        async def _handle_bridge_conn(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            try:
+                raw = await reader.readline()
+                if not raw:
+                    return
+                req = json.loads(raw.decode("utf-8"))
+                resp = await worker._host_rpc("bridge.exec", req, timeout=300.0)
+                if resp.get("ok") and isinstance(resp.get("result"), dict):
+                    out = resp["result"]
+                else:
+                    out = {
+                        "exit_code": 126,
+                        "stdout": "",
+                        "stderr": str(resp.get("error", "Host bridge request failed")) + "\n",
+                    }
+                writer.write((json.dumps(out) + "\n").encode("utf-8"))
+                await writer.drain()
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    writer.write(
+                        (
+                            json.dumps({"exit_code": 126, "stdout": "", "stderr": f"bridge error: {exc}\n"})
+                            + "\n"
+                        ).encode("utf-8")
+                    )
+                    await writer.drain()
+            finally:
+                writer.close()
+
+        bridge_server = await asyncio.start_unix_server(_handle_bridge_conn, path=str(sock_path))
+
     worker._send({"type": "ready"})
 
     async def _run_and_send(req_id: str, code: str) -> None:
@@ -1057,10 +1143,15 @@ async def _main() -> None:
             task = asyncio.create_task(_run_and_send(req_id, code))
             active_cell_tasks.add(task)
             task.add_done_callback(active_cell_tasks.discard)
+        elif msg_type == "host_response":
+            fut = worker._host_pending.get(req_id)
+            if fut is not None and not fut.done():
+                fut.set_result(msg)
         elif msg_type == "configure":
             worker.configure(
                 headless=msg.get("headless"),
                 background_check_every=msg.get("background_check_every"),
+                mcp_servers=msg.get("mcp_servers"),
             )
             worker._send({"type": "configure_result", "id": req_id})
         elif msg_type == "list_helpers":
@@ -1115,7 +1206,13 @@ async def _main() -> None:
         elif msg_type == "shutdown":
             break
 
-    # Clean up any still-running background bash processes and MCP sessions on shutdown
+    # Clean up any still-running background bash processes, bridge, and MCP sessions on shutdown
+    if bridge_server is not None:
+        bridge_server.close()
+        with contextlib.suppress(Exception):
+            await bridge_server.wait_closed()
+    if bridge_tmpdir is not None:
+        shutil.rmtree(bridge_tmpdir, ignore_errors=True)
     await worker.mcp.close()
     for h in worker._handles:
         if h.running:

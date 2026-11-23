@@ -31,6 +31,16 @@ export interface ToolCallRecord {
   function?: { name?: string; arguments?: string };
 }
 
+export type PermissionDecision = "allow_once" | "allow_session" | "reject";
+
+export interface PendingPermission {
+  requestId: string;
+  tool: string;
+  command: string;
+  cwd: string;
+  scope: string;
+}
+
 export interface ImageAttachment {
   mimeType: string;
   /** Base64, no `data:` prefix. */
@@ -95,7 +105,8 @@ export type ClientMessage =
   /** `cwd` is the folder picked in the sidebar; omit it for the server's own. */
   | { type: "new_session"; cwd?: string }
   | { type: "load_session"; sessionId: string }
-  | { type: "trust_project" };
+  | { type: "trust_project" }
+  | { type: "permission_response"; requestId: string; decision: PermissionDecision };
 
 export interface ProjectTrustState {
   cwd: string;
@@ -128,6 +139,8 @@ export interface SessionStateMessage {
   commands: Command[];
   bgCount?: number;
   gitBranch?: string | null;
+  sandboxed?: boolean;
+  pendingPermission?: PendingPermission | null;
 }
 
 export type ServerMessage =
@@ -166,6 +179,15 @@ export type ServerMessage =
       maxContextTokens?: number;
       error?: string;
     }
+  | {
+      type: "permission_request";
+      requestId: string;
+      tool: string;
+      command: string;
+      cwd: string;
+      scope: string;
+    }
+  | { type: "permission_resolved"; requestId: string; decision: PermissionDecision }
   | { type: "error"; message: string; fatal: boolean }
   | { type: "command_result"; name: string; ok: boolean; result: CommandResult };
 
@@ -186,6 +208,8 @@ const SERVER_MESSAGE_TYPES: ReadonlySet<string> = new Set<ServerMessageType>([
   "steering",
   "compaction",
   "turn_end",
+  "permission_request",
+  "permission_resolved",
   "error",
   "command_result",
 ]);

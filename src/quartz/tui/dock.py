@@ -163,6 +163,9 @@ class InteractiveDock:
 
         self._show_thinking = show_thinking
         self._show_details = show_details
+        set_perm = getattr(self.rt.kernel, "set_permission_handler", None)
+        if callable(set_perm):
+            set_perm(self._handle_permission_request)
         self._turn_running = False
         self._aborting = False
         self._bg_count = 0
@@ -541,6 +544,19 @@ class InteractiveDock:
             modal.done.set()
         self.modal_buffer.reset()
         self._focus_and_invalidate(self._input_window)
+
+    def _handle_permission_request(self, req: Any) -> str:
+        scope_label = str(getattr(req, "scope", "action")).replace("_", " ")
+        cmd = str(getattr(req, "command_display", ""))
+        choice = self.pick_option(
+            f"Allow {cmd}?",
+            [
+                ("allow_once", "Allow once"),
+                ("allow_session", f"Allow {scope_label} for this session"),
+                ("reject", "Reject"),
+            ],
+        )
+        return choice if choice in ("allow_once", "allow_session", "reject") else "reject"
 
     def pick_option(
         self, title: str, options: list[tuple[str, str]], current: str | None = None

@@ -139,6 +139,10 @@ class WebSession:
         # fresh one is the only case where the prompt is worth re-capturing.
         self._system_prompt_base_owner: weakref.ref[AgentRuntime] | None = None
         self._system_prompt_append = ""
+        self._perm_lock = threading.Lock()
+        self._pending_permission: dict[str, Any] | None = None
+        self._perm_event: threading.Event | None = None
+        self._perm_decision: str | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -244,6 +248,47 @@ class WebSession:
         set_cb = getattr(runtime.kernel, "set_bg_count_callback", None)
         if callable(set_cb):
             set_cb(lambda count: self.emit({"type": "bg_count", "count": count}))
+        set_perm = getattr(runtime.kernel, "set_permission_handler", None)
+        if callable(set_perm):
+            set_perm(self._handle_permission_request)
+
+    def _handle_permission_request(self, req: Any) -> str:
+        req_id = uuid.uuid4().hex
+        event = threading.Event()
+        payload = {
+            "requestId": req_id,
+            "tool": str(getattr(req, "tool", "")),
+            "command": str(getattr(req, "command_display", "")),
+            "cwd": str(getattr(req, "cwd", "")),
+            "scope": str(getattr(req, "scope", "")),
+        }
+        with self._perm_lock:
+            self._pending_permission = payload
+            self._perm_event = event
+            self._perm_decision = None
+        self.emit({"type": "permission_request", **payload})
+        event.wait(timeout=300.0)
+        with self._perm_lock:
+            decision = self._perm_decision or "reject"
+            if self._pending_permission and self._pending_permission.get("requestId") == req_id:
+                self._pending_permission = None
+                self._perm_event = None
+                self._perm_decision = None
+        self.emit({"type": "permission_resolved", "requestId": req_id, "decision": decision})
+        return decision
+
+    def resolve_permission(self, request_id: str, decision: str) -> bool:
+        """Resolve a pending permission prompt from the browser."""
+        if decision not in ("allow_once", "allow_session", "reject"):
+            raise ValueError(f"Invalid permission decision: {decision!r}")
+        with self._perm_lock:
+            if not self._pending_permission or self._pending_permission.get("requestId") != request_id:
+                return False
+            self._perm_decision = decision
+            ev = self._perm_event
+        if ev is not None:
+            ev.set()
+        return True
 
     # -- system prompt -----------------------------------------------------
 
@@ -273,6 +318,13 @@ class WebSession:
 
     def _retire(self) -> None:
         """Abort and drain the turn in flight, then close the current kernel."""
+        with self._perm_lock:
+            self._perm_decision = "reject"
+            ev = self._perm_event
+            self._pending_permission = None
+            self._perm_event = None
+        if ev is not None:
+            ev.set()
         self._abort_and_join()
         runtime, self._runtime = self._runtime, None
         if runtime is None:
@@ -614,6 +666,8 @@ class WebSession:
             "commands": self.commands(),
             "bgCount": int(getattr(runtime.kernel, "running_bash_count", lambda: 0)()),
             "gitBranch": _git_branch(runtime.cwd),
+            "sandboxed": bool(getattr(getattr(runtime.kernel, "_sandbox_config", None), "enabled", False)),
+            "pendingPermission": self._pending_permission,
         }
 
 

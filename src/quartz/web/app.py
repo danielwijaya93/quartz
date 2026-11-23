@@ -835,6 +835,14 @@ async def _dispatch(
             await asyncio.to_thread(session.trust_current_project)
             push(session.snapshot())
 
+        elif kind == "permission_response":
+            request_id = str(message.get("requestId") or "").strip()
+            decision = str(message.get("decision") or "reject").strip()
+            if not request_id:
+                push({"type": "error", "message": "Missing requestId.", "fatal": False})
+                return
+            await asyncio.to_thread(session.resolve_permission, request_id, decision)
+
         else:
             push({"type": "error", "message": f"Unknown frame type: {kind}", "fatal": False})
 

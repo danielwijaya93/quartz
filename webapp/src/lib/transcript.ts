@@ -16,6 +16,7 @@ import type {
   CommandResult,
   ImageAttachment,
   Message,
+  PendingPermission,
   ProjectTrustState,
   ServerMessage,
   TurnEndStatus,
@@ -155,6 +156,8 @@ export interface SessionMeta {
   bgCount?: number;
   bgFailed?: number;
   gitBranch?: string | null;
+  sandboxed?: boolean;
+  pendingPermission?: PendingPermission | null;
 }
 
 export interface TranscriptState {
@@ -663,6 +666,8 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
           projectTrust: message.projectTrust ?? null,
           bgCount: message.bgCount ?? 0,
           gitBranch: message.gitBranch ?? null,
+          sandboxed: message.sandboxed ?? false,
+          pendingPermission: message.pendingPermission ?? null,
         },
         status: message.turnRunning ? merged.status : null,
       };
@@ -740,6 +745,33 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
         actions: message.actions ?? null,
       }));
     }
+
+    case "permission_request":
+      return {
+        ...state,
+        session: {
+          ...state.session,
+          pendingPermission: {
+            requestId: message.requestId,
+            tool: message.tool,
+            command: message.command,
+            cwd: message.cwd,
+            scope: message.scope,
+          },
+        },
+      };
+
+    case "permission_resolved":
+      if (state.session.pendingPermission?.requestId !== message.requestId) {
+        return state;
+      }
+      return {
+        ...state,
+        session: {
+          ...state.session,
+          pendingPermission: null,
+        },
+      };
 
     case "bg_count":
       return {
