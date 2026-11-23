@@ -284,3 +284,25 @@ def test_snapshot_without_skips_is_silent(tmp_path: Path) -> None:
         rt.wait_snapshot()
 
     assert caught == []
+
+
+def test_failed_turn_restores_in_memory_messages_on_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rt = _runtime(tmp_path, [])
+
+    def _mutating_failing_loop(*args: Any, **kwargs: Any) -> tuple[str, list[dict[str, Any]], int]:
+        rt.messages.append(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "tc_1", "type": "function", "function": {"name": "ipython", "arguments": "{}"}}],
+            }
+        )
+        raise RuntimeError("kernel boom")
+
+    monkeypatch.setattr(turn, "agent_loop", _mutating_failing_loop)
+    outcome = run_interactive_turn(rt, _View())
+
+    assert outcome.status is TurnStatus.ERROR
+    assert rt.messages == [{"role": "user", "content": "hi"}]

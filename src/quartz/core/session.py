@@ -228,6 +228,50 @@ def _resolve_session_paths(session_id: str, sessions_dir: Path) -> tuple[Path, P
     return jsonl_path, snapshot_dir
 
 
+def repair_dangling_tool_calls(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Strip or drop assistant tool_calls that lack matching tool responses.
+
+    Providers reject requests where an assistant message with `tool_calls` is not
+    immediately followed by `tool` messages covering every `tool_call_id`. If a
+    broken history is loaded (or passed to the loop), drop any unanswered
+    `tool_calls` (and any partial `tool` replies for them) so the conversation
+    can continue.
+    """
+    repaired: list[dict[str, Any]] = []
+    i = 0
+    n = len(messages)
+    while i < n:
+        msg = messages[i]
+        tool_calls = msg.get("tool_calls") if isinstance(msg, dict) and msg.get("role") == "assistant" else None
+        if not tool_calls:
+            repaired.append(msg)
+            i += 1
+            continue
+
+        expected_ids = [str(tc.get("id", "")) for tc in tool_calls if isinstance(tc, dict)]
+        j = i + 1
+        found_ids: set[str] = set()
+        tool_msgs: list[dict[str, Any]] = []
+        while j < n and isinstance(messages[j], dict) and messages[j].get("role") == "tool":
+            tool_msgs.append(messages[j])
+            tc_id = str(messages[j].get("tool_call_id", ""))
+            if tc_id:
+                found_ids.add(tc_id)
+            j += 1
+
+        if expected_ids and all(eid in found_ids for eid in expected_ids):
+            repaired.append(msg)
+            repaired.extend(tool_msgs)
+        else:
+            content = msg.get("content")
+            has_text = isinstance(content, str) and bool(content.strip())
+            if has_text:
+                cleaned = {k: v for k, v in msg.items() if k != "tool_calls"}
+                repaired.append(cleaned)
+        i = j
+    return repaired
+
+
 class Session:
     """Append-only JSONL conversation log paired with a dill kernel snapshot."""
 
@@ -507,6 +551,7 @@ class Session:
             copy.deepcopy(session.cell_meta),
             tuple(sorted(session.steering_indices)),
         )
+        messages = repair_dangling_tool_calls(messages)
         return session, messages
 
     @classmethod

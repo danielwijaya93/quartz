@@ -171,6 +171,7 @@ def run_interactive_turn(
     a failed turn persists nothing.
     """
     started = time.monotonic()
+    msg_count = len(rt.messages)
     try:
         _, rt.messages, tokens = run_turn(
             rt,
@@ -187,6 +188,7 @@ def run_interactive_turn(
         rt.kernel.interrupt()
         return TurnOutcome(TurnStatus.INTERRUPTED, elapsed_s=time.monotonic() - started)
     except Exception as exc:
+        del rt.messages[msg_count:]
         return TurnOutcome(TurnStatus.ERROR, elapsed_s=time.monotonic() - started, error=exc)
     elapsed = time.monotonic() - started
     rt.total_elapsed_s += elapsed

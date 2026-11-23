@@ -353,7 +353,13 @@ class KernelClient:
             atexit.register(self.close)
             self._atexit_registered = True
 
-        if not self._ready_event.wait(timeout=timeout) or self._worker_exited or self._proc.poll() is not None:
+        ready = self._ready_event.wait(timeout=timeout)
+        rc = self._proc.poll()
+        if self._worker_exited or rc is not None:
+            self.close()
+            stderr_out = "".join(self._stderr_tail)
+            raise RuntimeError(f"Python kernel exited during startup (exit code {rc}). {stderr_out}")
+        if not ready:
             self.close()
             stderr_out = "".join(self._stderr_tail)
             raise RuntimeError(f"Python kernel failed to start within {timeout}s. {stderr_out}")
