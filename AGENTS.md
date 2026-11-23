@@ -60,6 +60,9 @@ All non-trivial changes **must** follow the branch and Pull Request flow:
      ```bash
      git checkout main && git pull
      ```
+   - **Post-merge sync**:
+     - If `webapp/` changed: run `cd webapp && npm run build` (for `quartz web`) and `npm run android:apk` (for Android). Offer to send `webapp/android/app/build/outputs/apk/debug/app-debug.apk` to the user via the `tg-send` skill.
+     - If `src/quartz/` changed: remind the user to run `systemctl --user restart quartz-web`.
 
 ### 2. Documentation & Agent Instruction Updates (Fast Track)
 - Direct commits to `main` are permitted for documentation, prompt templates, or instruction files (e.g. `AGENTS.md`, `README.md`).
