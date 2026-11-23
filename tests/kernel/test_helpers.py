@@ -720,3 +720,63 @@ def test_untrusted_project_helpers_are_skipped_with_warning(
     loaded_trusted = load_helpers(cwd=tmp_path, global_helpers_path=Path("/nonexistent"))
     assert marker.exists()
     assert loaded_trusted.functions["evil"]() == "evil"
+
+
+def test_find_and_rg_skip_build_and_clip_long_lines(tmp_path: Path) -> None:
+    from quartz.kernel.helpers import find, rg
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.ts").write_text("const needle = 1;\n", encoding="utf-8")
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "bundle.js").write_text(
+        f"const needle = 2; {'x' * 500}\n", encoding="utf-8"
+    )
+    (tmp_path / ".tooling").mkdir()
+    (tmp_path / ".tooling" / "sdk.txt").write_text("needle\n", encoding="utf-8")
+
+    found = find("*", str(tmp_path))
+    assert "src/app.ts" in found
+    assert not any(f.startswith(("dist/", ".tooling/")) for f in found)
+
+    hits = rg("needle", str(tmp_path))
+    assert "app.ts" in hits
+    assert "bundle.js" not in hits
+    assert "sdk.txt" not in hits
+
+    # Explicit target inside dist/ still works, but long lines are clipped
+    dist_hits = rg("needle", str(tmp_path / "dist"))
+    assert "bundle.js" in dist_hits
+    assert len(dist_hits) < 350
+
+
+def test_read_and_edit_output_caps(tmp_path: Path) -> None:
+    from quartz.kernel.helpers import MAX_EDIT_DIFF_CHARS, MAX_READ_CHARS, edit, read
+
+    big_file = tmp_path / "big.txt"
+    big_file.write_text("\n".join(f"line {i} {'a' * 100}" for i in range(300)), encoding="utf-8")
+
+    out = read(str(big_file), start=1, end=300)
+    assert "truncated at" in out
+    assert f"{MAX_READ_CHARS:,} chars" in out
+    assert "continue with read(" in out
+    assert len(out) < MAX_READ_CHARS + 300
+
+    # Large edit diff is capped at MAX_EDIT_DIFF_CHARS
+    edit_file = tmp_path / "edit_big.txt"
+    old_block = "\n".join(f"old line {i} {'b' * 60}" for i in range(60))
+    new_block = "\n".join(f"new line {i} {'c' * 60}" for i in range(60))
+    edit_file.write_text(old_block, encoding="utf-8")
+
+    edit_out = edit(str(edit_file), old_block, new_block)
+    assert "chars truncated" in edit_out
+    assert len(edit_out) <= MAX_EDIT_DIFF_CHARS + 200
+
+
+def test_worker_output_limits_and_prompt_rules() -> None:
+    from quartz.core.prompt import PROMPT_RULES
+    from quartz.kernel.worker import MAX_OUTPUT_CHARS, MAX_REPR_CHARS
+
+    assert MAX_OUTPUT_CHARS == 24_000
+    assert MAX_REPR_CHARS == 24_000
+    assert "Keep tool outputs lean" in PROMPT_RULES
+    assert "pytest -q --tb=short" in PROMPT_RULES
