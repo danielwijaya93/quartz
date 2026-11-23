@@ -276,7 +276,7 @@ class WebSession:
             self._perm_event = event
             self._perm_decision = None
         self.emit({"type": "permission_request", **payload})
-        event.wait(timeout=300.0)
+        event.wait()
         with self._perm_lock:
             decision = self._perm_decision or "reject"
             if self._pending_permission and self._pending_permission.get("requestId") == req_id:
@@ -325,15 +325,20 @@ class WebSession:
         append = self._system_prompt_append
         runtime.system_prompt = f"{base}\n\n{append}" if append else base
 
-    def _retire(self) -> None:
-        """Abort and drain the turn in flight, then close the current kernel."""
+    def _reject_pending_permission(self) -> None:
         with self._perm_lock:
+            if self._pending_permission is None and self._perm_event is None:
+                return
             self._perm_decision = "reject"
             ev = self._perm_event
             self._pending_permission = None
             self._perm_event = None
         if ev is not None:
             ev.set()
+
+    def _retire(self) -> None:
+        """Abort and drain the turn in flight, then close the current kernel."""
+        self._reject_pending_permission()
         self._abort_and_join()
         runtime, self._runtime = self._runtime, None
         if runtime is None:
@@ -601,6 +606,7 @@ class WebSession:
         with self._lock:
             turn = self._turn
             runtime = self._runtime
+        self._reject_pending_permission()
         if turn is None:
             return False
         turn.abort.set()

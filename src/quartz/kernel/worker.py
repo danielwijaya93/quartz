@@ -1100,7 +1100,7 @@ async def _main() -> None:
                 if not raw:
                     return
                 req = json.loads(raw.decode("utf-8"))
-                resp = await worker._host_rpc("bridge.exec", req, timeout=300.0)
+                resp = await worker._host_rpc("bridge.exec", req, timeout=None)
                 if resp.get("ok") and isinstance(resp.get("result"), dict):
                     out = resp["result"]
                 else:
