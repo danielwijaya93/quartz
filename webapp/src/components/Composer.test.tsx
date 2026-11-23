@@ -409,4 +409,48 @@ describe("Composer", () => {
     expect(onSubmit).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
   });
+
+  it("scrolls the active command and file option into view on ArrowDown/ArrowUp", async () => {
+    const user = userEvent.setup();
+    const scrollSpy = vi.fn();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scrollSpy;
+
+    try {
+      const commands = Array.from({ length: 15 }, (_, i) => ({
+        name: `cmd${i}`,
+        description: `Command ${i}`,
+      }));
+      const files = Array.from({ length: 15 }, (_, i) => `src/file${i}.ts`);
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(JSON.stringify({ cwd: "/repo", files }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+      setup({ cwd: "/repo", commands });
+      const textarea = screen.getByRole("textbox", { name: "Prompt quartz" });
+      await user.click(textarea);
+
+      // Slash command keyboard scroll
+      await user.keyboard("/");
+      await user.keyboard("{ArrowDown}{ArrowDown}");
+      expect(scrollSpy).toHaveBeenCalledWith({ block: "nearest" });
+
+      scrollSpy.mockClear();
+      await user.keyboard("{Escape}");
+      await user.clear(textarea);
+
+      // @file mention keyboard scroll
+      await user.keyboard("@file");
+      await screen.findByRole("listbox", { name: "Matching workspace files" });
+      await user.keyboard("{ArrowDown}{ArrowDown}");
+      expect(scrollSpy).toHaveBeenCalledWith({ block: "nearest" });
+
+      fetchSpy.mockRestore();
+    } finally {
+      HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+    }
+  });
 });
