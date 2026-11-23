@@ -93,7 +93,7 @@ def test_kernel_client_host_mcp_roundtrip(tmp_path: Path, monkeypatch: pytest.Mo
             return [{"server": "echo", "name": "say", "description": "say hi", "args": ["msg"]}]
 
         async def stub_call_tool(
-            server: str, tool: str, arguments: dict[str, Any] | None = None, *, timeout: float = 60.0
+            server: str, tool: str, arguments: dict[str, Any] | None = None
         ) -> Any:
             from quartz.kernel.client import _HOST_IMAGE_SINK
 
