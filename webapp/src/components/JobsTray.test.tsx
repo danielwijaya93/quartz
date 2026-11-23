@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { JobsTray } from "./JobsTray";
 
@@ -41,5 +41,34 @@ describe("JobsTray", () => {
 
     await user.click(screen.getByRole("button", { name: "Close background jobs" }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("ticks elapsed time every second automatically while open", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          jobs: [{ pid: 99, command: "sleep 30", label: "sleep", elapsed_s: 58 }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    render(<JobsTray open onClose={vi.fn()} />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText(/pid 99 · sleep · 58s/)).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(screen.getByText(/pid 99 · sleep · 1m 1s/)).toBeInTheDocument();
+
+    vi.useRealTimers();
   });
 });

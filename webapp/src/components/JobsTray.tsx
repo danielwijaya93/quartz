@@ -31,6 +31,8 @@ export function JobsTray({
   onClose: () => void;
 }): React.ReactElement | null {
   const [jobs, setJobs] = React.useState<JobItem[]>([]);
+  const [fetchedAt, setFetchedAt] = React.useState<number>(() => Date.now());
+  const [now, setNow] = React.useState<number>(() => Date.now());
   const [loading, setLoading] = React.useState(false);
   const [tails, setTails] = React.useState<Record<string, string>>({});
   const [busyPid, setBusyPid] = React.useState<string | null>(null);
@@ -41,7 +43,10 @@ export function JobsTray({
       const resp = await fetch(apiUrl("/api/jobs"));
       if (!resp.ok) throw new Error("Failed to load jobs");
       const data = (await resp.json()) as { jobs?: JobItem[] };
+      const ts = Date.now();
       setJobs(Array.isArray(data.jobs) ? data.jobs : []);
+      setFetchedAt(ts);
+      setNow(ts);
     } catch {
       setJobs([]);
     } finally {
@@ -55,6 +60,15 @@ export function JobsTray({
       void load();
     }
   }, [open, load]);
+
+  React.useEffect(() => {
+    if (!open || jobs.length === 0) return;
+    setNow(Date.now());
+    const id = window.setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [open, jobs.length]);
 
   if (!open) return null;
 
@@ -151,8 +165,8 @@ export function JobsTray({
                   <li key={pid} className="space-y-2 px-3 py-2">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="min-w-0 flex-1">
-                        <p className="text-xs font-medium text-foreground">
-                          pid {pid} · {job.label} · {formatElapsed(job.elapsed_s)}
+                        <p className="text-xs font-medium tabular-nums text-foreground">
+                          pid {pid} · {job.label} · {formatElapsed(job.elapsed_s + Math.max(0, (now - fetchedAt) / 1000))}
                         </p>
                         <p className="mt-0.5 truncate font-mono text-[11px] text-muted">
                           {job.command}
