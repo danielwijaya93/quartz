@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import contextlib
+import contextvars
 import dataclasses
 import json
 import os
@@ -22,6 +24,10 @@ from typing import Any
 from quartz.kernel.base import CellResult
 from quartz.kernel.sandbox import SandboxConfig, sandbox_env_overrides, wrap_command
 
+_HOST_IMAGE_SINK: contextvars.ContextVar[list[dict[str, str]] | None] = contextvars.ContextVar(
+    "quartz_host_image_sink", default=None
+)
+
 
 class KernelClient:
     """Manages a persistent `kernel_worker` subprocess over JSONL."""
@@ -32,6 +38,7 @@ class KernelClient:
         *,
         sandbox: bool = False,
         sandbox_config: SandboxConfig | None = None,
+        host_mcp: bool | None = None,
     ) -> None:
         self.cwd = (cwd or Path.cwd()).resolve()
         self._proc: subprocess.Popen[str] | None = None
@@ -57,6 +64,120 @@ class KernelClient:
         self._background_check_every = 0.0
         self._configured = False
         self._sandbox_config: SandboxConfig = sandbox_config or SandboxConfig(enabled=sandbox)
+        self._host_mcp_override = host_mcp
+        self._host_mcp: Any = None
+        self._host_loop: asyncio.AbstractEventLoop | None = None
+        self._host_thread: threading.Thread | None = None
+        self._host_loop_lock = threading.Lock()
+
+    def _host_mcp_enabled(self) -> bool:
+        if self._host_mcp_override is not None:
+            return self._host_mcp_override
+        return self._sandbox_config.enabled
+
+    def _get_host_mcp(self) -> Any:
+        if self._host_mcp is None:
+            from quartz.mcp.client import MCPManager
+
+            def _on_image(img: dict[str, str]) -> None:
+                sink = _HOST_IMAGE_SINK.get()
+                if sink is not None:
+                    sink.append(img)
+
+            self._host_mcp = MCPManager(cwd=self.cwd, on_image=_on_image)
+        return self._host_mcp
+
+    def _ensure_host_loop(self) -> asyncio.AbstractEventLoop:
+        with self._host_loop_lock:
+            if self._host_loop is not None and self._host_loop.is_running():
+                return self._host_loop
+            ready = threading.Event()
+            loop_holder: list[asyncio.AbstractEventLoop] = []
+
+            def _runner() -> None:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop_holder.append(loop)
+                ready.set()
+                try:
+                    loop.run_forever()
+                finally:
+                    loop.close()
+
+            self._host_thread = threading.Thread(target=_runner, daemon=True)
+            self._host_thread.start()
+            ready.wait(timeout=5.0)
+            self._host_loop = loop_holder[0]
+            return self._host_loop
+
+    def _send_host_response(self, payload: dict[str, Any]) -> None:
+        proc = self._proc
+        if proc is None or proc.stdin is None or proc.poll() is not None:
+            return
+        line = json.dumps(payload, ensure_ascii=False) + "\n"
+        try:
+            with self._write_lock:
+                proc.stdin.write(line)
+                proc.stdin.flush()
+        except Exception:
+            pass
+
+    async def _handle_host_request(self, msg: dict[str, Any]) -> None:
+        req_id = msg.get("id", "")
+        method = msg.get("method", "")
+        params = msg.get("params") or {}
+        mgr = self._get_host_mcp()
+        images: list[dict[str, str]] = []
+        token = _HOST_IMAGE_SINK.set(images)
+        try:
+            if method == "mcp.list_tools":
+                result = await mgr.list_tools(
+                    server=params.get("server"),
+                    refresh=bool(params.get("refresh", False)),
+                )
+            elif method == "mcp.search_tools":
+                result = await mgr.search_tools(
+                    query=str(params.get("query", "")),
+                    limit=int(params.get("limit", 20)),
+                    refresh=bool(params.get("refresh", False)),
+                )
+            elif method == "mcp.call_tool":
+                result = await mgr.call_tool(
+                    str(params.get("server", "")),
+                    str(params.get("tool", "")),
+                    arguments=params.get("arguments"),
+                    timeout=float(params.get("timeout", 60.0)),
+                )
+            else:
+                raise ValueError(f"Unknown host RPC method: {method!r}")
+
+            self._send_host_response(
+                {
+                    "type": "host_response",
+                    "id": req_id,
+                    "ok": True,
+                    "result": result,
+                    "servers": mgr.list_servers(),
+                    "images": images,
+                }
+            )
+        except Exception as exc:
+            self._send_host_response(
+                {
+                    "type": "host_response",
+                    "id": req_id,
+                    "ok": False,
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                    "servers": mgr.list_servers(),
+                }
+            )
+        finally:
+            _HOST_IMAGE_SINK.reset(token)
+
+    def _dispatch_host_request(self, msg: dict[str, Any]) -> None:
+        loop = self._ensure_host_loop()
+        asyncio.run_coroutine_threadsafe(self._handle_host_request(msg), loop)
 
     def enable_sandbox(self, config: SandboxConfig | None = None) -> None:
         """Enable OS-level sandboxing for the kernel subprocess (must be called before start)."""
@@ -81,6 +202,10 @@ class KernelClient:
         if self._sandbox_config.enabled:
             cmd = wrap_command(cmd, self.cwd, self._sandbox_config)
             env.update(sandbox_env_overrides())
+        if self._host_mcp_enabled():
+            env["QUARTZ_HOST_MCP"] = "1"
+        else:
+            env.pop("QUARTZ_HOST_MCP", None)
 
         self._proc = subprocess.Popen(
             cmd,
@@ -111,7 +236,7 @@ class KernelClient:
             self.close()
             stderr_out = "".join(self._stderr_tail)
             raise RuntimeError(f"Python kernel failed to start within {timeout}s. {stderr_out}")
-        if self._configured:
+        if self._configured or self._host_mcp_enabled():
             self._push_configure()
 
     def configure(self, *, headless: bool | None = None, background_check_every: float | None = None) -> None:
@@ -136,6 +261,8 @@ class KernelClient:
             "headless": self._headless,
             "background_check_every": self._background_check_every,
         }
+        if self._host_mcp_enabled():
+            payload["mcp_servers"] = self._get_host_mcp().list_servers()
         try:
             self._request(payload, timeout=5.0)
         except Exception:
@@ -174,6 +301,8 @@ class KernelClient:
             elif msg_type == "bg_jobs":
                 jobs = msg.get("jobs")
                 self._running_bash_jobs = [dict(j) for j in jobs if isinstance(j, dict)] if isinstance(jobs, list) else []
+            elif msg_type == "host_request":
+                self._dispatch_host_request(msg)
             elif msg_type == "event":
                 with self._events_cond:
                     self._events.append(msg)
@@ -445,6 +574,17 @@ class KernelClient:
         if self._stderr_thread is not None:
             self._stderr_thread.join(timeout=0.5)
             self._stderr_thread = None
+        if self._host_mcp is not None and self._host_loop is not None and self._host_loop.is_running():
+            with contextlib.suppress(Exception):
+                fut = asyncio.run_coroutine_threadsafe(self._host_mcp.close(), self._host_loop)
+                fut.result(timeout=2.0)
+        if self._host_loop is not None and self._host_loop.is_running():
+            self._host_loop.call_soon_threadsafe(self._host_loop.stop)
+            if self._host_thread is not None:
+                self._host_thread.join(timeout=1.0)
+            self._host_loop = None
+            self._host_thread = None
+        self._host_mcp = None
 
     def restart(self) -> None:
         self.close()

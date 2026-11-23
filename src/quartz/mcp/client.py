@@ -7,7 +7,7 @@ import json
 import os
 import tempfile
 import warnings
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
@@ -514,3 +514,102 @@ class MCPManager:
         self._sessions.clear()
         if stacks:
             await asyncio.gather(*(stack.aclose() for stack in stacks), return_exceptions=True)
+
+
+class HostMCPProxy:
+    """In-kernel proxy that forwards MCP operations to the host-side MCPManager over JSONL."""
+
+    def __init__(
+        self,
+        rpc: Callable[[str, dict[str, Any], float | None], Awaitable[dict[str, Any]]],
+        *,
+        initial_servers: list[str] | None = None,
+        on_image: Callable[[dict[str, str]], None] | None = None,
+    ) -> None:
+        self._rpc = rpc
+        self._servers_cache: list[str] = sorted(initial_servers or [])
+        self._on_image = on_image
+
+    def __getattr__(self, server: str) -> _MCPServerProxy:
+        if server.startswith("__") and server.endswith("__"):
+            raise AttributeError(server)
+        return _MCPServerProxy(self, server)  # type: ignore[arg-type]
+
+    def __getitem__(self, server: str) -> _MCPServerProxy:
+        return _MCPServerProxy(self, server)  # type: ignore[arg-type]
+
+    def set_servers(self, servers: list[str]) -> None:
+        """Update the cached list of configured server names pushed from the host."""
+        self._servers_cache = sorted(str(s) for s in servers)
+
+    def list_servers(self) -> list[str]:
+        """Return configured MCP server names."""
+        return list(self._servers_cache)
+
+    def _raise_remote_error(self, resp: dict[str, Any]) -> None:
+        err_type = resp.get("error_type", "RuntimeError")
+        msg = str(resp.get("error", "Host MCP request failed"))
+        if err_type == "KeyError":
+            raise KeyError(msg)
+        if err_type == "TimeoutError":
+            raise TimeoutError(msg)
+        if err_type == "ValueError":
+            raise ValueError(msg)
+        raise RuntimeError(msg)
+
+    async def _call(
+        self, method: str, params: dict[str, Any] | None = None, timeout: float | None = 65.0
+    ) -> Any:
+        resp = await self._rpc(method, params or {}, timeout)
+        if isinstance(resp.get("servers"), list):
+            self.set_servers(resp["servers"])
+        if not resp.get("ok"):
+            self._raise_remote_error(resp)
+        images = resp.get("images")
+        if isinstance(images, list) and self._on_image is not None:
+            for img in images:
+                if isinstance(img, dict):
+                    self._on_image(img)
+        return resp.get("result")
+
+    async def list_tools(
+        self, server: str | None = None, *, refresh: bool = False
+    ) -> list[dict[str, Any]]:
+        """List tools from one MCP server or all configured servers via the host."""
+        res = await self._call("mcp.list_tools", {"server": server, "refresh": refresh})
+        return list(res) if isinstance(res, list) else []
+
+    async def search_tools(
+        self, query: str = "", limit: int = 20, *, refresh: bool = False
+    ) -> list[dict[str, Any]]:
+        """Search MCP tools by keyword across configured servers via the host."""
+        res = await self._call(
+            "mcp.search_tools",
+            {"query": query, "limit": limit, "refresh": refresh},
+        )
+        return list(res) if isinstance(res, list) else []
+
+    async def call_tool(
+        self,
+        server: str,
+        tool: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        timeout: float = 60.0,
+    ) -> Any:
+        """Call a tool on an MCP server via the host and return the unwrapped Python result."""
+        rpc_timeout = (timeout + 5.0) if timeout is not None else None
+        return await self._call(
+            "mcp.call_tool",
+            {
+                "server": server,
+                "tool": tool,
+                "arguments": dict(arguments) if arguments is not None else {},
+                "timeout": timeout,
+            },
+            timeout=rpc_timeout,
+        )
+
+    async def close(self) -> None:
+        """No-op in the proxy; the host owns and closes MCP sessions."""
+        return None
