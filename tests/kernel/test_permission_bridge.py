@@ -159,3 +159,25 @@ def test_sandboxed_kernel_bridge_routes_remote_git_to_host(tmp_path: Path) -> No
         assert seen[0].scope == "git_remote"
     finally:
         kc.close()
+
+
+def test_exec_cell_does_not_timeout_while_waiting_for_permission(tmp_path: Path) -> None:
+    import time
+
+    repo, _remote = _init_git_repo_with_bare_remote(tmp_path)
+
+    def slow_handler(_req: PermissionRequest):
+        time.sleep(0.6)
+        return "allow_once"
+
+    kc = KernelClient(cwd=repo, sandbox=False, host_bridge=True, permission_handler=slow_handler)
+    kc.start(timeout=15.0)
+    try:
+        res = kc.exec_cell(
+            "r = await bash('git push -u origin HEAD')\nprint('DONE', r.exit_code)",
+            timeout=0.3,
+        )
+        assert res.ok, res.stderr
+        assert "DONE 0" in res.stdout
+    finally:
+        kc.close()

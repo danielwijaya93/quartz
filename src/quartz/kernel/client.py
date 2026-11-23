@@ -81,6 +81,8 @@ class KernelClient:
         self._permission_policy = PermissionPolicy(preapproved_scopes=preapproved_scopes)
         self._permission_handler: PermissionHandler | None = permission_handler
         self._permission_lock = threading.Lock()
+        self._permission_waiting_count = 0
+        self._permission_waiting_lock = threading.Lock()
         self._host_mcp: Any = None
         self._host_loop: asyncio.AbstractEventLoop | None = None
         self._host_thread: threading.Thread | None = None
@@ -231,7 +233,13 @@ class KernelClient:
                             "user approval (none configured).\n"
                         ),
                     }
-                decision = handler(req)
+                with self._permission_waiting_lock:
+                    self._permission_waiting_count += 1
+                try:
+                    decision = handler(req)
+                finally:
+                    with self._permission_waiting_lock:
+                        self._permission_waiting_count -= 1
                 allowed = self._permission_policy.record(scope, decision)
 
         if not allowed:
@@ -451,17 +459,32 @@ class KernelClient:
             with self._write_lock:
                 self._proc.stdin.write(line)
                 self._proc.stdin.flush()
-            try:
-                return q.get(timeout=timeout)
-            except queue.Empty:
-                if payload.get("type") == "exec":
-                    self.interrupt()
-                    # Give the interrupted cell a moment to return its KeyboardInterrupt result
-                    try:
-                        return q.get(timeout=3.0)
-                    except queue.Empty:
-                        pass
-                raise TimeoutError(f"Kernel request timed out after {timeout}s")
+            if timeout is None:
+                return q.get()
+            remaining = float(timeout)
+            poll_step = 0.25
+            last = time.monotonic()
+            while True:
+                step = min(poll_step, max(0.01, remaining))
+                try:
+                    return q.get(timeout=step)
+                except queue.Empty:
+                    now = time.monotonic()
+                    elapsed = now - last
+                    last = now
+                    with self._permission_waiting_lock:
+                        waiting_perm = self._permission_waiting_count > 0
+                    if not waiting_perm:
+                        remaining -= elapsed
+                    if remaining <= 0:
+                        if payload.get("type") == "exec":
+                            self.interrupt()
+                            # Give the interrupted cell a moment to return its KeyboardInterrupt result
+                            try:
+                                return q.get(timeout=3.0)
+                            except queue.Empty:
+                                pass
+                        raise TimeoutError(f"Kernel request timed out after {timeout}s")
         finally:
             with self._pending_lock:
                 self._pending.pop(req_id, None)
