@@ -279,7 +279,6 @@ export function App(): React.ReactElement {
           <SettingsView
             onBack={() => {
               setSettingsOpen(false);
-              window.requestAnimationFrame(() => composerRef.current?.focus());
             }}
             notifications={notifications}
           />
@@ -287,7 +286,6 @@ export function App(): React.ReactElement {
           <McpView
             onBack={() => {
               setMcpOpen(false);
-              window.requestAnimationFrame(() => composerRef.current?.focus());
             }}
           />
         ) : (
@@ -310,7 +308,6 @@ export function App(): React.ReactElement {
               open={jobsOpen}
               onClose={() => {
                 setJobsOpen(false);
-                window.requestAnimationFrame(() => composerRef.current?.focus());
               }}
             />
             {(quartz.state.idlePrompts ?? []).map((prompt) => {
