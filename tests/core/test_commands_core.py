@@ -113,6 +113,7 @@ def test_the_registry_lists_every_command_once() -> None:
         "/expand",
         "/compact",
         "/settings",
+        "/mcp",
         "/prompt",
         "/reset",
         "/jobs",
