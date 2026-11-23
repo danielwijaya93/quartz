@@ -488,6 +488,16 @@ describe("session_state and reconnect", () => {
     ],
   };
 
+  it("tracks failed bash_done notices in bgFailed", () => {
+    const state = fold([
+      history,
+      { type: "bash_notice", text: "[bash-done pid:1 exit:0 duration:1.0s]" },
+      { type: "bash_notice", text: "[bash-done pid:2 exit:1 duration:2.0s]" },
+      { type: "bash_notice", text: "[bash-done pid:3 exit:-9 duration:3.0s]" },
+    ]);
+    expect(state.session.bgFailed).toBe(2);
+  });
+
   it("updates bgCount from session_state and bg_count frames", () => {
     const state = fold([
       { ...history, bgCount: 2 },
