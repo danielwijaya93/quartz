@@ -526,6 +526,22 @@ def create_app(
             return _bad_request("sessionId is required")
         return await mutate(lambda sidebar: sidebar.import_session(session_id))
 
+    @app.post("/api/sessions/pin")
+    async def pin_session(request: Request) -> JSONResponse:
+        """Pin a session to the top of the sidebar."""
+        session_id = _session_id(await _json_body(request))
+        if session_id is None:
+            return _bad_request("sessionId is required")
+        return await mutate(lambda sidebar: sidebar.pin(session_id))
+
+    @app.post("/api/sessions/unpin")
+    async def unpin_session(request: Request) -> JSONResponse:
+        """Unpin a session from the top of the sidebar."""
+        session_id = _session_id(await _json_body(request))
+        if session_id is None:
+            return _bad_request("sessionId is required")
+        return await mutate(lambda sidebar: sidebar.unpin(session_id))
+
     @app.post("/api/sessions/rename")
     async def rename_session(request: Request) -> JSONResponse:
         body = await _json_body(request)

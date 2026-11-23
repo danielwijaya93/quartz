@@ -79,6 +79,7 @@ class SidebarState:
 
     hidden_sessions: set[str] = dataclasses.field(default_factory=set)
     imported_sessions: set[str] = dataclasses.field(default_factory=set)
+    pinned_sessions: set[str] = dataclasses.field(default_factory=set)
     renames: dict[str, str] = dataclasses.field(default_factory=dict)
     workspaces: list[Workspace] = dataclasses.field(default_factory=list)
 
@@ -88,6 +89,7 @@ class SidebarState:
             "version": SIDEBAR_VERSION,
             "hiddenSessions": sorted(self.hidden_sessions),
             "importedSessions": sorted(self.imported_sessions),
+            "pinnedSessions": sorted(self.pinned_sessions),
             "renames": {key: self.renames[key] for key in sorted(self.renames)},
             "workspaces": [workspace.to_dict() for workspace in self.workspaces],
         }
@@ -124,6 +126,7 @@ class SidebarState:
         return cls(
             hidden_sessions=_str_set(raw.get("hiddenSessions")),
             imported_sessions=_str_set(raw.get("importedSessions")),
+            pinned_sessions=_str_set(raw.get("pinnedSessions")),
             renames=renames,
             workspaces=workspaces,
         )
@@ -177,6 +180,18 @@ class SidebarStore:
         """List a session the user explicitly asked for (usually a terminal one)."""
         with self._lock:
             self.state.imported_sessions.add(session_id)
+            self.save()
+
+    def pin(self, session_id: str) -> None:
+        """Pin a session to the top of the sidebar."""
+        with self._lock:
+            self.state.pinned_sessions.add(session_id)
+            self.save()
+
+    def unpin(self, session_id: str) -> None:
+        """Remove a session from the pinned section."""
+        with self._lock:
+            self.state.pinned_sessions.discard(session_id)
             self.save()
 
     def rename(self, session_id: str, title: str) -> None:
@@ -269,6 +284,7 @@ def sidebar_payload(rows: list[dict[str, Any]], state: SidebarState) -> dict[str
             "version": SIDEBAR_VERSION,
             "hiddenSessions": sorted(state.hidden_sessions),
             "importedSessions": sorted(state.imported_sessions),
+            "pinnedSessions": sorted(state.pinned_sessions),
             "renames": {key: state.renames[key] for key in sorted(state.renames)},
             "workspaces": workspaces,
         },

@@ -91,6 +91,16 @@ export function importSession(sessionId: string): Promise<SidebarPayload> {
   return post("/api/sessions/import", { sessionId });
 }
 
+/** Pin a session to the top of the sidebar. */
+export function pinSession(sessionId: string): Promise<SidebarPayload> {
+  return post("/api/sessions/pin", { sessionId });
+}
+
+/** Unpin a session from the top of the sidebar. */
+export function unpinSession(sessionId: string): Promise<SidebarPayload> {
+  return post("/api/sessions/unpin", { sessionId });
+}
+
 /** Store a display title. An empty title clears it back to the preview. */
 export function renameSession(sessionId: string, title: string): Promise<SidebarPayload> {
   return post("/api/sessions/rename", { sessionId, title });

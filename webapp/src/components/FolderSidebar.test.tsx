@@ -518,11 +518,8 @@ describe("FolderSidebar's undo notice", () => {
           session({ sessionId: "s2", title: "Write tests", cwd: "/work/web" }),
         ],
         sidebar: {
-          version: 1,
-          hiddenSessions: [],
-          importedSessions: [],
+          ...EMPTY_SIDEBAR,
           renames: { s2: "Renamed tests" },
-          workspaces: [],
         },
       }),
       onSelectSession,
@@ -554,5 +551,43 @@ describe("FolderSidebar's undo notice", () => {
 
     await user.click(within(inboxRegion).getByRole("button", { name: /Fix auth/i }));
     expect(onSelectSession).toHaveBeenCalledWith("s1");
+  });
+
+  it("renders a Pinned section at the top and wires pin/unpin actions", async () => {
+    const user = userEvent.setup();
+    const onPin = vi.fn().mockResolvedValue(true);
+    const onUnpin = vi.fn().mockResolvedValue(true);
+    const onSelectSession = vi.fn();
+
+    renderSidebar({
+      data: payload({
+        sessions: [
+          session({ sessionId: "s1", title: "Pinned task", cwd: "/work/api" }),
+          session({ sessionId: "s2", title: "Regular task", cwd: "/work/web" }),
+        ],
+        sidebar: {
+          ...EMPTY_SIDEBAR,
+          pinnedSessions: ["s1"],
+        },
+      }),
+      onPin,
+      onUnpin,
+      onSelectSession,
+    });
+
+    const pinnedRegion = screen.getByRole("region", { name: "Pinned" });
+    expect(pinnedRegion).toBeInTheDocument();
+    expect(within(pinnedRegion).getByText("Pinned task")).toBeInTheDocument();
+
+    await user.click(within(pinnedRegion).getByRole("button", { name: /^Pinned task/i }));
+    expect(onSelectSession).toHaveBeenCalledWith("s1");
+
+    await user.click(
+      within(pinnedRegion).getByRole("button", { name: "Unpin session Pinned task" }),
+    );
+    expect(onUnpin).toHaveBeenCalledWith("s1");
+
+    await user.click(screen.getByRole("button", { name: "Pin session Regular task" }));
+    expect(onPin).toHaveBeenCalledWith("s2");
   });
 });
