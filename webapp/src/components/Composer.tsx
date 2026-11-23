@@ -818,12 +818,12 @@ export function Composer({
               isDisabled={disabled}
               onPress={() => fileRef.current?.click()}
               aria-label="Attach files"
-              className="size-7 rounded-lg text-muted hover:bg-surface-secondary hover:text-foreground"
+              className="size-7 shrink-0 rounded-lg text-muted hover:bg-surface-secondary hover:text-foreground"
             >
               <Plus aria-hidden="true" className="size-4" />
             </Button>
 
-            <div className="ml-auto flex items-center gap-1.5">
+            <div className="ml-auto flex min-w-0 flex-1 items-center justify-end gap-1.5">
               {bgCount > 0 || bgFailed > 0 ? (
                 <button
                   type="button"
@@ -835,7 +835,7 @@ export function Composer({
                   }
                   title="Click to open /jobs"
                   className={cn(
-                    "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg border px-2 font-mono text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
+                    "inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-lg border px-2 font-mono text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
                     bgFailed > 0
                       ? "border-danger/40 bg-danger-soft text-danger-soft-foreground hover:bg-danger-soft/80"
                       : "border-success/40 bg-success-soft text-success hover:bg-success-soft/80",
@@ -843,12 +843,15 @@ export function Composer({
                 >
                   <span
                     className={cn(
-                      "size-1.5 rounded-full",
+                      "size-1.5 shrink-0 rounded-full",
                       bgFailed > 0 ? "bg-danger" : "animate-pulse bg-success",
                     )}
                     aria-hidden="true"
                   />
-                  <span>
+                  <span className="sm:hidden">
+                    {bgFailed > 0 ? `${bgFailed} failed` : `bg × ${bgCount}`}
+                  </span>
+                  <span className="hidden sm:inline">
                     {bgFailed > 0
                       ? bgCount > 0
                         ? `bg × ${bgCount} · ${bgFailed} failed`
@@ -866,7 +869,7 @@ export function Composer({
                       ? `Switch model (current: ${model}${effort ? ` ${formatEffortLabel(effort)}` : ""})`
                       : "Choose a model"
                   }
-                  className="inline-flex h-7 max-w-[16rem] cursor-pointer items-center gap-1 rounded-lg px-2 text-xs text-muted transition-colors hover:bg-surface-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                  className="inline-flex h-7 min-w-0 max-w-[16rem] cursor-pointer items-center gap-1 rounded-lg px-2 text-xs text-muted transition-colors hover:bg-surface-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
                 >
                   <span className="truncate font-medium">{model || "Model"}</span>
                   {effort ? (
@@ -881,13 +884,13 @@ export function Composer({
               {turnRunning ? (
                 <Button
                   size="sm"
+                  isIconOnly
                   variant="outline"
                   onPress={onCancel}
                   aria-label="Cancel the running turn"
-                  className="h-8 gap-1 rounded-full px-2.5 text-xs font-medium"
+                  className="size-8 shrink-0 rounded-full"
                 >
-                  <Square aria-hidden="true" className="size-3" />
-                  Stop
+                  <Square aria-hidden="true" className="size-3.5" />
                 </Button>
               ) : null}
               <Button
@@ -898,7 +901,7 @@ export function Composer({
                 onPress={submit}
                 aria-label={turnRunning ? "Steer the running turn" : "Send prompt"}
                 className={cn(
-                  "size-8 rounded-full transition-all duration-150",
+                  "size-8 shrink-0 rounded-full transition-all duration-150",
                   canSend
                     ? "bg-foreground/85 text-background shadow-xs hover:bg-foreground"
                     : "border border-border/50 bg-surface-secondary/40 text-muted opacity-40",
