@@ -199,7 +199,10 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
                     model_override=options.model,
                     effort_override=options.effort,
                 )
-                max_ctx = resolve_context_tokens(provider_name, model, client)
+                # Resolve from the offline table immediately so startup never blocks
+                # on a /models HTTP round-trip; refresh from the provider in the
+                # background below once the runtime is built.
+                max_ctx = resolve_context_tokens(provider_name, model, client=None)
                 max_context_tokens = options.max_context_tokens or max_ctx
             settings = load_settings()
             system_prompt = build_system_prompt(cwd, headless=options.headless)
@@ -289,6 +292,21 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
             background_check_every=background_check_every,
             transport=options.transport,
         )
+        if (
+            not options.lazy_provider
+            and options.client_factory is None
+            and options.max_context_tokens is None
+            and (callable(getattr(client, "list_model_details", None)) or callable(getattr(client, "list_models", None)))
+        ):
+            def _refresh_context_tokens() -> None:
+                try:
+                    discovered = resolve_context_tokens(provider_name, model, client)
+                    if discovered > 0:
+                        runtime.max_context_tokens = discovered
+                except Exception:
+                    pass
+
+            threading.Thread(target=_refresh_context_tokens, daemon=True).start()
         return runtime, resumed
     except BaseException:
         kernel.close()

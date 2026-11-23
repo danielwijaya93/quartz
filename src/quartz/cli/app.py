@@ -27,8 +27,6 @@ from quartz.errors import CredentialError, EndpointConfigError, SessionNotFoundE
 from quartz.providers.registry import PROVIDERS, resolve_context_tokens
 from quartz.providers.selection import build_provider
 from quartz.settings import load_settings, project_trust_status, trust_project
-from quartz.tui.commands import _handle_slash_command
-from quartz.tui.dock import InteractiveDock
 from quartz.tui.render import (
     _active_printer,
     _format_turn_footer,
@@ -37,7 +35,6 @@ from quartz.tui.render import (
     _short_path,
     console,
 )
-from quartz.tui.replay import _replay_session
 from quartz.tui.turn_view import make_turn_view
 
 
@@ -79,6 +76,8 @@ def _run_headless(rt: AgentRuntime, prompt: str, image_args: list[str]) -> None:
 
 def _run_interactive(rt: AgentRuntime, resumed: bool) -> None:
     if not rt.plain_output and sys.stdin.isatty() and sys.stdout.isatty():
+        from quartz.tui.dock import InteractiveDock
+
         InteractiveDock(
             rt,
             resumed=resumed,
@@ -90,6 +89,8 @@ def _run_interactive(rt: AgentRuntime, resumed: bool) -> None:
     console.print(Text.assemble(("quartz", "bold"), (" v0.1.0 · Run /help for commands", "dim")))
 
     if resumed:
+        from quartz.tui.replay import _replay_session
+
         _replay_session(
             rt.messages,
             rt.cell_history,
@@ -134,6 +135,8 @@ def _run_interactive(rt: AgentRuntime, resumed: bool) -> None:
         user_input = raw_line.strip()
         if not user_input:
             continue
+
+        from quartz.tui.commands import _handle_slash_command
 
         cmd_res = _handle_slash_command(rt, user_input)
         if cmd_res is True:

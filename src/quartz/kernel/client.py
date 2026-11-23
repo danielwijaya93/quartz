@@ -405,7 +405,7 @@ class KernelClient:
         if proc.poll() is None:
             try:
                 self._send_shutdown(proc)
-                proc.wait(timeout=4.0)
+                proc.wait(timeout=1.0)
             except Exception:
                 pass
         if proc.poll() is None:
