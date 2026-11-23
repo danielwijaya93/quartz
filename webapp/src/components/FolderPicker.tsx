@@ -389,7 +389,7 @@ export function FolderPicker({
                       </>
                     )}
                   </p>
-                  <div className="flex w-full items-center justify-between gap-2">
+                  <div className="flex w-full flex-wrap items-center justify-between gap-2">
                     <Button
                       size="sm"
                       variant="ghost"
@@ -400,7 +400,7 @@ export function FolderPicker({
                       <FolderPlus aria-hidden="true" className="size-3.5" />
                       New folder
                     </Button>
-                    <div className="flex items-center gap-2">
+                    <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
                       {choice === null ? (
                         // The folder the dialog opened on is a real destination, so
                         // there is always a way to pick it without navigating away

@@ -429,6 +429,7 @@ export function App(): React.ReactElement {
               effort={quartz.state.session.effort}
               contextPct={quartz.state.session.contextPct}
               maxContextTokens={quartz.state.session.maxContextTokens}
+              cacheHitPct={quartz.state.session.cacheHitPct}
               bgCount={quartz.state.session.bgCount}
               bgFailed={quartz.state.session.bgFailed}
               onOpenJobs={() => {

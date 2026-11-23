@@ -135,6 +135,7 @@ export interface SessionStateMessage {
   effort: string;
   contextPct?: number;
   maxContextTokens?: number;
+  cacheHitPct?: number;
   messages: Message[];
   turnRunning: boolean;
   /**
@@ -187,6 +188,7 @@ export type ServerMessage =
       elapsedMs: number;
       contextPct?: number;
       maxContextTokens?: number;
+      cacheHitPct?: number;
       error?: string;
     }
   | {

@@ -294,15 +294,25 @@ describe("Composer", () => {
     expect(onOpenModelPicker).toHaveBeenCalledTimes(1);
   });
 
-  it("renders the context usage ring with percentage and window tooltip", () => {
+  it("renders the context usage ring and reveals context and cache hit details on tap", async () => {
+    const user = userEvent.setup();
     setup({
       model: "gemini-4-hydrogen",
       effort: "medium",
       contextPct: 23.5,
       maxContextTokens: 1_000_000,
+      cacheHitPct: 82.5,
       onOpenModelPicker: vi.fn(),
     });
-    expect(screen.getByRole("img", { name: "Context: 23.5% of 1.0M" })).toBeInTheDocument();
+    const trigger = screen.getByRole("button", {
+      name: "Context: 23.5% of 1.0M · Cache hit: 82.5%",
+    });
+    expect(trigger).toBeInTheDocument();
+
+    await user.click(trigger);
+    expect(screen.getByText("23.5% of 1.0M")).toBeInTheDocument();
+    expect(screen.getByText("Cache hit")).toBeInTheDocument();
+    expect(screen.getByText("82.5%")).toBeInTheDocument();
   });
 
   it("runs /reset via onRunCommand", async () => {
