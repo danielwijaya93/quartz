@@ -107,4 +107,34 @@ describe("HeaderBar", () => {
     expect(screen.getByLabelText("Git branch feat/p0-ui")).toBeInTheDocument();
     expect(screen.getByText("feat/p0-ui")).toBeInTheDocument();
   });
+
+  it("shows Sandboxed in red with strikethrough when sandbox is off and toggles on click", async () => {
+    const user = userEvent.setup();
+    const onToggleSandbox = vi.fn();
+    renderHeader({ session: { ...SESSION, sandboxed: false }, onToggleSandbox });
+
+    const btn = screen.getByRole("button", { name: "Sandbox disabled — click to enable" });
+    expect(btn).toHaveAttribute("aria-pressed", "false");
+    const label = screen.getByText("Sandboxed");
+    expect(label).toHaveClass("text-danger", "line-through");
+
+    await user.click(btn);
+    expect(onToggleSandbox).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows Sandboxed without strikethrough when sandbox is on and disables toggle during a turn", () => {
+    const onToggleSandbox = vi.fn();
+    renderHeader({
+      session: { ...SESSION, sandboxed: true },
+      onToggleSandbox,
+      turnRunning: true,
+    });
+
+    const btn = screen.getByRole("button", { name: "Sandbox enabled — click to disable" });
+    expect(btn).toHaveAttribute("aria-pressed", "true");
+    expect(btn).toBeDisabled();
+    const label = screen.getByText("Sandboxed");
+    expect(label).not.toHaveClass("line-through");
+    expect(label).not.toHaveClass("text-danger");
+  });
 });

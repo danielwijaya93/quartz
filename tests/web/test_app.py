@@ -760,3 +760,47 @@ def test_session_state_reports_project_trust_and_trust_project_rebuilds(
     updated = frames[-1]
     assert updated["projectTrust"]["trusted"] is True
     assert updated["projectTrust"]["needsTrust"] is False
+
+
+def test_set_sandbox_toggles_per_session_without_changing_new_sessions(
+    tmp_path: Path, wire: Any
+) -> None:
+    from types import SimpleNamespace
+    from fastapi.testclient import TestClient
+    from tests.web.conftest import make_runtime
+    from quartz.web.app import create_app
+
+    calls: list[bool | None] = []
+
+    def build(
+        session_id: str | None, cwd: Path | None = None, *, sandbox: bool | None = None
+    ) -> tuple[Any, bool]:
+        calls.append(sandbox)
+        effective = True if sandbox is None else sandbox
+        rt = make_runtime(cwd or tmp_path)
+        rt.kernel._sandbox_config = SimpleNamespace(enabled=effective)
+        return rt, session_id is not None
+
+    app = create_app(build=build, cwd=tmp_path)
+    client = TestClient(app)
+
+    with client.websocket_connect("/ws") as socket:
+        initial = wire.hello(socket)
+        assert initial["sandboxed"] is True
+
+        socket.send_json({"type": "set_sandbox", "enabled": False})
+        frames = wire.drain(socket, until="session_state")
+        assert frames[-1]["sandboxed"] is False
+
+        # Starting a new session uses the default (sandbox=None -> True), not the
+        # previous session's toggle.
+        socket.send_json({"type": "new_session"})
+        new_frames = wire.drain(socket, until="session_state")
+        assert new_frames[-1]["sandboxed"] is True
+
+        # Invalid payload returns a non-fatal error frame.
+        socket.send_json({"type": "set_sandbox", "enabled": "no"})
+        err_frames = wire.drain(socket, until="error")
+        assert err_frames[-1]["fatal"] is False
+
+    assert calls == [None, False, None]

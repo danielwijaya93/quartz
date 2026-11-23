@@ -501,7 +501,12 @@ def _handle_web_cli(argv: list[str]) -> None:
 
     from quartz.bootstrap import BootstrapOptions, build_runtime
 
-    def build(session_id: str | None, session_cwd: Path | None = None) -> Any:
+    def build(
+        session_id: str | None,
+        session_cwd: Path | None = None,
+        *,
+        sandbox: bool | None = None,
+    ) -> Any:
         """Build the runtime for a new session (``None``) or an existing one.
 
         A browser tab resuming history goes through the same bootstrap the terminal
@@ -526,7 +531,7 @@ def _handle_web_cli(argv: list[str]) -> None:
                 plain_output=False,
                 origin="web",
                 transport="web",
-                sandbox=args.sandbox,
+                sandbox=args.sandbox if sandbox is None else sandbox,
             )
         )
 

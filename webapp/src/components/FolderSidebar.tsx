@@ -2,11 +2,14 @@ import * as React from "react";
 import { Button, Disclosure, Spinner, cn } from "@heroui/react";
 import {
   ArchiveRestore,
+  Check,
   ChevronRight,
   FolderOpen,
   FolderPlus,
   Inbox,
   Pencil,
+  Pin,
+  PinOff,
   Plug,
   Plus,
   RefreshCw,
@@ -20,11 +23,13 @@ import {
   currentWorkspaceCwd,
   directoryLabel,
   displayTitle,
+  EMPTY_SIDEBAR,
   filterWorkspaceGroups,
   folderBadge,
   formatAge,
   groupSessions,
   NOTICE_TIMEOUT_MS,
+  pinnedSessions,
   type FolderBadge,
   type LiveSession,
   type SessionActivity,
@@ -66,6 +71,8 @@ export interface FolderSidebarProps {
   onHide: (sessionId: string) => Promise<boolean>;
   /** The undo for a hide; the same request the archive's Restore makes. */
   onRestore: (sessionId: string) => Promise<boolean>;
+  onPin?: (sessionId: string) => Promise<boolean>;
+  onUnpin?: (sessionId: string) => Promise<boolean>;
   onOpenArchive: () => void;
   /** Opens the in-canvas settings view. */
   onOpenSettings?: () => void;
@@ -75,15 +82,13 @@ export interface FolderSidebarProps {
   sessionActivity?: Readonly<Record<string, SessionActivity>>;
   /** Sessions needing attention (permission prompt, finished turn, or error). */
   inbox?: readonly InboxItem[];
+  /** Dismiss a non-permission item from the sidebar inbox. */
+  onDismissInboxItem?: (sessionId: string) => void;
+  /** Clear all read non-permission items from the sidebar inbox. */
+  onClearReadInbox?: () => void;
 }
 
-const EMPTY_STATE: SidebarState = {
-  version: 1,
-  hiddenSessions: [],
-  importedSessions: [],
-  renames: {},
-  workspaces: [],
-};
+const EMPTY_STATE: SidebarState = EMPTY_SIDEBAR;
 
 /**
  * The folder-first session sidebar.
@@ -114,18 +119,31 @@ export function FolderSidebar({
   onRename,
   onHide,
   onRestore,
+  onPin,
+  onUnpin,
   onOpenArchive,
   onOpenSettings,
   onOpenMcp,
   sessionActivity = {},
   inbox = [],
+  onDismissInboxItem,
+  onClearReadInbox,
 }: FolderSidebarProps): React.ReactElement {
   const [expandedOverrides, setExpandedOverrides] = React.useState<Readonly<Record<string, boolean>>>({});
   const [inboxExpanded, setInboxExpanded] = React.useState(true);
+  const [pinnedExpanded, setPinnedExpanded] = React.useState(true);
   const [searchQuery, setSearchQuery] = React.useState("");
 
   const groups = React.useMemo(() => (data ? groupSessions(data) : []), [data]);
   const sidebarState = data?.sidebar ?? EMPTY_STATE;
+  const pinnedIdSet = React.useMemo(
+    () => new Set(sidebarState.pinnedSessions),
+    [sidebarState.pinnedSessions],
+  );
+  const visiblePinned = React.useMemo(
+    () => (data ? pinnedSessions(data, searchQuery) : []),
+    [data, searchQuery],
+  );
   const visibleGroups = React.useMemo(
     () => filterWorkspaceGroups(groups, searchQuery, sidebarState),
     [groups, searchQuery, sidebarState],
@@ -354,6 +372,25 @@ export function FolderSidebar({
             sessionById={sessionById}
             renames={sidebarState.renames}
             onSelectSession={onSelectSession}
+            onDismiss={onDismissInboxItem}
+            onClearRead={onClearReadInbox}
+          />
+        ) : null}
+
+        {error === null && visiblePinned.length > 0 ? (
+          <PinnedSection
+            sessions={visiblePinned}
+            sidebar={sidebarState}
+            expanded={searching || pinnedExpanded}
+            onToggle={setPinnedExpanded}
+            currentSessionId={currentSessionId}
+            sessionActivity={sessionActivity}
+            onSelectSession={onSelectSession}
+            onRename={(sessionId, title) =>
+              void rename(sessionId, title, sidebarState.renames[sessionId] ?? "")
+            }
+            onHide={(sessionId, title) => void hide(sessionId, title)}
+            onUnpin={onUnpin ? (sessionId) => void onUnpin(sessionId) : undefined}
           />
         ) : null}
 
@@ -362,7 +399,7 @@ export function FolderSidebar({
             ? (
               <EmptySidebar onOpenFolder={onOpenFolder} onOpenArchive={onOpenArchive} />
             )
-            : visibleGroups.length === 0
+            : visibleGroups.length === 0 && visiblePinned.length === 0
               ? (
                 <div className="px-2 py-4 text-center text-xs text-muted">
                   <p>No matches for “{searchQuery.trim()}”.</p>
@@ -392,33 +429,45 @@ export function FolderSidebar({
                         onToggle={(expanded) => toggle(group.cwd, expanded)}
                         onNewSession={() => onNewSession(group.cwd)}
                       >
-                        {group.sessions.map((session) => (
-                          <SessionRow
-                            key={session.sessionId}
-                            session={session}
-                            sidebar={sidebarState}
-                            activity={sessionActivity[session.sessionId]}
-                            // Both halves: a row is current only while its own
-                            // folder is the live one, so a row can never claim to
-                            // be where the next prompt lands when its folder is not.
-                            current={
-                              here &&
-                              currentSessionId !== "" &&
-                              session.sessionId === currentSessionId
-                            }
-                            onSelect={() => onSelectSession(session.sessionId)}
-                            onRename={(title) =>
-                              void rename(
-                                session.sessionId,
-                                title,
-                                sidebarState.renames[session.sessionId] ?? "",
-                              )
-                            }
-                            onHide={() =>
-                              void hide(session.sessionId, displayTitle(session, sidebarState))
-                            }
-                          />
-                        ))}
+                        {group.sessions.map((session) => {
+                          const isPinned = pinnedIdSet.has(session.sessionId);
+                          const togglePin = isPinned
+                            ? onUnpin
+                              ? () => void onUnpin(session.sessionId)
+                              : undefined
+                            : onPin
+                              ? () => void onPin(session.sessionId)
+                              : undefined;
+                          return (
+                            <SessionRow
+                              key={session.sessionId}
+                              session={session}
+                              sidebar={sidebarState}
+                              activity={sessionActivity[session.sessionId]}
+                              pinned={isPinned}
+                              // Both halves: a row is current only while its own
+                              // folder is the live one, so a row can never claim to
+                              // be where the next prompt lands when its folder is not.
+                              current={
+                                here &&
+                                currentSessionId !== "" &&
+                                session.sessionId === currentSessionId
+                              }
+                              onSelect={() => onSelectSession(session.sessionId)}
+                              onTogglePin={togglePin}
+                              onRename={(title) =>
+                                void rename(
+                                  session.sessionId,
+                                  title,
+                                  sidebarState.renames[session.sessionId] ?? "",
+                                )
+                              }
+                              onHide={() =>
+                                void hide(session.sessionId, displayTitle(session, sidebarState))
+                              }
+                            />
+                          );
+                        })}
                       </WorkspaceRow>
                     </li>
                   );
@@ -629,6 +678,8 @@ function InboxSection({
   sessionById,
   renames,
   onSelectSession,
+  onDismiss,
+  onClearRead,
 }: {
   items: readonly InboxItem[];
   expanded: boolean;
@@ -637,30 +688,45 @@ function InboxSection({
   sessionById: ReadonlyMap<string, SidebarSession>;
   renames: Readonly<Record<string, string>>;
   onSelectSession: (sessionId: string) => void;
+  onDismiss?: (sessionId: string) => void;
+  onClearRead?: () => void;
 }): React.ReactElement {
+  const hasRead = items.some((item) => item.kind !== "permission" && item.read);
+
   return (
     <section aria-label="Inbox" className="mb-2 border-b border-separator/70 pb-2">
       <Disclosure isExpanded={expanded} onExpandedChange={onToggle} className="rounded-md">
         <Disclosure.Heading>
-          <Disclosure.Trigger
-            aria-label={`Inbox, ${items.length} ${items.length === 1 ? "item" : "items"}`}
-            className="flex h-7 min-h-7 w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-left transition-colors hover:bg-surface-secondary/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
-          >
-            <ChevronRight
-              aria-hidden="true"
-              className={cn(
-                "size-3 shrink-0 text-muted/70 motion-safe:transition-transform",
-                expanded && "rotate-90",
-              )}
-            />
-            <Inbox aria-hidden="true" className="size-3.5 shrink-0 text-accent" />
-            <span className="min-w-0 truncate text-[11px] font-semibold uppercase tracking-wider text-foreground/90">
-              Inbox
-            </span>
-            <span className="ml-auto shrink-0 rounded-full bg-accent-soft px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-accent-soft-foreground">
-              {items.length}
-            </span>
-          </Disclosure.Trigger>
+          <div className="flex items-center gap-1">
+            <Disclosure.Trigger
+              aria-label={`Inbox, ${items.length} ${items.length === 1 ? "item" : "items"}`}
+              className="flex h-7 min-h-7 min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-left transition-colors hover:bg-surface-secondary/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
+            >
+              <ChevronRight
+                aria-hidden="true"
+                className={cn(
+                  "size-3 shrink-0 text-muted/70 motion-safe:transition-transform",
+                  expanded && "rotate-90",
+                )}
+              />
+              <Inbox aria-hidden="true" className="size-3.5 shrink-0 text-accent" />
+              <span className="min-w-0 truncate text-[11px] font-semibold uppercase tracking-wider text-foreground/90">
+                Inbox
+              </span>
+              <span className="ml-auto shrink-0 rounded-full bg-accent-soft px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-accent-soft-foreground">
+                {items.length}
+              </span>
+            </Disclosure.Trigger>
+            {hasRead && onClearRead ? (
+              <button
+                type="button"
+                onClick={onClearRead}
+                className="shrink-0 cursor-pointer rounded-md px-1.5 py-0.5 text-[10px] font-medium text-muted transition-colors hover:bg-surface-secondary/80 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
+              >
+                Clear read
+              </button>
+            ) : null}
+          </div>
         </Disclosure.Heading>
         <Disclosure.Content>
           <Disclosure.Body className="mt-1">
@@ -671,38 +737,62 @@ function InboxSection({
                   renames[item.sessionId] ?? session?.title ?? item.title ?? "New session";
                 const meta = inboxKindMeta(item.kind);
                 const isCurrent = item.sessionId === currentSessionId;
+                const isRead = Boolean(item.read) && item.kind !== "permission";
+                const canDismiss = item.kind !== "permission" && Boolean(onDismiss);
                 const rowStyle = isCurrent
                   ? "border-accent/40 bg-accent-soft/60"
                   : item.kind === "permission"
                     ? "border-warning/35 bg-warning-soft/30 hover:bg-warning-soft/50"
-                    : item.kind === "error"
-                      ? "border-danger/30 bg-danger-soft/30 hover:bg-danger-soft/50"
-                      : "border-border/60 bg-surface-secondary/40 hover:bg-surface-secondary/80";
+                    : isRead
+                      ? "border-border/40 bg-surface-secondary/20 opacity-75 hover:bg-surface-secondary/50 hover:opacity-100"
+                      : item.kind === "error"
+                        ? "border-danger/30 bg-danger-soft/30 hover:bg-danger-soft/50"
+                        : "border-border/60 bg-surface-secondary/40 hover:bg-surface-secondary/80";
 
                 return (
-                  <li key={item.sessionId}>
+                  <li
+                    key={item.sessionId}
+                    data-read={isRead ? "true" : "false"}
+                    className={cn(
+                      "group relative flex items-stretch rounded-lg border transition-colors",
+                      rowStyle,
+                    )}
+                  >
                     <button
                       type="button"
                       onClick={() => onSelectSession(item.sessionId)}
                       aria-current={isCurrent ? "true" : undefined}
                       className={cn(
-                        "w-full cursor-pointer rounded-lg border px-2 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus",
-                        rowStyle,
+                        "min-w-0 flex-1 cursor-pointer rounded-lg px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus",
+                        canDismiss && "pr-7",
                       )}
                     >
                       <div className="flex items-center gap-1.5 text-[10px]">
                         <span
                           aria-hidden="true"
-                          className={cn("size-1.5 shrink-0 rounded-full", meta.dotClass)}
+                          className={cn(
+                            "size-1.5 shrink-0 rounded-full",
+                            isRead ? "bg-muted/50" : meta.dotClass,
+                          )}
                         />
-                        <span className="truncate font-medium text-foreground/85">
+                        <span
+                          className={cn(
+                            "truncate",
+                            isRead ? "font-normal text-muted" : "font-medium text-foreground/85",
+                          )}
+                        >
                           {meta.label}
                         </span>
                         <span className="ml-auto shrink-0 tabular-nums text-meta">
                           {formatAge(item.updatedAt)}
                         </span>
                       </div>
-                      <p className="mt-0.5 truncate text-[12px] font-medium text-foreground">
+                      <p
+                        className={cn(
+                          "mt-0.5 truncate text-[12px]",
+                          isRead ? "font-normal text-foreground/80" : "font-medium text-foreground",
+                        )}
+                      >
                         {title}
                       </p>
                       <p className="truncate text-[11px] text-muted">
@@ -711,9 +801,93 @@ function InboxSection({
                           : directoryLabel(item.cwd)}
                       </p>
                     </button>
+                    {canDismiss ? (
+                      <button
+                        type="button"
+                        onClick={() => onDismiss?.(item.sessionId)}
+                        aria-label={`Dismiss ${title}`}
+                        title="Dismiss"
+                        className="absolute right-1.5 top-1.5 flex size-5 cursor-pointer items-center justify-center rounded-md text-muted opacity-70 transition-opacity hover:bg-surface-secondary hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+                      >
+                        <Check aria-hidden="true" className="size-3.5" />
+                      </button>
+                    ) : null}
                   </li>
                 );
               })}
+            </ul>
+          </Disclosure.Body>
+        </Disclosure.Content>
+      </Disclosure>
+    </section>
+  );
+}
+
+function PinnedSection({
+  sessions,
+  sidebar,
+  expanded,
+  onToggle,
+  currentSessionId,
+  sessionActivity,
+  onSelectSession,
+  onRename,
+  onHide,
+  onUnpin,
+}: {
+  sessions: readonly SidebarSession[];
+  sidebar: SidebarState;
+  expanded: boolean;
+  onToggle: (expanded: boolean) => void;
+  currentSessionId: string;
+  sessionActivity: Readonly<Record<string, SessionActivity>>;
+  onSelectSession: (sessionId: string) => void;
+  onRename: (sessionId: string, title: string) => void;
+  onHide: (sessionId: string, title: string) => void;
+  onUnpin?: (sessionId: string) => void;
+}): React.ReactElement {
+  return (
+    <section aria-label="Pinned" className="mb-2 border-b border-separator/70 pb-2">
+      <Disclosure isExpanded={expanded} onExpandedChange={onToggle} className="rounded-md">
+        <Disclosure.Heading>
+          <Disclosure.Trigger
+            aria-label={`Pinned, ${sessions.length} ${sessions.length === 1 ? "session" : "sessions"}`}
+            className="flex h-7 min-h-7 w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-left transition-colors hover:bg-surface-secondary/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
+          >
+            <ChevronRight
+              aria-hidden="true"
+              className={cn(
+                "size-3 shrink-0 text-muted/70 motion-safe:transition-transform",
+                expanded && "rotate-90",
+              )}
+            />
+            <Pin aria-hidden="true" className="size-3 shrink-0 text-accent" />
+            <span className="min-w-0 truncate text-[11px] font-semibold uppercase tracking-wider text-foreground/90">
+              Pinned
+            </span>
+            <span className="ml-auto shrink-0 rounded px-1 text-[10px] tabular-nums text-meta">
+              {sessions.length}
+            </span>
+          </Disclosure.Trigger>
+        </Disclosure.Heading>
+        <Disclosure.Content>
+          <Disclosure.Body className="mt-0.5 space-y-0.5 pl-2.5">
+            <ul aria-label="Pinned sessions" className="space-y-0.5">
+              {sessions.map((session) => (
+                <SessionRow
+                  key={session.sessionId}
+                  session={session}
+                  sidebar={sidebar}
+                  activity={sessionActivity[session.sessionId]}
+                  pinned
+                  folderLabel={directoryLabel(session.cwd)}
+                  current={currentSessionId !== "" && session.sessionId === currentSessionId}
+                  onSelect={() => onSelectSession(session.sessionId)}
+                  onTogglePin={onUnpin ? () => onUnpin(session.sessionId) : undefined}
+                  onRename={(title) => onRename(session.sessionId, title)}
+                  onHide={() => onHide(session.sessionId, displayTitle(session, sidebar))}
+                />
+              ))}
             </ul>
           </Disclosure.Body>
         </Disclosure.Content>
@@ -847,16 +1021,22 @@ function SessionRow({
   session,
   sidebar,
   activity,
+  pinned = false,
+  folderLabel,
   current,
   onSelect,
+  onTogglePin,
   onRename,
   onHide,
 }: {
   session: SidebarSession;
   sidebar: SidebarState;
   activity?: SessionActivity;
+  pinned?: boolean;
+  folderLabel?: string;
   current: boolean;
   onSelect: () => void;
+  onTogglePin?: () => void;
   onRename: (title: string) => void;
   onHide: () => void;
 }): React.ReactElement {
@@ -935,11 +1115,23 @@ function SessionRow({
                 "truncate",
                 activity?.unread && !current && "font-semibold text-foreground",
               )}
-              title={`${title}${age ? ` · ${age} old` : ""}`}
+              title={`${title}${folderLabel ? ` · ${folderLabel}` : ""}${age ? ` · ${age} old` : ""}`}
             >
               {title}
             </span>
+            {folderLabel ? (
+              <span className="ml-1 shrink-0 text-[10px] text-meta">
+                · {folderLabel}
+              </span>
+            ) : null}
           </button>
+
+          {pinned && !folderLabel ? (
+            <Pin
+              aria-hidden="true"
+              className="size-2.5 shrink-0 text-accent/80 group-hover/session:hidden group-focus-within/session:hidden"
+            />
+          ) : null}
 
           {age ? (
             <span
@@ -953,6 +1145,22 @@ function SessionRow({
           <div
             className="flex shrink-0 items-center gap-0.5 motion-safe:transition-opacity [@media(hover:hover)]:opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100"
           >
+            {onTogglePin ? (
+              <Button
+                isIconOnly
+                size="sm"
+                variant="ghost"
+                aria-label={pinned ? `Unpin session ${title}` : `Pin session ${title}`}
+                onPress={onTogglePin}
+                className="size-5 min-w-5 h-5 w-5 rounded p-0 text-muted hover:text-foreground hover:bg-surface-secondary"
+              >
+                {pinned ? (
+                  <PinOff aria-hidden="true" className="size-2.5" />
+                ) : (
+                  <Pin aria-hidden="true" className="size-2.5" />
+                )}
+              </Button>
+            ) : null}
             <Button
               isIconOnly
               size="sm"

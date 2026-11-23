@@ -112,8 +112,11 @@ export type ClientMessage =
   | { type: "new_session"; cwd?: string }
   | { type: "load_session"; sessionId: string }
   | { type: "trust_project" }
+  | { type: "set_sandbox"; enabled: boolean }
   | { type: "permission_response"; requestId: string; decision: PermissionDecision }
-  | { type: "idle_session_response"; sessionId: string; action: "keep" | "close" };
+  | { type: "idle_session_response"; sessionId: string; action: "keep" | "close" }
+  | { type: "inbox_dismiss"; sessionId: string }
+  | { type: "inbox_clear_read" };
 
 export interface ProjectTrustState {
   cwd: string;
@@ -213,6 +216,7 @@ export interface InboxItem {
   cwd: string;
   title?: string;
   kind: InboxItemKind;
+  read?: boolean;
   updatedAt: string;
   preview?: string;
 }

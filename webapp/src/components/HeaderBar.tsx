@@ -79,6 +79,8 @@ export function HeaderBar({
   onRichUiModeChange,
   onNewSession,
   onChangeFolder,
+  onToggleSandbox,
+  turnRunning = false,
   sidebarOpen,
   onToggleSidebar,
 }: {
@@ -90,6 +92,10 @@ export function HeaderBar({
   onNewSession: () => void;
   /** Opens the folder picker to start a session in another folder. */
   onChangeFolder?: () => void;
+  /** Toggles the OS sandbox for the current session. */
+  onToggleSandbox?: () => void;
+  /** Whether a turn is currently running (disables sandbox toggling). */
+  turnRunning?: boolean;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
 }): React.ReactElement {
@@ -148,21 +154,57 @@ export function HeaderBar({
               </Chip>
             </li>
           ) : null}
-          {session.sandboxed ? (
-            <li className="hidden min-w-0 shrink-0 md:flex">
-              <Chip
-                size="sm"
-                variant="soft"
-                color="success"
-                title="Kernel is running inside OS sandbox"
-                aria-label="Sandboxed"
-                className="bg-surface-secondary/50"
-              >
-                <Shield aria-hidden="true" className="mr-1 size-3 shrink-0 text-success" />
-                <span className="text-[11px] font-medium text-foreground/85">Sandboxed</span>
-              </Chip>
-            </li>
-          ) : null}
+          <li className="hidden min-w-0 shrink-0 sm:flex">
+            {(() => {
+              const sandboxed = Boolean(session.sandboxed);
+              const chip = (
+                <Chip
+                  size="sm"
+                  variant="soft"
+                  color={sandboxed ? "success" : "danger"}
+                  title={
+                    turnRunning
+                      ? "Cannot toggle sandbox while a turn is running"
+                      : sandboxed
+                        ? "Kernel is running inside OS sandbox — click to disable"
+                        : "OS sandbox is off — click to enable"
+                  }
+                  className={cn(
+                    sandboxed ? "bg-surface-secondary/50" : "bg-danger/10",
+                    onToggleSandbox && !turnRunning && "cursor-pointer transition-colors hover:opacity-85",
+                    turnRunning && "cursor-not-allowed opacity-60",
+                  )}
+                >
+                  <Shield
+                    aria-hidden="true"
+                    className={cn("mr-1 size-3 shrink-0", sandboxed ? "text-success" : "text-danger")}
+                  />
+                  <span
+                    className={cn(
+                      "text-[11px] font-medium",
+                      sandboxed ? "text-foreground/85" : "text-danger line-through",
+                    )}
+                  >
+                    Sandboxed
+                  </span>
+                </Chip>
+              );
+              return onToggleSandbox ? (
+                <button
+                  type="button"
+                  disabled={turnRunning}
+                  onClick={onToggleSandbox}
+                  aria-pressed={sandboxed}
+                  aria-label={sandboxed ? "Sandbox enabled — click to disable" : "Sandbox disabled — click to enable"}
+                  className="inline-flex shrink-0 items-center rounded-md focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none disabled:cursor-not-allowed"
+                >
+                  {chip}
+                </button>
+              ) : (
+                chip
+              );
+            })()}
+          </li>
         </ul>
 
         <div className="ml-auto flex shrink-0 items-center justify-end gap-2">

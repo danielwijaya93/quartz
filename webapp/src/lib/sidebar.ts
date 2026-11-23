@@ -40,6 +40,7 @@ export interface SidebarState {
   version: number;
   hiddenSessions: string[];
   importedSessions: string[];
+  pinnedSessions: string[];
   renames: Record<string, string>;
   workspaces: SidebarWorkspace[];
 }
@@ -54,6 +55,7 @@ export const EMPTY_SIDEBAR: SidebarState = {
   version: 1,
   hiddenSessions: [],
   importedSessions: [],
+  pinnedSessions: [],
   renames: {},
   workspaces: [],
 };
@@ -123,6 +125,7 @@ export function parseSidebarPayload(raw: unknown): SidebarPayload {
       version: typeof state.version === "number" ? state.version : 1,
       hiddenSessions: asStringArray(state.hiddenSessions),
       importedSessions: asStringArray(state.importedSessions),
+      pinnedSessions: asStringArray(state.pinnedSessions),
       renames,
       workspaces,
     },
@@ -549,4 +552,29 @@ export function filterWorkspaceGroups(
     }
   }
   return filtered;
+}
+
+/**
+ * Visible sessions that the user pinned, newest first.
+ *
+ * Hidden sessions and sessions whose folder no longer exists are excluded,
+ * matching `groupSessions` so the sidebar never shows an unreachable row.
+ */
+export function pinnedSessions(payload: SidebarPayload, query = ""): SidebarSession[] {
+  const pinned = new Set(payload.sidebar.pinnedSessions);
+  if (pinned.size === 0) return [];
+  const needle = query.trim().toLowerCase();
+  return payload.sessions
+    .filter((session) => {
+      if (!pinned.has(session.sessionId)) return false;
+      if (!session.cwdExists) return false;
+      if (!isVisible(session, payload.sidebar)) return false;
+      if (needle === "") return true;
+      return (
+        displayTitle(session, payload.sidebar).toLowerCase().includes(needle) ||
+        directoryLabel(session.cwd).toLowerCase().includes(needle) ||
+        session.cwd.toLowerCase().includes(needle)
+      );
+    })
+    .sort((a, b) => timestamp(b.updatedAt) - timestamp(a.updatedAt));
 }
