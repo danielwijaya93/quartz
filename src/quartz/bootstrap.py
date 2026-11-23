@@ -304,6 +304,7 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
             headless=options.headless,
             show_thinking=options.show_thinking,
             show_details=options.show_details,
+            notifications=settings.notifications,
             progress_every=resolve_every(
                 options.progress_every,
                 headless=options.headless,

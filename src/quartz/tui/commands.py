@@ -543,11 +543,22 @@ def _terminal_settings(rt: AgentRuntime, arg: str) -> None:
                 "bg",
                 f"Background check interval: {rt.background_check_every}s (default {DEFAULT_BACKGROUND_CHECK_EVERY}s, 0 disables)",
             ),
+            (
+                "notifications",
+                f"Desktop notifications: {'on' if getattr(rt, 'notifications', True) else 'off'} (default on)",
+            ),
             ("reset", "Reset all settings to defaults"),
         ]
         picked = _pick_option("Settings", opts)
         if not picked:
             return
+
+        if picked == "notifications":
+            next_state = "off" if getattr(rt, "notifications", True) else "on"
+            result = _cmd_settings(rt, f"notifications {next_state}")
+            if result is not None:
+                _render_settings(rt, result)
+            continue
 
         if picked == "reset":
             result = _cmd_settings(rt, "reset")

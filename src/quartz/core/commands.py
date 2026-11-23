@@ -686,19 +686,22 @@ _SETTING_ALIASES: dict[str, str] = {
     "background_check_every": "bg",
     "idle": "idle",
     "web_idle_hours": "idle",
+    "notifications": "notifications",
+    "notify": "notifications",
+    "notification": "notifications",
 }
 
 _SETTINGS_USAGE = (
     "Usage: /settings reserve <tokens> | /settings keep <tokens> | "
     "/settings progress <n> | /settings bg <seconds> | /settings idle <hours> | "
-    "/settings reset | /settings list"
+    "/settings notifications <on|off> | /settings reset | /settings list"
 )
 
 
 @COMMAND_REGISTRY.register(
     "/settings",
     "Show or update user preferences (stored in ~/.quartz/config.json)",
-    usage="[reserve|keep <tokens>|progress <n>|bg <seconds>|idle <hours>|reset|list]",
+    usage="[reserve|keep <tokens>|progress <n>|bg <seconds>|idle <hours>|notifications <on|off>|reset|list]",
     immediate=True,
 )
 def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
@@ -707,12 +710,14 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
     from quartz.providers.registry import config_file_path
 
     stored_settings = load_settings()
+    notifications = getattr(rt, "notifications", stored_settings.notifications)
     current = Settings(
         compact_reserve_tokens=rt.compact_reserve_tokens,
         keep_recent_tokens=rt.keep_recent_tokens,
         progress_every=rt.progress_every,
         background_check_every=rt.background_check_every,
         web_idle_hours=stored_settings.web_idle_hours,
+        notifications=notifications,
     )
     parts = (arg or "").split()
     if parts:
@@ -729,7 +734,8 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
             f"background_check_every: {current.background_check_every}s "
             f"(default {DEFAULT_BACKGROUND_CHECK_EVERY}s, 0 disables; off in -p)\n"
             f"web_idle_hours: {current.web_idle_hours}h "
-            f"(default {DEFAULT_WEB_IDLE_HOURS}h, 0 disables)\n\n"
+            f"(default {DEFAULT_WEB_IDLE_HOURS}h, 0 disables)\n"
+            f"notifications: {'on' if current.notifications else 'off'} (default on)\n\n"
             f"Stored in {config_file_path()}\n\n"
             f"{_SETTINGS_USAGE}",
             title="Settings",
@@ -749,12 +755,14 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
         rt.keep_recent_tokens = defaults.keep_recent_tokens
         rt.progress_every = defaults.progress_every
         rt.background_check_every = defaults.background_check_every
+        rt.notifications = defaults.notifications
         return CommandResult.text(
             f"Reset settings to defaults. "
             f"reserve_tokens = {defaults.compact_reserve_tokens:,}, "
             f"keep_recent_tokens = {defaults.keep_recent_tokens:,}, "
             f"progress_every = {defaults.progress_every}, "
-            f"background_check_every = {defaults.background_check_every}s."
+            f"background_check_every = {defaults.background_check_every}s, "
+            f"notifications = {'on' if defaults.notifications else 'off'}."
         )
 
     if parts[0] == "progress" and len(parts) == 2:
@@ -777,6 +785,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 progress_every=every,
                 background_check_every=current.background_check_every,
                 web_idle_hours=current.web_idle_hours,
+                notifications=current.notifications,
             )
         )
         rt.progress_every = every
@@ -805,6 +814,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 progress_every=current.progress_every,
                 background_check_every=every,
                 web_idle_hours=current.web_idle_hours,
+                notifications=current.notifications,
             )
         )
         rt.background_check_every = every
@@ -835,6 +845,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 progress_every=current.progress_every,
                 background_check_every=current.background_check_every,
                 web_idle_hours=current.web_idle_hours,
+                notifications=current.notifications,
             )
             rt.compact_reserve_tokens = value
             label = "reserve_tokens"
@@ -845,6 +856,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 progress_every=current.progress_every,
                 background_check_every=current.background_check_every,
                 web_idle_hours=current.web_idle_hours,
+                notifications=current.notifications,
             )
             rt.keep_recent_tokens = value
             label = "keep_recent_tokens"
@@ -873,11 +885,38 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 progress_every=current.progress_every,
                 background_check_every=current.background_check_every,
                 web_idle_hours=hours,
+                notifications=current.notifications,
             )
         )
         state = "off" if hours == 0 else f"every {hours}h"
         return CommandResult.text(
             f"Saved. web_idle_hours = {hours}h ({state})."
+        )
+
+    if parts[0] == "notifications" and len(parts) == 2:
+        raw_val = parts[1].strip().lower()
+        if raw_val in ("on", "true", "yes", "1"):
+            enabled = True
+        elif raw_val in ("off", "false", "no", "0"):
+            enabled = False
+        else:
+            return CommandResult.error(
+                f"Invalid value {parts[1]!r}: expected on or off.",
+                body="Usage: /settings notifications <on|off>",
+            )
+        save_settings(
+            Settings(
+                compact_reserve_tokens=current.compact_reserve_tokens,
+                keep_recent_tokens=current.keep_recent_tokens,
+                progress_every=current.progress_every,
+                background_check_every=current.background_check_every,
+                web_idle_hours=current.web_idle_hours,
+                notifications=enabled,
+            )
+        )
+        rt.notifications = enabled
+        return CommandResult.text(
+            f"Saved. notifications = {'on' if enabled else 'off'}."
         )
 
     return CommandResult.error(f"Unknown settings argument {arg!r}.", body=_SETTINGS_USAGE)

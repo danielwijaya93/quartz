@@ -52,6 +52,7 @@ DEFAULT_SNAPSHOT_RETENTION_DAYS = 7
 DEFAULT_SANDBOX_ENABLED = True
 #: Prompt before closing an idle backgrounded web session after this many hours (0 disables).
 DEFAULT_WEB_IDLE_HOURS = 2
+DEFAULT_NOTIFICATIONS_ENABLED = True
 
 _MIN_TOKENS = 256
 _MAX_TOKENS = 10_000_000
@@ -72,6 +73,7 @@ class Settings:
     snapshot_retention_days: int = DEFAULT_SNAPSHOT_RETENTION_DAYS
     sandbox: bool = DEFAULT_SANDBOX_ENABLED
     web_idle_hours: int = DEFAULT_WEB_IDLE_HOURS
+    notifications: bool = DEFAULT_NOTIFICATIONS_ENABLED
 
 
 def _config_path(path: Path | None = None) -> Path:
@@ -196,6 +198,7 @@ def load_settings(path: Path | None = None) -> Settings:
         web_idle_hours=_coerce_idle_hours(
             raw.get("web_idle_hours"), DEFAULT_WEB_IDLE_HOURS
         ),
+        notifications=_coerce_bool(raw.get("notifications"), DEFAULT_NOTIFICATIONS_ENABLED),
     )
 
 
@@ -367,11 +370,12 @@ def save_settings(settings: Settings, path: Path | None = None) -> Path:
         data["progress_every"] = settings.progress_every
         data["background_check_every"] = settings.background_check_every
         data["web_idle_hours"] = settings.web_idle_hours
+        data["notifications"] = settings.notifications
 
     return update_config_json(_apply, path=path)
 
 
-def settings_as_dict(settings: Settings) -> dict[str, int]:
+def settings_as_dict(settings: Settings) -> dict[str, int | bool]:
     """Return the JSON-serialisable preference mapping for ``/settings list``."""
     return {
         "compact_reserve_tokens": settings.compact_reserve_tokens,
@@ -379,4 +383,5 @@ def settings_as_dict(settings: Settings) -> dict[str, int]:
         "progress_every": settings.progress_every,
         "background_check_every": settings.background_check_every,
         "web_idle_hours": settings.web_idle_hours,
+        "notifications": settings.notifications,
     }

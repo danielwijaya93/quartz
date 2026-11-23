@@ -1,6 +1,10 @@
 import * as React from "react";
 import { Button, Input } from "@heroui/react";
-import { ArrowLeft, RotateCcw } from "lucide-react";
+import { ArrowLeft, Bell, RotateCcw } from "lucide-react";
+import {
+  useNotifications,
+  type NotificationsController,
+} from "../lib/useNotifications";
 
 interface SettingsPayload {
   values: {
@@ -58,9 +62,13 @@ const SETTING_FIELDS: readonly {
  */
 export function SettingsView({
   onBack,
+  notifications: externalNotifications,
 }: {
   onBack: () => void;
+  notifications?: NotificationsController;
 }): React.ReactElement {
+  const fallbackNotifications = useNotifications();
+  const notifications = externalNotifications ?? fallbackNotifications;
   const [data, setData] = React.useState<SettingsPayload | null>(null);
   const [drafts, setDrafts] = React.useState<Record<string, string>>({});
   const [loading, setLoading] = React.useState(false);
@@ -216,6 +224,77 @@ export function SettingsView({
             })}
           </div>
         ) : null}
+
+        <section
+          aria-label="Browser notifications"
+          className="rounded-xl border border-border bg-surface/50 px-4 py-3"
+        >
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <Bell aria-hidden="true" className="size-3.5 text-muted" />
+                <p className="text-sm font-medium text-foreground">Browser notifications</p>
+              </div>
+              <p className="mt-0.5 text-xs text-muted">
+                {notifications.env.needsHttps
+                  ? "Requires HTTPS (for example via Tailscale Serve) or localhost."
+                  : notifications.env.needsHomeScreen
+                    ? "On iPhone or iPad, tap Share → Add to Home Screen, then open Quartz from your Home Screen."
+                    : notifications.env.permission === "denied"
+                      ? "Blocked in browser settings. Allow notifications for this site to enable them."
+                      : !notifications.env.supported
+                        ? "Not supported in this browser."
+                        : notifications.env.permission === "granted" && notifications.enabled
+                          ? "Enabled — alerts when a turn finishes, needs approval, or a background job ends while inactive."
+                          : notifications.env.permission === "default"
+                            ? "Allow notifications to get alerts when Quartz is in the background."
+                            : "Paused for this browser."}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {notifications.env.supported &&
+              notifications.env.permission === "granted" &&
+              notifications.enabled ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onPress={() => {
+                    void notifications.sendTest().then((ok) => {
+                      setStatus(
+                        ok
+                          ? { ok: true, text: "Test notification sent." }
+                          : { ok: false, text: "Could not send test notification." },
+                      );
+                    });
+                  }}
+                >
+                  Test
+                </Button>
+              ) : null}
+              <Button
+                size="sm"
+                variant={
+                  notifications.enabled && notifications.env.permission === "granted"
+                    ? "outline"
+                    : "primary"
+                }
+                isDisabled={
+                  !notifications.env.supported || notifications.env.permission === "denied"
+                }
+                onPress={() => {
+                  const next = !(
+                    notifications.enabled && notifications.env.permission === "granted"
+                  );
+                  void notifications.setEnabled(next);
+                }}
+              >
+                {notifications.enabled && notifications.env.permission === "granted"
+                  ? "Disable"
+                  : "Enable"}
+              </Button>
+            </div>
+          </div>
+        </section>
 
         {status ? (
           <p role="status" className={status.ok ? "text-xs text-success" : "text-xs text-danger"}>

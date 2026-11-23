@@ -12,7 +12,7 @@ import {
   setRowFormState,
   type TranscriptState,
 } from "./lib/transcript";
-import type { ImageAttachment, PermissionDecision } from "./protocol";
+import type { ImageAttachment, PermissionDecision, ServerMessage } from "./protocol";
 
 export interface QuartzApi {
   state: TranscriptState;
@@ -43,7 +43,11 @@ export interface QuartzApi {
  * into transcript state, and exposes intent-level actions. Components never see a
  * socket or a protocol message.
  */
-export function useQuartz(url?: string, systemPromptAppend = ""): QuartzApi {
+export function useQuartz(
+  url?: string,
+  systemPromptAppend = "",
+  onServerMessage?: (message: ServerMessage) => void,
+): QuartzApi {
   const [state, setState] = React.useState<TranscriptState>(initialState);
   const [status, setStatus] = React.useState<ConnectionStatus>("disconnected");
 
@@ -51,6 +55,8 @@ export function useQuartz(url?: string, systemPromptAppend = ""): QuartzApi {
   // Read by the connection effect so a re-created connection (url change, remount)
   // inherits the current append instead of starting from an empty one.
   const appendRef = React.useRef(systemPromptAppend);
+  const onMessageRef = React.useRef(onServerMessage);
+  onMessageRef.current = onServerMessage;
 
   React.useEffect(() => {
     const target = url ?? resolveSocketUrl(window.location);
@@ -60,6 +66,7 @@ export function useQuartz(url?: string, systemPromptAppend = ""): QuartzApi {
 
     const offMessage = connection.on("message", (message) => {
       setState((prev) => reduce(prev, message));
+      onMessageRef.current?.(message);
     });
     const offStatus = connection.on("status", setStatus);
 

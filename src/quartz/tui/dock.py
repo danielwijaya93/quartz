@@ -545,9 +545,19 @@ class InteractiveDock:
         self.modal_buffer.reset()
         self._focus_and_invalidate(self._input_window)
 
+    def _notify(self, title: str, body: str = "") -> None:
+        if getattr(self.rt, "plain_output", False):
+            return
+        if not getattr(self.rt, "notifications", True):
+            return
+        from quartz.tui.notify import notify_desktop
+
+        notify_desktop(title, body, enabled=True)
+
     def _handle_permission_request(self, req: Any) -> str:
         scope_label = str(getattr(req, "scope", "action")).replace("_", " ")
         cmd = str(getattr(req, "command_display", ""))
+        self._notify("Quartz: Approval needed", f"Allow {cmd}?")
         choice = self.pick_option(
             f"Allow {cmd}?",
             [
@@ -875,11 +885,13 @@ class InteractiveDock:
                 active_printer.block(Text("Interrupted.", style="yellow"))
             elif outcome.status is TurnStatus.ERROR:
                 active_printer.block(Text(f"Error: {outcome.error}", style="red"))
+                self._notify("Quartz: Turn failed", str(outcome.error or "An error occurred"))
             else:
                 timing = _format_turn_timing(
                     outcome.elapsed_s, self.rt.total_elapsed_s, self.rt.turn_count
                 )
                 active_printer.block(Text(timing, style="dim"))
+                self._notify("Quartz: Turn finished", f"Completed in {outcome.elapsed_s:.1f}s")
         finally:
             tracker.close()
             with self._lock:
@@ -934,6 +946,7 @@ class InteractiveDock:
                         try:
                             notice = drain_bash_events(self.rt.kernel, self.rt.messages)
                             if notice:
+                                self._notify("Quartz: Background job finished", notice)
                                 _render_bash_notice(notice)
                                 self._execute_dock_turn()
                         finally:

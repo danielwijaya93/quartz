@@ -64,6 +64,7 @@ class AgentRuntime:
     headless: bool
     progress_every: int
     background_check_every: int
+    notifications: bool
     transport: str
     session_state: SessionState
     view_config: ViewConfig
@@ -91,6 +92,7 @@ class AgentRuntime:
         show_details: bool = False,
         progress_every: int = 0,
         background_check_every: int = 0,
+        notifications: bool = True,
         transport: str = "cli",
         session_state: SessionState | None = None,
         view_config: ViewConfig | None = None,
@@ -112,6 +114,7 @@ class AgentRuntime:
         self.headless = headless
         self.progress_every = progress_every
         self.background_check_every = background_check_every
+        self.notifications = notifications
         self.transport = transport
         self.pending_images = pending_images if pending_images is not None else []
         self._snapshot_thread: threading.Thread | None = None
