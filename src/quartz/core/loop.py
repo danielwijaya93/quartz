@@ -19,6 +19,7 @@ from quartz.core.compact import (
 )
 from quartz.core.events import NO_OBSERVER, TurnObserver
 from quartz.core.progress import ProgressCheckpointer, announced_to_user
+from quartz.core.session import repair_dangling_tool_calls
 from quartz.errors import ContextOverflowError
 from quartz.kernel.base import CellExecutor, CellResult
 from quartz.providers.base import (
@@ -381,6 +382,7 @@ def agent_loop(
     stand before carrying on in the same response. ``0`` (the default) never asks,
     which is what a headless run wants.
     """
+    messages[:] = repair_dangling_tool_calls(messages)
     progress = ProgressCheckpointer(progress_every)
     last_prompt_tokens = initial_prompt_tokens
     # Number of leading messages already covered by `last_prompt_tokens`.
@@ -534,6 +536,10 @@ def agent_loop(
                             "content": marker,
                         }
                     )
+                raise
+            except Exception:
+                if messages and messages[-1] is assistant_dict:
+                    messages.pop()
                 raise
             finally:
                 observer.on_status(None)

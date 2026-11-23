@@ -494,3 +494,29 @@ def test_list_all_includes_preview_for_forked_session(tmp_path: Path) -> None:
     rows, _ = Session.list_all(sessions_dir=sessions_dir)
     by_id = {row["sessionId"]: row for row in rows}
     assert by_id[forked.id]["title"] == "Explain the compaction preview"
+
+
+def test_load_repairs_dangling_tool_calls_and_heals_on_next_save(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    s = Session.create(tmp_path, sessions_dir=sessions_dir)
+    s.save_messages(
+        [
+            {"role": "user", "content": "First"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "tc_missing", "type": "function", "function": {"name": "ipython", "arguments": "{}"}}],
+            },
+            {"role": "user", "content": "Continue"},
+        ]
+    )
+
+    loaded, msgs = Session.load(s.id, sessions_dir=sessions_dir)
+    assert [m["role"] for m in msgs] == ["user", "user"]
+    assert [m["content"] for m in msgs] == ["First", "Continue"]
+
+    msgs.append({"role": "assistant", "content": "Back on track."})
+    loaded.save_messages(msgs)
+
+    _, reloaded = Session.load(s.id, sessions_dir=sessions_dir)
+    assert [m["role"] for m in reloaded] == ["user", "user", "assistant"]

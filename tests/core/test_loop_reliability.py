@@ -236,3 +236,31 @@ def test_compaction_mutates_messages_in_place_before_turn_aborted(tmp_path: Path
         assert len(messages) < original_len
     finally:
         kernel.close()
+
+
+def test_agent_loop_rolls_back_assistant_tool_call_on_exec_error() -> None:
+    from quartz.providers.base import ToolCall
+
+    class _FailingKernel:
+        def exec_cell(self, code: str, timeout: float | None = 300.0):
+            raise RuntimeError("Python kernel failed to start within 10.0s.")
+
+        def drain_events(self) -> list[dict]:
+            return []
+
+        def interrupt(self) -> None:
+            pass
+
+    class _Provider:
+        def complete(self, **kwargs):
+            return CompletionResult(
+                text="",
+                tool_calls=[ToolCall(id="tc_1", name="ipython", arguments='{"code": "1+1"}')],
+                usage=Usage(input_tokens=1, output_tokens=1),
+            )
+
+    messages: list[dict] = [{"role": "user", "content": "Run 1+1"}]
+    with pytest.raises(RuntimeError, match="Python kernel failed to start"):
+        agent_loop(_Provider(), "test-model", "sys", messages, _FailingKernel(), stream=False)
+
+    assert messages == [{"role": "user", "content": "Run 1+1"}]
