@@ -47,7 +47,7 @@ describe("AssistantRowView", () => {
       { timeout: 10_000 },
     );
     expect(screen.getByTestId("openui-surface")).toBeInTheDocument();
-  });
+  }, 15_000);
 
   it("keeps completed openui-lang replies rendered as a surface even when Rich UI is switched off", async () => {
     renderRow({ text: OPENUI_TURN_LANG, richUi: false });
