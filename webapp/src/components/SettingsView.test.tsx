@@ -38,4 +38,31 @@ describe("SettingsView", () => {
     await user.click(screen.getByRole("button", { name: "Back to chat" }));
     expect(onBack).toHaveBeenCalledTimes(1);
   });
+
+  it("shows App notifications instead of Browser notifications inside Capacitor", async () => {
+    const serverUrl = await import("../lib/serverUrl");
+    vi.spyOn(serverUrl, "isNativeCapacitor").mockReturnValue(true);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/api/health")) {
+        return new Response(JSON.stringify({ status: "ok", version: "0.1.1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          values: { reserve: 16384, keep: 32768, progress: 5, bg: 30 },
+          defaults: { reserve: 16384, keep: 32768, progress: 5, bg: 30 },
+          configPath: "~/.quartz/config.json",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+
+    render(<SettingsView onBack={vi.fn()} />);
+    expect(await screen.findByText("App notifications")).toBeInTheDocument();
+    expect(screen.queryByText("Browser notifications")).toBeNull();
+  });
+
 });
