@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import re
 import shlex
+import warnings
 
 _CATEGORY_ORDER = ("list_dir", "find", "read", "edit", "mcp", "run")
 
@@ -94,11 +95,17 @@ def _classify_bash_command(cmd_str: str, found: set[str]) -> None:
             found.add("run")
 
 
+def _parse_ast(code: str) -> ast.Module:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=SyntaxWarning)
+        return ast.parse(code, "<ipython>", "exec")
+
+
 def classify_cell_actions(code: str) -> list[str]:
     """Return ordered action category keys detected in an ipython cell."""
     found: set[str] = set()
     try:
-        tree = ast.parse(code)
+        tree = _parse_ast(code)
     except SyntaxError:
         tree = None
 
@@ -556,7 +563,7 @@ def _describe_call_intent(node: ast.Call) -> str | None:
 def _intents_from_source(code: str) -> list[str]:
     """Collect ordered, deduped intent labels from one cell's source."""
     try:
-        tree = ast.parse(code)
+        tree = _parse_ast(code)
     except SyntaxError:
         # Parser broke — at least rescue sh()/bash() string args via regex.
         found: list[str] = []
