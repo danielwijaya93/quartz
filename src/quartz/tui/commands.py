@@ -32,7 +32,15 @@ from quartz.core.commands import (  # re-exported: the registry is the public su
 from quartz.core.commands import (  # re-exported: callers reach for it directly
     _cmd_compact,
     _cmd_jobs,
+    _cmd_mcp,
     _cmd_settings,
+    _format_mcp_detail,
+    reload_runtime_mcp,
+)
+from quartz.mcp.client import (
+    add_mcp_server,
+    default_mcp_config_path,
+    load_raw_mcp_config,
 )
 from quartz.core.compact import CompactionReason, CompactionResult
 from quartz.core.images import load_clipboard_image, load_image_file
@@ -632,11 +640,123 @@ def _terminal_jobs(rt: AgentRuntime, arg: str) -> None:
 
 
 #: Terminal implementations, keyed by the canonical name core registered.
+def _render_mcp(rt: AgentRuntime, result: CommandResult) -> None:
+    if result.kind == "list":
+        for item in result.items:
+            label = escape(str(item.get("label", "")))
+            detail = escape(str(item.get("detail", "")))
+            console_print(f"  [cyan]{label}[/cyan] — {detail}")
+        return
+    _render_settings(rt, result)
+
+
+def _terminal_mcp(rt: AgentRuntime, arg: str) -> None:
+    trimmed = arg.strip()
+    if trimmed or getattr(rt, "headless", True):
+        result = _run_core_handler("/mcp", _cmd_mcp, rt, trimmed)
+        if result is not None:
+            _render_mcp(rt, result)
+        return
+
+    cfg_path = default_mcp_config_path()
+    while True:
+        servers = load_raw_mcp_config(cfg_path)
+        opts: list[tuple[str, str]] = [
+            (f"srv:{name}", f"{name} — {_format_mcp_detail(spec)}")
+            for name, spec in sorted(servers.items())
+        ]
+        opts.append(("__add__", "+ Add MCP server"))
+        if servers:
+            opts.append(("__enable_all__", "Enable all servers"))
+            opts.append(("__disable_all__", "Disable all servers"))
+
+        picked = _pick_option("MCP Servers", opts)
+        if not picked:
+            return
+
+        if picked == "__enable_all__":
+            res = _cmd_mcp(rt, "enable --all")
+            if res is not None:
+                _render_mcp(rt, res)
+            continue
+
+        if picked == "__disable_all__":
+            res = _cmd_mcp(rt, "disable --all")
+            if res is not None:
+                _render_mcp(rt, res)
+            continue
+
+        if picked == "__add__":
+            name = _prompt_input("Server name: ")
+            if not name or not name.strip():
+                continue
+            transport = _pick_option(
+                f"Transport for {name.strip()}",
+                [("stdio", "stdio (local command)"), ("http", "http (Streamable HTTP URL)")],
+            )
+            if not transport:
+                continue
+            spec: dict[str, Any] = {}
+            if transport == "http":
+                url = _prompt_input("Streamable HTTP URL: ")
+                if not url or not url.strip():
+                    continue
+                spec["url"] = url.strip()
+                hdr = _prompt_input("Optional header (KEY=VALUE, blank to skip): ")
+                if hdr and "=" in hdr:
+                    k, v = hdr.split("=", 1)
+                    if k.strip():
+                        spec["headers"] = {k.strip(): v.strip()}
+            else:
+                cmd_line = _prompt_input("Command & args (e.g. npx -y @modelcontextprotocol/server-filesystem .): ")
+                if not cmd_line or not cmd_line.strip():
+                    continue
+                parts = cmd_line.strip().split()
+                spec["command"] = parts[0]
+                if len(parts) > 1:
+                    spec["args"] = parts[1:]
+                env_line = _prompt_input("Optional env var (KEY=VALUE, blank to skip): ")
+                if env_line and "=" in env_line:
+                    k, v = env_line.split("=", 1)
+                    if k.strip():
+                        spec["env"] = {k.strip(): v.strip()}
+            add_mcp_server(name.strip(), spec, cfg_path)
+            reload_runtime_mcp(rt)
+            _render_mcp(rt, CommandResult.text(f"Saved MCP server '{name.strip()}'."))
+            continue
+
+        if picked.startswith("srv:"):
+            srv_name = picked[4:]
+            spec = servers.get(srv_name)
+            if spec is None:
+                continue
+            enabled = spec.get("enabled", True) is not False
+            toggle_label = "Disable server" if enabled else "Enable server"
+            action = _pick_option(
+                f"{srv_name} ({'enabled' if enabled else 'disabled'})",
+                [
+                    ("toggle", toggle_label),
+                    ("remove", "Remove server"),
+                    ("back", "Back"),
+                ],
+            )
+            if action == "toggle":
+                subcmd = "disable" if enabled else "enable"
+                res = _cmd_mcp(rt, f"{subcmd} {srv_name}")
+                if res is not None:
+                    _render_mcp(rt, res)
+            elif action == "remove":
+                res = _cmd_mcp(rt, f"remove {srv_name}")
+                if res is not None:
+                    _render_mcp(rt, res)
+
+
 _TERMINAL_HANDLERS: dict[str, TerminalHandler] = {
     "/login": _terminal_login,
     "/logout": _terminal_logout,
     "/model": _terminal_model,
     "/settings": _terminal_settings,
+    "/mcp": _terminal_mcp,
     "/jobs": _terminal_jobs,
     "/continue": _terminal_continue,
     "/image": _terminal_image,
