@@ -19,7 +19,10 @@ import {
   NO_ARCHIVE_FILTER,
   parseSidebarPayload,
   pinnedSessions,
+  readSidebarCollapseState,
   sameFolder,
+  SIDEBAR_COLLAPSE_STORAGE_KEY,
+  writeSidebarCollapseState,
   type ArchiveEntry,
   type ArchiveReason,
   type LiveSession,
@@ -595,5 +598,51 @@ describe("pinnedSessions", () => {
     };
     expect(pinnedSessions(data, "alpha").map((s) => s.sessionId)).toEqual(["s1"]);
     expect(pinnedSessions(data, "newer").map((s) => s.sessionId)).toEqual(["s2"]);
+  });
+});
+
+describe("sidebar collapse persistence", () => {
+  it("returns defaults when storage is absent or malformed", () => {
+    expect(readSidebarCollapseState(undefined)).toEqual({
+      folders: {},
+      inbox: true,
+      pinned: true,
+    });
+    expect(
+      readSidebarCollapseState({
+        getItem: () => "not-json{",
+      }),
+    ).toEqual({
+      folders: {},
+      inbox: true,
+      pinned: true,
+    });
+    expect(
+      readSidebarCollapseState({
+        getItem: () => JSON.stringify({ folders: { "/a": "yes", "/b": false }, inbox: "no" }),
+      }),
+    ).toEqual({
+      folders: { "/b": false },
+      inbox: true,
+      pinned: true,
+    });
+  });
+
+  it("round-trips valid collapse state through storage", () => {
+    const store = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        store.set(key, value);
+      },
+    };
+    const state = {
+      folders: { "/work/api": false, "/work/web": true },
+      inbox: false,
+      pinned: true,
+    };
+    writeSidebarCollapseState(state, storage);
+    expect(store.has(SIDEBAR_COLLAPSE_STORAGE_KEY)).toBe(true);
+    expect(readSidebarCollapseState(storage)).toEqual(state);
   });
 });

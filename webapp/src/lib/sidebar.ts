@@ -578,3 +578,73 @@ export function pinnedSessions(payload: SidebarPayload, query = ""): SidebarSess
     })
     .sort((a, b) => timestamp(b.updatedAt) - timestamp(a.updatedAt));
 }
+
+/* ----------------------------------------------------------- collapse state */
+
+export const SIDEBAR_COLLAPSE_STORAGE_KEY = "quartz-sidebar-collapse";
+
+export interface SidebarCollapseState {
+  folders: Record<string, boolean>;
+  inbox: boolean;
+  pinned: boolean;
+}
+
+export const DEFAULT_SIDEBAR_COLLAPSE_STATE: SidebarCollapseState = {
+  folders: {},
+  inbox: true,
+  pinned: true,
+};
+
+function defaultCollapseState(): SidebarCollapseState {
+  return { folders: {}, inbox: true, pinned: true };
+}
+
+/**
+ * Read the persisted folder, Inbox, and Pinned expand/collapse preferences.
+ * Never throws; returns defaults when storage is absent, blocked, or malformed.
+ */
+export function readSidebarCollapseState(
+  storage?: Pick<Storage, "getItem">,
+): SidebarCollapseState {
+  const target = storage ?? (typeof localStorage === "undefined" ? undefined : localStorage);
+  if (!target) return defaultCollapseState();
+  try {
+    const raw = target.getItem(SIDEBAR_COLLAPSE_STORAGE_KEY);
+    if (!raw) return defaultCollapseState();
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return defaultCollapseState();
+    }
+    const record = parsed as Record<string, unknown>;
+    const folders: Record<string, boolean> = {};
+    if (typeof record.folders === "object" && record.folders !== null && !Array.isArray(record.folders)) {
+      for (const [cwd, expanded] of Object.entries(record.folders as Record<string, unknown>)) {
+        if (typeof expanded === "boolean") folders[cwd] = expanded;
+      }
+    }
+    return {
+      folders,
+      inbox: typeof record.inbox === "boolean" ? record.inbox : true,
+      pinned: typeof record.pinned === "boolean" ? record.pinned : true,
+    };
+  } catch {
+    return defaultCollapseState();
+  }
+}
+
+/**
+ * Persist the folder, Inbox, and Pinned expand/collapse preferences.
+ * A blocked or full store is silently ignored so the UI continues to work.
+ */
+export function writeSidebarCollapseState(
+  state: SidebarCollapseState,
+  storage?: Pick<Storage, "setItem">,
+): void {
+  const target = storage ?? (typeof localStorage === "undefined" ? undefined : localStorage);
+  if (!target) return;
+  try {
+    target.setItem(SIDEBAR_COLLAPSE_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Quota or private-mode rejection. The in-memory choice still applies.
+  }
+}

@@ -2,7 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FolderSidebar, type FolderSidebarProps } from "./FolderSidebar";
-import { EMPTY_SIDEBAR, NOTICE_TIMEOUT_MS, type SidebarPayload, type SidebarSession } from "@/lib/sidebar";
+import {
+  EMPTY_SIDEBAR,
+  NOTICE_TIMEOUT_MS,
+  SIDEBAR_COLLAPSE_STORAGE_KEY,
+  type SidebarPayload,
+  type SidebarSession,
+} from "@/lib/sidebar";
 
 function session(overrides: Partial<SidebarSession> = {}): SidebarSession {
   return {
@@ -674,5 +680,99 @@ describe("FolderSidebar's undo notice", () => {
 
     await user.click(screen.getByRole("button", { name: "Pin session Regular task" }));
     expect(onPin).toHaveBeenCalledWith("s2");
+  });
+
+});
+
+describe("FolderSidebar collapse persistence", () => {
+  it("persists folder, Inbox, and Pinned collapse states across remounts", async () => {
+    window.localStorage.clear();
+    const user = userEvent.setup();
+    const testData = payload({
+      sessions: [
+        session({ sessionId: "s1", title: "Important task", cwd: "/work/api" }),
+        session({ sessionId: "s2", title: "Regular task", cwd: "/work/web" }),
+      ],
+      sidebar: {
+        ...EMPTY_SIDEBAR,
+        pinnedSessions: ["s1"],
+      },
+    });
+    const testInbox = [
+      {
+        sessionId: "s2",
+        cwd: "/work/web",
+        title: "Regular task",
+        kind: "done" as const,
+        updatedAt: new Date().toISOString(),
+      },
+    ];
+
+    const firstRender = render(
+      <FolderSidebar
+        data={testData}
+        loading={false}
+        error={null}
+        actionError={null}
+        currentSessionId="s2"
+        currentCwd="/work/web"
+        variant="rail"
+        onClose={vi.fn()}
+        onReload={vi.fn()}
+        onSelectSession={vi.fn()}
+        onNewSession={vi.fn()}
+        onNewFolder={vi.fn()}
+        onOpenFolder={vi.fn()}
+        onRename={vi.fn(async () => true)}
+        onHide={vi.fn(async () => true)}
+        onRestore={vi.fn(async () => true)}
+        onOpenArchive={vi.fn()}
+        inbox={testInbox}
+      />,
+    );
+
+    // Initially expanded: folder, Inbox, and Pinned are all expanded.
+    expect(screen.getByRole("button", { name: /^web\b/i })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /^Inbox\b/i })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /^Pinned\b/i })).toHaveAttribute("aria-expanded", "true");
+
+    // Collapse folder "web", Inbox, and Pinned.
+    await user.click(screen.getByRole("button", { name: /^web\b/i }));
+    expect(screen.getByRole("button", { name: /^web\b/i })).toHaveAttribute("aria-expanded", "false");
+    await user.click(screen.getByRole("button", { name: /^Inbox\b/i }));
+    await user.click(screen.getByRole("button", { name: /^Pinned\b/i }));
+
+    expect(window.localStorage.getItem(SIDEBAR_COLLAPSE_STORAGE_KEY)).toBeTruthy();
+
+    firstRender.unmount();
+
+    // Remount: collapsed choices should be restored from localStorage.
+    render(
+      <FolderSidebar
+        data={testData}
+        loading={false}
+        error={null}
+        actionError={null}
+        currentSessionId="s2"
+        currentCwd="/work/web"
+        variant="rail"
+        onClose={vi.fn()}
+        onReload={vi.fn()}
+        onSelectSession={vi.fn()}
+        onNewSession={vi.fn()}
+        onNewFolder={vi.fn()}
+        onOpenFolder={vi.fn()}
+        onRename={vi.fn(async () => true)}
+        onHide={vi.fn(async () => true)}
+        onRestore={vi.fn(async () => true)}
+        onOpenArchive={vi.fn()}
+        inbox={testInbox}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /^web\b/i })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /^Inbox\b/i })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /^Pinned\b/i })).toHaveAttribute("aria-expanded", "false");
+    window.localStorage.clear();
   });
 });
