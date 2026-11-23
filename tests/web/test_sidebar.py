@@ -222,10 +222,10 @@ def test_pin_and_unpin_round_trip(tmp_path: Path) -> None:
     store.pin("s2")  # idempotent
 
     reloaded = SidebarStore(path)
-    assert reloaded.state.pinned_sessions == {"s1", "s2"}
-    assert reloaded.state.to_dict()["pinnedSessions"] == ["s1", "s2"]
+    assert reloaded.state.pinned_sessions == ["s2", "s1"]
+    assert reloaded.state.to_dict()["pinnedSessions"] == ["s2", "s1"]
 
     reloaded.unpin("s1")
-    assert SidebarStore(path).state.pinned_sessions == {"s2"}
+    assert SidebarStore(path).state.pinned_sessions == ["s2"]
     payload = sidebar_payload([_session("s1"), _session("s2")], SidebarStore(path).state)
     assert payload["sidebar"]["pinnedSessions"] == ["s2"]

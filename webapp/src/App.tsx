@@ -167,6 +167,21 @@ export function App(): React.ReactElement {
     Readonly<Record<string, SessionActivity>>
   >({});
 
+  const mergedSessionActivity = React.useMemo(() => {
+    const inbox = quartz.state.inbox;
+    if (!inbox || inbox.length === 0) return sessionActivity;
+    const next: Record<string, SessionActivity> = { ...sessionActivity };
+    for (const item of inbox) {
+      const existing = next[item.sessionId];
+      if (existing?.status === "running") continue;
+      next[item.sessionId] = {
+        status: item.kind,
+        unread: item.kind === "permission" ? true : !item.read,
+      };
+    }
+    return next;
+  }, [quartz.state.inbox, sessionActivity]);
+
   // A session becomes listable as soon as the first prompt is persisted on
   // turn start, and its title/updatedAt may settle at turn end, so reload on
   // both transitions and update per-session live activity state.
@@ -314,7 +329,7 @@ export function App(): React.ReactElement {
       setSettingsOpen(false);
       setMcpOpen(true);
     },
-    sessionActivity,
+    sessionActivity: mergedSessionActivity,
     inbox: quartz.state.inbox ?? [],
     onDismissInboxItem: quartz.dismissInboxItem,
     onClearReadInbox: quartz.clearReadInbox,

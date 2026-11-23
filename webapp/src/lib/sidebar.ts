@@ -515,7 +515,7 @@ export function formatAge(iso: string, now: number = Date.now()): string {
 
 /* ----------------------------------------------------- search & live status */
 
-export type SessionActivityStatus = "idle" | "running" | "done" | "error";
+export type SessionActivityStatus = "idle" | "running" | "done" | "error" | "permission";
 
 export interface SessionActivity {
   status: SessionActivityStatus;
@@ -561,12 +561,15 @@ export function filterWorkspaceGroups(
  * matching `groupSessions` so the sidebar never shows an unreachable row.
  */
 export function pinnedSessions(payload: SidebarPayload, query = ""): SidebarSession[] {
-  const pinned = new Set(payload.sidebar.pinnedSessions);
-  if (pinned.size === 0) return [];
+  const order = new Map<string, number>();
+  payload.sidebar.pinnedSessions.forEach((id, index) => {
+    if (!order.has(id)) order.set(id, index);
+  });
+  if (order.size === 0) return [];
   const needle = query.trim().toLowerCase();
   return payload.sessions
     .filter((session) => {
-      if (!pinned.has(session.sessionId)) return false;
+      if (!order.has(session.sessionId)) return false;
       if (!session.cwdExists) return false;
       if (!isVisible(session, payload.sidebar)) return false;
       if (needle === "") return true;
@@ -576,7 +579,7 @@ export function pinnedSessions(payload: SidebarPayload, query = ""): SidebarSess
         session.cwd.toLowerCase().includes(needle)
       );
     })
-    .sort((a, b) => timestamp(b.updatedAt) - timestamp(a.updatedAt));
+    .sort((a, b) => (order.get(a.sessionId) ?? 0) - (order.get(b.sessionId) ?? 0));
 }
 
 /* ----------------------------------------------------------- collapse state */

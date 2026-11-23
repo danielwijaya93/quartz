@@ -579,7 +579,7 @@ describe("pinnedSessions", () => {
     updatedAt: "2026-01-02T12:00:00Z",
   });
 
-  it("returns visible pinned sessions newest first, excluding hidden and missing-folder ones", () => {
+  it("returns visible pinned sessions in pin order, excluding hidden and missing-folder ones", () => {
     const result = pinnedSessions({
       sessions: [s1, s2, s3, s4],
       sidebar: {
@@ -588,7 +588,7 @@ describe("pinnedSessions", () => {
         hiddenSessions: ["s3"],
       },
     });
-    expect(result.map((s) => s.sessionId)).toEqual(["s2", "s1"]);
+    expect(result.map((s) => s.sessionId)).toEqual(["s1", "s2"]);
   });
 
   it("filters pinned sessions by title or folder name", () => {

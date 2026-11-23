@@ -1115,12 +1115,8 @@ class SessionManager:
         with self._lock:
             existing = self._inbox.get(sid)
             if kind == "_attached":
-                if (
-                    existing is not None
-                    and existing["kind"] in ("done", "error")
-                    and not existing.get("read")
-                ):
-                    existing["read"] = True
+                if existing is not None and existing["kind"] in ("done", "error"):
+                    self._inbox.pop(sid, None)
                     changed = True
             elif kind == "_closed":
                 if sid in self._inbox:
@@ -1165,18 +1161,23 @@ class SessionManager:
                     item_kind = ""
                     preview = None
                 if item_kind:
-                    self._inbox_seq += 1
-                    self._inbox[sid] = {
-                        "sessionId": sid,
-                        "cwd": cwd,
-                        "title": self._session_title(ws),
-                        "kind": item_kind,
-                        "read": bool(ws.attached),
-                        "updatedAt": datetime.now(timezone.utc).isoformat(),
-                        "preview": preview,
-                        "_seq": self._inbox_seq,
-                    }
-                    changed = True
+                    if ws.attached:
+                        if existing is not None and existing["kind"] in ("done", "error"):
+                            self._inbox.pop(sid, None)
+                            changed = True
+                    else:
+                        self._inbox_seq += 1
+                        self._inbox[sid] = {
+                            "sessionId": sid,
+                            "cwd": cwd,
+                            "title": self._session_title(ws),
+                            "kind": item_kind,
+                            "read": False,
+                            "updatedAt": datetime.now(timezone.utc).isoformat(),
+                            "preview": preview,
+                            "_seq": self._inbox_seq,
+                        }
+                        changed = True
         if changed:
             self._broadcast_inbox()
         hook = self._push_hook
