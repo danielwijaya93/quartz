@@ -906,6 +906,11 @@ class SessionManager:
         self._check_interval_s = max(0.05, float(check_interval_s))
         self._watcher_timer: threading.Timer | None = None
         self._closed = False
+        self._push_hook: Callable[[WebSession, Frame], None] | None = None
+
+    def set_push_hook(self, hook: Callable[[WebSession, Frame], None] | None) -> None:
+        """Register a callback invoked for session frames (e.g. Web Push dispatch)."""
+        self._push_hook = hook
 
     @property
     def cwd(self) -> Path:
@@ -1133,35 +1138,38 @@ class SessionManager:
                     self._inbox.pop(sid, None)
                     changed = True
             elif kind == "turn_end":
-                if not ws.attached:
-                    status = frame.get("status")
-                    if status == "ok":
-                        item_kind = "done"
-                        preview = None
-                    elif status == "error":
-                        item_kind = "error"
-                        err = str(frame.get("error") or "").strip()
-                        preview = err if err else "Turn failed"
-                        if len(preview) > 120:
-                            preview = f"{preview[:119]}…"
-                    else:
-                        item_kind = ""
-                        preview = None
-                    if item_kind:
-                        self._inbox_seq += 1
-                        self._inbox[sid] = {
-                            "sessionId": sid,
-                            "cwd": cwd,
-                            "title": self._session_title(ws),
-                            "kind": item_kind,
-                            "read": False,
-                            "updatedAt": datetime.now(timezone.utc).isoformat(),
-                            "preview": preview,
-                            "_seq": self._inbox_seq,
-                        }
-                        changed = True
+                status = frame.get("status")
+                if status == "ok":
+                    item_kind = "done"
+                    preview = None
+                elif status == "error":
+                    item_kind = "error"
+                    err = str(frame.get("error") or "").strip()
+                    preview = err if err else "Turn failed"
+                    if len(preview) > 120:
+                        preview = f"{preview[:119]}…"
+                else:
+                    item_kind = ""
+                    preview = None
+                if item_kind:
+                    self._inbox_seq += 1
+                    self._inbox[sid] = {
+                        "sessionId": sid,
+                        "cwd": cwd,
+                        "title": self._session_title(ws),
+                        "kind": item_kind,
+                        "read": bool(ws.attached),
+                        "updatedAt": datetime.now(timezone.utc).isoformat(),
+                        "preview": preview,
+                        "_seq": self._inbox_seq,
+                    }
+                    changed = True
         if changed:
             self._broadcast_inbox()
+        hook = self._push_hook
+        if hook is not None:
+            with contextlib.suppress(Exception):
+                hook(ws, frame)
 
     def register_sink(self, push: Push) -> None:
         with self._lock:

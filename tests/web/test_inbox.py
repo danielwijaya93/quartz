@@ -64,26 +64,47 @@ def test_background_turn_end_adds_done_and_clears_on_attach(tmp_path: Path) -> N
         assert read_items[0]["sessionId"] == sid1
         assert read_items[0]["read"] is True
 
-        # Starting a new turn (replying) clears it from the inbox.
+        # Starting a new turn (replying) clears it from the inbox while running.
+        release.clear()
         s1.start_turn("Follow up", [])
+        assert manager.inbox_items() == []
         release.set()
         _wait_turn(s1)
-        assert manager.inbox_items() == []
+        after_items = manager.inbox_items()
+        assert len(after_items) == 1
+        assert after_items[0]["read"] is True
     finally:
         manager.close_all()
 
 
-def test_foreground_turn_end_does_not_add_to_inbox(tmp_path: Path) -> None:
+def test_foreground_turn_end_adds_read_item_and_clears_on_reply(tmp_path: Path) -> None:
+    release = threading.Event()
+
     def runner(rt: Any, observer: Any, **_kw: Any) -> TurnOutcome:
+        release.wait(timeout=2.0)
         return TurnOutcome(TurnStatus.OK)
 
     manager = SessionManager(_build_factory(tmp_path), cwd=tmp_path, runner=runner)
     try:
         s1 = manager.create_session(tmp_path)
+        sid1 = s1.runtime.active_session.id
         s1.attach(lambda _f: None)
         s1.start_turn("Hello", [])
+        release.set()
         _wait_turn(s1)
+
+        items = manager.inbox_items()
+        assert len(items) == 1
+        assert items[0]["sessionId"] == sid1
+        assert items[0]["kind"] == "done"
+        assert items[0]["read"] is True
+
+        # Replying clears it from the inbox.
+        release.clear()
+        s1.start_turn("Next", [])
         assert manager.inbox_items() == []
+        release.set()
+        _wait_turn(s1)
     finally:
         manager.close_all()
 
