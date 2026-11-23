@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import contextlib
 import dataclasses
 import json
 import os
@@ -14,6 +15,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
