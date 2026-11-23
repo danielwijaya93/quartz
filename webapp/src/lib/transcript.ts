@@ -152,6 +152,7 @@ export interface SessionMeta {
   effort: string;
   contextPct?: number;
   maxContextTokens?: number;
+  cacheHitPct?: number;
   commands: Command[];
   projectTrust: ProjectTrustState | null;
   bgCount?: number;
@@ -674,6 +675,7 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
           effort: message.effort,
           contextPct: message.contextPct ?? 0,
           maxContextTokens: message.maxContextTokens ?? 0,
+          cacheHitPct: message.cacheHitPct ?? 0,
           commands: message.commands,
           projectTrust: message.projectTrust ?? null,
           bgCount: message.bgCount ?? 0,
@@ -839,13 +841,16 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
           turnRunning: false,
           status: null,
           session:
-            message.contextPct !== undefined || message.maxContextTokens !== undefined
+            message.contextPct !== undefined ||
+            message.maxContextTokens !== undefined ||
+            message.cacheHitPct !== undefined
               ? {
                   ...state.session,
                   ...(message.contextPct !== undefined ? { contextPct: message.contextPct } : {}),
                   ...(message.maxContextTokens !== undefined
                     ? { maxContextTokens: message.maxContextTokens }
                     : {}),
+                  ...(message.cacheHitPct !== undefined ? { cacheHitPct: message.cacheHitPct } : {}),
                 }
               : state.session,
         },

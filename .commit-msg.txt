@@ -1,5 +1,6 @@
-fix(android): show "App notifications" instead of "Browser notifications" in Settings
+fix: wrap FolderPicker footer on mobile and add tappable context + cache hit details
 
-- Render "App notifications", "Blocked in Android app settings...", and "Paused on this device." when running inside Capacitor.
-- Add unit test in SettingsView.test.tsx.
-- Bump unified Quartz version to 0.1.1.
+- Wrap FolderPicker footer buttons on narrow screens so nothing overflows to the right.
+- Expose cacheHitPct on session_state and turn_end frames from src/quartz/web/session.py.
+- Turn ContextRing into a tappable button with a popover showing Context %/window and Cache hit % on both mobile and desktop.
+- Bump unified Quartz version to 0.1.2.

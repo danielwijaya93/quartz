@@ -612,7 +612,15 @@ class WebSession:
             rt = self.runtime
             max_ctx = rt.max_context_tokens
             ctx_pct = round(rt.usage_stats.context_pct(max_ctx), 1) if max_ctx > 0 else 0.0
-            self.emit(_turn_end_frame(outcome, context_pct=ctx_pct, max_context_tokens=max_ctx))
+            cache_hit_pct = round(float(getattr(rt.usage_stats, "cache_hit_rate", 0.0)) * 100.0, 1)
+            self.emit(
+                _turn_end_frame(
+                    outcome,
+                    context_pct=ctx_pct,
+                    max_context_tokens=max_ctx,
+                    cache_hit_pct=cache_hit_pct,
+                )
+            )
         finally:
             self._settle_streamed_text(outcome)
             with self._lock:
@@ -754,6 +762,7 @@ class WebSession:
             messages = list(runtime.messages)
         max_ctx = runtime.max_context_tokens
         ctx_pct = round(runtime.usage_stats.context_pct(max_ctx), 1) if max_ctx > 0 else 0.0
+        cache_hit_pct = round(float(getattr(runtime.usage_stats, "cache_hit_rate", 0.0)) * 100.0, 1)
         return {
             "type": "session_state",
             "sessionId": runtime.active_session.id,
@@ -762,6 +771,7 @@ class WebSession:
             "effort": runtime.effort,
             "contextPct": ctx_pct,
             "maxContextTokens": max_ctx,
+            "cacheHitPct": cache_hit_pct,
             "messages": messages,
             "turnRunning": turn_running,
             # The answer the running turn has written but not yet committed to
@@ -843,6 +853,7 @@ def _turn_end_frame(
     *,
     context_pct: float | None = None,
     max_context_tokens: int | None = None,
+    cache_hit_pct: float | None = None,
 ) -> Frame:
     frame: Frame = {
         "type": "turn_end",
@@ -854,6 +865,8 @@ def _turn_end_frame(
         frame["contextPct"] = context_pct
     if max_context_tokens is not None:
         frame["maxContextTokens"] = max_context_tokens
+    if cache_hit_pct is not None:
+        frame["cacheHitPct"] = cache_hit_pct
     if outcome.error is not None:
         frame["error"] = str(outcome.error) or outcome.error.__class__.__name__
     return frame
