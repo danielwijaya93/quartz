@@ -49,7 +49,8 @@ npm run build
 npx cap sync android
 
 cd "$WEBAPP_DIR/android"
+rm -f "$WEBAPP_DIR/android/app/build/outputs/apk/debug/"*.apk
 ./gradlew assembleDebug --no-daemon
 
-APK_PATH="$WEBAPP_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
+APK_PATH="$(ls -1 "$WEBAPP_DIR/android/app/build/outputs/apk/debug/"quartz-*.apk | head -n 1)"
 echo "APK ready: $APK_PATH ($(du -h "$APK_PATH" | cut -f1))"

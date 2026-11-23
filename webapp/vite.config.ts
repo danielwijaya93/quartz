@@ -1,7 +1,18 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
+
+const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version?: string };
+const appVersion = pkg.version ?? "0.1.0";
+let appBuild = "dev";
+try {
+  appBuild = execSync("git rev-list --count HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim() || "dev";
+} catch {
+  /* Not a git checkout. */
+}
 
 /**
  * Static SPA build. `quartz web` serves `dist/` from the Python server, so there
@@ -11,6 +22,10 @@ import { fileURLToPath, URL } from "node:url";
  * URL the shipped app uses (same-origin WebSocket, no CORS).
  */
 export default defineConfig({
+  define: {
+    "import.meta.env.VITE_APP_VERSION": JSON.stringify(appVersion),
+    "import.meta.env.VITE_APP_BUILD": JSON.stringify(appBuild),
+  },
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },

@@ -11,16 +11,23 @@ describe("SettingsView", () => {
   it("renders in-canvas settings without a modal dialog or MCP clutter and returns via Back to chat", async () => {
     const user = userEvent.setup();
     const onBack = vi.fn();
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/api/health")) {
+        return new Response(JSON.stringify({ status: "ok", version: "0.1.0" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(
         JSON.stringify({
           values: { reserve: 16384, keep: 32768, progress: 5, bg: 30 },
           defaults: { reserve: 16384, keep: 32768, progress: 5, bg: 30 },
           configPath: "~/.quartz/config.json",
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
+      );
+    });
 
     render(<SettingsView onBack={onBack} />);
     expect(screen.queryByRole("dialog")).toBeNull();

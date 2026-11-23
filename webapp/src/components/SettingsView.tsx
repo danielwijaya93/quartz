@@ -77,12 +77,22 @@ export function SettingsView({
   const [loading, setLoading] = React.useState(false);
   const [savingKey, setSavingKey] = React.useState<string | null>(null);
   const [status, setStatus] = React.useState<{ ok: boolean; text: string } | null>(null);
+  const [serverVersion, setServerVersion] = React.useState<string | null>(null);
 
   const load = React.useCallback(async () => {
     setLoading(true);
     setStatus(null);
     try {
-      const resp = await fetch(apiUrl("/api/settings"));
+      const [resp, healthResp] = await Promise.all([
+        fetch(apiUrl("/api/settings")),
+        fetch(apiUrl("/api/health")).catch(() => null),
+      ]);
+      if (healthResp?.ok) {
+        const health = (await healthResp.json()) as { version?: unknown };
+        if (typeof health.version === "string" && health.version) {
+          setServerVersion(health.version);
+        }
+      }
       if (!resp.ok) throw new Error("Failed to load settings");
       const payload = (await resp.json()) as SettingsPayload;
       setData(payload);
@@ -181,6 +191,10 @@ export function SettingsView({
           <h1 className="text-lg font-semibold tracking-tight text-foreground">Settings</h1>
           <p className="mt-0.5 text-xs text-muted">
             Session compaction and background check defaults.
+          </p>
+          <p className="mt-1 text-xs text-muted/80">
+            App v{import.meta.env.VITE_APP_VERSION || "0.1.0"} (build {import.meta.env.VITE_APP_BUILD || "dev"})
+            {serverVersion ? ` · Server v${serverVersion}` : ""}
           </p>
         </div>
 

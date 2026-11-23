@@ -1,8 +1,8 @@
-fix(android): request POST_NOTIFICATIONS and create high-importance alert channel
+feat: unified versioning across Core/TUI, Web, and Android + versioned APK names
 
-- nativePermissionHint() previously defaulted to "granted", so useNotifications
-  never called requestNotificationPermission() on Android 13+.
-- Query LocalNotifications.checkPermissions() on native mount, cache the real
-  status in localStorage, and prompt when notifications are enabled and state is "default".
-- Create a high-importance `quartz_alerts` notification channel and route
-  turn-end, permission-request, and error alerts through it.
+- Expose __version__ in src/quartz/__init__.py (reads pyproject.toml / package metadata).
+- Add -V / --version flag to `quartz` CLI and `"version"` field to `/api/health`.
+- Add scripts/bump_version.py to bump pyproject.toml and webapp/package.json together.
+- Inject VITE_APP_VERSION and VITE_APP_BUILD in webapp/vite.config.ts and display App + Server versions in SettingsView.
+- Update webapp/android/app/build.gradle to read versionName from package.json, compute versionCode from git commit count, and output quartz-v<version>-b<build>.apk.
+- Update webapp/scripts/build-apk.sh, .github/workflows/ci.yml, and AGENTS.md for versioned APK filenames.
