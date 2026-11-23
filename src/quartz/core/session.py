@@ -632,7 +632,16 @@ class Session:
 
     def record_cell_meta(self, tool_call_id: str, *, ok: bool, duration_s: float) -> None:
         if tool_call_id:
-            self.cell_meta[tool_call_id] = {"ok": bool(ok), "duration_s": float(duration_s)}
+            existing = dict(self.cell_meta.get(tool_call_id) or {})
+            existing["ok"] = bool(ok)
+            existing["duration_s"] = float(duration_s)
+            self.cell_meta[tool_call_id] = existing
+
+    def record_cell_files(self, tool_call_id: str, files: list[dict[str, Any]]) -> None:
+        if tool_call_id and files:
+            existing = dict(self.cell_meta.get(tool_call_id) or {})
+            existing["files"] = [dict(f) for f in files]
+            self.cell_meta[tool_call_id] = existing
 
     def record_steering(self, message_index: int) -> None:
         if message_index >= 0:

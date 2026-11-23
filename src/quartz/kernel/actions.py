@@ -534,6 +534,9 @@ def _describe_call_intent(node: ast.Call) -> str | None:
     if name == "view_image":
         path = _intent_const(node.args[0]) if node.args else _kw_str(node, "path")
         return f"View {_shorten_path(path)}" if path else None
+    if name == "attach_file":
+        path = _intent_const(node.args[0]) if node.args else _kw_str(node, "path")
+        return f"Attach {_shorten_path(path)}" if path else None
     if name == "ls":
         path = _intent_const(node.args[0]) if node.args else _kw_str(node, "path")
         if not path or path == ".":

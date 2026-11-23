@@ -40,6 +40,7 @@ from quartz.core.loop import drain_bash_events
 from quartz.core.session import Session
 from quartz.settings import project_trust_status, trust_project
 from quartz.core.turn import TurnOutcome, TurnStatus, run_interactive_turn
+from quartz.web.attachments import AttachedFileRegistry
 from quartz.web.bridge import Frame, Push, WebObserver
 
 if TYPE_CHECKING:
@@ -118,11 +119,13 @@ class WebSession:
         cwd: Path,
         runner: TurnRunner = run_interactive_turn,
         on_event: Callable[[WebSession, Frame], None] | None = None,
+        file_registry: AttachedFileRegistry | None = None,
     ) -> None:
         self._build = build
         self._cwd = cwd
         self._runner = runner
         self._on_event = on_event
+        self._file_registry = file_registry
         self._runtime: AgentRuntime | None = None
         self._turn: _Turn | None = None
         self._lock = threading.Lock()
@@ -630,7 +633,12 @@ class WebSession:
             self._status = None
             self._last_active_at = time.monotonic()
             self._idle_prompted_at = None
-            observer = WebObserver(self.emit, runtime=runtime)
+            reg = self._file_registry
+            observer = WebObserver(
+                self.emit,
+                runtime=runtime,
+                register_file=reg.register if reg is not None else None,
+            )
             turn.thread = threading.Thread(
                 target=self._run_turn,
                 args=(turn, observer),
@@ -667,7 +675,12 @@ class WebSession:
             # The observer pushes through `self.emit`, not through the socket that
             # started the turn: that socket may be gone (a phone asleep) and another
             # may be listening by the time the next token arrives.
-            observer = WebObserver(self.emit, runtime=runtime)
+            reg = self._file_registry
+            observer = WebObserver(
+                self.emit,
+                runtime=runtime,
+                register_file=reg.register if reg is not None else None,
+            )
             turn.thread = threading.Thread(
                 target=self._run_turn,
                 args=(turn, observer),
@@ -849,6 +862,12 @@ class WebSession:
         max_ctx = runtime.max_context_tokens
         ctx_pct = round(runtime.usage_stats.context_pct(max_ctx), 1) if max_ctx > 0 else 0.0
         cache_hit_pct = round(float(getattr(runtime.usage_stats, "cache_hit_rate", 0.0)) * 100.0, 1)
+        raw_cell_meta = getattr(runtime.active_session, "cell_meta", None) or {}
+        cell_files = {
+            tc_id: list(meta["files"])
+            for tc_id, meta in raw_cell_meta.items()
+            if isinstance(meta, dict) and isinstance(meta.get("files"), list) and meta["files"]
+        }
         return {
             "type": "session_state",
             "sessionId": runtime.active_session.id,
@@ -859,6 +878,7 @@ class WebSession:
             "maxContextTokens": max_ctx,
             "cacheHitPct": cache_hit_pct,
             "messages": messages,
+            "cellFiles": cell_files,
             "turnRunning": turn_running,
             # The answer the running turn has written but not yet committed to
             # history. A client that connects mid-turn draws it, so the prose already
@@ -1006,6 +1026,7 @@ class SessionManager:
         self._watcher_timer: threading.Timer | None = None
         self._closed = False
         self._push_hook: Callable[[WebSession, Frame], None] | None = None
+        self.file_registry = AttachedFileRegistry()
 
     def set_push_hook(self, hook: Callable[[WebSession, Frame], None] | None) -> None:
         """Register a callback invoked for session frames (e.g. Web Push dispatch)."""
@@ -1115,6 +1136,7 @@ class SessionManager:
             cwd=self._cwd,
             runner=self._runner,
             on_event=self._on_session_event,
+            file_registry=self.file_registry,
         )
 
     @staticmethod

@@ -2,6 +2,7 @@ import * as React from "react";
 import { Card, Chip, Disclosure, Spinner } from "@heroui/react";
 import { Check, X } from "lucide-react";
 import { firstLine, isUnifiedDiff, parseDiffStats, type ToolRow } from "@/lib/transcript";
+import { FileAttachments } from "../FileAttachments";
 
 const STATUS_COPY: Record<
   ToolRow["status"],
@@ -79,7 +80,8 @@ function DiffOutput({ text }: { text: string }): React.ReactElement {
 
 export function ToolRowView({ row }: { row: ToolRow }): React.ReactElement {
   const chips = actionChips(row.actions);
-  const hasBody = row.code !== "" || row.output !== "" || row.images.length > 0;
+  const hasFiles = (row.files?.length ?? 0) > 0;
+  const hasBody = row.code !== "" || row.output !== "" || row.images.length > 0 || hasFiles;
   const failed = row.status === "failed";
   const defaultOpen = failed || row.images.length > 0;
   const status = STATUS_COPY[row.status];
@@ -166,6 +168,9 @@ export function ToolRowView({ row }: { row: ToolRow }): React.ReactElement {
                   </li>
                 ))}
               </ul>
+            ) : null}
+            {row.files && row.files.length > 0 ? (
+              <FileAttachments files={row.files} compact />
             ) : null}
             {chips.length > 0 ? (
               <ul className="flex flex-wrap gap-1.5" aria-label="Side effects">

@@ -23,6 +23,7 @@ class CellResult:
     stderr: str
     result: str | None
     images: list[dict[str, str]] = dataclasses.field(default_factory=list)
+    files: list[dict[str, Any]] = dataclasses.field(default_factory=list)
 
     def format_for_model(self) -> str:
         """Format cell output concisely for the LLM tool result."""

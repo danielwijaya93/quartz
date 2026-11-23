@@ -11,6 +11,7 @@ import {
   type Turn,
 } from "@/lib/transcript";
 import { TranscriptAnnouncer } from "./TranscriptAnnouncer";
+import { FileAttachments } from "./FileAttachments";
 import { TurnTray } from "./TurnTray";
 import { UserRowView } from "./rows/UserRowView";
 import { AssistantRowView } from "./rows/AssistantRowView";
@@ -99,8 +100,15 @@ function TurnView({
   onPrompt: (text: string) => void;
   onFormState: (id: string, state: Record<string, unknown>) => void;
 }): React.ReactElement {
+  const attachedFiles = turn.files ?? [];
   return (
-    <div className={turn.answer !== null ? "mb-2 flex flex-col gap-1.5" : "flex flex-col gap-1"}>
+    <div
+      className={
+        turn.answer !== null || attachedFiles.length > 0
+          ? "mb-2 flex flex-col gap-1.5"
+          : "flex flex-col gap-1"
+      }
+    >
       {turn.steps.length > 0 ? (
         <TurnTray turn={turn} richUi={richUi} onPrompt={onPrompt} onFormState={onFormState} />
       ) : null}
@@ -113,6 +121,7 @@ function TurnView({
           onFormState={onFormState}
         />
       ) : null}
+      {attachedFiles.length > 0 ? <FileAttachments files={attachedFiles} /> : null}
     </div>
   );
 }

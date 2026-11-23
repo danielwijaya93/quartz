@@ -47,6 +47,14 @@ export interface ImageAttachment {
   data: string;
 }
 
+export interface FileAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  url: string;
+}
+
 export interface Command {
   name: string;
   description: string;
@@ -137,6 +145,7 @@ export interface SessionStateMessage {
   maxContextTokens?: number;
   cacheHitPct?: number;
   messages: Message[];
+  cellFiles?: Record<string, FileAttachment[]>;
   turnRunning: boolean;
   /**
    * The answer the running turn has written but not yet committed to `messages`.
@@ -168,6 +177,7 @@ export type ServerMessage =
       output: string;
       durationMs: number;
       images?: ImageAttachment[];
+      files?: FileAttachment[];
       actions?: Record<string, unknown> | null;
     }
   | { type: "bash_notice"; text: string }

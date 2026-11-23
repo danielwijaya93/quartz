@@ -48,6 +48,24 @@ def _images(cell: CellResult) -> list[dict[str, str]]:
     ]
 
 
+def _files(
+    cell: CellResult,
+    register_file: Callable[[dict[str, Any]], dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Register kernel file attachments and return wire-safe descriptors."""
+    if register_file is None or not getattr(cell, "files", None):
+        return []
+    out: list[dict[str, Any]] = []
+    for file_meta in cell.files:
+        if not isinstance(file_meta, dict) or not file_meta.get("path"):
+            continue
+        try:
+            out.append(register_file(file_meta))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
 def _actions(code: str) -> dict[str, Any] | None:
     """Reuse the terminal's cell-intent classifier for the row's chips.
 
@@ -72,10 +90,17 @@ class WebObserver(TurnView):
     terminal ones.
     """
 
-    def __init__(self, push: Push, *, runtime: AgentRuntime) -> None:
+    def __init__(
+        self,
+        push: Push,
+        *,
+        runtime: AgentRuntime,
+        register_file: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    ) -> None:
         super().__init__()
         self._push = push
         self._runtime = runtime
+        self._register_file = register_file
         # tool_call id -> (code, monotonic start). `on_tool_result` gets no code and
         # no timing, so both are captured when the call is announced.
         self._pending: dict[str, tuple[str, float]] = {}
@@ -105,6 +130,11 @@ class WebObserver(TurnView):
         duration_s = time.monotonic() - started
         # Same side effect the terminal view performs, for the same reason.
         self._runtime.cell_history.append((code, cell, duration_s))
+        attached_files = _files(cell, self._register_file)
+        if attached_files:
+            session = self._runtime.active_session
+            if hasattr(session, "record_cell_files"):
+                session.record_cell_files(tool_call_id, attached_files)
         self._push(
             {
                 "type": "tool_result",
@@ -113,6 +143,7 @@ class WebObserver(TurnView):
                 "output": cell.format_for_model(),
                 "durationMs": int(duration_s * 1000),
                 "images": _images(cell),
+                "files": attached_files,
                 "actions": _actions(code),
             }
         )

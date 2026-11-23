@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from quartz.core.session import Session
@@ -670,6 +670,23 @@ def create_app(
         target = workspace_cwd or str(active_cwd)
         payload = await asyncio.to_thread(list_workspace_files, target, active_cwd, limit)
         return JSONResponse(payload)
+
+    @app.get("/api/files/{file_id}")
+    async def download_attached_file(
+        file_id: str,
+        inline: bool = Query(default=False),
+    ) -> Response:
+        """Serve a file that Quartz explicitly attached during a turn."""
+        entry = await asyncio.to_thread(manager.file_registry.get, file_id)
+        if entry is None:
+            return JSONResponse({"error": "File not found"}, status_code=404)
+        disposition = "inline" if inline else "attachment"
+        return FileResponse(
+            path=entry["path"],
+            media_type=entry.get("mimeType") or "application/octet-stream",
+            filename=entry.get("name") or Path(entry["path"]).name,
+            content_disposition_type=disposition,
+        )
 
     # -- model picker ------------------------------------------------------
 

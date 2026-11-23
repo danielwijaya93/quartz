@@ -14,6 +14,7 @@
 import type {
   Command,
   CommandResult,
+  FileAttachment,
   ImageAttachment,
   InboxItem,
   Message,
@@ -61,6 +62,7 @@ export interface ToolRow {
   output: string;
   durationMs: number | null;
   images: ImageAttachment[];
+  files?: FileAttachment[];
   actions: Record<string, unknown> | null;
 }
 
@@ -489,6 +491,7 @@ function rowsFromMessage(message: Message, index: number): Row[] {
           output: "",
           durationMs: null,
           images: [],
+          files: [],
           actions: null,
           // Marked complete: history has no duration, and a spinner would lie.
           ...({} as Record<string, never>),
@@ -508,7 +511,10 @@ function rowsFromMessage(message: Message, index: number): Row[] {
 }
 
 /** Build history rows and attach `role: "tool"` outputs onto their matching ToolRows. */
-function buildHistoryRows(messages: Message[]): Row[] {
+function buildHistoryRows(
+  messages: Message[],
+  cellFiles?: Record<string, FileAttachment[]>,
+): Row[] {
   const rows: Row[] = [];
   const toolRowIndex = new Map<string, number>();
   for (let index = 0; index < messages.length; index += 1) {
@@ -520,10 +526,12 @@ function buildHistoryRows(messages: Message[]): Row[] {
           const existing = rows[targetIdx];
           if (existing && existing.kind === "tool") {
             const { text, images } = extractMessageContent(message.content);
+            const attachedFiles = cellFiles?.[message.tool_call_id];
             rows[targetIdx] = {
               ...existing,
               output: text,
               images: images.length > 0 ? images : existing.images,
+              files: attachedFiles && attachedFiles.length > 0 ? attachedFiles : existing.files,
             };
           }
         }
@@ -547,8 +555,12 @@ function buildHistoryRows(messages: Message[]): Row[] {
  * log*. Live rows keep their network ids, so a reconnect that replays history
  * adds only rows that were never rendered.
  */
-function mergeHistory(state: TranscriptState, messages: Message[]): TranscriptState {
-  const incoming = buildHistoryRows(messages);
+function mergeHistory(
+  state: TranscriptState,
+  messages: Message[],
+  cellFiles?: Record<string, FileAttachment[]>,
+): TranscriptState {
+  const incoming = buildHistoryRows(messages, cellFiles);
   const fresh = incoming.filter((row) => !state.seen.has(row.id));
 
   // A prompt is echoed locally the moment it is sent (the wire has no
@@ -661,7 +673,7 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
       const switched =
         state.session.sessionId !== "" && state.session.sessionId !== message.sessionId;
       const base = switched ? { ...initialState, session: state.session } : state;
-      const merged = withLiveText(mergeHistory(base, message.messages), message.streamingText);
+      const merged = withLiveText(mergeHistory(base, message.messages, message.cellFiles), message.streamingText);
       return {
         ...merged,
         turnRunning: message.turnRunning,
@@ -732,6 +744,7 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
         output: "",
         durationMs: null,
         images: [],
+        files: [],
         actions: null,
       });
 
@@ -747,6 +760,7 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
           output: message.output,
           durationMs: message.durationMs,
           images: message.images ?? [],
+          files: message.files ?? [],
           actions: message.actions ?? null,
         });
       }
@@ -756,6 +770,7 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
         output: message.output,
         durationMs: message.durationMs,
         images: message.images ?? [],
+        files: message.files ?? [],
         actions: message.actions ?? null,
       }));
     }
@@ -952,6 +967,8 @@ export interface Turn {
   id: string;
   steps: TurnStep[];
   answer: AssistantRow | null;
+  /** Files attached by tools during this turn, lifted out for prominent download. */
+  files?: FileAttachment[];
   /** The turn is running: the tray header shows the current step instead of a count. */
   live: boolean;
   /** Total elapsed turn duration in milliseconds when settled. */
@@ -1161,6 +1178,16 @@ function buildTurn(rows: readonly (AssistantRow | ThinkingRow | ToolRow)[]): Tur
       break;
     }
   }
+  const files: FileAttachment[] = [];
+  const seenFileIds = new Set<string>();
+  for (const row of rows) {
+    if (row.kind !== "tool" || !row.files?.length) continue;
+    for (const f of row.files) {
+      if (seenFileIds.has(f.id)) continue;
+      seenFileIds.add(f.id);
+      files.push(f);
+    }
+  }
   return {
     kind: "turn",
     // Derived from the first row's id, never from a position: a disclosure keyed
@@ -1168,6 +1195,7 @@ function buildTurn(rows: readonly (AssistantRow | ThinkingRow | ToolRow)[]): Tur
     id: `turn-${rows[0]!.id}`,
     steps: foldSteps(rows, answerIndex),
     answer: answerIndex === -1 ? null : (rows[answerIndex] as AssistantRow),
+    files,
     live: false,
   };
 }

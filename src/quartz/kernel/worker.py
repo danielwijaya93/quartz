@@ -38,6 +38,7 @@ from typing import Any
 
 from quartz.core.background import STATUS_TAIL_LINES
 from quartz.kernel.helpers import (
+    _FILES_VAR,
     _IMAGES_VAR,
     _record_cell_image,
     _truncate,
@@ -695,6 +696,7 @@ class KernelWorker:
         stderr: str,
         result_repr: str | None,
         images: list[dict[str, str]],
+        files: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         return {
             "type": "exec_result",
@@ -704,6 +706,7 @@ class KernelWorker:
             "stderr": _spill_or_truncate(stderr, MAX_OUTPUT_CHARS, "stderr", cell_id),
             "result": result_repr,
             "images": images,
+            "files": files or [],
             "running_bash": sum(1 for h in self._handles if h.running),
         }
 
@@ -712,6 +715,7 @@ class KernelWorker:
         stdout_buf = io.StringIO()
         stderr_buf = io.StringIO()
         cell_images: list[dict[str, str]] = []
+        cell_files: list[dict[str, Any]] = []
         result_repr: str | None = None
         ok = True
 
@@ -742,6 +746,7 @@ class KernelWorker:
                 tok_out = _STDOUT_VAR.set(stdout_buf)
                 tok_err = _STDERR_VAR.set(stderr_buf)
                 tok_img = _IMAGES_VAR.set(cell_images)
+                tok_files = _FILES_VAR.set(cell_files)
                 tok_cid = _CELL_ID_VAR.set(cell_id)
                 try:
                     coro = eval(compiled, self._namespace, self._namespace)
@@ -761,6 +766,7 @@ class KernelWorker:
                     _STDOUT_VAR.reset(tok_out)
                     _STDERR_VAR.reset(tok_err)
                     _IMAGES_VAR.reset(tok_img)
+                    _FILES_VAR.reset(tok_files)
             for w in syntax_warnings:
                 if issubclass(w.category, SyntaxWarning):
                     stderr_buf.write(f"<ipython>:{w.lineno}: {w.category.__name__}: {w.message}\n")
@@ -777,7 +783,7 @@ class KernelWorker:
             self._active_cell_ids.discard(cell_id)
 
         return self._cell_result(
-            cell_id, ok, stdout_buf.getvalue(), stderr_buf.getvalue(), result_repr, cell_images
+            cell_id, ok, stdout_buf.getvalue(), stderr_buf.getvalue(), result_repr, cell_images, cell_files
         )
 
     def list_helpers(self) -> dict[str, Any]:
