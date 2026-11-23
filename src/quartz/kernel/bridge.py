@@ -7,6 +7,7 @@ import os
 import shlex
 import stat
 import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -31,6 +32,9 @@ class PermissionRequest:
     cwd: str
     scope: str
     command_display: str
+    cancel_event: threading.Event | None = dataclasses.field(
+        default=None, compare=False, repr=False
+    )
 
 
 class PermissionPolicy:
@@ -116,7 +120,9 @@ def find_real_binary(name: str, *, exclude_dir: Path | None = None) -> str | Non
             entry_path = Path(entry).resolve()
         except OSError:
             continue
-        if excluded is not None and entry_path == excluded:
+        if (excluded is not None and entry_path == excluded) or (
+            entry_path.name == "shims" and entry_path.parent.name.startswith("quartz-bridge-")
+        ):
             continue
         candidate = entry_path / name
         if candidate.is_file() and os.access(candidate, os.X_OK):
@@ -165,7 +171,7 @@ def _find_real(name):
             p = Path(entry).resolve()
         except OSError:
             continue
-        if p == SHIM_DIR:
+        if p == SHIM_DIR or (p.name == "shims" and p.parent.name.startswith("quartz-bridge-")):
             continue
         cand = p / name
         if cand.is_file() and os.access(cand, os.X_OK):

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import inspect
 import os
 import queue
 import subprocess
@@ -150,6 +151,7 @@ class WebSession:
         self._perm_decision: str | None = None
         self._last_active_at: float = time.monotonic()
         self._idle_prompted_at: float | None = None
+        self._sandbox_override: bool | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -218,6 +220,25 @@ class WebSession:
         self._retire()
         self._swap(*self._build(cleaned, self._resume_cwd(cleaned)))
 
+    def _call_build(
+        self,
+        session_id: str | None,
+        cwd: Path | None = None,
+        *,
+        sandbox: bool | None = None,
+    ) -> tuple[AgentRuntime, bool]:
+        effective_sandbox = self._sandbox_override if sandbox is None else sandbox
+        if effective_sandbox is not None:
+            try:
+                params = inspect.signature(self._build).parameters
+            except (TypeError, ValueError):
+                params = {}
+            if "sandbox" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            ):
+                return self._build(session_id, cwd, sandbox=effective_sandbox)  # type: ignore[call-arg]
+        return self._build(session_id, cwd)
+
     def trust_current_project(self) -> None:
         """Persist trust for the active session's cwd and rebuild the runtime."""
         with self._lock:
@@ -229,7 +250,25 @@ class WebSession:
         has_log = runtime.active_session.jsonl_path.is_file()
         trust_project(target_cwd)
         self._retire()
-        self._swap(*self._build(sid if has_log else None, target_cwd))
+        self._swap(*self._call_build(sid if has_log else None, target_cwd))
+
+    def set_sandbox(self, enabled: bool) -> None:
+        """Rebuild the active session's runtime with sandboxing enabled or disabled."""
+        with self._lock:
+            if self._turn is not None:
+                raise TurnBusyError("Cannot toggle sandbox while a turn is running.")
+        runtime = self.runtime
+        current = bool(getattr(getattr(runtime.kernel, "_sandbox_config", None), "enabled", False))
+        if current == enabled:
+            self._sandbox_override = enabled
+            return
+        target_cwd = runtime.cwd
+        sid = runtime.active_session.id
+        has_log = runtime.active_session.jsonl_path.is_file()
+        self._retire()
+        built = self._call_build(sid if has_log else None, target_cwd, sandbox=enabled)
+        self._sandbox_override = enabled
+        self._swap(*built)
 
     def _resume_cwd(self, session_id: str) -> Path:
         """The folder to resume in: the log's own `meta.cwd`, or the server's.
@@ -279,9 +318,18 @@ class WebSession:
             self._perm_event = event
             self._perm_decision = None
         self.emit({"type": "permission_request", **payload})
-        event.wait()
+        cancel_ev = getattr(req, "cancel_event", None)
+        if cancel_ev is None:
+            event.wait()
+        else:
+            while not event.wait(timeout=0.05):
+                if cancel_ev.is_set():
+                    break
         with self._perm_lock:
-            decision = self._perm_decision or "reject"
+            if event.is_set():
+                decision = self._perm_decision or "reject"
+            else:
+                decision = "reject"
             if self._pending_permission and self._pending_permission.get("requestId") == req_id:
                 self._pending_permission = None
                 self._perm_event = None

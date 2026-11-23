@@ -26,6 +26,7 @@ import subprocess
 import symtable
 import sys
 import tempfile
+import threading
 import time
 import uuid
 import traceback
@@ -411,7 +412,10 @@ class KernelWorker:
         self.headless = False
         #: Status-check period for running jobs, in seconds (``0`` disables).
         self.background_check_every = 0.0
+        self._send_lock = threading.Lock()
         self._host_pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._sync_host_lock = threading.Lock()
+        self._sync_host_pending: dict[str, tuple[threading.Event, list[dict[str, Any]]]] = {}
         use_host_mcp = os.environ.get("QUARTZ_HOST_MCP") == "1"
         self.mcp: MCPManager | HostMCPProxy
         if use_host_mcp:
@@ -476,6 +480,9 @@ class KernelWorker:
             if timeout is not None:
                 return await asyncio.wait_for(fut, timeout=timeout)
             return await fut
+        except asyncio.CancelledError:
+            self._send({"type": "host_cancel", "id": req_id})
+            raise
         finally:
             self._host_pending.pop(req_id, None)
 
@@ -533,8 +540,9 @@ class KernelWorker:
 
     def _send(self, payload: dict[str, Any]) -> None:
         line = json.dumps(payload, ensure_ascii=False)
-        self._proto_out.write(line + "\n")
-        self._proto_out.flush()
+        with self._send_lock:
+            self._proto_out.write(line + "\n")
+            self._proto_out.flush()
 
     def _send_bg_count(self) -> None:
         jobs = [
@@ -1031,27 +1039,47 @@ class KernelWorker:
         return {"restored": restored, "skipped": skipped}
 
 
-async def _stdin_reader(queue: asyncio.Queue[dict[str, Any] | None]) -> None:
-    loop = asyncio.get_running_loop()
-    while True:
-        line = await loop.run_in_executor(None, sys.stdin.readline)
-        if not line:
-            await queue.put(None)
-            break
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        await queue.put(msg)
+def _start_stdin_reader(
+    worker: KernelWorker,
+    loop: asyncio.AbstractEventLoop,
+    queue: asyncio.Queue[dict[str, Any] | None],
+) -> threading.Thread:
+    def _reader() -> None:
+        while True:
+            line = sys.stdin.readline()
+            if not line:
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+                break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if msg.get("type") == "host_response":
+                req_id = msg.get("id", "")
+                with worker._sync_host_lock:
+                    entry = worker._sync_host_pending.get(req_id)
+                if entry is not None:
+                    ev, box = entry
+                    box.append(msg)
+                    ev.set()
+                    continue
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(queue.put_nowait, msg)
+
+    t = threading.Thread(target=_reader, daemon=True)
+    t.start()
+    return t
 
 
 async def _main() -> None:
     worker = KernelWorker(isolate_stdio=True)
+    loop = asyncio.get_running_loop()
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-    reader_task = asyncio.create_task(_stdin_reader(queue))
+    _start_stdin_reader(worker, loop, queue)
 
     active_cell_tasks: set[asyncio.Task[None]] = set()
 
@@ -1079,9 +1107,12 @@ async def _main() -> None:
     except (ValueError, OSError):
         pass
 
-    bridge_server: asyncio.AbstractServer | None = None
+    bridge_sock: socket.socket | None = None
+    bridge_stop = threading.Event()
     bridge_tmpdir: str | None = None
     if os.environ.get("QUARTZ_HOST_BRIDGE") == "1":
+        import select
+        import socket
         import tempfile
         from quartz.kernel.bridge import ensure_shim_dir
 
@@ -1092,15 +1123,64 @@ async def _main() -> None:
         os.environ["QUARTZ_HOST_BRIDGE_SOCK"] = str(sock_path)
         os.environ["PATH"] = f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
 
-        async def _handle_bridge_conn(
-            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-        ) -> None:
+        bridge_inflight_lock = threading.Lock()
+        bridge_inflight = 0
+
+        def _handle_bridge_conn(conn: socket.socket) -> None:
+            nonlocal bridge_inflight
             try:
-                raw = await reader.readline()
-                if not raw:
+                buf = bytearray()
+                while b"\n" not in buf:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        return
+                    buf.extend(chunk)
+                raw_line = bytes(buf).split(b"\n", 1)[0]
+                if not raw_line:
                     return
-                req = json.loads(raw.decode("utf-8"))
-                resp = await worker._host_rpc("bridge.exec", req, timeout=None)
+                req = json.loads(raw_line.decode("utf-8"))
+
+                with bridge_inflight_lock:
+                    bridge_inflight += 1
+                    os.environ["QUARTZ_BRIDGE_WAITING"] = "1"
+
+                rpc_id = uuid.uuid4().hex
+                ev = threading.Event()
+                box: list[dict[str, Any]] = []
+                with worker._sync_host_lock:
+                    worker._sync_host_pending[rpc_id] = (ev, box)
+                try:
+                    worker._send(
+                        {
+                            "type": "host_request",
+                            "id": rpc_id,
+                            "method": "bridge.exec",
+                            "params": req,
+                        }
+                    )
+                    cancelled = False
+                    while not ev.wait(timeout=0.05):
+                        if bridge_stop.is_set():
+                            cancelled = True
+                            break
+                        readable, _, _ = select.select([conn], [], [], 0)
+                        if readable:
+                            peek = conn.recv(1, socket.MSG_PEEK)
+                            if peek == b"":
+                                cancelled = True
+                                break
+                    if cancelled:
+                        worker._send({"type": "host_cancel", "id": rpc_id})
+                        return
+                    resp = box[0] if box else {}
+                finally:
+                    with worker._sync_host_lock:
+                        worker._sync_host_pending.pop(rpc_id, None)
+                    with bridge_inflight_lock:
+                        bridge_inflight = max(0, bridge_inflight - 1)
+                        if bridge_inflight == 0:
+                            os.environ.pop("QUARTZ_BRIDGE_WAITING", None)
+
                 if resp.get("ok") and isinstance(resp.get("result"), dict):
                     out = resp["result"]
                 else:
@@ -1109,21 +1189,35 @@ async def _main() -> None:
                         "stdout": "",
                         "stderr": str(resp.get("error", "Host bridge request failed")) + "\n",
                     }
-                writer.write((json.dumps(out) + "\n").encode("utf-8"))
-                await writer.drain()
+                conn.sendall((json.dumps(out) + "\n").encode("utf-8"))
             except Exception as exc:
                 with contextlib.suppress(Exception):
-                    writer.write(
+                    conn.sendall(
                         (
                             json.dumps({"exit_code": 126, "stdout": "", "stderr": f"bridge error: {exc}\n"})
                             + "\n"
                         ).encode("utf-8")
                     )
-                    await writer.drain()
             finally:
-                writer.close()
+                with contextlib.suppress(Exception):
+                    conn.close()
 
-        bridge_server = await asyncio.start_unix_server(_handle_bridge_conn, path=str(sock_path))
+        bridge_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        bridge_sock.bind(str(sock_path))
+        bridge_sock.listen(16)
+        bridge_sock.settimeout(0.2)
+
+        def _accept_bridge() -> None:
+            while not bridge_stop.is_set():
+                try:
+                    conn, _ = bridge_sock.accept()
+                except TimeoutError:
+                    continue
+                except OSError:
+                    break
+                threading.Thread(target=_handle_bridge_conn, args=(conn,), daemon=True).start()
+
+        threading.Thread(target=_accept_bridge, daemon=True).start()
 
     worker._send({"type": "ready"})
 
@@ -1207,17 +1301,16 @@ async def _main() -> None:
             break
 
     # Clean up any still-running background bash processes, bridge, and MCP sessions on shutdown
-    if bridge_server is not None:
-        bridge_server.close()
+    bridge_stop.set()
+    if bridge_sock is not None:
         with contextlib.suppress(Exception):
-            await bridge_server.wait_closed()
+            bridge_sock.close()
     if bridge_tmpdir is not None:
         shutil.rmtree(bridge_tmpdir, ignore_errors=True)
     await worker.mcp.close()
     for h in worker._handles:
         if h.running:
             h.kill(signal.SIGKILL, grace=0)
-    reader_task.cancel()
 
 
 if __name__ == "__main__":

@@ -141,3 +141,42 @@ def test_web_session_permission_unblocked_on_cancel(tmp_path: Path) -> None:
         for f in frames
     )
     ws.close()
+
+
+def test_web_session_permission_unblocked_on_request_cancel_event(tmp_path: Path) -> None:
+    rt = _DummyRuntime(tmp_path)
+    frames: list[dict[str, Any]] = []
+    cancel_ev = threading.Event()
+
+    ws = WebSession(build=lambda _sid, _cwd: (rt, False), cwd=tmp_path)
+    ws.attach(frames.append)
+    ws.ensure_runtime()
+
+    req = PermissionRequest(
+        tool="git",
+        argv=("push",),
+        cwd=str(tmp_path),
+        scope="git_remote",
+        command_display="git push",
+        cancel_event=cancel_ev,
+    )
+
+    result_holder: list[str] = []
+    t = threading.Thread(target=lambda: result_holder.append(ws._handle_permission_request(req)))
+    t.start()
+
+    for _ in range(50):
+        if any(f.get("type") == "permission_request" for f in frames):
+            break
+        threading.Event().wait(0.02)
+
+    assert ws.snapshot()["pendingPermission"] is not None
+    cancel_ev.set()
+    t.join(timeout=2.0)
+    assert result_holder == ["reject"]
+    assert ws.snapshot()["pendingPermission"] is None
+    assert any(
+        f.get("type") == "permission_resolved" and f.get("decision") == "reject"
+        for f in frames
+    )
+    ws.close()

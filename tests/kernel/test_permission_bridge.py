@@ -181,3 +181,87 @@ def test_exec_cell_does_not_timeout_while_waiting_for_permission(tmp_path: Path)
         assert "DONE 0" in res.stdout
     finally:
         kc.close()
+
+
+def test_killed_bridge_command_cancels_permission_and_unblocks_retry(tmp_path: Path) -> None:
+    import threading
+
+    repo, _remote = _init_git_repo_with_bare_remote(tmp_path)
+    calls: list[str] = []
+    first_cancelled = threading.Event()
+
+    def handler(req: PermissionRequest):
+        calls.append(req.command_display)
+        if len(calls) == 1:
+            assert req.cancel_event is not None
+            if req.cancel_event.wait(timeout=5.0):
+                first_cancelled.set()
+            return "reject"
+        return "allow_once"
+
+    kc = KernelClient(cwd=repo, sandbox=False, host_bridge=True, permission_handler=handler)
+    kc.start(timeout=15.0)
+    try:
+        r1 = kc.exec_cell(
+            "import subprocess\n"
+            "try:\n"
+            "    subprocess.run(['git', 'push', '-u', 'origin', 'HEAD'], timeout=0.25, capture_output=True)\n"
+            "except subprocess.TimeoutExpired:\n"
+            "    print('TIMED_OUT')\n",
+            timeout=10.0,
+        )
+        assert r1.ok, r1.stderr
+        assert "TIMED_OUT" in r1.stdout
+        assert first_cancelled.wait(timeout=3.0), "first bridge request was not cancelled on shim disconnect"
+
+        r2 = kc.exec_cell(
+            "r = await bash('git push -u origin HEAD')\nprint('RETRY', r.exit_code)",
+            timeout=10.0,
+        )
+        assert r2.ok, r2.stderr
+        assert "RETRY 0" in r2.stdout
+        assert len(calls) == 2
+    finally:
+        kc.close()
+
+
+def test_bridge_sets_waiting_env_while_inflight(tmp_path: Path) -> None:
+    import os
+    import threading
+
+    repo, _remote = _init_git_repo_with_bare_remote(tmp_path)
+    seen_waiting: list[str | None] = []
+    handler_entered = threading.Event()
+    release_handler = threading.Event()
+
+    def handler(_req: PermissionRequest):
+        handler_entered.set()
+        release_handler.wait(timeout=5.0)
+        return "allow_once"
+
+    kc = KernelClient(cwd=repo, sandbox=False, host_bridge=True, permission_handler=handler)
+    kc.start(timeout=15.0)
+    try:
+        def _release_after_check() -> None:
+            handler_entered.wait(timeout=5.0)
+            # Give the cell a moment to observe QUARTZ_BRIDGE_WAITING while subprocess is blocked
+            threading.Event().wait(0.15)
+            release_handler.set()
+
+        t = threading.Thread(target=_release_after_check, daemon=True)
+        t.start()
+        res = kc.exec_cell(
+            "import os, subprocess, time\n"
+            "p = subprocess.Popen(['git', 'push', '-u', 'origin', 'HEAD'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n"
+            "time.sleep(0.1)\n"
+            "during = os.environ.get('QUARTZ_BRIDGE_WAITING')\n"
+            "p.communicate(timeout=5)\n"
+            "after = os.environ.get('QUARTZ_BRIDGE_WAITING')\n"
+            "print('DURING', during, 'AFTER', after)\n",
+            timeout=10.0,
+        )
+        t.join(timeout=2.0)
+        assert res.ok, res.stderr
+        assert "DURING 1 AFTER None" in res.stdout
+    finally:
+        kc.close()
