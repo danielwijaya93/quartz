@@ -1141,13 +1141,20 @@ class SessionManager:
         return None
 
     def inbox_items(self) -> list[dict[str, Any]]:
-        """Return current inbox items ordered with permissions first, then unread, then newest."""
+        """Return current active session items ordered: needs you, working, done (newest first)."""
         with self._lock:
             items = list(self._inbox.values())
+
+        def _priority(kind: str) -> int:
+            if kind in ("permission", "error"):
+                return 0
+            if kind == "working":
+                return 1
+            return 2
+
         items.sort(
             key=lambda item: (
-                0 if item["kind"] == "permission" else 1,
-                0 if not item.get("read") else 1,
+                _priority(str(item.get("kind", ""))),
                 -int(item.get("_seq", 0)),
             )
         )
@@ -1165,10 +1172,10 @@ class SessionManager:
         ]
 
     def dismiss_inbox_item(self, session_id: str) -> bool:
-        """Dismiss a non-permission inbox item by session ID."""
+        """Dismiss a completed or errored active session item by session ID."""
         with self._lock:
             existing = self._inbox.get(session_id)
-            if existing is None or existing["kind"] == "permission":
+            if existing is None or existing["kind"] in ("permission", "working"):
                 return False
             self._inbox.pop(session_id, None)
         self._broadcast_inbox()
@@ -1200,18 +1207,22 @@ class SessionManager:
         changed = False
         with self._lock:
             existing = self._inbox.get(sid)
-            if kind == "_attached":
-                if existing is not None and existing["kind"] in ("done", "error"):
-                    self._inbox.pop(sid, None)
-                    changed = True
-            elif kind == "_closed":
+            if kind == "_closed":
                 if sid in self._inbox:
                     self._inbox.pop(sid, None)
                     changed = True
             elif kind == "turn_start":
-                if existing is not None and existing["kind"] in ("done", "error"):
-                    self._inbox.pop(sid, None)
-                    changed = True
+                self._inbox_seq += 1
+                self._inbox[sid] = {
+                    "sessionId": sid,
+                    "cwd": cwd,
+                    "title": self._session_title(ws),
+                    "kind": "working",
+                    "read": False,
+                    "updatedAt": datetime.now(timezone.utc).isoformat(),
+                    "_seq": self._inbox_seq,
+                }
+                changed = True
             elif kind == "permission_request":
                 tool = str(frame.get("tool") or "").strip()
                 command = str(frame.get("command") or "").strip()
@@ -1230,7 +1241,19 @@ class SessionManager:
                 changed = True
             elif kind == "permission_resolved":
                 if existing is not None and existing["kind"] == "permission":
-                    self._inbox.pop(sid, None)
+                    if ws.turn_running:
+                        self._inbox_seq += 1
+                        self._inbox[sid] = {
+                            "sessionId": sid,
+                            "cwd": cwd,
+                            "title": self._session_title(ws),
+                            "kind": "working",
+                            "read": False,
+                            "updatedAt": datetime.now(timezone.utc).isoformat(),
+                            "_seq": self._inbox_seq,
+                        }
+                    else:
+                        self._inbox.pop(sid, None)
                     changed = True
             elif kind == "turn_end":
                 status = frame.get("status")
@@ -1247,23 +1270,21 @@ class SessionManager:
                     item_kind = ""
                     preview = None
                 if item_kind:
-                    if ws.attached:
-                        if existing is not None and existing["kind"] in ("done", "error"):
-                            self._inbox.pop(sid, None)
-                            changed = True
-                    else:
-                        self._inbox_seq += 1
-                        self._inbox[sid] = {
-                            "sessionId": sid,
-                            "cwd": cwd,
-                            "title": self._session_title(ws),
-                            "kind": item_kind,
-                            "read": False,
-                            "updatedAt": datetime.now(timezone.utc).isoformat(),
-                            "preview": preview,
-                            "_seq": self._inbox_seq,
-                        }
-                        changed = True
+                    self._inbox_seq += 1
+                    self._inbox[sid] = {
+                        "sessionId": sid,
+                        "cwd": cwd,
+                        "title": self._session_title(ws),
+                        "kind": item_kind,
+                        "read": False,
+                        "updatedAt": datetime.now(timezone.utc).isoformat(),
+                        "preview": preview,
+                        "_seq": self._inbox_seq,
+                    }
+                    changed = True
+                elif existing is not None and existing["kind"] == "working":
+                    self._inbox.pop(sid, None)
+                    changed = True
         if changed:
             self._broadcast_inbox()
         hook = self._push_hook

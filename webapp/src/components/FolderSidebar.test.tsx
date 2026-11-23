@@ -521,23 +521,26 @@ describe("FolderSidebar's undo notice", () => {
         s2: { status: "done", unread: true },
       },
     });
-    expect(screen.getByLabelText("Running")).toBeInTheDocument();
-    expect(screen.getByLabelText("Completed, unread")).toBeInTheDocument();
+    expect(screen.getByLabelText("Working")).toBeInTheDocument();
+    expect(screen.getByLabelText("Done")).toBeInTheDocument();
     const unreadTitle = screen.getByText("earlier prompt");
     expect(unreadTitle.className).toContain("font-semibold");
   });
 
-  it("hides Inbox when empty", () => {
+  it("always shows Active Sessions even when empty", () => {
     renderSidebar({
       data: payload({
         sessions: [session({ sessionId: "s1", title: "Fix auth", cwd: "/work/api" })],
       }),
       inbox: [],
     });
-    expect(screen.queryByRole("region", { name: "Inbox" })).not.toBeInTheDocument();
+    const activeRegion = screen.getByRole("region", { name: "Active Sessions" });
+    expect(activeRegion).toBeInTheDocument();
+    expect(within(activeRegion).getByText("0")).toBeInTheDocument();
+    expect(within(activeRegion).getByText("No active sessions")).toBeInTheDocument();
   });
 
-  it("renders Inbox items and selects session on click", async () => {
+  it("renders Active Sessions with working, done, and needs you statuses and selects on click", async () => {
     const user = userEvent.setup();
     const onSelectSession = vi.fn();
     renderSidebar({
@@ -545,6 +548,7 @@ describe("FolderSidebar's undo notice", () => {
         sessions: [
           session({ sessionId: "s1", title: "Fix auth", cwd: "/work/api" }),
           session({ sessionId: "s2", title: "Write tests", cwd: "/work/web" }),
+          session({ sessionId: "s3", title: "Build UI", cwd: "/work/web" }),
         ],
         sidebar: {
           ...EMPTY_SIDEBAR,
@@ -568,21 +572,32 @@ describe("FolderSidebar's undo notice", () => {
           kind: "done",
           updatedAt: new Date().toISOString(),
         },
+        {
+          sessionId: "s3",
+          cwd: "/work/web",
+          title: "Build UI",
+          kind: "working",
+          updatedAt: new Date().toISOString(),
+        },
       ],
     });
 
-    const attentionRegion = screen.getByRole("region", { name: "Needs attention" });
-    expect(attentionRegion).toBeInTheDocument();
-    expect(within(attentionRegion).getByText("Fix auth")).toBeInTheDocument();
-    expect(within(attentionRegion).getByText(/Permission · api · bash: npm test/)).toBeInTheDocument();
-    // Passive "done" items are not rendered in the Needs attention strip.
-    expect(within(attentionRegion).queryByText("Renamed tests")).not.toBeInTheDocument();
+    const activeRegion = screen.getByRole("region", { name: "Active Sessions" });
+    expect(activeRegion).toBeInTheDocument();
+    expect(within(activeRegion).getByText("Fix auth")).toBeInTheDocument();
+    expect(within(activeRegion).getByText("Needs you")).toBeInTheDocument();
+    expect(within(activeRegion).getByText("Build UI")).toBeInTheDocument();
+    expect(within(activeRegion).getByText("Working")).toBeInTheDocument();
+    expect(within(activeRegion).getByText("Renamed tests")).toBeInTheDocument();
+    expect(within(activeRegion).getByText("Done")).toBeInTheDocument();
+    // Folder name is not shown on Active Session rows.
+    expect(within(activeRegion).queryByText(/api/)).not.toBeInTheDocument();
 
-    await user.click(within(attentionRegion).getByRole("button", { name: /Fix auth/i }));
+    await user.click(within(activeRegion).getByRole("button", { name: /Fix auth/i }));
     expect(onSelectSession).toHaveBeenCalledWith("s1");
   });
 
-  it("supports per-row dismiss for errors (not permissions) and Unread filter chip", async () => {
+  it("supports per-row dismiss for done/error (not permission/working) and Unread filter chip", async () => {
     const user = userEvent.setup();
     const onDismissInboxItem = vi.fn();
     renderSidebar({
@@ -591,12 +606,14 @@ describe("FolderSidebar's undo notice", () => {
           session({ sessionId: "s1", title: "Fix auth", cwd: "/work/api" }),
           session({ sessionId: "s2", title: "Write tests", cwd: "/work/web" }),
           session({ sessionId: "s3", title: "Unread task", cwd: "/work/web" }),
+          session({ sessionId: "s4", title: "Running task", cwd: "/work/web" }),
         ],
       }),
       onDismissInboxItem,
       sessionActivity: {
         s2: { status: "done", unread: false },
         s3: { status: "error", unread: true },
+        s4: { status: "running", unread: false },
       },
       inbox: [
         {
@@ -608,6 +625,14 @@ describe("FolderSidebar's undo notice", () => {
           updatedAt: new Date().toISOString(),
         },
         {
+          sessionId: "s2",
+          cwd: "/work/web",
+          title: "Write tests",
+          kind: "done",
+          read: true,
+          updatedAt: new Date().toISOString(),
+        },
+        {
           sessionId: "s3",
           cwd: "/work/web",
           title: "Unread task",
@@ -615,66 +640,49 @@ describe("FolderSidebar's undo notice", () => {
           read: false,
           updatedAt: new Date().toISOString(),
         },
+        {
+          sessionId: "s4",
+          cwd: "/work/web",
+          title: "Running task",
+          kind: "working",
+          read: false,
+          updatedAt: new Date().toISOString(),
+        },
       ],
     });
 
-    const attentionRegion = screen.getByRole("region", { name: "Needs attention" });
-    // Permission item cannot be dismissed; error item can be dismissed.
-    expect(within(attentionRegion).queryByRole("button", { name: "Dismiss Fix auth" })).not.toBeInTheDocument();
-    await user.click(within(attentionRegion).getByRole("button", { name: "Dismiss Unread task" }));
+    const activeRegion = screen.getByRole("region", { name: "Active Sessions" });
+    expect(within(activeRegion).queryByRole("button", { name: "Dismiss Fix auth" })).not.toBeInTheDocument();
+    expect(within(activeRegion).queryByRole("button", { name: "Dismiss Running task" })).not.toBeInTheDocument();
+    await user.click(within(activeRegion).getByRole("button", { name: "Dismiss Unread task" }));
     expect(onDismissInboxItem).toHaveBeenCalledWith("s3");
+    await user.click(within(activeRegion).getByRole("button", { name: "Dismiss Write tests" }));
+    expect(onDismissInboxItem).toHaveBeenCalledWith("s2");
 
     // Unread filter chip filters workspace sessions to unread/attention ones.
     const unreadBtn = screen.getByRole("button", { name: /^Unread\s*\d*$/i });
     expect(unreadBtn).toHaveAttribute("aria-pressed", "false");
     await user.click(unreadBtn);
     expect(unreadBtn).toHaveAttribute("aria-pressed", "true");
-    expect(screen.queryByRole("button", { name: /Write tests/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Write tests$/i })).not.toBeInTheDocument();
   });
 
-  it("renders a Pinned section at the top and wires pin/unpin actions", async () => {
-    const user = userEvent.setup();
-    const onPin = vi.fn().mockResolvedValue(true);
-    const onUnpin = vi.fn().mockResolvedValue(true);
-    const onSelectSession = vi.fn();
-
+  it("does not render Pin or Unpin buttons", () => {
     renderSidebar({
       data: payload({
         sessions: [
-          session({ sessionId: "s1", title: "Pinned task", cwd: "/work/api" }),
-          session({ sessionId: "s2", title: "Regular task", cwd: "/work/web" }),
+          session({ sessionId: "s1", title: "Task one", cwd: "/work/api" }),
         ],
-        sidebar: {
-          ...EMPTY_SIDEBAR,
-          pinnedSessions: ["s1"],
-        },
       }),
-      onPin,
-      onUnpin,
-      onSelectSession,
     });
-
-    const pinnedRegion = screen.getByRole("region", { name: "Pinned" });
-    expect(pinnedRegion).toBeInTheDocument();
-    expect(within(pinnedRegion).getByText("Pinned task")).toBeInTheDocument();
-    expect(within(pinnedRegion).getByText(/· api/)).toBeInTheDocument();
-
-    await user.click(within(pinnedRegion).getByRole("button", { name: /^Pinned task/i }));
-    expect(onSelectSession).toHaveBeenCalledWith("s1");
-
-    await user.click(
-      within(pinnedRegion).getByRole("button", { name: "Unpin session Pinned task" }),
-    );
-    expect(onUnpin).toHaveBeenCalledWith("s1");
-
-    await user.click(screen.getByRole("button", { name: "Pin session Regular task" }));
-    expect(onPin).toHaveBeenCalledWith("s2");
+    expect(screen.queryByRole("region", { name: "Pinned" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /pin session/i })).not.toBeInTheDocument();
   });
 
 });
 
 describe("FolderSidebar collapse persistence", () => {
-  it("persists folder, Inbox, and Pinned collapse states across remounts", async () => {
+  it("persists folder collapse states across remounts with Active Sessions on top", async () => {
     window.localStorage.clear();
     const user = userEvent.setup();
     const testData = payload({
@@ -682,10 +690,6 @@ describe("FolderSidebar collapse persistence", () => {
         session({ sessionId: "s1", title: "Important task", cwd: "/work/api" }),
         session({ sessionId: "s2", title: "Regular task", cwd: "/work/web" }),
       ],
-      sidebar: {
-        ...EMPTY_SIDEBAR,
-        pinnedSessions: ["s1"],
-      },
     });
     const testInbox = [
       {
@@ -720,15 +724,12 @@ describe("FolderSidebar collapse persistence", () => {
       />,
     );
 
-    // Initially expanded: folder and Pinned are expanded; Needs attention is non-collapsible.
     expect(screen.getByRole("button", { name: /^web\b/i })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("region", { name: "Needs attention" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Pinned\b/i })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("region", { name: "Active Sessions" })).toBeInTheDocument();
 
-    // Collapse folder "web" and Pinned.
+    // Collapse folder "web".
     await user.click(screen.getByRole("button", { name: /^web\b/i }));
     expect(screen.getByRole("button", { name: /^web\b/i })).toHaveAttribute("aria-expanded", "false");
-    await user.click(screen.getByRole("button", { name: /^Pinned\b/i }));
 
     expect(window.localStorage.getItem(SIDEBAR_COLLAPSE_STORAGE_KEY)).toBeTruthy();
 
@@ -759,7 +760,6 @@ describe("FolderSidebar collapse persistence", () => {
     );
 
     expect(screen.getByRole("button", { name: /^web\b/i })).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByRole("button", { name: /^Pinned\b/i })).toHaveAttribute("aria-expanded", "false");
     window.localStorage.clear();
   });
 });

@@ -45,8 +45,14 @@ def test_background_turn_end_adds_done_and_clears_on_attach(tmp_path: Path) -> N
         s1.runtime.messages.append({"role": "user", "content": "Fix the bug"})
         sid1 = s1.runtime.active_session.id
 
-        # Not attached -> background turn finishes -> appears in inbox.
+        # While running -> appears as "working"
         s1.start_turn("Fix the bug", [])
+        working_items = manager.inbox_items()
+        assert len(working_items) == 1
+        assert working_items[0]["sessionId"] == sid1
+        assert working_items[0]["kind"] == "working"
+        assert manager.dismiss_inbox_item(sid1) is False
+
         release.set()
         _wait_turn(s1)
 
@@ -57,22 +63,27 @@ def test_background_turn_end_adds_done_and_clears_on_attach(tmp_path: Path) -> N
         assert items[0]["title"] == "Fix the bug"
         assert any(f.get("type") == "inbox_state" and len(f["items"]) == 1 for f in events)
 
-        # Attaching auto-clears "done" from the inbox.
+        # Attaching does NOT clear "done" from Active Sessions (must be dismissed explicitly).
         s1.attach(lambda _f: None)
-        assert manager.inbox_items() == []
+        assert len(manager.inbox_items()) == 1
+        assert manager.inbox_items()[0]["kind"] == "done"
 
-        # Attached follow-up turns do not re-add "done" to the inbox.
+        # Attached follow-up turns transition to "working" then "done".
         release.clear()
         s1.start_turn("Follow up", [])
-        assert manager.inbox_items() == []
+        assert manager.inbox_items()[0]["kind"] == "working"
         release.set()
         _wait_turn(s1)
+        assert manager.inbox_items()[0]["kind"] == "done"
+
+        # Explicit dismiss removes "done".
+        assert manager.dismiss_inbox_item(sid1) is True
         assert manager.inbox_items() == []
     finally:
         manager.close_all()
 
 
-def test_foreground_turn_end_does_not_add_inbox_item(tmp_path: Path) -> None:
+def test_foreground_turn_end_stays_in_active_sessions_until_dismissed(tmp_path: Path) -> None:
     release = threading.Event()
 
     def runner(rt: Any, observer: Any, **_kw: Any) -> TurnOutcome:
@@ -82,12 +93,17 @@ def test_foreground_turn_end_does_not_add_inbox_item(tmp_path: Path) -> None:
     manager = SessionManager(_build_factory(tmp_path), cwd=tmp_path, runner=runner)
     try:
         s1 = manager.create_session(tmp_path)
+        sid1 = s1.runtime.active_session.id
         s1.attach(lambda _f: None)
         s1.start_turn("Hello", [])
+        assert manager.inbox_items()[0]["kind"] == "working"
         release.set()
         _wait_turn(s1)
 
-        assert manager.inbox_items() == []
+        items = manager.inbox_items()
+        assert len(items) == 1
+        assert items[0]["sessionId"] == sid1
+        assert items[0]["kind"] == "done"
     finally:
         manager.close_all()
 
@@ -189,24 +205,25 @@ def test_dismiss_inbox_item(tmp_path: Path) -> None:
 
     manager = SessionManager(_build_factory(tmp_path), cwd=tmp_path, runner=runner)
     try:
-        s_read = manager.create_session(tmp_path)
-        s_read.start_turn("Read task", [])
-        _wait_turn(s_read)
-        s_read.attach(lambda _f: None)  # auto-cleared on attach
+        s_one = manager.create_session(tmp_path)
+        sid_one = s_one.runtime.active_session.id
+        s_one.start_turn("Task 1", [])
+        _wait_turn(s_one)
+        s_one.attach(lambda _f: None)  # remains in Active Sessions until dismissed
 
-        s_unread = manager.create_session(tmp_path)
-        sid_unread = s_unread.runtime.active_session.id
-        s_unread.start_turn("Unread task", [])
-        _wait_turn(s_unread)
+        s_two = manager.create_session(tmp_path)
+        sid_two = s_two.runtime.active_session.id
+        s_two.start_turn("Task 2", [])
+        _wait_turn(s_two)
 
         items = manager.inbox_items()
-        assert [i["sessionId"] for i in items] == [sid_unread]
-        assert items[0]["read"] is False
+        assert [i["sessionId"] for i in items] == [sid_two, sid_one]
 
-        # dismiss_inbox_item removes unread item.
-        assert manager.dismiss_inbox_item(sid_unread) is True
+        assert manager.dismiss_inbox_item(sid_two) is True
+        assert [i["sessionId"] for i in manager.inbox_items()] == [sid_one]
+        assert manager.dismiss_inbox_item(sid_two) is False
+        assert manager.dismiss_inbox_item(sid_one) is True
         assert manager.inbox_items() == []
-        assert manager.dismiss_inbox_item(sid_unread) is False
     finally:
         manager.close_all()
 
@@ -218,11 +235,6 @@ def test_websocket_inbox_dismiss(tmp_path: Path) -> None:
     app = create_app(build=_build_factory(tmp_path), cwd=tmp_path, runner=runner)
     client = TestClient(app)
     manager: SessionManager = app.state.manager
-
-    s1 = manager.create_session(tmp_path)
-    s1.start_turn("Task 1", [])
-    _wait_turn(s1)
-    s1.attach(lambda _f: None)  # auto-cleared on attach
 
     s2 = manager.create_session(tmp_path)
     sid2 = s2.runtime.active_session.id

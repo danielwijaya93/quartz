@@ -211,7 +211,7 @@ export type ServerMessage =
   | { type: "error"; message: string; fatal: boolean }
   | { type: "command_result"; name: string; ok: boolean; result: CommandResult };
 
-export type InboxItemKind = "permission" | "done" | "error";
+export type InboxItemKind = "working" | "permission" | "done" | "error";
 
 export interface InboxItem {
   sessionId: string;
