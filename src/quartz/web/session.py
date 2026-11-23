@@ -36,6 +36,7 @@ from quartz.core.commands import (
     serves_web,
 )
 from quartz.core.images import ImageAttachment, build_user_content
+from quartz.core.loop import drain_bash_events
 from quartz.core.session import Session
 from quartz.settings import project_trust_status, trust_project
 from quartz.core.turn import TurnOutcome, TurnStatus, run_interactive_turn
@@ -152,6 +153,8 @@ class WebSession:
         self._last_active_at: float = time.monotonic()
         self._idle_prompted_at: float | None = None
         self._sandbox_override: bool | None = None
+        self._bg_stop: threading.Event | None = None
+        self._bg_thread: threading.Thread | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -302,6 +305,7 @@ class WebSession:
         set_perm = getattr(runtime.kernel, "set_permission_handler", None)
         if callable(set_perm):
             set_perm(self._handle_permission_request)
+        self._start_bg_watcher(runtime)
 
     def _handle_permission_request(self, req: Any) -> str:
         req_id = uuid.uuid4().hex
@@ -395,6 +399,7 @@ class WebSession:
 
     def _retire(self) -> None:
         """Abort and drain the turn in flight, then close the current kernel."""
+        self._stop_bg_watcher()
         self._reject_pending_permission()
         self._abort_and_join()
         self._notify_event({"type": "_closed"})
@@ -554,6 +559,87 @@ class WebSession:
     def turn_running(self) -> bool:
         with self._lock:
             return self._turn is not None
+
+    def _start_bg_watcher(self, runtime: AgentRuntime) -> None:
+        self._stop_bg_watcher()
+        kernel = runtime.kernel
+        if not (
+            callable(getattr(kernel, "has_pending_events", None))
+            and callable(getattr(kernel, "wait_until_event", None))
+            and callable(getattr(kernel, "drain_events", None))
+        ):
+            return
+        stop_event = threading.Event()
+        thread = threading.Thread(
+            target=self._bg_watcher_loop,
+            args=(runtime, stop_event),
+            name="quartz-web-bg-watcher",
+            daemon=True,
+        )
+        self._bg_stop = stop_event
+        self._bg_thread = thread
+        thread.start()
+
+    def _stop_bg_watcher(self) -> None:
+        stop_event, self._bg_stop = self._bg_stop, None
+        thread, self._bg_thread = self._bg_thread, None
+        if stop_event is not None:
+            stop_event.set()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+
+    def _bg_watcher_loop(self, runtime: AgentRuntime, stop_event: threading.Event) -> None:
+        while not stop_event.is_set():
+            if self._runtime is not runtime:
+                break
+            if self.turn_running:
+                stop_event.wait(0.25)
+                continue
+            has_events = False
+            try:
+                if runtime.kernel.has_pending_events():
+                    has_events = True
+                else:
+                    has_events = bool(runtime.kernel.wait_until_event(stop_event, timeout=0.25))
+            except Exception:  # noqa: BLE001 - retired/broken kernel must not crash watcher
+                has_events = False
+                stop_event.wait(0.25)
+                continue
+            if has_events and not stop_event.is_set():
+                if self._start_bg_turn(runtime, stop_event):
+                    continue
+                stop_event.wait(0.25)
+
+    def _start_bg_turn(self, runtime: AgentRuntime, stop_event: threading.Event) -> bool:
+        with self._lock:
+            if stop_event.is_set() or self._runtime is not runtime or self._turn is not None:
+                return False
+            try:
+                notice = drain_bash_events(runtime.kernel, runtime.messages)
+            except Exception:  # noqa: BLE001 - do not crash watcher on kernel drain failure
+                return False
+            if not notice:
+                return False
+            try:
+                runtime.active_session.save_messages(runtime.messages)
+            except OSError:
+                pass
+            turn = _Turn(id=f"turn-{uuid.uuid4().hex[:12]}")
+            self._turn = turn
+            self._streaming = ""
+            self._status = None
+            self._last_active_at = time.monotonic()
+            self._idle_prompted_at = None
+            observer = WebObserver(self.emit, runtime=runtime)
+            turn.thread = threading.Thread(
+                target=self._run_turn,
+                args=(turn, observer),
+                name=f"quartz-web-{turn.id}",
+                daemon=True,
+            )
+            thread = turn.thread
+        thread.start()
+        return True
 
     def start_turn(self, text: str, images: list[ImageAttachment]) -> str:
         """Record the user message and run one turn on its own thread.
