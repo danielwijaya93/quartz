@@ -1,5 +1,8 @@
-chore: automate Android APK build in CI and PR workflow
+fix(android): request POST_NOTIFICATIONS and create high-importance alert channel
 
-- Add webapp/scripts/build-apk.sh and `npm run android:apk` (resolves JDK 21 and Android SDK automatically).
-- Add an `Android APK` job to .github/workflows/ci.yml that builds app-debug.apk and uploads it as a workflow artifact.
-- Update AGENTS.md step 5 post-merge checklist to rebuild webapp/dist and the APK when webapp/ changes, offer Telegram delivery via tg-send, and remind to restart quartz-web when src/quartz/ changes.
+- nativePermissionHint() previously defaulted to "granted", so useNotifications
+  never called requestNotificationPermission() on Android 13+.
+- Query LocalNotifications.checkPermissions() on native mount, cache the real
+  status in localStorage, and prompt when notifications are enabled and state is "default".
+- Create a high-importance `quartz_alerts` notification channel and route
+  turn-end, permission-request, and error alerts through it.

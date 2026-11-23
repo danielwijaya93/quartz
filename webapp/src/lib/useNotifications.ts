@@ -1,6 +1,6 @@
 import * as React from "react";
 import type { ServerMessage } from "../protocol";
-import { clearNativeNotifications } from "./nativeNotifications";
+import { checkNativePermission, clearNativeNotifications, ensureNativeChannel } from "./nativeNotifications";
 import { isNativeCapacitor } from "./serverUrl";
 import {
   detectNotificationEnvironment,
@@ -40,7 +40,15 @@ export function useNotifications(): NotificationsController {
     void registerNotificationServiceWorker();
     const initialEnv = detectNotificationEnvironment();
     setEnv(initialEnv);
-    if (enabledRef.current && initialEnv.supported && initialEnv.permission === "granted") {
+    if (isNativeCapacitor()) {
+      void ensureNativeChannel();
+      void checkNativePermission().then(async (perm) => {
+        if (enabledRef.current && perm === "default") {
+          await requestNotificationPermission();
+        }
+        setEnv(detectNotificationEnvironment());
+      });
+    } else if (enabledRef.current && initialEnv.supported && initialEnv.permission === "granted") {
       void subscribeToWebPush().then((endpoint) => {
         pushEndpointRef.current = endpoint;
       });

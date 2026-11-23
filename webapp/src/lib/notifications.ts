@@ -98,11 +98,13 @@ export function detectNotificationEnvironment(): NotificationEnvironment {
  */
 function nativePermissionHint(): NotificationPermissionState {
   try {
-    return window.localStorage.getItem("quartz:native-notif-denied") === "true"
-      ? "denied"
-      : "granted";
+    const cached = window.localStorage.getItem("quartz:native-notif-perm");
+    if (cached === "granted" || cached === "denied" || cached === "default") {
+      return cached;
+    }
+    return "default";
   } catch {
-    return "granted";
+    return "default";
   }
 }
 
