@@ -1037,11 +1037,15 @@ class SessionManager:
         return None
 
     def inbox_items(self) -> list[dict[str, Any]]:
-        """Return current inbox items ordered with permissions first, then newest."""
+        """Return current inbox items ordered with permissions first, then unread, then newest."""
         with self._lock:
             items = list(self._inbox.values())
         items.sort(
-            key=lambda item: (0 if item["kind"] == "permission" else 1, -int(item.get("_seq", 0)))
+            key=lambda item: (
+                0 if item["kind"] == "permission" else 1,
+                0 if not item.get("read") else 1,
+                -int(item.get("_seq", 0)),
+            )
         )
         return [
             {
@@ -1049,11 +1053,36 @@ class SessionManager:
                 "cwd": item["cwd"],
                 **({"title": item["title"]} if item.get("title") else {}),
                 "kind": item["kind"],
+                "read": bool(item.get("read", False)),
                 "updatedAt": item["updatedAt"],
                 **({"preview": item["preview"]} if item.get("preview") else {}),
             }
             for item in items
         ]
+
+    def dismiss_inbox_item(self, session_id: str) -> bool:
+        """Dismiss a non-permission inbox item by session ID."""
+        with self._lock:
+            existing = self._inbox.get(session_id)
+            if existing is None or existing["kind"] == "permission":
+                return False
+            self._inbox.pop(session_id, None)
+        self._broadcast_inbox()
+        return True
+
+    def clear_read_inbox(self) -> int:
+        """Remove all read non-permission items from the inbox. Returns removed count."""
+        with self._lock:
+            to_remove = [
+                sid
+                for sid, item in self._inbox.items()
+                if item["kind"] != "permission" and item.get("read")
+            ]
+            for sid in to_remove:
+                self._inbox.pop(sid, None)
+        if to_remove:
+            self._broadcast_inbox()
+        return len(to_remove)
 
     def _broadcast_inbox(self) -> None:
         self._broadcast({"type": "inbox_state", "items": self.inbox_items()})
@@ -1068,8 +1097,12 @@ class SessionManager:
         with self._lock:
             existing = self._inbox.get(sid)
             if kind == "_attached":
-                if existing is not None and existing["kind"] in ("done", "error"):
-                    self._inbox.pop(sid, None)
+                if (
+                    existing is not None
+                    and existing["kind"] in ("done", "error")
+                    and not existing.get("read")
+                ):
+                    existing["read"] = True
                     changed = True
             elif kind == "_closed":
                 if sid in self._inbox:
@@ -1089,6 +1122,7 @@ class SessionManager:
                     "cwd": cwd,
                     "title": self._session_title(ws),
                     "kind": "permission",
+                    "read": False,
                     "updatedAt": datetime.now(timezone.utc).isoformat(),
                     "preview": preview if len(preview) <= 120 else f"{preview[:119]}…",
                     "_seq": self._inbox_seq,
@@ -1120,6 +1154,7 @@ class SessionManager:
                             "cwd": cwd,
                             "title": self._session_title(ws),
                             "kind": item_kind,
+                            "read": False,
                             "updatedAt": datetime.now(timezone.utc).isoformat(),
                             "preview": preview,
                             "_seq": self._inbox_seq,

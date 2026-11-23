@@ -376,3 +376,19 @@ def test_new_session_appears_in_sidebar_as_soon_as_prompt_starts(
         finally:
             app_client.runner.release()
         wire.drain(ws, until="turn_end")
+
+
+def test_pin_and_unpin_session_endpoints(app_client: AppClient, tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sid = _make_session(tmp_path, sessions_dir)
+
+    pinned = _payload(app_client.client.post("/api/sessions/pin", json={"sessionId": sid}))
+    assert pinned["sidebar"]["pinnedSessions"] == [sid]
+
+    unpinned = _payload(app_client.client.post("/api/sessions/unpin", json={"sessionId": sid}))
+    assert unpinned["sidebar"]["pinnedSessions"] == []
+
+    bad = app_client.client.post("/api/sessions/pin", json={})
+    assert bad.status_code == 400
+    bad_unpin = app_client.client.post("/api/sessions/unpin", json={"sessionId": "../escape"})
+    assert bad_unpin.status_code == 400

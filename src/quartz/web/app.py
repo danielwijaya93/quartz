@@ -526,6 +526,22 @@ def create_app(
             return _bad_request("sessionId is required")
         return await mutate(lambda sidebar: sidebar.import_session(session_id))
 
+    @app.post("/api/sessions/pin")
+    async def pin_session(request: Request) -> JSONResponse:
+        """Pin a session to the top of the sidebar."""
+        session_id = _session_id(await _json_body(request))
+        if session_id is None:
+            return _bad_request("sessionId is required")
+        return await mutate(lambda sidebar: sidebar.pin(session_id))
+
+    @app.post("/api/sessions/unpin")
+    async def unpin_session(request: Request) -> JSONResponse:
+        """Unpin a session from the top of the sidebar."""
+        session_id = _session_id(await _json_body(request))
+        if session_id is None:
+            return _bad_request("sessionId is required")
+        return await mutate(lambda sidebar: sidebar.unpin(session_id))
+
     @app.post("/api/sessions/rename")
     async def rename_session(request: Request) -> JSONResponse:
         body = await _json_body(request)
@@ -922,6 +938,21 @@ async def _dispatch(
             await asyncio.to_thread(session.trust_current_project)
             push(session.snapshot())
 
+        elif kind == "set_sandbox":
+            session = await _ensure_conn_session(manager, conn, push, app)
+            enabled = message.get("enabled")
+            if not isinstance(enabled, bool):
+                push(
+                    {
+                        "type": "error",
+                        "message": "Missing boolean 'enabled' for set_sandbox.",
+                        "fatal": False,
+                    }
+                )
+                return
+            await asyncio.to_thread(session.set_sandbox, enabled)
+            session.emit(session.snapshot())
+
         elif kind == "permission_response":
             session = await _ensure_conn_session(manager, conn, push, app)
             request_id = str(message.get("requestId") or "").strip()
@@ -938,6 +969,16 @@ async def _dispatch(
                 push({"type": "error", "message": "Missing sessionId.", "fatal": False})
                 return
             await asyncio.to_thread(manager.resolve_idle_prompt, session_id, action)
+
+        elif kind == "inbox_dismiss":
+            session_id = str(message.get("sessionId") or "").strip()
+            if not session_id:
+                push({"type": "error", "message": "Missing sessionId.", "fatal": False})
+                return
+            await asyncio.to_thread(manager.dismiss_inbox_item, session_id)
+
+        elif kind == "inbox_clear_read":
+            await asyncio.to_thread(manager.clear_read_inbox)
 
         else:
             push({"type": "error", "message": f"Unknown frame type: {kind}", "fatal": False})

@@ -372,6 +372,10 @@ export class Connection {
     return this.send({ type: "trust_project" });
   }
 
+  sendSetSandbox(enabled: boolean): boolean {
+    return this.send({ type: "set_sandbox", enabled });
+  }
+
   sendPermissionResponse(
     requestId: string,
     decision: "allow_once" | "allow_session" | "reject",
@@ -386,6 +390,14 @@ export class Connection {
 
   sendIdleSessionResponse(sessionId: string, action: "keep" | "close"): boolean {
     return this.send({ type: "idle_session_response", sessionId, action });
+  }
+
+  sendInboxDismiss(sessionId: string): boolean {
+    return this.send({ type: "inbox_dismiss", sessionId });
+  }
+
+  sendInboxClearRead(): boolean {
+    return this.send({ type: "inbox_clear_read" });
   }
 }
 

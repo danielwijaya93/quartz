@@ -518,11 +518,8 @@ describe("FolderSidebar's undo notice", () => {
           session({ sessionId: "s2", title: "Write tests", cwd: "/work/web" }),
         ],
         sidebar: {
-          version: 1,
-          hiddenSessions: [],
-          importedSessions: [],
+          ...EMPTY_SIDEBAR,
           renames: { s2: "Renamed tests" },
-          workspaces: [],
         },
       }),
       onSelectSession,
@@ -554,5 +551,104 @@ describe("FolderSidebar's undo notice", () => {
 
     await user.click(within(inboxRegion).getByRole("button", { name: /Fix auth/i }));
     expect(onSelectSession).toHaveBeenCalledWith("s1");
+  });
+
+  it("supports read state, per-row dismiss (except permission), and Clear read", async () => {
+    const user = userEvent.setup();
+    const onDismissInboxItem = vi.fn();
+    const onClearReadInbox = vi.fn();
+    renderSidebar({
+      data: payload({
+        sessions: [
+          session({ sessionId: "s1", title: "Fix auth", cwd: "/work/api" }),
+          session({ sessionId: "s2", title: "Write tests", cwd: "/work/web" }),
+          session({ sessionId: "s3", title: "Unread task", cwd: "/work/web" }),
+        ],
+      }),
+      onDismissInboxItem,
+      onClearReadInbox,
+      inbox: [
+        {
+          sessionId: "s1",
+          cwd: "/work/api",
+          title: "Fix auth",
+          kind: "permission",
+          read: false,
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          sessionId: "s2",
+          cwd: "/work/web",
+          title: "Write tests",
+          kind: "done",
+          read: true,
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          sessionId: "s3",
+          cwd: "/work/web",
+          title: "Unread task",
+          kind: "error",
+          read: false,
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+    });
+
+    const inboxRegion = screen.getByRole("region", { name: "Inbox" });
+    // Permission item cannot be dismissed.
+    expect(within(inboxRegion).queryByRole("button", { name: "Dismiss Fix auth" })).not.toBeInTheDocument();
+
+    // Read vs unread attributes.
+    const items = within(inboxRegion).getAllByRole("listitem");
+    expect(items[0]).toHaveAttribute("data-read", "false");
+    expect(items[1]).toHaveAttribute("data-read", "true");
+    expect(items[2]).toHaveAttribute("data-read", "false");
+
+    // Per-row dismiss fires callback.
+    await user.click(within(inboxRegion).getByRole("button", { name: "Dismiss Write tests" }));
+    expect(onDismissInboxItem).toHaveBeenCalledWith("s2");
+
+    // Clear read button fires callback.
+    await user.click(within(inboxRegion).getByRole("button", { name: "Clear read" }));
+    expect(onClearReadInbox).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders a Pinned section at the top and wires pin/unpin actions", async () => {
+    const user = userEvent.setup();
+    const onPin = vi.fn().mockResolvedValue(true);
+    const onUnpin = vi.fn().mockResolvedValue(true);
+    const onSelectSession = vi.fn();
+
+    renderSidebar({
+      data: payload({
+        sessions: [
+          session({ sessionId: "s1", title: "Pinned task", cwd: "/work/api" }),
+          session({ sessionId: "s2", title: "Regular task", cwd: "/work/web" }),
+        ],
+        sidebar: {
+          ...EMPTY_SIDEBAR,
+          pinnedSessions: ["s1"],
+        },
+      }),
+      onPin,
+      onUnpin,
+      onSelectSession,
+    });
+
+    const pinnedRegion = screen.getByRole("region", { name: "Pinned" });
+    expect(pinnedRegion).toBeInTheDocument();
+    expect(within(pinnedRegion).getByText("Pinned task")).toBeInTheDocument();
+
+    await user.click(within(pinnedRegion).getByRole("button", { name: /^Pinned task/i }));
+    expect(onSelectSession).toHaveBeenCalledWith("s1");
+
+    await user.click(
+      within(pinnedRegion).getByRole("button", { name: "Unpin session Pinned task" }),
+    );
+    expect(onUnpin).toHaveBeenCalledWith("s1");
+
+    await user.click(screen.getByRole("button", { name: "Pin session Regular task" }));
+    expect(onPin).toHaveBeenCalledWith("s2");
   });
 });

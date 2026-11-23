@@ -240,6 +240,8 @@ export function App(): React.ReactElement {
     onRename: sidebar.rename,
     onHide: sidebar.hide,
     onRestore: sidebar.restore,
+    onPin: sidebar.pin,
+    onUnpin: sidebar.unpin,
     onOpenArchive: openArchive,
     onOpenSettings: () => {
       setMcpOpen(false);
@@ -251,6 +253,8 @@ export function App(): React.ReactElement {
     },
     sessionActivity,
     inbox: quartz.state.inbox ?? [],
+    onDismissInboxItem: quartz.dismissInboxItem,
+    onClearReadInbox: quartz.clearReadInbox,
   };
 
   return (
@@ -273,6 +277,8 @@ export function App(): React.ReactElement {
             else setPicker("session");
           }}
           onChangeFolder={() => setPicker("session")}
+          onToggleSandbox={() => quartz.setSandbox(!quartz.state.session.sandboxed)}
+          turnRunning={quartz.state.turnRunning}
           sidebarOpen={sidebarOpen}
           onToggleSidebar={() => setSidebarOpen((open) => !open)}
         />

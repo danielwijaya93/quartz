@@ -4,8 +4,10 @@ import {
   fetchSidebar,
   hideSession,
   importSession,
+  pinSession,
   renameSession,
   restoreSession,
+  unpinSession,
 } from "./sidebarApi";
 import type { SidebarPayload } from "./sidebar";
 
@@ -21,6 +23,8 @@ export interface SidebarApi {
   hide: (sessionId: string) => Promise<boolean>;
   restore: (sessionId: string) => Promise<boolean>;
   importSession: (sessionId: string) => Promise<boolean>;
+  pin: (sessionId: string) => Promise<boolean>;
+  unpin: (sessionId: string) => Promise<boolean>;
   rename: (sessionId: string, title: string) => Promise<boolean>;
   addWorkspace: (cwd: string) => Promise<boolean>;
 }
@@ -100,6 +104,8 @@ export function useSidebar(): SidebarApi {
     hide: React.useCallback((id: string) => run(() => hideSession(id)), [run]),
     restore: React.useCallback((id: string) => run(() => restoreSession(id)), [run]),
     importSession: React.useCallback((id: string) => run(() => importSession(id)), [run]),
+    pin: React.useCallback((id: string) => run(() => pinSession(id)), [run]),
+    unpin: React.useCallback((id: string) => run(() => unpinSession(id)), [run]),
     rename: React.useCallback(
       (id: string, title: string) => run(() => renameSession(id, title)),
       [run],

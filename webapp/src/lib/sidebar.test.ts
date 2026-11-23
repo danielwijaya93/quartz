@@ -18,6 +18,7 @@ import {
   isVisible,
   NO_ARCHIVE_FILTER,
   parseSidebarPayload,
+  pinnedSessions,
   sameFolder,
   type ArchiveEntry,
   type ArchiveReason,
@@ -545,5 +546,54 @@ describe("filterWorkspaceGroups", () => {
 
   it("returns an empty array when nothing matches", () => {
     expect(filterWorkspaceGroups(groups, "nonexistent", EMPTY_SIDEBAR)).toEqual([]);
+  });
+});
+
+describe("pinnedSessions", () => {
+  const s1 = session({
+    sessionId: "s1",
+    cwd: "/work/alpha",
+    title: "Pinned first",
+    updatedAt: "2026-01-02T08:00:00Z",
+  });
+  const s2 = session({
+    sessionId: "s2",
+    cwd: "/work/beta",
+    title: "Pinned newer",
+    updatedAt: "2026-01-02T10:00:00Z",
+  });
+  const s3 = session({
+    sessionId: "s3",
+    cwd: "/work/beta",
+    title: "Hidden pinned",
+    updatedAt: "2026-01-02T11:00:00Z",
+  });
+  const s4 = session({
+    sessionId: "s4",
+    cwd: "/work/gone",
+    title: "Missing folder pinned",
+    cwdExists: false,
+    updatedAt: "2026-01-02T12:00:00Z",
+  });
+
+  it("returns visible pinned sessions newest first, excluding hidden and missing-folder ones", () => {
+    const result = pinnedSessions({
+      sessions: [s1, s2, s3, s4],
+      sidebar: {
+        ...EMPTY_SIDEBAR,
+        pinnedSessions: ["s1", "s2", "s3", "s4"],
+        hiddenSessions: ["s3"],
+      },
+    });
+    expect(result.map((s) => s.sessionId)).toEqual(["s2", "s1"]);
+  });
+
+  it("filters pinned sessions by title or folder name", () => {
+    const data: SidebarPayload = {
+      sessions: [s1, s2],
+      sidebar: { ...EMPTY_SIDEBAR, pinnedSessions: ["s1", "s2"] },
+    };
+    expect(pinnedSessions(data, "alpha").map((s) => s.sessionId)).toEqual(["s1"]);
+    expect(pinnedSessions(data, "newer").map((s) => s.sessionId)).toEqual(["s2"]);
   });
 });

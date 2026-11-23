@@ -27,6 +27,8 @@ export interface QuartzApi {
   loadSession: (sessionId: string) => void;
   /** Persist trust for the active session's folder and reload it. */
   trustProject: () => void;
+  /** Toggle OS sandbox for the active session. */
+  setSandbox: (enabled: boolean) => void;
   respondPermission: (requestId: string, decision: PermissionDecision) => void;
   /** Keep alive or close an idle backgrounded session. */
   respondIdleSession: (sessionId: string, action: "keep" | "close") => void;
@@ -34,6 +36,10 @@ export interface QuartzApi {
   setFormState: (id: string, formState: Record<string, unknown>) => void;
   /** Clear the failed background job badge once the user opens /jobs. */
   clearBgFailed: () => void;
+  /** Dismiss a non-permission item from the sidebar inbox. */
+  dismissInboxItem: (sessionId: string) => void;
+  /** Clear all read non-permission items from the sidebar inbox. */
+  clearReadInbox: () => void;
 }
 
 /**
@@ -128,6 +134,10 @@ export function useQuartz(
     connectionRef.current?.sendTrustProject();
   }, []);
 
+  const setSandbox = React.useCallback((enabled: boolean) => {
+    connectionRef.current?.sendSetSandbox(enabled);
+  }, []);
+
   const respondPermission = React.useCallback(
     (requestId: string, decision: PermissionDecision) => {
       connectionRef.current?.sendPermissionResponse(requestId, decision);
@@ -153,6 +163,14 @@ export function useQuartz(
     setState((prev) => clearBgFailedState(prev));
   }, []);
 
+  const dismissInboxItem = React.useCallback((sessionId: string) => {
+    connectionRef.current?.sendInboxDismiss(sessionId);
+  }, []);
+
+  const clearReadInbox = React.useCallback(() => {
+    connectionRef.current?.sendInboxClearRead();
+  }, []);
+
   return {
     state,
     status,
@@ -163,9 +181,12 @@ export function useQuartz(
     newSession,
     loadSession,
     trustProject,
+    setSandbox,
     respondPermission,
     respondIdleSession,
     setFormState,
     clearBgFailed,
+    dismissInboxItem,
+    clearReadInbox,
   };
 }

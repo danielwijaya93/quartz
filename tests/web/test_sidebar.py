@@ -40,6 +40,7 @@ def test_missing_file_loads_empty(tmp_path: Path) -> None:
         "version": SIDEBAR_VERSION,
         "hiddenSessions": [],
         "importedSessions": [],
+        "pinnedSessions": [],
         "renames": {},
         "workspaces": [],
     }
@@ -199,3 +200,20 @@ def test_payload_annotates_workspaces_with_whether_they_exist(tmp_path: Path) ->
     # Every known session is sent, visible or not: the archive dialog is the
     # difference between this list and the rule.
     assert [row["sessionId"] for row in payload["sessions"]] == ["s1"]
+
+
+def test_pin_and_unpin_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "sidebar.json"
+    store = SidebarStore(path)
+    store.pin("s2")
+    store.pin("s1")
+    store.pin("s2")  # idempotent
+
+    reloaded = SidebarStore(path)
+    assert reloaded.state.pinned_sessions == {"s1", "s2"}
+    assert reloaded.state.to_dict()["pinnedSessions"] == ["s1", "s2"]
+
+    reloaded.unpin("s1")
+    assert SidebarStore(path).state.pinned_sessions == {"s2"}
+    payload = sidebar_payload([_session("s1"), _session("s2")], SidebarStore(path).state)
+    assert payload["sidebar"]["pinnedSessions"] == ["s2"]
