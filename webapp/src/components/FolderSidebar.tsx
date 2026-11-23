@@ -30,9 +30,12 @@ import {
   groupSessions,
   NOTICE_TIMEOUT_MS,
   pinnedSessions,
+  readSidebarCollapseState,
+  writeSidebarCollapseState,
   type FolderBadge,
   type LiveSession,
   type SessionActivity,
+  type SidebarCollapseState,
   type SidebarPayload,
   type SidebarSession,
   type SidebarState,
@@ -132,9 +135,12 @@ export function FolderSidebar({
   onDismissInboxItem,
   onClearReadInbox,
 }: FolderSidebarProps): React.ReactElement {
-  const [expandedOverrides, setExpandedOverrides] = React.useState<Readonly<Record<string, boolean>>>({});
-  const [inboxExpanded, setInboxExpanded] = React.useState(true);
-  const [pinnedExpanded, setPinnedExpanded] = React.useState(true);
+  const [collapseState, setCollapseState] = React.useState<SidebarCollapseState>(() =>
+    readSidebarCollapseState(),
+  );
+  const expandedOverrides = collapseState.folders;
+  const inboxExpanded = collapseState.inbox;
+  const pinnedExpanded = collapseState.pinned;
   const [searchQuery, setSearchQuery] = React.useState("");
 
   const groups = React.useMemo(() => (data ? groupSessions(data) : []), [data]);
@@ -248,9 +254,40 @@ export function FolderSidebar({
     [onRestore, onRename],
   );
 
-  const toggle = React.useCallback((cwd: string, expanded: boolean) => {
-    setExpandedOverrides((prev) => ({ ...prev, [cwd]: expanded }));
-  }, []);
+  const updateCollapseState = React.useCallback(
+    (updater: (prev: SidebarCollapseState) => SidebarCollapseState) => {
+      setCollapseState((prev) => {
+        const next = updater(prev);
+        writeSidebarCollapseState(next);
+        return next;
+      });
+    },
+    [],
+  );
+
+  const toggle = React.useCallback(
+    (cwd: string, expanded: boolean) => {
+      updateCollapseState((prev) => ({
+        ...prev,
+        folders: { ...prev.folders, [cwd]: expanded },
+      }));
+    },
+    [updateCollapseState],
+  );
+
+  const setInboxExpanded = React.useCallback(
+    (expanded: boolean) => {
+      updateCollapseState((prev) => ({ ...prev, inbox: expanded }));
+    },
+    [updateCollapseState],
+  );
+
+  const setPinnedExpanded = React.useCallback(
+    (expanded: boolean) => {
+      updateCollapseState((prev) => ({ ...prev, pinned: expanded }));
+    },
+    [updateCollapseState],
+  );
 
   return (
     <nav
