@@ -111,6 +111,11 @@ export function addWorkspace(cwd: string): Promise<SidebarPayload> {
   return post("/api/workspaces", { cwd });
 }
 
+/** Remove a folder from the sidebar list. Nothing on disk is touched. */
+export function removeWorkspace(cwd: string): Promise<SidebarPayload> {
+  return post("/api/workspaces/remove", { cwd });
+}
+
 /**
  * `GET /api/fs/list`. A bad path comes back as `error` inside the listing rather
  * than as a thrown failure: the picker has to stay on screen and let the person go

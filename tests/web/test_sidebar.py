@@ -85,6 +85,18 @@ def test_adding_the_same_workspace_twice_is_one_row(tmp_path: Path) -> None:
     assert [workspace.cwd for workspace in SidebarStore(path).state.workspaces] == ["/tmp/project"]
 
 
+def test_removing_a_workspace_persists_and_is_idempotent(tmp_path: Path) -> None:
+    path = tmp_path / "sidebar.json"
+    store = SidebarStore(path)
+    store.add_workspace("/tmp/one")
+    store.add_workspace("/tmp/two")
+
+    store.remove_workspace("/tmp/one")
+    store.remove_workspace("/tmp/one")  # idempotent
+
+    assert [workspace.cwd for workspace in SidebarStore(path).state.workspaces] == ["/tmp/two"]
+
+
 def test_save_is_atomic_and_leaves_no_temp_files(tmp_path: Path) -> None:
     """A crash mid-write must leave the old file, never a truncated one."""
     path = tmp_path / "sidebar.json"

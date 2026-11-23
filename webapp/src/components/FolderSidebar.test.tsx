@@ -153,6 +153,29 @@ describe("FolderSidebar", () => {
     );
   });
 
+  it("removes an empty folder from the sidebar and hides remove on non-empty folders", async () => {
+    const user = userEvent.setup();
+    const onRemoveFolder = vi.fn().mockResolvedValue(true);
+    renderSidebar({
+      data: payload({
+        sidebar: {
+          ...EMPTY_SIDEBAR,
+          workspaces: [{ cwd: "/home/x/empty", label: "empty", cwdExists: true }],
+        },
+      }),
+      onRemoveFolder,
+    });
+
+    // Non-empty folder ("project") must not have a remove button.
+    expect(
+      screen.queryByRole("button", { name: "Remove project from sidebar" }),
+    ).not.toBeInTheDocument();
+
+    // Empty folder ("empty") has a remove button that calls onRemoveFolder with its cwd.
+    await user.click(screen.getByRole("button", { name: "Remove empty from sidebar" }));
+    expect(onRemoveFolder).toHaveBeenCalledWith("/home/x/empty");
+  });
+
   it("hides a session from its row action", async () => {
     const user = userEvent.setup();
     const { props } = renderSidebar();

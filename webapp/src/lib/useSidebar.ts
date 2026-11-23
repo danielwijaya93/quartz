@@ -5,6 +5,7 @@ import {
   hideSession,
   importSession,
   pinSession,
+  removeWorkspace,
   renameSession,
   restoreSession,
   unpinSession,
@@ -27,6 +28,7 @@ export interface SidebarApi {
   unpin: (sessionId: string) => Promise<boolean>;
   rename: (sessionId: string, title: string) => Promise<boolean>;
   addWorkspace: (cwd: string) => Promise<boolean>;
+  removeWorkspace: (cwd: string) => Promise<boolean>;
 }
 
 function messageOf(cause: unknown): string {
@@ -111,5 +113,6 @@ export function useSidebar(): SidebarApi {
       [run],
     ),
     addWorkspace: React.useCallback((cwd: string) => run(() => addWorkspace(cwd)), [run]),
+    removeWorkspace: React.useCallback((cwd: string) => run(() => removeWorkspace(cwd)), [run]),
   };
 }

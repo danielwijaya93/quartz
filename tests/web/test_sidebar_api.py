@@ -192,6 +192,27 @@ def test_workspace_must_be_a_directory(app_client: AppClient, tmp_path: Path) ->
     assert "not a directory" in response.json()["error"]
 
 
+def test_remove_workspace_removes_from_sidebar_without_deleting_dir(
+    app_client: AppClient, tmp_path: Path
+) -> None:
+    folder = tmp_path / "empty-project"
+    folder.mkdir()
+    app_client.client.post("/api/workspaces", json={"cwd": str(folder)})
+
+    response = app_client.client.post("/api/workspaces/remove", json={"cwd": str(folder)})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sidebar"]["workspaces"] == []
+    assert folder.is_dir()
+
+
+@pytest.mark.parametrize("body", [{}, {"cwd": ""}, {"cwd": "   "}, {"cwd": 7}, {"cwd": None}])
+def test_remove_workspace_requires_cwd(app_client: AppClient, body: dict[str, Any]) -> None:
+    response = app_client.client.post("/api/workspaces/remove", json=body)
+    assert response.status_code == 400
+    assert "cwd" in response.json()["error"]
+
+
 # -- the folder picker -------------------------------------------------
 
 

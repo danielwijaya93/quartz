@@ -628,6 +628,16 @@ def create_app(
             return _bad_request(error or "cwd must be a directory")
         return await mutate(lambda sidebar: sidebar.add_workspace(str(resolved)))
 
+    @app.post("/api/workspaces/remove")
+    async def remove_workspace(request: Request) -> JSONResponse:
+        """Remove a folder from the sidebar list without touching disk."""
+        body = await _json_body(request)
+        raw_cwd = body.get("cwd")
+        if not isinstance(raw_cwd, str) or not raw_cwd.strip():
+            return _bad_request("cwd is required")
+        target = raw_cwd.strip()
+        return await mutate(lambda sidebar: sidebar.remove_workspace(target))
+
     # -- the folder picker -------------------------------------------------
 
     @app.get("/api/fs/list")

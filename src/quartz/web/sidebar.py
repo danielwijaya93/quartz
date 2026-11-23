@@ -213,6 +213,16 @@ class SidebarStore:
             self.state.workspaces.append(Workspace(cwd=cwd, label=label or Path(cwd).name))
             self.save()
 
+    def remove_workspace(self, cwd: str) -> None:
+        """Remove a folder from the sidebar list. Idempotent; touches no files on disk."""
+        with self._lock:
+            before = len(self.state.workspaces)
+            self.state.workspaces = [
+                workspace for workspace in self.state.workspaces if workspace.cwd != cwd
+            ]
+            if len(self.state.workspaces) != before:
+                self.save()
+
     # -- persistence -------------------------------------------------------
 
     def save(self) -> None:

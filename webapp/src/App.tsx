@@ -234,6 +234,7 @@ export function App(): React.ReactElement {
     onSelectSession: selectSession,
     onNewSession: newSessionIn,
     onNewFolder: () => setPicker("workspace"),
+    onRemoveFolder: sidebar.removeWorkspace,
     onOpenFolder: () => setPicker("session"),
     // Handed over as-is: each one resolves to whether the server did it, which is
     // what the sidebar's undo notice reports on.
