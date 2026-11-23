@@ -45,6 +45,16 @@ def _generate_vapid() -> tuple[str, str]:
     return private_pem, _public_key_b64(vapid)
 
 
+_MAX_PUSH_BODY_LENGTH = 120
+
+
+def _compact_push_body(text: str, max_length: int = _MAX_PUSH_BODY_LENGTH) -> str:
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= max_length:
+        return collapsed
+    return collapsed[: max(0, max_length - 3)].rstrip() + "..."
+
+
 def format_push_payload(frame: dict[str, Any]) -> dict[str, Any] | None:
     """Build a Web Push notification payload for a server frame, or ``None``."""
     kind = frame.get("type")
@@ -60,7 +70,7 @@ def format_push_payload(frame: dict[str, Any]) -> dict[str, Any] | None:
                 "url": "/",
             }
         if status == "error":
-            err = str(frame.get("error") or "").strip()
+            err = _compact_push_body(str(frame.get("error") or ""))
             return {
                 "title": "Quartz: Turn failed",
                 "body": err or "An error occurred during the turn.",
@@ -69,16 +79,16 @@ def format_push_payload(frame: dict[str, Any]) -> dict[str, Any] | None:
             }
         return None
     if kind == "permission_request":
-        command = str(frame.get("command") or frame.get("tool") or "action").strip()
+        command = str(frame.get("command") or frame.get("tool") or "action")
         req_id = str(frame.get("requestId") or "").strip()
         return {
             "title": "Quartz: Approval needed",
-            "body": f"Allow {command}?",
+            "body": _compact_push_body(f"Allow {command}?"),
             "tag": f"quartz-permission-{req_id}" if req_id else "quartz-permission",
             "url": "/",
         }
     if kind == "bash_notice":
-        text = str(frame.get("text") or "").strip()
+        text = _compact_push_body(str(frame.get("text") or ""))
         return {
             "title": "Quartz: Background job finished",
             "body": text or "A background job finished.",
@@ -86,7 +96,7 @@ def format_push_payload(frame: dict[str, Any]) -> dict[str, Any] | None:
             "url": "/",
         }
     if kind == "error":
-        msg = str(frame.get("message") or "").strip()
+        msg = _compact_push_body(str(frame.get("message") or ""))
         return {
             "title": "Quartz: Error",
             "body": msg or "An error occurred.",
