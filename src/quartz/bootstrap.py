@@ -22,6 +22,7 @@ supply configuration another way) before calling `build_runtime`.
 from __future__ import annotations
 
 import dataclasses
+import os
 import threading
 from pathlib import Path
 import contextlib
@@ -35,6 +36,7 @@ from quartz.core.runtime import AgentRuntime
 from quartz.core.session import Session, default_sessions_dir, prune_snapshots
 from quartz.errors import SessionNotFoundError
 from quartz.kernel.client import KernelClient
+from quartz.kernel.sandbox import SandboxConfig
 from quartz.providers.registry import resolve_context_tokens
 from quartz.providers.selection import build_provider
 from quartz.settings import load_settings, trust_project
@@ -127,6 +129,20 @@ class BootstrapOptions:
     client_factory: Callable[[], tuple[Any, ...]] | None = None
     kernel_factory: Any | None = None
     lazy_provider: bool = False
+    sandbox: bool | None = None
+
+
+def _resolve_sandbox_enabled(explicit: bool | None, setting: bool) -> bool:
+    if explicit is not None:
+        return explicit
+    env_val = os.getenv("QUARTZ_SANDBOX")
+    if env_val is not None:
+        norm = env_val.strip().lower()
+        if norm in {"0", "false", "no", "off"}:
+            return False
+        if norm in {"1", "true", "yes", "on"}:
+            return True
+    return setting
 
 
 def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
@@ -149,8 +165,13 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
     if options.trust_project:
         trust_project(cwd)
 
+    settings = load_settings()
+    sandbox_enabled = _resolve_sandbox_enabled(options.sandbox, settings.sandbox)
+
     kernel_cls = options.kernel_factory or KernelClient
     kernel = kernel_cls(cwd=cwd)
+    if sandbox_enabled and hasattr(kernel, "enable_sandbox"):
+        kernel.enable_sandbox(SandboxConfig(enabled=True))
     kernel_err: list[BaseException] = []
 
     def _start_kernel() -> None:
@@ -204,7 +225,6 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
                 # background below once the runtime is built.
                 max_ctx = resolve_context_tokens(provider_name, model, client=None)
                 max_context_tokens = options.max_context_tokens or max_ctx
-            settings = load_settings()
             system_prompt = build_system_prompt(cwd, headless=options.headless)
         finally:
             kernel_thread.join()

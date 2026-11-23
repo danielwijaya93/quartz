@@ -49,6 +49,7 @@ DEFAULT_BACKGROUND_CHECK_EVERY = 300
 #: are never pruned; only the pickled namespace goes, since resuming a session whose
 #: snapshot has aged out still replays its conversation.
 DEFAULT_SNAPSHOT_RETENTION_DAYS = 7
+DEFAULT_SANDBOX_ENABLED = True
 
 _MIN_TOKENS = 256
 _MAX_TOKENS = 10_000_000
@@ -66,6 +67,7 @@ class Settings:
     progress_every: int = DEFAULT_PROGRESS_EVERY
     background_check_every: int = DEFAULT_BACKGROUND_CHECK_EVERY
     snapshot_retention_days: int = DEFAULT_SNAPSHOT_RETENTION_DAYS
+    sandbox: bool = DEFAULT_SANDBOX_ENABLED
 
 
 def _config_path(path: Path | None = None) -> Path:
@@ -143,6 +145,18 @@ def _coerce_interval(value: Any, default: int) -> int:
     return default
 
 
+def _coerce_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        norm = value.strip().lower()
+        if norm in {"1", "true", "yes", "on"}:
+            return True
+        if norm in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
 def load_settings(path: Path | None = None) -> Settings:
     """Load settings from config.json, falling back to defaults (never raises)."""
     raw = _read_raw(path)
@@ -160,6 +174,7 @@ def load_settings(path: Path | None = None) -> Settings:
         snapshot_retention_days=_coerce_retention(
             raw.get("snapshot_retention_days"), DEFAULT_SNAPSHOT_RETENTION_DAYS
         ),
+        sandbox=_coerce_bool(raw.get("sandbox"), DEFAULT_SANDBOX_ENABLED),
     )
 
 
