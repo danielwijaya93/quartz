@@ -10,8 +10,8 @@ import { FolderPicker } from "./components/FolderPicker";
 import { SessionArchiveDialog } from "./components/SessionArchiveDialog";
 import { TrustFolderDialog } from "./components/TrustFolderDialog";
 import { ModelPickerDialog } from "./components/ModelPickerDialog";
-import { SettingsModal } from "./components/SettingsModal";
-import { JobsModal } from "./components/JobsModal";
+import { SettingsView } from "./components/SettingsView";
+import { JobsTray } from "./components/JobsTray";
 import { useQuartz } from "./useQuartz";
 import { useCommandPalette } from "./lib/useCommandPalette";
 import { useOpenUISystemPrompt, useRichUiMode } from "./lib/useRichUi";
@@ -188,6 +188,7 @@ export function App(): React.ReactElement {
 
   const selectSession = React.useCallback(
     (id: string) => {
+      setSettingsOpen(false);
       setSessionActivity((prev) => {
         const current = prev[id];
         if (!current || !current.unread) return prev;
@@ -201,6 +202,7 @@ export function App(): React.ReactElement {
 
   const newSessionIn = React.useCallback(
     (cwd: string) => {
+      setSettingsOpen(false);
       quartz.newSession(cwd);
       if (narrow) closeSidebar();
     },
@@ -226,6 +228,7 @@ export function App(): React.ReactElement {
     onHide: sidebar.hide,
     onRestore: sidebar.restore,
     onOpenArchive: openArchive,
+    onOpenSettings: () => setSettingsOpen(true),
     sessionActivity,
   };
 
@@ -252,44 +255,62 @@ export function App(): React.ReactElement {
           sidebarOpen={sidebarOpen}
           onToggleSidebar={() => setSidebarOpen((open) => !open)}
         />
-        <Transcript
-          rows={quartz.state.rows}
-          turnRunning={quartz.state.turnRunning}
-          cwd={quartz.state.session.cwd}
-          richUi={wantsRichUi(richUi.mode)}
-          onPrompt={onPrompt}
-          onFormState={quartz.setFormState}
-          onRunCommand={handleRunCommand}
-        />
-        <StatusLine
-          label={quartz.state.status}
-          status={quartz.status}
-          turnRunning={quartz.state.turnRunning}
-        />
-        <Composer
-          connection={quartz.status}
-          cwd={quartz.state.session.cwd}
-          turnRunning={quartz.state.turnRunning}
-          fatalError={quartz.state.fatalError}
-          commands={quartz.state.session.commands}
-          model={quartz.state.session.model}
-          effort={quartz.state.session.effort}
-          contextPct={quartz.state.session.contextPct}
-          maxContextTokens={quartz.state.session.maxContextTokens}
-          bgCount={quartz.state.session.bgCount}
-          bgFailed={quartz.state.session.bgFailed}
-          onOpenJobs={() => {
-            quartz.clearBgFailed();
-            setJobsOpen(true);
-          }}
-          onOpenModelPicker={() => setModelPickerOpen(true)}
-          onSubmit={onSubmit}
-          onSteer={quartz.steer}
-          onCancel={quartz.cancel}
-          onRunCommand={handleRunCommand}
-          onOpenPalette={palette.openPalette}
-          textareaRef={composerRef}
-        />
+        {settingsOpen ? (
+          <SettingsView
+            onBack={() => {
+              setSettingsOpen(false);
+              window.requestAnimationFrame(() => composerRef.current?.focus());
+            }}
+          />
+        ) : (
+          <>
+            <Transcript
+              rows={quartz.state.rows}
+              turnRunning={quartz.state.turnRunning}
+              cwd={quartz.state.session.cwd}
+              richUi={wantsRichUi(richUi.mode)}
+              onPrompt={onPrompt}
+              onFormState={quartz.setFormState}
+              onRunCommand={handleRunCommand}
+            />
+            <StatusLine
+              label={quartz.state.status}
+              status={quartz.status}
+              turnRunning={quartz.state.turnRunning}
+            />
+            <JobsTray
+              open={jobsOpen}
+              onClose={() => {
+                setJobsOpen(false);
+                window.requestAnimationFrame(() => composerRef.current?.focus());
+              }}
+            />
+            <Composer
+              connection={quartz.status}
+              cwd={quartz.state.session.cwd}
+              turnRunning={quartz.state.turnRunning}
+              fatalError={quartz.state.fatalError}
+              commands={quartz.state.session.commands}
+              model={quartz.state.session.model}
+              effort={quartz.state.session.effort}
+              contextPct={quartz.state.session.contextPct}
+              maxContextTokens={quartz.state.session.maxContextTokens}
+              bgCount={quartz.state.session.bgCount}
+              bgFailed={quartz.state.session.bgFailed}
+              onOpenJobs={() => {
+                quartz.clearBgFailed();
+                setJobsOpen((prev) => !prev);
+              }}
+              onOpenModelPicker={() => setModelPickerOpen(true)}
+              onSubmit={onSubmit}
+              onSteer={quartz.steer}
+              onCancel={quartz.cancel}
+              onRunCommand={handleRunCommand}
+              onOpenPalette={palette.openPalette}
+              textareaRef={composerRef}
+            />
+          </>
+        )}
       </div>
 
       <CommandPalette
@@ -338,25 +359,7 @@ export function App(): React.ReactElement {
         }}
       />
 
-      <SettingsModal
-        open={settingsOpen}
-        onOpenChange={(open) => {
-          setSettingsOpen(open);
-          if (!open) {
-            window.requestAnimationFrame(() => composerRef.current?.focus());
-          }
-        }}
-      />
 
-      <JobsModal
-        open={jobsOpen}
-        onOpenChange={(open) => {
-          setJobsOpen(open);
-          if (!open) {
-            window.requestAnimationFrame(() => composerRef.current?.focus());
-          }
-        }}
-      />
 
       <ModelPickerDialog
         open={modelPickerOpen}
