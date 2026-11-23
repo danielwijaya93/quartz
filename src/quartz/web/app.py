@@ -296,6 +296,146 @@ def create_app(
             }
         )
 
+    def _mcp_snapshot() -> dict[str, Any]:
+        from quartz.mcp.client import default_mcp_config_path, load_raw_mcp_config
+
+        cfg_path = default_mcp_config_path()
+        raw = load_raw_mcp_config(cfg_path)
+        servers: list[dict[str, Any]] = []
+        for name, spec in sorted(raw.items()):
+            is_http = "url" in spec
+            headers = spec.get("headers") if isinstance(spec.get("headers"), dict) else {}
+            env = spec.get("env") if isinstance(spec.get("env"), dict) else {}
+            servers.append(
+                {
+                    "name": name,
+                    "enabled": spec.get("enabled", True) is not False,
+                    "transport": "http" if is_http else "stdio",
+                    "url": str(spec.get("url", "")) if is_http else "",
+                    "command": "" if is_http else str(spec.get("command", "")),
+                    "args": [] if is_http else [str(a) for a in spec.get("args", [])],
+                    "cwd": str(spec.get("cwd", "")) if spec.get("cwd") else "",
+                    "headerKeys": sorted(str(k) for k in headers.keys()),
+                    "envKeys": sorted(str(k) for k in env.keys()),
+                }
+            )
+        return {"configPath": str(cfg_path), "servers": servers}
+
+    def _reload_session_mcp() -> None:
+        if session.built:
+            from quartz.core.commands import reload_runtime_mcp
+
+            reload_runtime_mcp(session.runtime)
+
+    @app.get("/api/mcp")
+    async def get_mcp() -> JSONResponse:
+        """List configured MCP servers with header/env secret values masked."""
+        return JSONResponse(await asyncio.to_thread(_mcp_snapshot))
+
+    @app.post("/api/mcp/toggle")
+    async def toggle_mcp(request: Request) -> JSONResponse:
+        from quartz.mcp.client import (
+            default_mcp_config_path,
+            load_raw_mcp_config,
+            set_mcp_server_enabled,
+        )
+
+        body = await _json_body(request)
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            return JSONResponse({"ok": False, "error": "enabled must be boolean"}, status_code=400)
+        cfg_path = default_mcp_config_path()
+        if body.get("all") is True:
+            names = sorted(load_raw_mcp_config(cfg_path).keys())
+        else:
+            name = str(body.get("name") or "").strip()
+            if not name:
+                return JSONResponse({"ok": False, "error": "Missing server name"}, status_code=400)
+            names = [name]
+
+        def _apply() -> bool:
+            updated = False
+            for item in names:
+                if set_mcp_server_enabled(item, enabled, cfg_path):
+                    updated = True
+            if updated:
+                _reload_session_mcp()
+            return updated
+
+        ok = await asyncio.to_thread(_apply)
+        if not ok and names:
+            return JSONResponse({"ok": False, "error": "Server not found"}, status_code=404)
+        snap = await asyncio.to_thread(_mcp_snapshot)
+        return JSONResponse({"ok": True, **snap})
+
+    @app.post("/api/mcp/add")
+    async def add_mcp(request: Request) -> JSONResponse:
+        from quartz.mcp.client import add_mcp_server, default_mcp_config_path
+
+        body = await _json_body(request)
+        name = str(body.get("name") or "").strip()
+        if not name:
+            return JSONResponse({"ok": False, "error": "Server name is required"}, status_code=400)
+        transport = str(body.get("transport") or "stdio").strip().lower()
+        spec: dict[str, Any] = {}
+        if transport == "http":
+            url = str(body.get("url") or "").strip()
+            if not url:
+                return JSONResponse({"ok": False, "error": "URL is required for HTTP"}, status_code=400)
+            spec["url"] = url
+            headers = body.get("headers")
+            if isinstance(headers, dict) and headers:
+                spec["headers"] = {str(k): str(v) for k, v in headers.items() if str(k).strip()}
+        elif transport == "stdio":
+            command = str(body.get("command") or "").strip()
+            if not command:
+                return JSONResponse(
+                    {"ok": False, "error": "Command is required for stdio"}, status_code=400
+                )
+            spec["command"] = command
+            args = body.get("args")
+            if isinstance(args, list) and args:
+                spec["args"] = [str(a) for a in args if str(a).strip()]
+            env = body.get("env")
+            if isinstance(env, dict) and env:
+                spec["env"] = {str(k): str(v) for k, v in env.items() if str(k).strip()}
+            cwd_val = str(body.get("cwd") or "").strip()
+            if cwd_val:
+                spec["cwd"] = cwd_val
+        else:
+            return JSONResponse({"ok": False, "error": "Invalid transport"}, status_code=400)
+
+        if body.get("enabled") is False:
+            spec["enabled"] = False
+
+        def _save() -> None:
+            add_mcp_server(name, spec, default_mcp_config_path())
+            _reload_session_mcp()
+
+        await asyncio.to_thread(_save)
+        snap = await asyncio.to_thread(_mcp_snapshot)
+        return JSONResponse({"ok": True, **snap})
+
+    @app.post("/api/mcp/remove")
+    async def remove_mcp(request: Request) -> JSONResponse:
+        from quartz.mcp.client import default_mcp_config_path, remove_mcp_server
+
+        body = await _json_body(request)
+        name = str(body.get("name") or "").strip()
+        if not name:
+            return JSONResponse({"ok": False, "error": "Missing server name"}, status_code=400)
+
+        def _rm() -> bool:
+            removed = remove_mcp_server(name, default_mcp_config_path())
+            if removed:
+                _reload_session_mcp()
+            return removed
+
+        if not await asyncio.to_thread(_rm):
+            return JSONResponse({"ok": False, "error": f"Server '{name}' not found"}, status_code=404)
+        snap = await asyncio.to_thread(_mcp_snapshot)
+        return JSONResponse({"ok": True, **snap})
+
     @app.get("/api/jobs")
     async def list_jobs() -> JSONResponse:
         if not session.built:
