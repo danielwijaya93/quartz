@@ -5,6 +5,7 @@ import {
   ChevronRight,
   FolderOpen,
   FolderPlus,
+  Inbox,
   Pencil,
   Plug,
   Plus,
@@ -17,6 +18,7 @@ import {
 import { ThemeToggle } from "./ThemeToggle";
 import {
   currentWorkspaceCwd,
+  directoryLabel,
   displayTitle,
   filterWorkspaceGroups,
   folderBadge,
@@ -31,6 +33,7 @@ import {
   type SidebarState,
   type WorkspaceGroup,
 } from "@/lib/sidebar";
+import type { InboxItem } from "@/protocol";
 
 export interface FolderSidebarProps {
   /** The last good payload, or null before the first load succeeds. */
@@ -70,6 +73,8 @@ export interface FolderSidebarProps {
   onOpenMcp?: () => void;
   /** Per-session live status (running / done / error / unread). */
   sessionActivity?: Readonly<Record<string, SessionActivity>>;
+  /** Sessions needing attention (permission prompt, finished turn, or error). */
+  inbox?: readonly InboxItem[];
 }
 
 const EMPTY_STATE: SidebarState = {
@@ -113,8 +118,10 @@ export function FolderSidebar({
   onOpenSettings,
   onOpenMcp,
   sessionActivity = {},
+  inbox = [],
 }: FolderSidebarProps): React.ReactElement {
   const [expandedOverrides, setExpandedOverrides] = React.useState<Readonly<Record<string, boolean>>>({});
+  const [inboxExpanded, setInboxExpanded] = React.useState(true);
   const [searchQuery, setSearchQuery] = React.useState("");
 
   const groups = React.useMemo(() => (data ? groupSessions(data) : []), [data]);
@@ -125,6 +132,26 @@ export function FolderSidebar({
   );
   const searching = searchQuery.trim() !== "";
   const sessions = React.useMemo(() => data?.sessions ?? [], [data]);
+  const sessionById = React.useMemo(() => {
+    const map = new Map<string, SidebarSession>();
+    for (const s of sessions) map.set(s.sessionId, s);
+    return map;
+  }, [sessions]);
+  const visibleInbox = React.useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return inbox;
+    return inbox.filter((item) => {
+      const s = sessionById.get(item.sessionId);
+      const title = sidebarState.renames[item.sessionId] ?? s?.title ?? item.title ?? "";
+      const folder = directoryLabel(item.cwd);
+      const preview = item.preview ?? "";
+      return (
+        title.toLowerCase().includes(q) ||
+        folder.toLowerCase().includes(q) ||
+        preview.toLowerCase().includes(q)
+      );
+    });
+  }, [inbox, searchQuery, sessionById, sidebarState.renames]);
   const drawer = variant === "drawer";
 
   const live = React.useMemo<LiveSession>(
@@ -316,6 +343,18 @@ export function FolderSidebar({
           >
             {actionError}
           </p>
+        ) : null}
+
+        {visibleInbox.length > 0 ? (
+          <InboxSection
+            items={visibleInbox}
+            expanded={searching || inboxExpanded}
+            onToggle={setInboxExpanded}
+            currentSessionId={currentSessionId}
+            sessionById={sessionById}
+            renames={sidebarState.renames}
+            onSelectSession={onSelectSession}
+          />
         ) : null}
 
         {error === null && data !== null
@@ -569,6 +608,117 @@ function EmptySidebar({
         </Button>
       </div>
     </div>
+  );
+}
+
+function inboxKindMeta(kind: InboxItem["kind"]): { label: string; dotClass: string } {
+  if (kind === "permission") {
+    return { label: "Permission needed", dotClass: "bg-warning" };
+  }
+  if (kind === "error") {
+    return { label: "Error", dotClass: "bg-danger" };
+  }
+  return { label: "Turn finished", dotClass: "bg-success" };
+}
+
+function InboxSection({
+  items,
+  expanded,
+  onToggle,
+  currentSessionId,
+  sessionById,
+  renames,
+  onSelectSession,
+}: {
+  items: readonly InboxItem[];
+  expanded: boolean;
+  onToggle: (expanded: boolean) => void;
+  currentSessionId: string;
+  sessionById: ReadonlyMap<string, SidebarSession>;
+  renames: Readonly<Record<string, string>>;
+  onSelectSession: (sessionId: string) => void;
+}): React.ReactElement {
+  return (
+    <section aria-label="Inbox" className="mb-2 border-b border-separator/70 pb-2">
+      <Disclosure isExpanded={expanded} onExpandedChange={onToggle} className="rounded-md">
+        <Disclosure.Heading>
+          <Disclosure.Trigger
+            aria-label={`Inbox, ${items.length} ${items.length === 1 ? "item" : "items"}`}
+            className="flex h-7 min-h-7 w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-left transition-colors hover:bg-surface-secondary/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
+          >
+            <ChevronRight
+              aria-hidden="true"
+              className={cn(
+                "size-3 shrink-0 text-muted/70 motion-safe:transition-transform",
+                expanded && "rotate-90",
+              )}
+            />
+            <Inbox aria-hidden="true" className="size-3.5 shrink-0 text-accent" />
+            <span className="min-w-0 truncate text-[11px] font-semibold uppercase tracking-wider text-foreground/90">
+              Inbox
+            </span>
+            <span className="ml-auto shrink-0 rounded-full bg-accent-soft px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-accent-soft-foreground">
+              {items.length}
+            </span>
+          </Disclosure.Trigger>
+        </Disclosure.Heading>
+        <Disclosure.Content>
+          <Disclosure.Body className="mt-1">
+            <ul aria-label="Inbox sessions" className="space-y-1">
+              {items.map((item) => {
+                const session = sessionById.get(item.sessionId);
+                const title =
+                  renames[item.sessionId] ?? session?.title ?? item.title ?? "New session";
+                const meta = inboxKindMeta(item.kind);
+                const isCurrent = item.sessionId === currentSessionId;
+                const rowStyle = isCurrent
+                  ? "border-accent/40 bg-accent-soft/60"
+                  : item.kind === "permission"
+                    ? "border-warning/35 bg-warning-soft/30 hover:bg-warning-soft/50"
+                    : item.kind === "error"
+                      ? "border-danger/30 bg-danger-soft/30 hover:bg-danger-soft/50"
+                      : "border-border/60 bg-surface-secondary/40 hover:bg-surface-secondary/80";
+
+                return (
+                  <li key={item.sessionId}>
+                    <button
+                      type="button"
+                      onClick={() => onSelectSession(item.sessionId)}
+                      aria-current={isCurrent ? "true" : undefined}
+                      className={cn(
+                        "w-full cursor-pointer rounded-lg border px-2 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus",
+                        rowStyle,
+                      )}
+                    >
+                      <div className="flex items-center gap-1.5 text-[10px]">
+                        <span
+                          aria-hidden="true"
+                          className={cn("size-1.5 shrink-0 rounded-full", meta.dotClass)}
+                        />
+                        <span className="truncate font-medium text-foreground/85">
+                          {meta.label}
+                        </span>
+                        <span className="ml-auto shrink-0 tabular-nums text-meta">
+                          {formatAge(item.updatedAt)}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 truncate text-[12px] font-medium text-foreground">
+                        {title}
+                      </p>
+                      <p className="truncate text-[11px] text-muted">
+                        {item.preview
+                          ? `${directoryLabel(item.cwd)} · ${item.preview}`
+                          : directoryLabel(item.cwd)}
+                      </p>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </Disclosure.Body>
+        </Disclosure.Content>
+      </Disclosure>
+    </section>
   );
 }
 

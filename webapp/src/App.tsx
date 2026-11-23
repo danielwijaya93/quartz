@@ -250,6 +250,7 @@ export function App(): React.ReactElement {
       setMcpOpen(true);
     },
     sessionActivity,
+    inbox: quartz.state.inbox ?? [],
   };
 
   return (

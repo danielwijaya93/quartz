@@ -24,6 +24,7 @@ import time
 import uuid
 import weakref
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -114,10 +115,12 @@ class WebSession:
         *,
         cwd: Path,
         runner: TurnRunner = run_interactive_turn,
+        on_event: Callable[[WebSession, Frame], None] | None = None,
     ) -> None:
         self._build = build
         self._cwd = cwd
         self._runner = runner
+        self._on_event = on_event
         self._runtime: AgentRuntime | None = None
         self._turn: _Turn | None = None
         self._lock = threading.Lock()
@@ -336,10 +339,17 @@ class WebSession:
         if ev is not None:
             ev.set()
 
+    def _notify_event(self, frame: Frame) -> None:
+        cb = self._on_event
+        if cb is not None:
+            with contextlib.suppress(Exception):
+                cb(self, frame)
+
     def _retire(self) -> None:
         """Abort and drain the turn in flight, then close the current kernel."""
         self._reject_pending_permission()
         self._abort_and_join()
+        self._notify_event({"type": "_closed"})
         runtime, self._runtime = self._runtime, None
         if runtime is None:
             return
@@ -396,6 +406,7 @@ class WebSession:
             self._sinks.add(push)
             self._last_active_at = time.monotonic()
             self._idle_prompted_at = None
+        self._notify_event({"type": "_attached"})
 
     def detach(self, push: Push) -> None:
         """Stop sending to one socket, without deciding anything yet.
@@ -456,6 +467,7 @@ class WebSession:
                 sink(frame)
             except Exception:  # noqa: BLE001 - a dead socket must not kill a turn
                 self.detach(sink)
+        self._notify_event(frame)
 
     def _cancel_grace(self) -> None:
         grace, self._grace = self._grace, None
@@ -840,6 +852,8 @@ class SessionManager:
         self._placeholder: WebSession | None = None
         self._system_prompt_append = ""
         self._global_sinks: set[Push] = set()
+        self._inbox: dict[str, dict[str, Any]] = {}
+        self._inbox_seq = 0
         self._idle_hours_override = idle_hours
         self._check_interval_s = max(0.05, float(check_interval_s))
         self._watcher_timer: threading.Timer | None = None
@@ -860,7 +874,7 @@ class SessionManager:
                 self._current_id = first_id
                 return self._sessions[first_id]
             if self._placeholder is None:
-                self._placeholder = WebSession(self._build, cwd=self._cwd, runner=self._runner)
+                self._placeholder = self._new_web_session()
                 self._placeholder.set_system_prompt_append(self._system_prompt_append)
             return self._placeholder
 
@@ -896,7 +910,7 @@ class SessionManager:
                 sid, ws = next(iter(self._sessions.items()))
                 self._current_id = sid
                 return ws
-            ws = self._placeholder or WebSession(self._build, cwd=self._cwd, runner=self._runner)
+            ws = self._placeholder or self._new_web_session()
             self._placeholder = None
             ws.set_system_prompt_append(self._system_prompt_append)
         ws.ensure_runtime(cwd)
@@ -908,7 +922,7 @@ class SessionManager:
 
     def create_session(self, cwd: Path | None = None) -> WebSession:
         """Build a fresh `WebSession` in `cwd` without retiring existing sessions."""
-        ws = WebSession(self._build, cwd=self._cwd, runner=self._runner)
+        ws = self._new_web_session()
         with self._lock:
             ws.set_system_prompt_append(self._system_prompt_append)
         ws.ensure_runtime(cwd)
@@ -928,7 +942,7 @@ class SessionManager:
                 existing.mark_active()
                 return existing
             append = self._system_prompt_append
-        ws = WebSession(self._build, cwd=self._cwd, runner=self._runner)
+        ws = self._new_web_session()
         ws.set_system_prompt_append(append)
         ws.load_session(cleaned)
         with self._lock:
@@ -942,6 +956,129 @@ class SessionManager:
             self._sessions[cleaned] = ws
             self._current_id = cleaned
         return ws
+
+    def _new_web_session(self) -> WebSession:
+        return WebSession(
+            self._build,
+            cwd=self._cwd,
+            runner=self._runner,
+            on_event=self._on_session_event,
+        )
+
+    @staticmethod
+    def _session_title(ws: WebSession) -> str | None:
+        if not ws.built:
+            return None
+        for msg in getattr(ws.runtime, "messages", ()):
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            text = ""
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                parts = [
+                    str(part.get("text") or "")
+                    for part in content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                ]
+                text = " ".join(parts)
+            cleaned = " ".join(text.split())
+            if cleaned:
+                return cleaned if len(cleaned) <= 80 else f"{cleaned[:79]}…"
+        return None
+
+    def inbox_items(self) -> list[dict[str, Any]]:
+        """Return current inbox items ordered with permissions first, then newest."""
+        with self._lock:
+            items = list(self._inbox.values())
+        items.sort(
+            key=lambda item: (0 if item["kind"] == "permission" else 1, -int(item.get("_seq", 0)))
+        )
+        return [
+            {
+                "sessionId": item["sessionId"],
+                "cwd": item["cwd"],
+                **({"title": item["title"]} if item.get("title") else {}),
+                "kind": item["kind"],
+                "updatedAt": item["updatedAt"],
+                **({"preview": item["preview"]} if item.get("preview") else {}),
+            }
+            for item in items
+        ]
+
+    def _broadcast_inbox(self) -> None:
+        self._broadcast({"type": "inbox_state", "items": self.inbox_items()})
+
+    def _on_session_event(self, ws: WebSession, frame: Frame) -> None:
+        if not ws.built:
+            return
+        sid = ws.runtime.active_session.id
+        cwd = str(ws.runtime.cwd)
+        kind = frame.get("type")
+        changed = False
+        with self._lock:
+            existing = self._inbox.get(sid)
+            if kind == "_attached":
+                if existing is not None and existing["kind"] in ("done", "error"):
+                    self._inbox.pop(sid, None)
+                    changed = True
+            elif kind == "_closed":
+                if sid in self._inbox:
+                    self._inbox.pop(sid, None)
+                    changed = True
+            elif kind == "turn_start":
+                if existing is not None and existing["kind"] in ("done", "error"):
+                    self._inbox.pop(sid, None)
+                    changed = True
+            elif kind == "permission_request":
+                tool = str(frame.get("tool") or "").strip()
+                command = str(frame.get("command") or "").strip()
+                preview = f"{tool}: {command}" if tool and command else (command or tool or "Permission required")
+                self._inbox_seq += 1
+                self._inbox[sid] = {
+                    "sessionId": sid,
+                    "cwd": cwd,
+                    "title": self._session_title(ws),
+                    "kind": "permission",
+                    "updatedAt": datetime.now(timezone.utc).isoformat(),
+                    "preview": preview if len(preview) <= 120 else f"{preview[:119]}…",
+                    "_seq": self._inbox_seq,
+                }
+                changed = True
+            elif kind == "permission_resolved":
+                if existing is not None and existing["kind"] == "permission":
+                    self._inbox.pop(sid, None)
+                    changed = True
+            elif kind == "turn_end":
+                if not ws.attached:
+                    status = frame.get("status")
+                    if status == "ok":
+                        item_kind = "done"
+                        preview = None
+                    elif status == "error":
+                        item_kind = "error"
+                        err = str(frame.get("error") or "").strip()
+                        preview = err if err else "Turn failed"
+                        if len(preview) > 120:
+                            preview = f"{preview[:119]}…"
+                    else:
+                        item_kind = ""
+                        preview = None
+                    if item_kind:
+                        self._inbox_seq += 1
+                        self._inbox[sid] = {
+                            "sessionId": sid,
+                            "cwd": cwd,
+                            "title": self._session_title(ws),
+                            "kind": item_kind,
+                            "updatedAt": datetime.now(timezone.utc).isoformat(),
+                            "preview": preview,
+                            "_seq": self._inbox_seq,
+                        }
+                        changed = True
+        if changed:
+            self._broadcast_inbox()
 
     def register_sink(self, push: Push) -> None:
         with self._lock:
@@ -1062,6 +1199,10 @@ class SessionManager:
                     self._current_id = next(iter(self._sessions), None)
         if action == "close":
             ws.close()
+            with self._lock:
+                removed = self._inbox.pop(session_id, None) is not None
+            if removed:
+                self._broadcast_inbox()
         self._broadcast(
             {
                 "type": "idle_session_resolved",
