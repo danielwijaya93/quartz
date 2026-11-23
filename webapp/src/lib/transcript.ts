@@ -152,6 +152,7 @@ export interface SessionMeta {
   maxContextTokens?: number;
   commands: Command[];
   projectTrust: ProjectTrustState | null;
+  bgCount?: number;
 }
 
 export interface TranscriptState {
@@ -646,6 +647,7 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
           maxContextTokens: message.maxContextTokens ?? 0,
           commands: message.commands,
           projectTrust: message.projectTrust ?? null,
+          bgCount: message.bgCount ?? 0,
         },
         status: message.turnRunning ? merged.status : null,
       };
@@ -723,6 +725,15 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
         actions: message.actions ?? null,
       }));
     }
+
+    case "bg_count":
+      return {
+        ...state,
+        session: {
+          ...state.session,
+          bgCount: Math.max(0, message.count),
+        },
+      };
 
     case "bash_notice":
       return appendRow(state, {
