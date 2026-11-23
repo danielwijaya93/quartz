@@ -2,13 +2,32 @@ import * as React from "react";
 import { Alert } from "@heroui/react";
 import type { ConnectionStatus } from "@/lib/connection";
 
+const DEFAULT_BANNER_DELAY_MS = 1500;
+
 /** Non-blocking: streaming output stays readable while the socket recovers. */
 export function ConnectionBanner({
   status,
+  delayMs = DEFAULT_BANNER_DELAY_MS,
 }: {
   status: ConnectionStatus;
+  delayMs?: number;
 }): React.ReactElement | null {
-  if (status === "connected") return null;
+  const [visible, setVisible] = React.useState(false);
+
+  React.useEffect(() => {
+    if (status === "connected") {
+      setVisible(false);
+      return;
+    }
+    if (delayMs <= 0) {
+      setVisible(true);
+      return;
+    }
+    const timer = setTimeout(() => setVisible(true), delayMs);
+    return () => clearTimeout(timer);
+  }, [status, delayMs]);
+
+  if (status === "connected" || !visible) return null;
 
   const reconnecting = status === "connecting";
   return (

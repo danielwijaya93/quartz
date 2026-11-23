@@ -540,7 +540,14 @@ def _handle_web_cli(argv: list[str]) -> None:
     import uvicorn
 
     try:
-        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.port,
+            log_level="info",
+            ws_ping_interval=30.0,
+            ws_ping_timeout=60.0,
+        )
     except KeyboardInterrupt:
         pass
     except (OSError, SystemExit) as exc:
