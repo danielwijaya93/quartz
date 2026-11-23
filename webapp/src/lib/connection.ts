@@ -13,6 +13,7 @@
  *   - announce connection status changes
  */
 
+import { configuredWsUrl } from "./serverUrl";
 import {
   CLIENT_VERSION,
   parseServerMessage,
@@ -413,6 +414,8 @@ export function resolveSocketUrl(location: {
 }): string {
   const override = wsUrlOverride();
   if (typeof override === "string" && override !== "") return override;
+  const configured = configuredWsUrl();
+  if (configured) return configured;
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   return `${scheme}//${location.host}/ws`;
 }

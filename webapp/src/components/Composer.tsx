@@ -1,4 +1,5 @@
 import * as React from "react";
+import { apiUrl } from "../lib/serverUrl";
 import { Alert, Button, TextArea, cn } from "@heroui/react";
 import { ArrowUp, ChevronDown, CornerDownLeft, CornerDownRight, FileText, Plus, Square, X } from "lucide-react";
 import { PROMPT_HANDOFF_EVENT, isProseQuery, readPromptHandoff } from "@/lib/commandText";
@@ -251,7 +252,7 @@ export function Composer({
     if (!atOpen || !cwd || filesByCwd[cwd] !== undefined) return;
     let cancelled = false;
     setFilesLoading(true);
-    void fetch(`/api/workspace/files?cwd=${encodeURIComponent(cwd)}`)
+    void fetch(apiUrl(`/api/workspace/files?cwd=${encodeURIComponent(cwd)}`))
       .then((resp) => (resp.ok ? resp.json() : Promise.reject(new Error("failed"))))
       .then((data: { files?: unknown }) => {
         if (cancelled) return;

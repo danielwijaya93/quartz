@@ -1,4 +1,5 @@
 import * as React from "react";
+import { apiUrl } from "../../lib/serverUrl";
 import { Alert, Button, Card, Chip, Input, Separator } from "@heroui/react";
 import { Check, Copy, Eye, RotateCcw, Square, Terminal } from "lucide-react";
 import { Markdown } from "../Markdown";
@@ -240,7 +241,7 @@ function InteractiveJobsBody({
     }
     setLoadingPid(pid);
     try {
-      const resp = await fetch(`/api/jobs/${encodeURIComponent(pid)}/tail`);
+      const resp = await fetch(apiUrl(`/api/jobs/${encodeURIComponent(pid)}/tail`));
       if (!resp.ok) {
         setTails((prev) => ({ ...prev, [pid]: "(output tail unavailable)" }));
       } else {
@@ -258,7 +259,7 @@ function InteractiveJobsBody({
   const killJob = async (pid: string): Promise<void> => {
     setKillingPid(pid);
     try {
-      await fetch(`/api/jobs/${encodeURIComponent(pid)}/kill`, { method: "POST" });
+      await fetch(apiUrl(`/api/jobs/${encodeURIComponent(pid)}/kill`), { method: "POST" });
       onRunCommand?.("jobs");
     } finally {
       setKillingPid(null);

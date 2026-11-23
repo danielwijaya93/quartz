@@ -1,4 +1,5 @@
 import * as React from "react";
+import { apiUrl } from "../lib/serverUrl";
 import { Button, Chip, Input, cn } from "@heroui/react";
 import { ArrowLeft, Plus, Trash2 } from "lucide-react";
 
@@ -58,7 +59,7 @@ export function McpView({
     setLoading(true);
     setMcpStatus(null);
     try {
-      const resp = await fetch("/api/mcp");
+      const resp = await fetch(apiUrl("/api/mcp"));
       if (!resp.ok) throw new Error("Failed to load MCP servers");
       const payload = (await resp.json()) as McpPayload;
       if (Array.isArray(payload.servers)) setMcpData(payload);
@@ -77,7 +78,7 @@ export function McpView({
     setMcpBusy(name);
     setMcpStatus(null);
     try {
-      const resp = await fetch("/api/mcp/toggle", {
+      const resp = await fetch(apiUrl("/api/mcp/toggle"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, enabled }),
@@ -102,7 +103,7 @@ export function McpView({
     setMcpBusy(name);
     setMcpStatus(null);
     try {
-      const resp = await fetch("/api/mcp/remove", {
+      const resp = await fetch(apiUrl("/api/mcp/remove"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
@@ -146,7 +147,7 @@ export function McpView({
     setMcpBusy("__add__");
     setMcpStatus(null);
     try {
-      const resp = await fetch("/api/mcp/add", {
+      const resp = await fetch(apiUrl("/api/mcp/add"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),

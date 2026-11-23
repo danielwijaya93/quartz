@@ -247,6 +247,37 @@ answers `/` with a 503 "client not built" page rather than pretending, so run
 | `--open` | Open the default browser once the server is listening. |
 | `--dev` | Serve the API only; run `npm run dev` in `webapp/` next to it. |
 
+#### Android app
+
+`webapp/android/` is a Capacitor shell around the same `dist/` build. It is not a
+second client: the WebView loads the identical SPA, so every feature ships once.
+
+```bash
+cd webapp && npm run build && npx cap sync android
+cd android && ./gradlew assembleDebug        # -> app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+No Android Studio is needed; the SDK command-line tools are enough. Point Gradle at
+one with `ANDROID_HOME` (plus `JAVA_HOME` on a JDK with `javac`).
+
+A packaged shell is not served from the Quartz host, so the app asks for the server
+URL on first launch and stores it in `localStorage`. Every `/api/*` call and the
+`/ws` socket are built from it (`webapp/src/lib/serverUrl.ts`); Settings has a
+"Save & reconnect" card to change it later. Because the WebView's `Origin` never
+matches the server's `Host`, `quartz web` accepts the fixed shell origins
+(`http://localhost`, `capacitor://localhost`, `http://app.quartz.local`) and answers
+CORS preflights for them. `QUARTZ_ALLOWED_ORIGINS` adds origins, comma-separated,
+for a renamed `hostname` in `capacitor.config.ts` or a reverse proxy in front.
+
+Serve the app over the network it should reach, e.g. Tailscale:
+
+```bash
+quartz web --host 100.x.y.z     # reachable at http://100.x.y.z:8765 from the phone
+```
+
+The transport has no authentication, so keep the bind on a private network.
+
 Sessions started from the browser are ordinary Quartz sessions: they live in the
 same JSONL log with the same kernel snapshots, so `quartz -c` resumes one and the
 web client can load a terminal session.

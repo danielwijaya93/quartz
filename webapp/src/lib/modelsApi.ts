@@ -1,3 +1,5 @@
+import { apiUrl } from "./serverUrl";
+
 export interface ModelProvider {
   id: string;
   label: string;
@@ -20,7 +22,7 @@ export interface ModelsPayload {
 }
 
 export async function fetchModels(): Promise<ModelsPayload> {
-  const res = await fetch("/api/models");
+  const res = await fetch(apiUrl("/api/models"));
   if (!res.ok) throw new Error(`Failed to fetch models (${res.status})`);
   return res.json() as Promise<ModelsPayload>;
 }
@@ -30,7 +32,7 @@ export async function selectModel(
   model?: string,
   effort?: string,
 ): Promise<{ ok: boolean; message?: string; error?: string }> {
-  const res = await fetch("/api/models/select", {
+  const res = await fetch(apiUrl("/api/models/select"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ provider, model, effort }),
