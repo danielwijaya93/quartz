@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import contextlib
 import dataclasses
 import json
 import os
@@ -14,6 +15,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +40,7 @@ class KernelClient:
         self._stderr_tail: deque[str] = deque(maxlen=200)
         self._running_bash_count: int = 0
         self._running_bash_jobs: list[dict[str, Any]] = []
+        self._on_bg_count: Callable[[int], None] | None = None
         self._atexit_registered = False
         self.dirty = False
         self._restart_notice: str | None = None
@@ -145,7 +148,12 @@ class KernelClient:
             if msg_type == "ready":
                 self._ready_event.set()
             elif msg_type == "bg_count":
-                self._running_bash_count = int(msg.get("count", 0))
+                count = int(msg.get("count", 0))
+                self._running_bash_count = count
+                cb = self._on_bg_count
+                if cb is not None:
+                    with contextlib.suppress(Exception):
+                        cb(count)
             elif msg_type == "bg_jobs":
                 jobs = msg.get("jobs")
                 self._running_bash_jobs = [dict(j) for j in jobs if isinstance(j, dict)] if isinstance(jobs, list) else []
@@ -165,6 +173,10 @@ class KernelClient:
         self._worker_exited = True
         self._running_bash_count = 0
         self._running_bash_jobs.clear()
+        cb = self._on_bg_count
+        if cb is not None:
+            with contextlib.suppress(Exception):
+                cb(0)
         self._ready_event.set()
         with self._events_cond:
             self._events_cond.notify_all()
@@ -283,6 +295,10 @@ class KernelClient:
             "restored": list(resp.get("restored", [])),
             "skipped": list(resp.get("skipped", [])),
         }
+
+    def set_bg_count_callback(self, callback: Callable[[int], None] | None) -> None:
+        """Register a listener notified whenever the worker's running bash job count changes."""
+        self._on_bg_count = callback
 
     def running_bash_count(self, timeout: float = 5.0) -> int:
         del timeout

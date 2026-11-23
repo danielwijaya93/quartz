@@ -126,6 +126,7 @@ export interface SessionStateMessage {
   streamingText?: string;
   projectTrust?: ProjectTrustState;
   commands: Command[];
+  bgCount?: number;
 }
 
 export type ServerMessage =
@@ -145,6 +146,7 @@ export type ServerMessage =
       actions?: Record<string, unknown> | null;
     }
   | { type: "bash_notice"; text: string }
+  | { type: "bg_count"; count: number }
   | { type: "steering"; text: string }
   | {
       type: "compaction";
@@ -179,6 +181,7 @@ const SERVER_MESSAGE_TYPES: ReadonlySet<string> = new Set<ServerMessageType>([
   "tool_call",
   "tool_result",
   "bash_notice",
+  "bg_count",
   "steering",
   "compaction",
   "turn_end",

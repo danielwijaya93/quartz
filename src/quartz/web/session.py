@@ -240,6 +240,9 @@ class WebSession:
             self._system_prompt_base = runtime.system_prompt
             self._system_prompt_base_owner = weakref.ref(runtime)
         self._apply_system_prompt_append()
+        set_cb = getattr(runtime.kernel, "set_bg_count_callback", None)
+        if callable(set_cb):
+            set_cb(lambda count: self.emit({"type": "bg_count", "count": count}))
 
     # -- system prompt -----------------------------------------------------
 
@@ -608,6 +611,7 @@ class WebSession:
             "streamingText": streaming,
             "projectTrust": project_trust_status(runtime.cwd),
             "commands": self.commands(),
+            "bgCount": int(getattr(runtime.kernel, "running_bash_count", lambda: 0)()),
         }
 
 def resolve_cwd(raw: object, fallback: Path) -> Path:

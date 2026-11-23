@@ -488,6 +488,17 @@ describe("session_state and reconnect", () => {
     ],
   };
 
+  it("updates bgCount from session_state and bg_count frames", () => {
+    const state = fold([
+      { ...history, bgCount: 2 },
+      { type: "bg_count", count: 3 },
+      { type: "bg_count", count: 0 },
+    ]);
+    expect(state.session.bgCount).toBe(0);
+    const live = fold([{ ...history, bgCount: 1 }, { type: "bg_count", count: 3 }]);
+    expect(live.session.bgCount).toBe(3);
+  });
+
   it("hydrates rows, session meta and commands", () => {
     const state = fold([history]);
     expect(state.session).toMatchObject({ sessionId: "s-1", model: "m", effort: "medium" });
