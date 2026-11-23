@@ -271,7 +271,9 @@ export function SettingsView({
                       : !notifications.env.supported
                         ? "Not supported in this browser."
                         : notifications.env.permission === "granted" && notifications.enabled
-                          ? "Enabled — alerts when a turn finishes, needs approval, or a background job ends while inactive."
+                          ? isNative
+                            ? "Enabled — alerts when a turn finishes, needs approval, or a background job ends."
+                            : "Enabled — alerts when a turn finishes, needs approval, or a background job ends while inactive."
                           : notifications.env.permission === "default"
                             ? "Allow notifications to get alerts when Quartz is in the background."
                             : isNative
