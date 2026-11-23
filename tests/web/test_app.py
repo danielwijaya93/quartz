@@ -767,7 +767,7 @@ def test_set_sandbox_toggles_per_session_without_changing_new_sessions(
 ) -> None:
     from types import SimpleNamespace
     from fastapi.testclient import TestClient
-    from tests.web.conftest import make_runtime
+    from conftest import make_runtime  # type: ignore[import-not-found]
     from quartz.web.app import create_app
 
     calls: list[bool | None] = []
