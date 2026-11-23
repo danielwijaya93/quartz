@@ -193,6 +193,145 @@ describe("Connection", () => {
     sockets[0]?.emit({ type: "text_delta", text: "ignored" });
     expect(listener).not.toHaveBeenCalled();
   });
+
+  it("reconnects immediately on visibilitychange to visible without waiting on long backoff", () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: FakeSocket[] = [];
+      const connection = new Connection("ws://test/ws", {
+        socketFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        backoffMs: [8000],
+        reconnect: true,
+      });
+      connection.connect();
+      sockets[0]?.open();
+      sockets[0]?.close();
+      expect(sockets).toHaveLength(1);
+
+      // Even though backoff is 8000ms, unlocking the screen reconnects right away.
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: "visible",
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(sockets).toHaveLength(2);
+      connection.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("pauses background reconnect attempts while hidden, then reconnects on visible", () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: FakeSocket[] = [];
+      const connection = new Connection("ws://test/ws", {
+        socketFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        backoffMs: [100, 500],
+        reconnect: true,
+      });
+      connection.connect();
+      sockets[0]?.open();
+
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: "hidden",
+      });
+      sockets[0]?.close();
+      vi.advanceTimersByTime(5000);
+      expect(sockets).toHaveLength(1);
+
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: "visible",
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(sockets).toHaveLength(2);
+      connection.close();
+    } finally {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: "visible",
+      });
+      vi.useRealTimers();
+    }
+  });
+
+  it("re-sends hello on wake and replaces zombie sockets that do not respond", () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: FakeSocket[] = [];
+      const connection = new Connection("ws://test/ws", {
+        socketFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        backoffMs: [100],
+        wakeCheckTimeoutMs: 500,
+        reconnect: true,
+      });
+      connection.connect();
+      sockets[0]?.open();
+      sockets[0]!.sent.length = 0;
+
+      // Wake when socket still thinks it is OPEN: sends hello to probe.
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: "visible",
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(sockets[0]?.sent).toHaveLength(1);
+      expect(JSON.parse(sockets[0]?.sent[0] ?? "{}")).toMatchObject({ type: "hello" });
+
+      // If server responds before watchdog, keep the same socket.
+      sockets[0]?.emit({ type: "text_delta", text: "alive" });
+      vi.advanceTimersByTime(600);
+      expect(sockets).toHaveLength(1);
+
+      // Next wake where server does NOT respond -> zombie socket replaced.
+      document.dispatchEvent(new Event("visibilitychange"));
+      vi.advanceTimersByTime(500);
+      expect(sockets).toHaveLength(2);
+      connection.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reconnects immediately when the browser fires online", () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: FakeSocket[] = [];
+      const connection = new Connection("ws://test/ws", {
+        socketFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        backoffMs: [8000],
+        reconnect: true,
+      });
+      connection.connect();
+      sockets[0]?.open();
+      sockets[0]?.close();
+      expect(sockets).toHaveLength(1);
+
+      window.dispatchEvent(new Event("online"));
+      expect(sockets).toHaveLength(2);
+      connection.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("resolveSocketUrl", () => {
