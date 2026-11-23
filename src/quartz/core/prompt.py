@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import os
 import platform
-import re
 import sys
 from pathlib import Path
 
-from quartz.kernel.helpers import format_helpers_for_prompt, load_helpers
-from quartz.mcp.client import load_mcp_servers, load_mcp_tool_cache
+from quartz.kernel.helpers import discover_skills, format_helpers_for_prompt, load_helpers
+from quartz.mcp.client import load_mcp_servers
 
 PROMPT_HEADER = """# Quartz
 
@@ -72,64 +71,7 @@ def discover_context_files(
     return found
 
 
-def _parse_skill_frontmatter(skill_md: Path) -> tuple[str, str] | None:
-    """Extract (name, description) from a SKILL.md YAML frontmatter block."""
-    try:
-        content = skill_md.read_text(encoding="utf-8")
-    except OSError:
-        return None
-
-    match = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
-    if not match:
-        return None
-
-    frontmatter = match.group(1)
-    name = ""
-    description = ""
-    lines = frontmatter.splitlines()
-    idx = 0
-    while idx < len(lines):
-        line = lines[idx]
-        if line.startswith("name:"):
-            name = line.split(":", 1)[1].strip().strip("\"'")
-        elif line.startswith("description:"):
-            raw_val = line.split(":", 1)[1].strip()
-            if raw_val in (">", ">-", "|", "|-"):
-                block_lines: list[str] = []
-                idx += 1
-                while idx < len(lines):
-                    cont = lines[idx]
-                    if cont and not cont[0].isspace():
-                        idx -= 1
-                        break
-                    stripped = cont.strip()
-                    if stripped:
-                        block_lines.append(stripped)
-                    idx += 1
-                description = " ".join(block_lines)
-            else:
-                description = raw_val.strip("\"'")
-        idx += 1
-    if not name:
-        name = skill_md.parent.name
-    return (name, description)
-
-
-def discover_skills(skills_dir: Path | None = None) -> list[tuple[str, str, Path]]:
-    """Discover SKILL.md files exclusively from ~/.agents/skills."""
-    root = (skills_dir or (Path.home() / ".agents" / "skills")).expanduser()
-    if not root.is_dir():
-        return []
-
-    skills_by_name: dict[str, tuple[str, str, Path]] = {}
-    for entry in sorted(root.iterdir()):
-        skill_md = entry / "SKILL.md"
-        if entry.is_dir() and skill_md.is_file():
-            parsed = _parse_skill_frontmatter(skill_md)
-            if parsed:
-                name, desc = parsed
-                skills_by_name[name] = (name, desc, skill_md)
-    return list(skills_by_name.values())
+# discover_skills is re-exported from quartz.kernel.helpers for backwards compatibility.
 
 
 def build_system_prompt(
@@ -164,32 +106,20 @@ def build_system_prompt(
 
     mcp_servers = load_mcp_servers(work_dir, trusted=trusted)
     if mcp_servers:
-        tool_cache = load_mcp_tool_cache()
-        mcp_lines = [
+        sections.append(
             "## MCP Servers\n\n"
-            "Call them from Python via the pre-imported `mcp` object "
-            "(`await mcp.<server>.<tool>(...)`, `await mcp.call_tool(server, tool, arguments={...})`, or `await mcp.list_tools(server)`):"
-        ]
-        for name in sorted(mcp_servers):
-            cached = tool_cache.get(name)
-            if cached:
-                tool_strs = [
-                    f"`{t['name']}({', '.join(t.get('args', [])[:5])})`"
-                    for t in cached[:12]
-                ]
-                suffix = f" (+{len(cached) - 12} more)" if len(cached) > 12 else ""
-                mcp_lines.append(f"- `{name}`: {', '.join(tool_strs)}{suffix}")
-            else:
-                mcp_lines.append(f"- `{name}`")
-        sections.append("\n".join(mcp_lines))
+            f"{len(mcp_servers)} MCP server(s) configured. Use `mcp.list_servers()` or "
+            "`await mcp.search_tools(query)` in Python to discover servers and tools, and "
+            "`await mcp.<server>.<tool>(...)` or `await mcp.call_tool(server, tool, arguments={...})` to call them."
+        )
 
     skills = discover_skills(skills_dir=skills_dir)
     if skills:
-        lines = ["## Skills\n\nRead a skill's `SKILL.md` in Python when a task matches it:"]
-        for name, desc, path in skills:
-            summary = f": {desc}" if desc else ""
-            lines.append(f"- `{name}` (`{path}`){summary}")
-        sections.append("\n".join(lines))
+        sections.append(
+            "## Skills\n\n"
+            f"{len(skills)} skill(s) available. Use `find_skills(query)` in Python to search by keyword, "
+            "then `read(path)` on the matching `SKILL.md` when a task matches."
+        )
 
     context_files = discover_context_files(work_dir, global_agents_path=global_agents_path)
     if context_files:
