@@ -880,7 +880,6 @@ function PinnedSection({
                   sidebar={sidebar}
                   activity={sessionActivity[session.sessionId]}
                   pinned
-                  folderLabel={directoryLabel(session.cwd)}
                   current={currentSessionId !== "" && session.sessionId === currentSessionId}
                   onSelect={() => onSelectSession(session.sessionId)}
                   onTogglePin={onUnpin ? () => onUnpin(session.sessionId) : undefined}
