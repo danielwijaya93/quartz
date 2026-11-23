@@ -110,7 +110,7 @@ export function HeaderBar({
 
   return (
     <header className="shrink-0 border-b border-separator/70 bg-background/85 backdrop-blur">
-      <div className="mx-auto flex w-full max-w-3xl items-center gap-2 px-4 py-2 sm:px-5">
+      <div className="mx-auto flex w-full max-w-3xl items-center gap-1.5 px-2.5 py-2 sm:gap-2 sm:px-5">
         <Button
           isIconOnly
           size="sm"
@@ -128,24 +128,26 @@ export function HeaderBar({
             title={copy.label}
             className={cn("size-2 rounded-full", dotClass)}
           />
-          <span className="text-sm font-semibold tracking-tight text-foreground">Quartz</span>
+          <span className="hidden text-sm font-semibold tracking-tight text-foreground sm:inline">
+            Quartz
+          </span>
         </div>
 
-        <span aria-hidden="true" className="text-xs text-muted/60">
+        <span aria-hidden="true" className="hidden text-xs text-muted/60 sm:inline">
           /
         </span>
 
-        <ul className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+        <ul className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden sm:gap-1.5">
           <CwdChip cwd={session.cwd} onChangeFolder={onChangeFolder} />
           {session.gitBranch ? (
-            <li className="hidden min-w-0 shrink-0 sm:flex">
+            <li className="flex min-w-0 shrink sm:shrink-0">
               <Chip
                 size="sm"
                 variant="soft"
                 color="default"
                 title={`Git branch: ${session.gitBranch}`}
                 aria-label={`Git branch ${session.gitBranch}`}
-                className="max-w-36 overflow-hidden bg-surface-secondary/50"
+                className="max-w-20 overflow-hidden bg-surface-secondary/50 sm:max-w-36"
               >
                 <GitBranch aria-hidden="true" className="mr-1 size-3 shrink-0 text-muted" />
                 <span className="truncate font-mono text-[11px] font-medium text-foreground/85">
@@ -154,7 +156,7 @@ export function HeaderBar({
               </Chip>
             </li>
           ) : null}
-          <li className="hidden min-w-0 shrink-0 sm:flex">
+          <li className="flex min-w-0 shrink-0">
             {(() => {
               const sandboxed = Boolean(session.sandboxed);
               const chip = (
@@ -177,11 +179,11 @@ export function HeaderBar({
                 >
                   <Shield
                     aria-hidden="true"
-                    className={cn("mr-1 size-3 shrink-0", sandboxed ? "text-success" : "text-danger")}
+                    className={cn("size-3 shrink-0 sm:mr-1", sandboxed ? "text-success" : "text-danger")}
                   />
                   <span
                     className={cn(
-                      "text-[11px] font-medium",
+                      "hidden text-[11px] font-medium sm:inline",
                       sandboxed ? "text-foreground/85" : "text-danger line-through",
                     )}
                   >

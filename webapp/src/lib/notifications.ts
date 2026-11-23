@@ -88,6 +88,121 @@ export function registerNotificationServiceWorker(): Promise<ServiceWorkerRegist
   return swPromise;
 }
 
+async function awaitServiceWorkerReady(timeoutMs = 2000): Promise<ServiceWorkerRegistration | null> {
+  const reg = await registerNotificationServiceWorker();
+  if (!reg || typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+    return reg;
+  }
+  const readyPromise = navigator.serviceWorker.ready;
+  if (!readyPromise) return reg;
+  try {
+    return await Promise.race([
+      readyPromise,
+      new Promise<ServiceWorkerRegistration>((resolve) => {
+        setTimeout(() => resolve(reg), timeoutMs);
+      }),
+    ]);
+  } catch {
+    return reg;
+  }
+}
+
+export function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = window.atob(base64);
+  const buffer = new ArrayBuffer(raw.length);
+  const output = new Uint8Array(buffer);
+  for (let i = 0; i < raw.length; i += 1) {
+    output[i] = raw.charCodeAt(i);
+  }
+  return output;
+}
+
+export async function subscribeToWebPush(): Promise<string | null> {
+  if (
+    typeof window === "undefined" ||
+    !window.isSecureContext ||
+    typeof navigator === "undefined" ||
+    !("serviceWorker" in navigator) ||
+    !("PushManager" in window) ||
+    typeof window.Notification === "undefined" ||
+    window.Notification.permission !== "granted"
+  ) {
+    return null;
+  }
+
+  try {
+    const reg = await awaitServiceWorkerReady();
+    if (!reg || !reg.pushManager) return null;
+
+    const keyRes = await fetch("/api/push/vapid-key");
+    if (!keyRes.ok) return null;
+    const keyData = (await keyRes.json()) as { publicKey?: string };
+    const publicKey = keyData.publicKey;
+    if (!publicKey) return null;
+
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey),
+      });
+    }
+
+    const subJson = sub.toJSON();
+    const res = await fetch("/api/push/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(subJson),
+    });
+    if (!res.ok) return null;
+    return sub.endpoint;
+  } catch {
+    return null;
+  }
+}
+
+export async function unsubscribeFromWebPush(): Promise<void> {
+  if (
+    typeof window === "undefined" ||
+    !window.isSecureContext ||
+    typeof navigator === "undefined" ||
+    !("serviceWorker" in navigator)
+  ) {
+    return;
+  }
+  try {
+    const reg = await awaitServiceWorkerReady();
+    if (!reg || !reg.pushManager) return;
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub) return;
+    await fetch("/api/push/unsubscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint: sub.endpoint }),
+    }).catch(() => undefined);
+    await sub.unsubscribe().catch(() => undefined);
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function sendWebPushTest(endpoint?: string | null): Promise<boolean> {
+  try {
+    const res = await fetch("/api/push/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(endpoint ? { endpoint } : {}),
+    });
+    if (!res.ok) return false;
+    const data = (await res.json()) as { ok?: boolean };
+    return Boolean(data.ok);
+  } catch {
+    return false;
+  }
+}
+
 export async function requestNotificationPermission(): Promise<NotificationPermissionState> {
   if (typeof window === "undefined" || typeof window.Notification === "undefined") {
     return "unsupported";
@@ -182,7 +297,7 @@ export async function showBrowserNotification(
   // and iOS Home Screen PWAs, and works cleanly on desktop browsers too.
   if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
     try {
-      const reg = await registerNotificationServiceWorker();
+      const reg = await awaitServiceWorkerReady();
       if (reg && typeof reg.showNotification === "function") {
         await reg.showNotification(payload.title, options);
         return true;

@@ -10,6 +10,7 @@ dependencies = [
     "mcp>=2.3.0",
     "prompt-toolkit>=3.0.53",
     "python-dotenv>=1.2.4",
+    "pywebpush>=2.5.0",
     "rich>=15.0.0",
     "uvicorn[standard]>=0.34",
     "websockets>=14.0",

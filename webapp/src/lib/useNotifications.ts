@@ -6,9 +6,12 @@ import {
   readNotificationsEnabled,
   registerNotificationServiceWorker,
   requestNotificationPermission,
+  sendWebPushTest,
   setDocumentUnreadBadge,
   shouldNotifyInBackground,
   showBrowserNotification,
+  subscribeToWebPush,
+  unsubscribeFromWebPush,
   writeNotificationsEnabled,
   type NotificationEnvironment,
 } from "./notifications";
@@ -28,11 +31,18 @@ export function useNotifications(): NotificationsController {
   );
   const unreadRef = React.useRef(0);
   const enabledRef = React.useRef(enabled);
+  const pushEndpointRef = React.useRef<string | null>(null);
   enabledRef.current = enabled;
 
   React.useEffect(() => {
     void registerNotificationServiceWorker();
-    setEnv(detectNotificationEnvironment());
+    const initialEnv = detectNotificationEnvironment();
+    setEnv(initialEnv);
+    if (enabledRef.current && initialEnv.supported && initialEnv.permission === "granted") {
+      void subscribeToWebPush().then((endpoint) => {
+        pushEndpointRef.current = endpoint;
+      });
+    }
 
     const clearBadge = () => {
       if (document.visibilityState === "visible" || document.hasFocus()) {
@@ -59,13 +69,19 @@ export function useNotifications(): NotificationsController {
 
     unreadRef.current += 1;
     setDocumentUnreadBadge(unreadRef.current);
-    void showBrowserNotification(payload);
+    // When Web Push is active, sw.js delivers the OS notification via the push
+    // channel (which also wakes the worker when the phone is backgrounded).
+    if (!pushEndpointRef.current) {
+      void showBrowserNotification(payload);
+    }
   }, []);
 
   const setEnabled = React.useCallback(async (next: boolean) => {
     if (!next) {
       writeNotificationsEnabled(false);
       setEnabledState(false);
+      pushEndpointRef.current = null;
+      await unsubscribeFromWebPush();
       return;
     }
     const currentEnv = detectNotificationEnvironment();
@@ -76,6 +92,9 @@ export function useNotifications(): NotificationsController {
     setEnv(refreshed);
     writeNotificationsEnabled(true);
     setEnabledState(true);
+    if (refreshed.supported && refreshed.permission === "granted") {
+      pushEndpointRef.current = await subscribeToWebPush();
+    }
   }, []);
 
   const sendTest = React.useCallback(async () => {
@@ -87,6 +106,13 @@ export function useNotifications(): NotificationsController {
     setEnv(refreshed);
     if (!refreshed.supported || refreshed.permission !== "granted") {
       return false;
+    }
+    if (!pushEndpointRef.current) {
+      pushEndpointRef.current = await subscribeToWebPush();
+    }
+    if (pushEndpointRef.current) {
+      const pushed = await sendWebPushTest(pushEndpointRef.current);
+      if (pushed) return true;
     }
     return showBrowserNotification({
       title: "Quartz",
