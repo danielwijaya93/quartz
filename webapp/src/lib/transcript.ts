@@ -153,6 +153,7 @@ export interface SessionMeta {
   commands: Command[];
   projectTrust: ProjectTrustState | null;
   bgCount?: number;
+  bgFailed?: number;
 }
 
 export interface TranscriptState {
@@ -247,6 +248,17 @@ export function addUserPrompt(
  * into the message text, because the text is what markdown mode renders -- form
  * state must never leak into it.
  */
+export function clearBgFailed(state: TranscriptState): TranscriptState {
+  if ((state.session.bgFailed ?? 0) === 0) return state;
+  return {
+    ...state,
+    session: {
+      ...state.session,
+      bgFailed: 0,
+    },
+  };
+}
+
 export function setRowFormState(
   state: TranscriptState,
   id: string,
@@ -735,12 +747,24 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
         },
       };
 
-    case "bash_notice":
-      return appendRow(state, {
+    case "bash_notice": {
+      const exitMatch = /\[bash-done\b[^\]]*\bexit:(-?\d+)/.exec(message.text);
+      const failed = exitMatch !== null && Number(exitMatch[1]) !== 0;
+      const nextState = failed
+        ? {
+            ...state,
+            session: {
+              ...state.session,
+              bgFailed: (state.session.bgFailed ?? 0) + 1,
+            },
+          }
+        : state;
+      return appendRow(nextState, {
         kind: "bash_notice",
         id: makeId("bash"),
         text: message.text,
       });
+    }
 
     case "steering":
       return appendRow(state, {

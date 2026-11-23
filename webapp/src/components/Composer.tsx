@@ -97,6 +97,7 @@ export interface ComposerProps {
   contextPct?: number;
   maxContextTokens?: number;
   bgCount?: number;
+  bgFailed?: number;
   onOpenJobs?: () => void;
   onOpenModelPicker?: () => void;
   onSubmit: (text: string, images: ImageAttachment[]) => void;
@@ -151,6 +152,7 @@ export function Composer({
   contextPct,
   maxContextTokens,
   bgCount = 0,
+  bgFailed = 0,
   onOpenJobs,
   onOpenModelPicker,
   onSubmit,
@@ -629,16 +631,37 @@ export function Composer({
             </Button>
 
             <div className="ml-auto flex items-center gap-1.5">
-              {bgCount > 0 ? (
+              {bgCount > 0 || bgFailed > 0 ? (
                 <button
                   type="button"
                   onClick={onOpenJobs}
-                  aria-label={`Background jobs running: ${bgCount}. Click to inspect.`}
-                  title="Background jobs running — click to open /jobs"
-                  className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg border border-border/70 bg-surface-secondary/70 px-2 font-mono text-xs text-foreground transition-colors hover:bg-surface-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                  aria-label={
+                    bgFailed > 0
+                      ? `Background jobs: ${bgCount} running, ${bgFailed} failed. Click to inspect.`
+                      : `Background jobs running: ${bgCount}. Click to inspect.`
+                  }
+                  title="Click to open /jobs"
+                  className={cn(
+                    "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg border px-2 font-mono text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
+                    bgFailed > 0
+                      ? "border-danger/40 bg-danger-soft text-danger-soft-foreground hover:bg-danger-soft/80"
+                      : "border-success/40 bg-success-soft text-success hover:bg-success-soft/80",
+                  )}
                 >
-                  <span className="size-1.5 animate-pulse rounded-full bg-accent" aria-hidden="true" />
-                  <span>bg × {bgCount}</span>
+                  <span
+                    className={cn(
+                      "size-1.5 rounded-full",
+                      bgFailed > 0 ? "bg-danger" : "animate-pulse bg-success",
+                    )}
+                    aria-hidden="true"
+                  />
+                  <span>
+                    {bgFailed > 0
+                      ? bgCount > 0
+                        ? `bg × ${bgCount} · ${bgFailed} failed`
+                        : `bg × ${bgFailed} failed`
+                      : `bg × ${bgCount}`}
+                  </span>
                 </button>
               ) : null}
               {onOpenModelPicker ? (

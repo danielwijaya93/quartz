@@ -123,6 +123,7 @@ export function App(): React.ReactElement {
         return;
       }
       if (cleaned === "jobs" && (!arg || arg.trim() === "")) {
+        quartz.clearBgFailed();
         setJobsOpen(true);
         return;
       }
@@ -224,7 +225,11 @@ export function App(): React.ReactElement {
           contextPct={quartz.state.session.contextPct}
           maxContextTokens={quartz.state.session.maxContextTokens}
           bgCount={quartz.state.session.bgCount}
-          onOpenJobs={() => setJobsOpen(true)}
+          bgFailed={quartz.state.session.bgFailed}
+          onOpenJobs={() => {
+            quartz.clearBgFailed();
+            setJobsOpen(true);
+          }}
           onOpenModelPicker={() => setModelPickerOpen(true)}
           onSubmit={onSubmit}
           onSteer={quartz.steer}

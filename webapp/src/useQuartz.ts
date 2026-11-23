@@ -6,6 +6,7 @@ import {
 } from "./lib/connection";
 import {
   addUserPrompt,
+  clearBgFailed as clearBgFailedState,
   initialState,
   reduce,
   setRowFormState,
@@ -28,6 +29,8 @@ export interface QuartzApi {
   trustProject: () => void;
   /** Persist an OpenUI surface's form state onto the row that rendered it. */
   setFormState: (id: string, formState: Record<string, unknown>) => void;
+  /** Clear the failed background job badge once the user opens /jobs. */
+  clearBgFailed: () => void;
 }
 
 /**
@@ -122,6 +125,10 @@ export function useQuartz(url?: string, systemPromptAppend = ""): QuartzApi {
     [],
   );
 
+  const clearBgFailed = React.useCallback(() => {
+    setState((prev) => clearBgFailedState(prev));
+  }, []);
+
   return {
     state,
     status,
@@ -133,5 +140,6 @@ export function useQuartz(url?: string, systemPromptAppend = ""): QuartzApi {
     loadSession,
     trustProject,
     setFormState,
+    clearBgFailed,
   };
 }
