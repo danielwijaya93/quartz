@@ -286,7 +286,10 @@ def main() -> None:
     except (OSError, ValueError):
         pass
 
+    from quartz import __version__
+
     parser = argparse.ArgumentParser(description="quartz — minimal coding agent with a persistent Python REPL.")
+    parser.add_argument("-V", "--version", action="version", version=f"quartz {__version__}")
     parser.add_argument("-p", "--prompt", help="Run a single prompt in headless mode and exit.")
     parser.add_argument(
         "--image",

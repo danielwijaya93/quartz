@@ -283,9 +283,12 @@ def create_app(
     @app.get("/api/health")
     async def health() -> JSONResponse:
         current = manager.current_session
+        from quartz import __version__
+
         return JSONResponse(
             {
                 "status": "ok",
+                "version": __version__,
                 "built": current.built,
                 "turnRunning": any(ws.turn_running for ws in manager.all_sessions()),
                 "activeSessions": len(manager.all_sessions()),
