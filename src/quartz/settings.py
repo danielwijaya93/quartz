@@ -50,12 +50,15 @@ DEFAULT_BACKGROUND_CHECK_EVERY = 300
 #: snapshot has aged out still replays its conversation.
 DEFAULT_SNAPSHOT_RETENTION_DAYS = 7
 DEFAULT_SANDBOX_ENABLED = True
+#: Prompt before closing an idle backgrounded web session after this many hours (0 disables).
+DEFAULT_WEB_IDLE_HOURS = 2
 
 _MIN_TOKENS = 256
 _MAX_TOKENS = 10_000_000
 _MAX_PROGRESS_EVERY = 1_000
 _MAX_BACKGROUND_CHECK_EVERY = 86_400
 _MAX_RETENTION_DAYS = 3_650
+_MAX_WEB_IDLE_HOURS = 8_760
 
 
 @dataclasses.dataclass(frozen=True)
@@ -68,6 +71,7 @@ class Settings:
     background_check_every: int = DEFAULT_BACKGROUND_CHECK_EVERY
     snapshot_retention_days: int = DEFAULT_SNAPSHOT_RETENTION_DAYS
     sandbox: bool = DEFAULT_SANDBOX_ENABLED
+    web_idle_hours: int = DEFAULT_WEB_IDLE_HOURS
 
 
 def _config_path(path: Path | None = None) -> Path:
@@ -145,6 +149,20 @@ def _coerce_interval(value: Any, default: int) -> int:
     return default
 
 
+def _coerce_idle_hours(value: Any, default: int) -> int:
+    """Coerce a stored web idle check interval in hours; ``0`` disables."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, str) and value.strip():
+        try:
+            value = int(value.strip())
+        except ValueError:
+            return default
+    if isinstance(value, int) and 0 <= value <= _MAX_WEB_IDLE_HOURS:
+        return value
+    return default
+
+
 def _coerce_bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
@@ -175,6 +193,9 @@ def load_settings(path: Path | None = None) -> Settings:
             raw.get("snapshot_retention_days"), DEFAULT_SNAPSHOT_RETENTION_DAYS
         ),
         sandbox=_coerce_bool(raw.get("sandbox"), DEFAULT_SANDBOX_ENABLED),
+        web_idle_hours=_coerce_idle_hours(
+            raw.get("web_idle_hours"), DEFAULT_WEB_IDLE_HOURS
+        ),
     )
 
 
@@ -198,6 +219,15 @@ def validate_background_check_every(value: int) -> bool:
         isinstance(value, int)
         and not isinstance(value, bool)
         and 0 <= value <= _MAX_BACKGROUND_CHECK_EVERY
+    )
+
+
+def validate_web_idle_hours(value: int) -> bool:
+    """Return True when ``value`` is a sane web idle check interval in hours (``0`` disables)."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= _MAX_WEB_IDLE_HOURS
     )
 
 
@@ -336,6 +366,7 @@ def save_settings(settings: Settings, path: Path | None = None) -> Path:
         data["keep_recent_tokens"] = settings.keep_recent_tokens
         data["progress_every"] = settings.progress_every
         data["background_check_every"] = settings.background_check_every
+        data["web_idle_hours"] = settings.web_idle_hours
 
     return update_config_json(_apply, path=path)
 
@@ -347,4 +378,5 @@ def settings_as_dict(settings: Settings) -> dict[str, int]:
         "keep_recent_tokens": settings.keep_recent_tokens,
         "progress_every": settings.progress_every,
         "background_check_every": settings.background_check_every,
+        "web_idle_hours": settings.web_idle_hours,
     }

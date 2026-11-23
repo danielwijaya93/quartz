@@ -310,6 +310,39 @@ export function App(): React.ReactElement {
                 window.requestAnimationFrame(() => composerRef.current?.focus());
               }}
             />
+            {(quartz.state.idlePrompts ?? []).map((prompt) => {
+              const hours = Math.max(1, Math.round(prompt.idleSeconds / 3600));
+              const folder = prompt.cwd.split("/").filter(Boolean).pop() || prompt.cwd;
+              return (
+                <div
+                  key={prompt.sessionId}
+                  role="region"
+                  aria-label="Idle session prompt"
+                  className="mx-auto mb-2 flex w-full max-w-3xl flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-content1 px-3 py-2 text-xs shadow-sm"
+                >
+                  <span className="text-foreground/90">
+                    Session <code className="font-mono">{prompt.sessionId.slice(0, 12)}</code> (
+                    {folder}) has been idle for {hours}h. Keep it alive or close it?
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="rounded border border-border px-2.5 py-1 text-xs font-medium hover:bg-content2"
+                      onClick={() => quartz.respondIdleSession(prompt.sessionId, "keep")}
+                    >
+                      Keep alive
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded bg-danger/15 px-2.5 py-1 text-xs font-medium text-danger hover:bg-danger/25"
+                      onClick={() => quartz.respondIdleSession(prompt.sessionId, "close")}
+                    >
+                      Close session
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
             {quartz.state.session.pendingPermission ? (
               <PermissionPromptCard
                 permission={quartz.state.session.pendingPermission}

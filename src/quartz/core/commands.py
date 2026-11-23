@@ -38,6 +38,7 @@ from quartz.settings import (
     DEFAULT_COMPACT_RESERVE_TOKENS,
     DEFAULT_KEEP_RECENT_TOKENS,
     DEFAULT_PROGRESS_EVERY,
+    DEFAULT_WEB_IDLE_HOURS,
     Settings,
     load_settings,
     save_settings,
@@ -45,6 +46,7 @@ from quartz.settings import (
     validate_background_check_every,
     validate_progress_every,
     validate_tokens,
+    validate_web_idle_hours,
 )
 
 if TYPE_CHECKING:
@@ -682,18 +684,21 @@ _SETTING_ALIASES: dict[str, str] = {
     "bg": "bg",
     "background": "bg",
     "background_check_every": "bg",
+    "idle": "idle",
+    "web_idle_hours": "idle",
 }
 
 _SETTINGS_USAGE = (
     "Usage: /settings reserve <tokens> | /settings keep <tokens> | "
-    "/settings progress <n> | /settings bg <seconds> | /settings reset | /settings list"
+    "/settings progress <n> | /settings bg <seconds> | /settings idle <hours> | "
+    "/settings reset | /settings list"
 )
 
 
 @COMMAND_REGISTRY.register(
     "/settings",
     "Show or update user preferences (stored in ~/.quartz/config.json)",
-    usage="[reserve|keep <tokens>|progress <n>|bg <seconds>|reset|list]",
+    usage="[reserve|keep <tokens>|progress <n>|bg <seconds>|idle <hours>|reset|list]",
     immediate=True,
 )
 def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
@@ -701,11 +706,13 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
     # a transport that never shows /settings should not have to import.
     from quartz.providers.registry import config_file_path
 
+    stored_settings = load_settings()
     current = Settings(
         compact_reserve_tokens=rt.compact_reserve_tokens,
         keep_recent_tokens=rt.keep_recent_tokens,
         progress_every=rt.progress_every,
         background_check_every=rt.background_check_every,
+        web_idle_hours=stored_settings.web_idle_hours,
     )
     parts = (arg or "").split()
     if parts:
@@ -720,7 +727,9 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
             f"progress_every: {current.progress_every} "
             f"(default {DEFAULT_PROGRESS_EVERY}, 0 disables; off in -p)\n"
             f"background_check_every: {current.background_check_every}s "
-            f"(default {DEFAULT_BACKGROUND_CHECK_EVERY}s, 0 disables; off in -p)\n\n"
+            f"(default {DEFAULT_BACKGROUND_CHECK_EVERY}s, 0 disables; off in -p)\n"
+            f"web_idle_hours: {current.web_idle_hours}h "
+            f"(default {DEFAULT_WEB_IDLE_HOURS}h, 0 disables)\n\n"
             f"Stored in {config_file_path()}\n\n"
             f"{_SETTINGS_USAGE}",
             title="Settings",
@@ -767,6 +776,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 keep_recent_tokens=current.keep_recent_tokens,
                 progress_every=every,
                 background_check_every=current.background_check_every,
+                web_idle_hours=current.web_idle_hours,
             )
         )
         rt.progress_every = every
@@ -794,6 +804,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 keep_recent_tokens=current.keep_recent_tokens,
                 progress_every=current.progress_every,
                 background_check_every=every,
+                web_idle_hours=current.web_idle_hours,
             )
         )
         rt.background_check_every = every
@@ -823,6 +834,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 keep_recent_tokens=current.keep_recent_tokens,
                 progress_every=current.progress_every,
                 background_check_every=current.background_check_every,
+                web_idle_hours=current.web_idle_hours,
             )
             rt.compact_reserve_tokens = value
             label = "reserve_tokens"
@@ -832,12 +844,40 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 keep_recent_tokens=value,
                 progress_every=current.progress_every,
                 background_check_every=current.background_check_every,
+                web_idle_hours=current.web_idle_hours,
             )
             rt.keep_recent_tokens = value
             label = "keep_recent_tokens"
         save_settings(updated)
         return CommandResult.text(
             f"Saved. {label} = {value:,}. Applies from your next message."
+        )
+
+    if parts[0] == "idle" and len(parts) == 2:
+        try:
+            hours = int(parts[1])
+        except ValueError:
+            return CommandResult.error(
+                f"Invalid value {parts[1]!r}: expected an integer hour count.",
+                body="Usage: /settings idle <hours> (0 disables idle prompts)",
+            )
+        if not validate_web_idle_hours(hours):
+            return CommandResult.error(
+                f"Invalid value {hours}: must be between 0 and 8,760 hours.",
+                body="Usage: /settings idle <hours> (0 disables idle prompts)",
+            )
+        save_settings(
+            Settings(
+                compact_reserve_tokens=current.compact_reserve_tokens,
+                keep_recent_tokens=current.keep_recent_tokens,
+                progress_every=current.progress_every,
+                background_check_every=current.background_check_every,
+                web_idle_hours=hours,
+            )
+        )
+        state = "off" if hours == 0 else f"every {hours}h"
+        return CommandResult.text(
+            f"Saved. web_idle_hours = {hours}h ({state})."
         )
 
     return CommandResult.error(f"Unknown settings argument {arg!r}.", body=_SETTINGS_USAGE)
