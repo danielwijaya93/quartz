@@ -46,8 +46,8 @@ from quartz.kernel.helpers import (
 from quartz.kernel.pycheck import unresolved_global_names
 from quartz.mcp.client import HostMCPProxy, MCPManager
 
-MAX_OUTPUT_CHARS = 128_000
-MAX_REPR_CHARS = 128_000
+MAX_OUTPUT_CHARS = 24_000
+MAX_REPR_CHARS = 24_000
 MAX_VAR_BYTES = 16 * 1024 * 1024
 MAX_TOTAL_SNAPSHOT_BYTES = 256 * 1024 * 1024
 

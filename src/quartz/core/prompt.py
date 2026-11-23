@@ -19,6 +19,8 @@ PROMPT_RULES = """## Rules
 - Prioritize available REPL helpers and primitives over verbose standard-library boilerplate or multi-turn external commands.
 - Use `bash()` for long-running or background processes; do not block a cell with `sleep` or minutes-long awaits (let long jobs finish in the background).
 - Use raw strings (`r"..."`) for regexes or any string with backslashes (or `fixed=True` in `rg()` for literal searches) to avoid Python `SyntaxWarning`.
+- Keep tool outputs lean: read targeted line ranges instead of whole files, and use `git diff --stat` before full diffs.
+- For tests and builds, prefer quiet flags (e.g. `pytest -q --tb=short`) and inspect failures rather than printing full logs.
 - Follow `## Project Instructions` strictly."""
 
 

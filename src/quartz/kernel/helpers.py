@@ -26,7 +26,35 @@ from quartz.core.images import load_image_file
 from quartz.kernel.pycheck import check_python_source
 from quartz.settings import is_project_trusted
 
-_IGNORE_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", ".mypy_cache"}
+_IGNORE_DIRS = {
+    ".git",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "dist",
+    "build",
+    ".tooling",
+    ".next",
+    "coverage",
+}
+_RG_DEFAULT_EXCLUDES = (
+    "!**/dist/**",
+    "!**/build/**",
+    "!**/.tooling/**",
+    "!**/.next/**",
+    "!**/coverage/**",
+    "!**/node_modules/**",
+    "!**/.venv/**",
+    "!**/__pycache__/**",
+    "!*.min.js",
+    "!*.min.css",
+)
+_RG_MAX_COLUMNS = 200
+MAX_READ_CHARS = 16_000
+MAX_EDIT_DIFF_CHARS = 1_500
 
 _IMAGES_VAR: contextvars.ContextVar[list[dict[str, str]] | None] = contextvars.ContextVar(
     "quartz_images", default=None
@@ -94,9 +122,24 @@ _RG_TIMEOUT = 15
 
 
 def _rg_external(pattern: str, path: str, glob: str | None, max_hits: int, fixed: bool) -> str:
-    cmd = ["rg", "-n", "--no-heading", "--color=never", "-m", str(max_hits)]
+    cmd = [
+        "rg",
+        "-n",
+        "--no-heading",
+        "--color=never",
+        "--max-columns",
+        str(_RG_MAX_COLUMNS),
+        "--max-columns-preview",
+        "-m",
+        str(max_hits),
+    ]
     if fixed:
         cmd.append("-F")
+    # Exclude noisy build/vendor artifacts unless the caller explicitly targets one of them.
+    path_parts = set(Path(path).parts)
+    if not (path_parts & _IGNORE_DIRS):
+        for excl in _RG_DEFAULT_EXCLUDES:
+            cmd.extend(["-g", excl])
     if glob:
         cmd.extend(["-g", glob])
     cmd.extend(["--", pattern, path])
@@ -129,7 +172,8 @@ def _rg_python(pattern: str, path: str, glob: str | None, max_hits: int, fixed: 
             continue
         for idx, line in enumerate(text.splitlines(), 1):
             if regex.search(line):
-                hits.append(f"{fpath}:{idx}:{line}")
+                clipped = line if len(line) <= _RG_MAX_COLUMNS else f"{line[:_RG_MAX_COLUMNS]}... [truncated]"
+                hits.append(f"{fpath}:{idx}:{clipped}")
                 if len(hits) >= max_hits:
                     return "\n".join(hits)
     return "\n".join(hits) if hits else "(no matches)"
@@ -151,6 +195,8 @@ def read(path: str, start: int = 1, end: int = 200) -> str:
     s = max(1, start)
     out: list[str] = []
     total_lines = 0
+    char_count = 0
+    truncated_at: int | None = None
     with p.open("r", encoding="utf-8", errors="replace") as fh:
         for idx, raw_line in enumerate(fh, 1):
             total_lines = idx
@@ -158,9 +204,18 @@ def read(path: str, start: int = 1, end: int = 200) -> str:
                 continue
             if end is not None and idx > end:
                 break
-            out.append(f"{idx}: {raw_line.rstrip(chr(10)).rstrip(chr(13))}")
+            formatted = f"{idx}: {raw_line.rstrip(chr(10)).rstrip(chr(13))}"
+            if out and char_count + len(formatted) + 1 > MAX_READ_CHARS:
+                truncated_at = idx
+                break
+            out.append(formatted)
+            char_count += len(formatted) + 1
     if s > total_lines:
         return f"(EOF: file has {total_lines} lines)"
+    if truncated_at is not None:
+        out.append(
+            f"... [truncated at {MAX_READ_CHARS:,} chars; continue with read({path!r}, start={truncated_at}, end={end})]"
+        )
     return "\n".join(out)
 
 
@@ -229,7 +284,7 @@ def edit(path: str, old: str, new: str) -> str:
     if not diff_lines:
         msg = f"Updated {path} (no changes)"
     else:
-        msg = f"Updated {path}\n{_truncate(chr(10).join(diff_lines), 8000)}"
+        msg = f"Updated {path}\n{_truncate(chr(10).join(diff_lines), MAX_EDIT_DIFF_CHARS)}"
     if p.suffix == ".py":
         warnings = _check_python_source(p, updated)
         if warnings:
