@@ -78,7 +78,7 @@ export function useNotifications(): NotificationsController {
     if (!enabledRef.current) return;
     const payload = formatNotificationForFrame(message);
     if (!payload) return;
-    if (!shouldNotifyInBackground()) return;
+    if (!isNativeCapacitor() && !shouldNotifyInBackground()) return;
 
     unreadRef.current += 1;
     setDocumentUnreadBadge(unreadRef.current);

@@ -1,6 +1,5 @@
-fix: wrap FolderPicker footer on mobile and add tappable context + cache hit details
+fix(android): fire notifications even when the active session is in foreground
 
-- Wrap FolderPicker footer buttons on narrow screens so nothing overflows to the right.
-- Expose cacheHitPct on session_state and turn_end frames from src/quartz/web/session.py.
-- Turn ContextRing into a tappable button with a popover showing Context %/window and Cache hit % on both mobile and desktop.
-- Bump unified Quartz version to 0.1.2.
+- Skip shouldNotifyInBackground() suppression when running inside Capacitor so Android WebView visibility quirks never swallow turn-end or permission alerts.
+- Update SettingsView status copy for Android.
+- Add unit test in useNotifications.test.ts and bump unified version to 0.1.3.
