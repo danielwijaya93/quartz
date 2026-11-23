@@ -22,6 +22,15 @@ from pathlib import Path
 from typing import Any
 
 from quartz.kernel.base import CellResult
+from quartz.kernel.bridge import (
+    PermissionHandler,
+    PermissionPolicy,
+    PermissionRequest,
+    classify_bridge_scope,
+    find_real_binary,
+    format_command_display,
+    validate_bridge_cwd,
+)
 from quartz.kernel.sandbox import SandboxConfig, sandbox_env_overrides, wrap_command
 
 _HOST_IMAGE_SINK: contextvars.ContextVar[list[dict[str, str]] | None] = contextvars.ContextVar(
@@ -39,6 +48,9 @@ class KernelClient:
         sandbox: bool = False,
         sandbox_config: SandboxConfig | None = None,
         host_mcp: bool | None = None,
+        host_bridge: bool | None = None,
+        permission_handler: PermissionHandler | None = None,
+        preapproved_scopes: set[str] | None = None,
     ) -> None:
         self.cwd = (cwd or Path.cwd()).resolve()
         self._proc: subprocess.Popen[str] | None = None
@@ -65,6 +77,10 @@ class KernelClient:
         self._configured = False
         self._sandbox_config: SandboxConfig = sandbox_config or SandboxConfig(enabled=sandbox)
         self._host_mcp_override = host_mcp
+        self._host_bridge_override = host_bridge
+        self._permission_policy = PermissionPolicy(preapproved_scopes=preapproved_scopes)
+        self._permission_handler: PermissionHandler | None = permission_handler
+        self._permission_lock = threading.Lock()
         self._host_mcp: Any = None
         self._host_loop: asyncio.AbstractEventLoop | None = None
         self._host_thread: threading.Thread | None = None
@@ -74,6 +90,15 @@ class KernelClient:
         if self._host_mcp_override is not None:
             return self._host_mcp_override
         return self._sandbox_config.enabled
+
+    def _host_bridge_enabled(self) -> bool:
+        if self._host_bridge_override is not None:
+            return self._host_bridge_override
+        return self._sandbox_config.enabled
+
+    def set_permission_handler(self, handler: PermissionHandler | None) -> None:
+        """Register (or clear) the interactive approval callback for host-bridged commands."""
+        self._permission_handler = handler
 
     def _get_host_mcp(self) -> Any:
         if self._host_mcp is None:
@@ -148,6 +173,9 @@ class KernelClient:
                     arguments=params.get("arguments"),
                     timeout=float(params.get("timeout", 60.0)),
                 )
+            elif method == "bridge.exec":
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(None, self._exec_bridge_sync, params)
             else:
                 raise ValueError(f"Unknown host RPC method: {method!r}")
 
@@ -174,6 +202,64 @@ class KernelClient:
             )
         finally:
             _HOST_IMAGE_SINK.reset(token)
+
+    def _exec_bridge_sync(self, params: dict[str, Any]) -> dict[str, Any]:
+        tool = str(params.get("tool", ""))
+        if tool not in {"git", "gh"}:
+            return {"exit_code": 126, "stdout": "", "stderr": f"Unsupported bridge tool: {tool!r}\n"}
+        raw_argv = params.get("argv")
+        argv = [str(a) for a in raw_argv] if isinstance(raw_argv, list) else []
+        target_cwd = validate_bridge_cwd(params.get("cwd"), self.cwd)
+        scope = classify_bridge_scope(tool, argv)
+        req = PermissionRequest(
+            tool=tool,
+            argv=tuple(argv),
+            cwd=str(target_cwd),
+            scope=scope,
+            command_display=format_command_display(tool, argv),
+        )
+
+        with self._permission_lock:
+            allowed = self._permission_policy.is_allowed(scope)
+            if not allowed:
+                handler = self._permission_handler
+                if handler is None:
+                    return {
+                        "exit_code": 126,
+                        "stdout": "",
+                        "stderr": (
+                            f"Permission denied: '{req.command_display}' requires interactive "
+                            "user approval (none configured).\n"
+                        ),
+                    }
+                decision = handler(req)
+                allowed = self._permission_policy.record(scope, decision)
+
+        if not allowed:
+            return {
+                "exit_code": 126,
+                "stdout": "",
+                "stderr": f"Permission rejected by user: '{req.command_display}'\n",
+            }
+
+        real_bin = find_real_binary(tool)
+        if not real_bin:
+            return {"exit_code": 127, "stdout": "", "stderr": f"{tool}: command not found on host\n"}
+
+        proc = subprocess.run(
+            [real_bin, *argv],
+            cwd=str(target_cwd),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=290.0,
+        )
+        return {
+            "exit_code": proc.returncode,
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+        }
 
     def _dispatch_host_request(self, msg: dict[str, Any]) -> None:
         loop = self._ensure_host_loop()
@@ -206,6 +292,10 @@ class KernelClient:
             env["QUARTZ_HOST_MCP"] = "1"
         else:
             env.pop("QUARTZ_HOST_MCP", None)
+        if self._host_bridge_enabled():
+            env["QUARTZ_HOST_BRIDGE"] = "1"
+        else:
+            env.pop("QUARTZ_HOST_BRIDGE", None)
 
         self._proc = subprocess.Popen(
             cmd,

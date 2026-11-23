@@ -1079,6 +1079,52 @@ async def _main() -> None:
     except (ValueError, OSError):
         pass
 
+    bridge_server: asyncio.AbstractServer | None = None
+    bridge_tmpdir: str | None = None
+    if os.environ.get("QUARTZ_HOST_BRIDGE") == "1":
+        import tempfile
+        from quartz.kernel.bridge import ensure_shim_dir
+
+        bridge_tmpdir = tempfile.mkdtemp(prefix="quartz-bridge-")
+        bridge_dir = Path(bridge_tmpdir)
+        shim_dir = ensure_shim_dir(bridge_dir / "shims", python_executable=sys.executable)
+        sock_path = bridge_dir / "bridge.sock"
+        os.environ["QUARTZ_HOST_BRIDGE_SOCK"] = str(sock_path)
+        os.environ["PATH"] = f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+
+        async def _handle_bridge_conn(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            try:
+                raw = await reader.readline()
+                if not raw:
+                    return
+                req = json.loads(raw.decode("utf-8"))
+                resp = await worker._host_rpc("bridge.exec", req, timeout=300.0)
+                if resp.get("ok") and isinstance(resp.get("result"), dict):
+                    out = resp["result"]
+                else:
+                    out = {
+                        "exit_code": 126,
+                        "stdout": "",
+                        "stderr": str(resp.get("error", "Host bridge request failed")) + "\n",
+                    }
+                writer.write((json.dumps(out) + "\n").encode("utf-8"))
+                await writer.drain()
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    writer.write(
+                        (
+                            json.dumps({"exit_code": 126, "stdout": "", "stderr": f"bridge error: {exc}\n"})
+                            + "\n"
+                        ).encode("utf-8")
+                    )
+                    await writer.drain()
+            finally:
+                writer.close()
+
+        bridge_server = await asyncio.start_unix_server(_handle_bridge_conn, path=str(sock_path))
+
     worker._send({"type": "ready"})
 
     async def _run_and_send(req_id: str, code: str) -> None:
@@ -1160,7 +1206,13 @@ async def _main() -> None:
         elif msg_type == "shutdown":
             break
 
-    # Clean up any still-running background bash processes and MCP sessions on shutdown
+    # Clean up any still-running background bash processes, bridge, and MCP sessions on shutdown
+    if bridge_server is not None:
+        bridge_server.close()
+        with contextlib.suppress(Exception):
+            await bridge_server.wait_closed()
+    if bridge_tmpdir is not None:
+        shutil.rmtree(bridge_tmpdir, ignore_errors=True)
     await worker.mcp.close()
     for h in worker._handles:
         if h.running:
