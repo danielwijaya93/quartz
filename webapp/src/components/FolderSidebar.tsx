@@ -64,6 +64,8 @@ export interface FolderSidebarProps {
   onNewSession: (cwd: string) => void;
   /** Adds a folder to the sidebar; the header's folder button. */
   onNewFolder: () => void;
+  /** Removes an empty folder from the sidebar list (never deletes on disk). */
+  onRemoveFolder?: (cwd: string) => Promise<boolean>;
   /** Opens the folder picker to start a session in a folder picked there. */
   onOpenFolder: () => void;
   /** Both resolve to whether the server did it, which is what the notice reports. */
@@ -115,6 +117,7 @@ export function FolderSidebar({
   onSelectSession,
   onNewSession,
   onNewFolder,
+  onRemoveFolder,
   onOpenFolder,
   onRename,
   onHide,
@@ -428,6 +431,11 @@ export function FolderSidebar({
                         }
                         onToggle={(expanded) => toggle(group.cwd, expanded)}
                         onNewSession={() => onNewSession(group.cwd)}
+                        onRemove={
+                          onRemoveFolder && group.sessions.length === 0
+                            ? () => void onRemoveFolder(group.cwd)
+                            : undefined
+                        }
                       >
                         {group.sessions.map((session) => {
                           const isPinned = pinnedIdSet.has(session.sessionId);
@@ -902,6 +910,7 @@ function WorkspaceRow({
   expanded,
   onToggle,
   onNewSession,
+  onRemove,
   children,
 }: {
   group: WorkspaceGroup;
@@ -912,6 +921,7 @@ function WorkspaceRow({
   expanded: boolean;
   onToggle: (expanded: boolean) => void;
   onNewSession: () => void;
+  onRemove?: () => void;
   children: React.ReactNode;
 }): React.ReactElement {
   const count = group.sessions.length;
@@ -956,6 +966,18 @@ function WorkspaceRow({
             )}
           </Disclosure.Trigger>
         </Disclosure.Heading>
+        {count === 0 && onRemove ? (
+          <Button
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            aria-label={`Remove ${group.label} from sidebar`}
+            onPress={onRemove}
+            className="size-5 min-w-5 h-5 w-5 shrink-0 rounded p-0 text-muted hover:text-danger hover:bg-surface-secondary motion-safe:transition-opacity [@media(hover:hover)]:opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100"
+          >
+            <X aria-hidden="true" className="size-3" />
+          </Button>
+        ) : null}
         <Button
           isIconOnly
           size="sm"
