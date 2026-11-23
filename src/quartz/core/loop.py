@@ -18,6 +18,7 @@ from quartz.core.compact import (
     estimate_context_tokens,
 )
 from quartz.core.events import NO_OBSERVER, TurnObserver
+from quartz.core.images import prune_old_images
 from quartz.core.progress import ProgressCheckpointer, announced_to_user
 from quartz.core.session import repair_dangling_tool_calls
 from quartz.errors import ContextOverflowError
@@ -430,7 +431,7 @@ def agent_loop(
         if update_request is not None:
             messages.append(update_request)
 
-        full_messages = [{"role": "system", "content": system_prompt}, *messages]
+        full_messages = [{"role": "system", "content": system_prompt}, *prune_old_images(messages)]
         try:
             assistant_dict, usage = _call_model(
                 client,
