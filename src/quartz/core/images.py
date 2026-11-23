@@ -200,3 +200,43 @@ def content_to_text(content: Any, *, image_placeholder: str = "[image]") -> str:
                 parts.append(image_placeholder)
         return "\n".join(parts)
     return str(content or "")
+
+
+def prune_old_images(
+    messages: list[dict[str, Any]], *, keep_recent: int = 2
+) -> list[dict[str, Any]]:
+    """Return a copy of `messages` keeping only the most recent `keep_recent` images.
+
+    Older image parts are replaced with a lightweight text placeholder so multi-turn
+    visual sessions do not re-send stale base64 payloads on every turn, while the
+    persisted `messages` list remains untouched for session replay/UI.
+    """
+    image_positions: list[tuple[int, int]] = []
+    for msg_idx, msg in enumerate(messages):
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part_idx, part in enumerate(content):
+            if isinstance(part, dict) and (
+                part.get("type") in ("image_url", "image") or "image_url" in part
+            ):
+                image_positions.append((msg_idx, part_idx))
+
+    if len(image_positions) <= keep_recent:
+        return messages
+
+    to_omit = set(image_positions[: len(image_positions) - max(0, keep_recent)])
+    pruned: list[dict[str, Any]] = []
+    for msg_idx, msg in enumerate(messages):
+        content = msg.get("content")
+        if not isinstance(content, list) or not any(m == msg_idx for m, _ in to_omit):
+            pruned.append(msg)
+            continue
+        new_parts = [
+            {"type": "text", "text": "[omitted older image]"}
+            if (msg_idx, part_idx) in to_omit
+            else part
+            for part_idx, part in enumerate(content)
+        ]
+        pruned.append({**msg, "content": new_parts})
+    return pruned

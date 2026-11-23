@@ -45,6 +45,29 @@ def test_load_image_file_and_build_content(tmp_path: Path) -> None:
     assert content_to_text(content) == "describe this\n[image]"
 
 
+def test_prune_old_images_keeps_recent_and_preserves_original() -> None:
+    from quartz.core.images import prune_old_images
+
+    def img_msg(label: str) -> dict:
+        return {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": label},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{label}"}},
+            ],
+        }
+
+    msgs = [img_msg("img1"), {"role": "assistant", "content": "ok"}, img_msg("img2"), img_msg("img3")]
+    pruned = prune_old_images(msgs, keep_recent=2)
+
+    # Original list is not mutated
+    assert msgs[0]["content"][1]["type"] == "image_url"
+    # Oldest image is replaced with placeholder, newest 2 kept
+    assert pruned[0]["content"][1] == {"type": "text", "text": "[omitted older image]"}
+    assert pruned[2]["content"][1]["type"] == "image_url"
+    assert pruned[3]["content"][1]["type"] == "image_url"
+
+
 def test_load_image_file_errors(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         load_image_file(tmp_path / "missing.png")
