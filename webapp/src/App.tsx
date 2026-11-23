@@ -17,6 +17,7 @@ import { JobsTray } from "./components/JobsTray";
 import { useQuartz } from "./useQuartz";
 import { useCommandPalette } from "./lib/useCommandPalette";
 import { useOpenUISystemPrompt, useRichUiMode } from "./lib/useRichUi";
+import { useNotifications } from "./lib/useNotifications";
 import { useSidebar } from "./lib/useSidebar";
 import type { SessionActivity } from "./lib/sidebar";
 import { useMediaQuery } from "./lib/useMediaQuery";
@@ -32,7 +33,8 @@ export function App(): React.ReactElement {
   // drawn *and* whether the session is told to produce OpenUI Lang at all.
   const richUi = useRichUiMode();
   const systemPromptAppend = useOpenUISystemPrompt(richUi.mode);
-  const quartz = useQuartz(undefined, systemPromptAppend);
+  const notifications = useNotifications();
+  const quartz = useQuartz(undefined, systemPromptAppend, notifications.notifyFromFrame);
   const sidebar = useSidebar();
 
   const composerRef = React.useRef<HTMLTextAreaElement | null>(null);
@@ -279,6 +281,7 @@ export function App(): React.ReactElement {
               setSettingsOpen(false);
               window.requestAnimationFrame(() => composerRef.current?.focus());
             }}
+            notifications={notifications}
           />
         ) : mcpOpen ? (
           <McpView

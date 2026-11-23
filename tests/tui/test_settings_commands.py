@@ -110,6 +110,7 @@ def test_settings_progress_edit_preserves_compaction_values(
         "progress_every": 7,
         "background_check_every": 0,
         "web_idle_hours": 2,
+        "notifications": True,
     }
 
 
