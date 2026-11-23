@@ -22,6 +22,7 @@ import { useSidebar } from "./lib/useSidebar";
 import type { SessionActivity } from "./lib/sidebar";
 import { useMediaQuery } from "./lib/useMediaQuery";
 import { useOpenUIThemeMirror } from "./lib/theme";
+import { useNativeShell } from "./lib/useNativeShell";
 import { wantsRichUi } from "./lib/richUi";
 import type { ImageAttachment } from "./protocol";
 
@@ -39,6 +40,10 @@ export function App(): React.ReactElement {
 
   const composerRef = React.useRef<HTMLTextAreaElement | null>(null);
   const palette = useCommandPalette(composerRef);
+
+  // Text shared in from another app. Held in state rather than written straight into
+  // the textarea: the composer owns its draft, so it is handed the value and decides.
+  const [sharedText, setSharedText] = React.useState<string | null>(null);
 
   // OpenUI reads `data-openui-theme`; mirror whatever HeroUI applied to `<html>`
   // so a surface is never drawn in the other theme's palette.
@@ -71,6 +76,63 @@ export function App(): React.ReactElement {
   const trustPromptOpen = Boolean(
     projectTrust?.needsTrust && !dismissedTrustCwds.has(projectTrust.cwd),
   );
+
+  /**
+   * Android Back, in the order a person expects it: close the thing on top, and only
+   * leave the app when nothing is open. The SPA already treats Escape that way, so
+   * this reuses the same setters instead of inventing a second navigation stack.
+   */
+  const handleAndroidBack = React.useCallback((): boolean => {
+    if (palette.open) {
+      palette.onOpenChange(false);
+      return true;
+    }
+    if (picker !== null) {
+      setPicker(null);
+      return true;
+    }
+    if (archiveOpen) {
+      setArchiveOpen(false);
+      return true;
+    }
+    if (modelPickerOpen) {
+      setModelPickerOpen(false);
+      return true;
+    }
+    if (jobsOpen) {
+      setJobsOpen(false);
+      return true;
+    }
+    if (settingsOpen) {
+      setSettingsOpen(false);
+      return true;
+    }
+    if (mcpOpen) {
+      setMcpOpen(false);
+      return true;
+    }
+    if (narrow && sidebarOpen) {
+      setSidebarOpen(false);
+      return true;
+    }
+    return false;
+  }, [
+    palette,
+    picker,
+    archiveOpen,
+    modelPickerOpen,
+    jobsOpen,
+    settingsOpen,
+    mcpOpen,
+    narrow,
+    sidebarOpen,
+  ]);
+
+  useNativeShell({
+    turnRunning: quartz.state.turnRunning,
+    onBack: handleAndroidBack,
+    onSharedText: setSharedText,
+  });
 
   /**
    * The control the archive dialog was opened from.
@@ -379,6 +441,8 @@ export function App(): React.ReactElement {
               onCancel={quartz.cancel}
               onRunCommand={handleRunCommand}
               onOpenPalette={palette.openPalette}
+              sharedText={sharedText}
+              onSharedTextConsumed={() => setSharedText(null)}
               textareaRef={composerRef}
             />
           </>

@@ -30,3 +30,6 @@ webapp/coverage/
 webapp/android/app/src/main/assets/public/
 webapp/android/app/src/main/assets/capacitor.config.json
 webapp/android/app/src/main/assets/capacitor.plugins.json
+
+# Local Android SDK / JDK used to build the APK (machine-local, not committed)
+.tooling/

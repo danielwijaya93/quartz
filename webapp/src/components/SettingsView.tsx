@@ -1,5 +1,6 @@
 import * as React from "react";
 import { ServerUrlCard } from "./ServerUrlCard";
+import { BiometricLockCard } from "./BiometricLockCard";
 import { apiUrl } from "../lib/serverUrl";
 import { Button, Input } from "@heroui/react";
 import { ArrowLeft, Bell, RotateCcw } from "lucide-react";
@@ -174,6 +175,7 @@ export function SettingsView({
         </div>
 
         <ServerUrlCard />
+        <BiometricLockCard />
 
         <div>
           <h1 className="text-lg font-semibold tracking-tight text-foreground">Settings</h1>

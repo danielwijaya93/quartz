@@ -110,6 +110,10 @@ export interface ComposerProps {
   onOpenPalette: () => void;
   /** Exposed so the app can return focus here after an overlay closes. */
   textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
+  /** Text shared into the app from another app; dropped into the draft once. */
+  sharedText?: string | null;
+  /** Called after `sharedText` has been placed, so the parent stops re-sending it. */
+  onSharedTextConsumed?: () => void;
 }
 
 /** Read a File as base64 without the `data:` prefix the protocol expects. */
@@ -172,6 +176,8 @@ export function Composer({
   onCancel,
   onRunCommand,
   onOpenPalette,
+  sharedText = null,
+  onSharedTextConsumed,
   textareaRef: forwardedRef,
 }: ComposerProps): React.ReactElement {
   const [text, setText] = React.useState("");
@@ -194,6 +200,33 @@ export function Composer({
   const cmdListRef = React.useRef<HTMLUListElement | null>(null);
   const fileListRef = React.useRef<HTMLUListElement | null>(null);
   const keyboardNavRef = React.useRef(false);
+
+  const consumedRef = React.useRef(onSharedTextConsumed);
+  consumedRef.current = onSharedTextConsumed;
+
+  // A share arrives as "here is text", not "send this": it lands in the draft so the
+  // person can add a question to it. Appending rather than replacing is what keeps a
+  // half-typed prompt when the share comes in mid-sentence.
+  React.useEffect(() => {
+    if (sharedText === null) return;
+    const incoming = sharedText.trim();
+    if (!incoming) {
+      consumedRef.current?.();
+      return;
+    }
+    setText((prev) => (prev.trim() ? `${prev.trimEnd()}\n\n${incoming}` : incoming));
+    consumedRef.current?.();
+    const node = textareaRef.current;
+    if (node) {
+      node.focus();
+      const end = node.value.length;
+      try {
+        node.setSelectionRange(end, end);
+      } catch {
+        /* Not focusable right now. */
+      }
+    }
+  }, [sharedText, textareaRef]);
 
   const offline = connection !== "connected";
   const blocked = fatalError !== null;

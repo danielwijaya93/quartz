@@ -1,4 +1,5 @@
-import { apiUrl } from "./serverUrl";
+import { apiUrl, isNativeCapacitor } from "./serverUrl";
+import { requestNativePermission, showNativeNotification } from "./nativeNotifications";
 import type { ServerMessage } from "../protocol";
 
 export type NotificationPermissionState = "granted" | "denied" | "default" | "unsupported";
@@ -60,6 +61,22 @@ export function detectNotificationEnvironment(): NotificationEnvironment {
     ? (window.Notification.permission as NotificationPermissionState)
     : "unsupported";
 
+  // A packaged shell reports support from the native plugin, not from the web API it
+  // does not have. Without this the settings toggle stays hidden on Android and the
+  // app quietly never notifies.
+  if (isNativeCapacitor()) {
+    return {
+      supported: true,
+      secureContext: true,
+      isIos: false,
+      isAndroid: true,
+      isStandalone: true,
+      needsHttps: false,
+      needsHomeScreen: false,
+      permission: nativePermissionHint(),
+    };
+  }
+
   return {
     supported: hasApi && secureContext,
     secureContext,
@@ -70,6 +87,23 @@ export function detectNotificationEnvironment(): NotificationEnvironment {
     needsHomeScreen: isIos && !isStandalone,
     permission,
   };
+}
+
+/**
+ * What to show before the async native check runs.
+ *
+ * The real answer needs an `await` on the plugin, and this function is synchronous
+ * because it is called during render. "granted" is the honest default: Android 13+
+ * asks once on first use, and everything below 13 grants at install.
+ */
+function nativePermissionHint(): NotificationPermissionState {
+  try {
+    return window.localStorage.getItem("quartz:native-notif-denied") === "true"
+      ? "denied"
+      : "granted";
+  } catch {
+    return "granted";
+  }
 }
 
 let swPromise: Promise<ServiceWorkerRegistration | null> | null = null;
@@ -205,6 +239,14 @@ export async function sendWebPushTest(endpoint?: string | null): Promise<boolean
 }
 
 export async function requestNotificationPermission(): Promise<NotificationPermissionState> {
+  // Android asks through its own runtime permission dialog, not the web API.
+  if (isNativeCapacitor()) {
+    const native = await requestNativePermission();
+    if (native === "granted") return "granted";
+    if (native === "denied") return "denied";
+    if (native === "unsupported") return "unsupported";
+    return "default";
+  }
   if (typeof window === "undefined" || typeof window.Notification === "undefined") {
     return "unsupported";
   }
@@ -278,6 +320,11 @@ export function formatNotificationForFrame(
 export async function showBrowserNotification(
   payload: BrowserNotificationPayload,
 ): Promise<boolean> {
+  // A packaged app has no service worker and no `window.Notification`: without this
+  // branch the native build would silently notify nobody, which is exactly the
+  // regression that made the APK worse than the browser.
+  if (isNativeCapacitor()) return showNativeNotification(payload);
+
   if (
     typeof window === "undefined" ||
     !window.isSecureContext ||
