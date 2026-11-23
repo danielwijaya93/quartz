@@ -126,6 +126,14 @@ async function readAsAttachment(file: File): Promise<ImageAttachment> {
   };
 }
 
+function isCoarsePointer(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(pointer: coarse)").matches
+  );
+}
+
 /** Read a non-image File as UTF-8 text. */
 async function readAsTextFile(file: File): Promise<AttachedFile> {
   const content = await new Promise<string>((resolve, reject) => {
@@ -467,6 +475,9 @@ export function Composer({
         }
       }
       if (event.key === "Enter" && !event.shiftKey) {
+        if (isCoarsePointer()) {
+          return;
+        }
         event.preventDefault();
         submit();
         return;
@@ -781,6 +792,7 @@ export function Composer({
             }}
             placeholder={placeholder}
             aria-label={turnRunning ? "Steer the running turn" : "Prompt quartz"}
+            enterKeyHint={isCoarsePointer() ? "enter" : "send"}
             spellCheck={false}
             autoCapitalize="off"
             autoComplete="off"
