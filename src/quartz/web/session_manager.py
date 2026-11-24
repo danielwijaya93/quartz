@@ -13,33 +13,21 @@ from typing import Any
 from quartz.core.turn import run_interactive_turn
 from quartz.web.attachments import AttachedFileRegistry
 from quartz.web.bridge import Frame, Push
-from quartz.web.web_session import BuildRuntime, TurnRunner, WebSession
+from quartz.web.web_session import BuildRuntime, TurnRunner, WebSession, validate_session_id
+
+_validate_session_id = validate_session_id
 
 __all__ = ["SessionManager"]
 
+_KIND_PRIORITY = {"permission": 0, "error": 0, "working": 1}
 
-def _validate_session_id(session_id: str) -> str:
-    cleaned = session_id.strip()
-    if (
-        not cleaned
-        or "/" in cleaned
-        or "\\" in cleaned
-        or "\x00" in cleaned
-        or cleaned in (".", "..")
-        or ".." in cleaned
-    ):
-        raise ValueError("Invalid sessionId")
-    return cleaned
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else f"{text[: limit - 1]}…"
 
 
 class SessionManager:
-    """Pool of live `WebSession` instances and the idle-session watcher.
-
-    Switching sessions in `quartz web` detaches the browser tab from the current
-    session and attaches it to the target session without aborting running turns
-    or closing kernels. Backgrounded sessions stay alive until the user closes
-    them (either directly or in response to an idle prompt) or the server exits.
-    """
+    """Pool of live `WebSession` instances and the idle-session watcher."""
 
     def __init__(
         self,
@@ -72,7 +60,6 @@ class SessionManager:
         self.file_registry = AttachedFileRegistry()
 
     def set_push_hook(self, hook: Callable[[WebSession, Frame], None] | None) -> None:
-        """Register a callback invoked for session frames (e.g. Web Push dispatch)."""
         self._push_hook = hook
 
     @property
@@ -81,14 +68,12 @@ class SessionManager:
 
     @property
     def current_session(self) -> WebSession:
-        """Most recently active session, or a lazy unbuilt placeholder."""
         with self._lock:
             if self._current_id and self._current_id in self._sessions:
                 return self._sessions[self._current_id]
             if self._sessions:
-                first_id = next(iter(self._sessions))
-                self._current_id = first_id
-                return self._sessions[first_id]
+                self._current_id = next(iter(self._sessions))
+                return self._sessions[self._current_id]
             if self._placeholder is None:
                 self._placeholder = self._new_web_session()
                 self._placeholder.set_system_prompt_append(self._system_prompt_append)
@@ -96,9 +81,7 @@ class SessionManager:
 
     def get_session(self, session_id: str | None = None) -> WebSession | None:
         with self._lock:
-            if session_id is None:
-                return self.current_session
-            return self._sessions.get(session_id)
+            return self.current_session if session_id is None else self._sessions.get(session_id)
 
     def all_sessions(self) -> list[WebSession]:
         with self._lock:
@@ -108,20 +91,23 @@ class SessionManager:
         cleaned = append.strip()
         with self._lock:
             self._system_prompt_append = cleaned
-            sessions = list(self._sessions.values())
-            placeholder = self._placeholder
-        for ws in sessions:
+            targets = list(self._sessions.values()) + ([self._placeholder] if self._placeholder is not None else [])
+        for ws in targets:
             ws.set_system_prompt_append(cleaned)
-        if placeholder is not None:
-            placeholder.set_system_prompt_append(cleaned)
+
+    def _register_session(self, ws: WebSession, cwd: Path | None) -> WebSession:
+        ws.ensure_runtime(cwd)
+        sid = ws.runtime.active_session.id
+        with self._lock:
+            self._sessions[sid] = ws
+            self._current_id = sid
+        self.evict_lru_sessions(keep_id=sid)
+        return ws
 
     def ensure_default_session(self, cwd: Path | None = None) -> WebSession:
-        """Return the current live session, or build the initial one in `cwd`."""
         with self._lock:
-            if self._current_id and self._current_id in self._sessions:
-                ws = self._sessions[self._current_id]
-                if ws.built:
-                    return ws
+            if self._current_id and self._current_id in self._sessions and self._sessions[self._current_id].built:
+                return self._sessions[self._current_id]
             if self._sessions:
                 sid, ws = next(iter(self._sessions.items()))
                 self._current_id = sid
@@ -129,30 +115,16 @@ class SessionManager:
             ws = self._placeholder or self._new_web_session()
             self._placeholder = None
             ws.set_system_prompt_append(self._system_prompt_append)
-        ws.ensure_runtime(cwd)
-        sid = ws.runtime.active_session.id
-        with self._lock:
-            self._sessions[sid] = ws
-            self._current_id = sid
-        self.evict_lru_sessions(keep_id=sid)
-        return ws
+        return self._register_session(ws, cwd)
 
     def create_session(self, cwd: Path | None = None) -> WebSession:
-        """Build a fresh `WebSession` in `cwd` without retiring existing sessions."""
         ws = self._new_web_session()
         with self._lock:
             ws.set_system_prompt_append(self._system_prompt_append)
-        ws.ensure_runtime(cwd)
-        sid = ws.runtime.active_session.id
-        with self._lock:
-            self._sessions[sid] = ws
-            self._current_id = sid
-        self.evict_lru_sessions(keep_id=sid)
-        return ws
+        return self._register_session(ws, cwd)
 
     def get_or_load_session(self, session_id: str) -> WebSession:
-        """Return the live `WebSession` for `session_id`, or load it into the pool."""
-        cleaned = _validate_session_id(session_id)
+        cleaned = validate_session_id(session_id)
         with self._lock:
             existing = self._sessions.get(cleaned)
             if existing is not None and existing.built:
@@ -164,7 +136,6 @@ class SessionManager:
         ws.set_system_prompt_append(append)
         ws.load_session(cleaned)
         with self._lock:
-            # Another thread may have loaded the same session while we were building.
             race = self._sessions.get(cleaned)
             if race is not None and race.built:
                 ws.close()
@@ -178,11 +149,8 @@ class SessionManager:
 
     def _new_web_session(self) -> WebSession:
         return WebSession(
-            self._build,
-            cwd=self._cwd,
-            runner=self._runner,
-            on_event=self._on_session_event,
-            file_registry=self.file_registry,
+            self._build, cwd=self._cwd, runner=self._runner,
+            on_event=self._on_session_event, file_registry=self.file_registry,
         )
 
     @staticmethod
@@ -193,54 +161,44 @@ class SessionManager:
             if msg.get("role") != "user":
                 continue
             content = msg.get("content")
-            text = ""
             if isinstance(content, str):
                 text = content
             elif isinstance(content, list):
-                parts = [
-                    str(part.get("text") or "")
-                    for part in content
-                    if isinstance(part, dict) and part.get("type") == "text"
-                ]
-                text = " ".join(parts)
+                text = " ".join(str(p.get("text") or "") for p in content if isinstance(p, dict) and p.get("type") == "text")
+            else:
+                text = ""
             cleaned = " ".join(text.split())
             if cleaned:
-                return cleaned if len(cleaned) <= 80 else f"{cleaned[:79]}…"
+                return _clip(cleaned, 80)
         return None
 
+    def _make_active_entry(
+        self, sid: str, ws: WebSession, kind: str, *, seq: int, preview: str | None = None
+    ) -> dict[str, Any]:
+        entry: dict[str, Any] = {
+            "sessionId": sid,
+            "cwd": str(ws.runtime.cwd),
+            "title": self._session_title(ws),
+            "kind": kind,
+            "read": False,
+            "updatedAt": datetime.now(UTC).isoformat(),
+            "_seq": seq,
+        }
+        if preview:
+            entry["preview"] = _clip(preview, 120)
+        return entry
+
     def active_sessions_items(self) -> list[dict[str, Any]]:
-        """Return current active session items ordered: needs you, working, done (newest first)."""
         with self._lock:
             by_id = dict(self._active_sessions)
             for ws in self._sessions.values():
-                if not ws.built or not ws.turn_running:
-                    continue
-                sid = ws.runtime.active_session.id
-                if sid not in by_id:
-                    by_id[sid] = {
-                        "sessionId": sid,
-                        "cwd": str(ws.runtime.cwd),
-                        "title": self._session_title(ws),
-                        "kind": "working",
-                        "read": False,
-                        "updatedAt": datetime.now(UTC).isoformat(),
-                        "_seq": self._active_sessions_seq,
-                    }
+                if ws.built and ws.turn_running:
+                    sid = ws.runtime.active_session.id
+                    if sid not in by_id:
+                        by_id[sid] = self._make_active_entry(sid, ws, "working", seq=self._active_sessions_seq)
             items = list(by_id.values())
 
-        def _priority(kind: str) -> int:
-            if kind in ("permission", "error"):
-                return 0
-            if kind == "working":
-                return 1
-            return 2
-
-        items.sort(
-            key=lambda item: (
-                _priority(str(item.get("kind", ""))),
-                -int(item.get("_seq", 0)),
-            )
-        )
+        items.sort(key=lambda item: (_KIND_PRIORITY.get(str(item.get("kind", "")), 2), -int(item.get("_seq", 0))))
         return [
             {
                 "sessionId": item["sessionId"],
@@ -255,7 +213,6 @@ class SessionManager:
         ]
 
     def dismiss_active_session(self, session_id: str) -> bool:
-        """Dismiss a completed or errored active session item by session ID."""
         with self._lock:
             existing = self._active_sessions.get(session_id)
             if existing is None or existing["kind"] in ("permission", "working"):
@@ -265,11 +222,9 @@ class SessionManager:
         return True
 
     def clear_read_active_sessions(self) -> int:
-        """Remove all read non-permission items from active sessions. Returns removed count."""
         with self._lock:
             to_remove = [
-                sid
-                for sid, item in self._active_sessions.items()
+                sid for sid, item in self._active_sessions.items()
                 if item["kind"] != "permission" and item.get("read")
             ]
             for sid in to_remove:
@@ -282,104 +237,50 @@ class SessionManager:
         self._broadcast({"type": "active_sessions_state", "items": self.active_sessions_items()})
 
     def broadcast_settings_state(self, *, notifications: bool, rich_ui: bool) -> None:
-        """Broadcast synced UI preferences to every connected Web/Android client."""
-        frame: Frame = {
-            "type": "settings_state",
-            "notifications": notifications,
-            "richUi": rich_ui,
-        }
+        frame: Frame = {"type": "settings_state", "notifications": notifications, "richUi": rich_ui}
         self._broadcast(frame)
         self._broadcast_notification(frame)
 
     def broadcast_notifications_cleared(self) -> None:
-        """Notify connected clients that alerts were read/dismissed on a device."""
         frame: Frame = {"type": "notifications_cleared"}
         self._broadcast(frame)
         self._broadcast_notification(frame)
+
+    def _set_active_locked(self, sid: str, ws: WebSession, kind: str, preview: str | None = None) -> None:
+        self._active_sessions_seq += 1
+        self._active_sessions[sid] = self._make_active_entry(sid, ws, kind, seq=self._active_sessions_seq, preview=preview)
 
     def _on_session_event(self, ws: WebSession, frame: Frame) -> None:
         if not ws.built:
             return
         sid = ws.runtime.active_session.id
-        cwd = str(ws.runtime.cwd)
         kind = frame.get("type")
         changed = False
         with self._lock:
             existing = self._active_sessions.get(sid)
             if kind == "_closed":
-                if sid in self._active_sessions:
-                    self._active_sessions.pop(sid, None)
-                    changed = True
+                changed = self._active_sessions.pop(sid, None) is not None
             elif kind == "turn_start":
-                self._active_sessions_seq += 1
-                self._active_sessions[sid] = {
-                    "sessionId": sid,
-                    "cwd": cwd,
-                    "title": self._session_title(ws),
-                    "kind": "working",
-                    "read": False,
-                    "updatedAt": datetime.now(UTC).isoformat(),
-                    "_seq": self._active_sessions_seq,
-                }
+                self._set_active_locked(sid, ws, "working")
                 changed = True
             elif kind == "permission_request":
-                tool = str(frame.get("tool") or "").strip()
-                command = str(frame.get("command") or "").strip()
+                tool, command = str(frame.get("tool") or "").strip(), str(frame.get("command") or "").strip()
                 preview = f"{tool}: {command}" if tool and command else (command or tool or "Permission required")
-                self._active_sessions_seq += 1
-                self._active_sessions[sid] = {
-                    "sessionId": sid,
-                    "cwd": cwd,
-                    "title": self._session_title(ws),
-                    "kind": "permission",
-                    "read": False,
-                    "updatedAt": datetime.now(UTC).isoformat(),
-                    "preview": preview if len(preview) <= 120 else f"{preview[:119]}…",
-                    "_seq": self._active_sessions_seq,
-                }
+                self._set_active_locked(sid, ws, "permission", preview)
                 changed = True
-            elif kind == "permission_resolved":
-                if existing is not None and existing["kind"] == "permission":
-                    if ws.turn_running:
-                        self._active_sessions_seq += 1
-                        self._active_sessions[sid] = {
-                            "sessionId": sid,
-                            "cwd": cwd,
-                            "title": self._session_title(ws),
-                            "kind": "working",
-                            "read": False,
-                            "updatedAt": datetime.now(UTC).isoformat(),
-                            "_seq": self._active_sessions_seq,
-                        }
-                    else:
-                        self._active_sessions.pop(sid, None)
-                    changed = True
+            elif kind == "permission_resolved" and existing is not None and existing["kind"] == "permission":
+                if ws.turn_running:
+                    self._set_active_locked(sid, ws, "working")
+                else:
+                    self._active_sessions.pop(sid, None)
+                changed = True
             elif kind == "turn_end":
                 status = frame.get("status")
                 if status == "ok":
-                    item_kind = "done"
-                    preview = None
+                    self._set_active_locked(sid, ws, "done")
+                    changed = True
                 elif status == "error":
-                    item_kind = "error"
-                    err = str(frame.get("error") or "").strip()
-                    preview = err if err else "Turn failed"
-                    if len(preview) > 120:
-                        preview = f"{preview[:119]}…"
-                else:
-                    item_kind = ""
-                    preview = None
-                if item_kind:
-                    self._active_sessions_seq += 1
-                    self._active_sessions[sid] = {
-                        "sessionId": sid,
-                        "cwd": cwd,
-                        "title": self._session_title(ws),
-                        "kind": item_kind,
-                        "read": False,
-                        "updatedAt": datetime.now(UTC).isoformat(),
-                        "preview": preview,
-                        "_seq": self._active_sessions_seq,
-                    }
+                    self._set_active_locked(sid, ws, "error", str(frame.get("error") or "").strip() or "Turn failed")
                     changed = True
                 elif existing is not None and existing["kind"] == "working":
                     self._active_sessions.pop(sid, None)
@@ -387,14 +288,20 @@ class SessionManager:
         if changed:
             self._broadcast_active_sessions()
         if kind in ("turn_end", "permission_request", "bash_notice", "error"):
-            payload = dict(frame)
-            payload["sessionId"] = sid
-            payload["sessionTitle"] = self._session_title(ws)
-            self._broadcast_notification(payload)
-        hook = self._push_hook
-        if hook is not None:
+            self._broadcast_notification({**frame, "sessionId": sid, "sessionTitle": self._session_title(ws)})
+        if self._push_hook is not None:
             with contextlib.suppress(Exception):
-                hook(ws, frame)
+                self._push_hook(ws, frame)
+
+    def _fanout(self, targets_set: set[Push], frame: Frame) -> None:
+        with self._lock:
+            targets = tuple(targets_set)
+        for target in targets:
+            try:
+                target(frame)
+            except Exception:
+                with self._lock:
+                    targets_set.discard(target)
 
     def add_notification_listener(self, push: Push) -> None:
         with self._lock:
@@ -405,13 +312,7 @@ class SessionManager:
             self._notification_listeners.discard(push)
 
     def _broadcast_notification(self, frame: Frame) -> None:
-        with self._lock:
-            listeners = tuple(self._notification_listeners)
-        for listener in listeners:
-            try:
-                listener(frame)
-            except Exception:
-                self.remove_notification_listener(listener)
+        self._fanout(self._notification_listeners, frame)
 
     def register_sink(self, push: Push) -> None:
         with self._lock:
@@ -422,13 +323,7 @@ class SessionManager:
             self._global_sinks.discard(push)
 
     def _broadcast(self, frame: Frame) -> None:
-        with self._lock:
-            sinks = tuple(self._global_sinks)
-        for sink in sinks:
-            try:
-                sink(frame)
-            except Exception:
-                self.unregister_sink(sink)
+        self._fanout(self._global_sinks, frame)
 
     def _idle_hours(self) -> float:
         if self._idle_hours_override is not None:
@@ -445,13 +340,6 @@ class SessionManager:
         return int(load_settings().web_max_live_sessions)
 
     def evict_lru_sessions(self, *, keep_id: str | None = None) -> list[str]:
-        """Hibernate least-recently-active idle background sessions over the live cap.
-
-        Never evicts the current session, any browser-attached session, or any session
-        with an active turn, pending permission, or running background bash job.
-        Hibernated sessions save their kernel snapshot to disk first and transparently
-        restore on the next `get_or_load_session(sid)`.
-        """
         limit = self._max_live_sessions()
         if limit <= 0:
             return []
@@ -460,12 +348,11 @@ class SessionManager:
             excess = len(self._sessions) - limit
             if excess <= 0:
                 return []
-            candidates = [
+            candidates = sorted(
                 (ws.last_active_at, sid, ws)
                 for sid, ws in self._sessions.items()
                 if sid != keep_id and sid != self._current_id and ws.can_hibernate()
-            ]
-            candidates.sort(key=lambda item: item[0])
+            )
             for _, sid, ws in candidates[:excess]:
                 self._sessions.pop(sid, None)
                 to_evict.append((sid, ws))
@@ -474,16 +361,14 @@ class SessionManager:
             if ws.hibernate():
                 hibernated.append(sid)
             else:
-                # Session became busy between check and hibernate; put it back.
                 with self._lock:
                     self._sessions.setdefault(sid, ws)
         return hibernated
 
     def start_watcher(self) -> None:
         with self._lock:
-            if self._closed:
-                return
-            self._schedule_watcher_locked()
+            if not self._closed:
+                self._schedule_watcher_locked()
 
     def _schedule_watcher_locked(self) -> None:
         if self._watcher_timer is not None:
@@ -509,8 +394,16 @@ class SessionManager:
         if timer is not None:
             timer.cancel()
 
+    @staticmethod
+    def _idle_frame(sid: str, ws: WebSession, idle_seconds: int) -> Frame:
+        return {
+            "type": "idle_session_prompt",
+            "sessionId": sid,
+            "cwd": str(ws.runtime.cwd),
+            "idleSeconds": max(0, idle_seconds),
+        }
+
     def check_idle_sessions(self, now: float | None = None) -> list[Frame]:
-        """Check for idle backgrounded sessions, enforce LRU cap, and prompt in the browser."""
         self.evict_lru_sessions()
         hours = self._idle_hours()
         if hours <= 0:
@@ -521,46 +414,27 @@ class SessionManager:
         with self._lock:
             items = list(self._sessions.items())
         for sid, ws in items:
-            if not ws.built or ws.turn_running or ws.attached:
-                continue
-            if ws.idle_prompted_at is not None:
+            if not ws.built or ws.turn_running or ws.attached or ws.idle_prompted_at is not None:
                 continue
             idle_s = current_time - ws.last_active_at
             if idle_s >= threshold_s:
                 ws.idle_prompted_at = current_time
-                frame: Frame = {
-                    "type": "idle_session_prompt",
-                    "sessionId": sid,
-                    "cwd": str(ws.runtime.cwd),
-                    "idleSeconds": int(idle_s),
-                }
+                frame = self._idle_frame(sid, ws, int(idle_s))
                 frames.append(frame)
                 self._broadcast(frame)
         return frames
 
     def pending_idle_prompts(self, now: float | None = None) -> list[Frame]:
-        """Return any idle prompts still awaiting a user decision."""
         current_time = time.monotonic() if now is None else now
-        frames: list[Frame] = []
         with self._lock:
             items = list(self._sessions.items())
-        for sid, ws in items:
-            if not ws.built or ws.turn_running or ws.attached:
-                continue
-            if ws.idle_prompted_at is None:
-                continue
-            frames.append(
-                {
-                    "type": "idle_session_prompt",
-                    "sessionId": sid,
-                    "cwd": str(ws.runtime.cwd),
-                    "idleSeconds": max(0, int(current_time - ws.last_active_at)),
-                }
-            )
-        return frames
+        return [
+            self._idle_frame(sid, ws, int(current_time - ws.last_active_at))
+            for sid, ws in items
+            if ws.built and not ws.turn_running and not ws.attached and ws.idle_prompted_at is not None
+        ]
 
     def resolve_idle_prompt(self, session_id: str, action: str) -> bool:
-        """Handle a user's keep/close choice for an idle backgrounded session."""
         if action not in ("keep", "close"):
             raise ValueError(f"Invalid idle session action: {action!r}")
         with self._lock:
@@ -579,17 +453,10 @@ class SessionManager:
                 removed = self._active_sessions.pop(session_id, None) is not None
             if removed:
                 self._broadcast_active_sessions()
-        self._broadcast(
-            {
-                "type": "idle_session_resolved",
-                "sessionId": session_id,
-                "action": action,
-            }
-        )
+        self._broadcast({"type": "idle_session_resolved", "sessionId": session_id, "action": action})
         return True
 
     def close_all(self) -> None:
-        """Stop the watcher and close every live session."""
         with self._lock:
             self._closed = True
             sessions = list(self._sessions.values())
@@ -597,9 +464,6 @@ class SessionManager:
             placeholder, self._placeholder = self._placeholder, None
             self._current_id = None
         self.stop_watcher()
-        for ws in sessions:
+        for ws in sessions + ([placeholder] if placeholder is not None else []):
             with contextlib.suppress(Exception):
                 ws.close()
-        if placeholder is not None:
-            with contextlib.suppress(Exception):
-                placeholder.close()

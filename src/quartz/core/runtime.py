@@ -7,7 +7,7 @@ import logging
 import threading
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, overload
 
 from quartz.core.compact import (
     CompactionResult,
@@ -24,6 +24,27 @@ from quartz.providers.base import LLMProvider
 logger = logging.getLogger(__name__)
 
 __all__ = ["AgentRuntime", "ModelConfig", "RuntimeOptions", "SessionState", "ViewConfig"]
+
+class _Delegate[T]:
+    """Typed property descriptor forwarding attribute access to a sub-config dataclass."""
+
+    def __init__(self, target: str, attr: str) -> None:
+        self._target = target
+        self._attr = attr
+
+    @overload
+    def __get__(self, obj: None, objtype: type[Any] | None = None) -> _Delegate[T]: ...
+
+    @overload
+    def __get__(self, obj: Any, objtype: type[Any] | None = None) -> T: ...
+
+    def __get__(self, obj: Any, objtype: type[Any] | None = None) -> Any:
+        if obj is None:
+            return self
+        return getattr(getattr(obj, self._target), self._attr)
+
+    def __set__(self, obj: Any, value: T) -> None:
+        setattr(getattr(obj, self._target), self._attr, value)
 
 
 @dataclasses.dataclass
@@ -84,6 +105,32 @@ class AgentRuntime:
     view_config: ViewConfig
     pending_images: list[ImageAttachment]
 
+    provider_name: _Delegate[str] = _Delegate("model_config", "provider_name")
+    model: _Delegate[str] = _Delegate("model_config", "model")
+    effort: _Delegate[str] = _Delegate("model_config", "effort")
+    system_prompt: _Delegate[str] = _Delegate("model_config", "system_prompt")
+    max_context_tokens: _Delegate[int] = _Delegate("model_config", "max_context_tokens")
+    compact_reserve_tokens: _Delegate[int] = _Delegate("model_config", "compact_reserve_tokens")
+    keep_recent_tokens: _Delegate[int] = _Delegate("model_config", "keep_recent_tokens")
+
+    headless: _Delegate[bool] = _Delegate("options", "headless")
+    progress_every: _Delegate[int] = _Delegate("options", "progress_every")
+    background_check_every: _Delegate[int] = _Delegate("options", "background_check_every")
+    notifications: _Delegate[bool] = _Delegate("options", "notifications")
+    transport: _Delegate[str] = _Delegate("options", "transport")
+
+    active_session: _Delegate[Session] = _Delegate("session_state", "session")
+    messages: _Delegate[list[dict[str, Any]]] = _Delegate("session_state", "messages")
+    usage_stats: _Delegate[TurnUsage] = _Delegate("session_state", "usage")
+    cell_history: _Delegate[list[tuple[str, CellResult, float]]] = _Delegate("session_state", "cell_history")
+    total_elapsed_s: _Delegate[float] = _Delegate("session_state", "total_elapsed_s")
+    turn_count: _Delegate[int] = _Delegate("session_state", "turn_count")
+
+    verbose: _Delegate[bool] = _Delegate("view_config", "verbose")
+    plain_output: _Delegate[bool] = _Delegate("view_config", "plain_output")
+    show_thinking: _Delegate[bool] = _Delegate("view_config", "show_thinking")
+    show_details: _Delegate[bool] = _Delegate("view_config", "show_details")
+
     def __init__(
         self,
         cwd: Path,
@@ -115,34 +162,20 @@ class AgentRuntime:
         total_elapsed_s: float = 0.0,
         turn_count: int = 0,
     ) -> None:
-        model_config = ModelConfig(
-            provider_name=provider_name,
-            model=model,
-            effort=effort,
-            system_prompt=system_prompt,
-            max_context_tokens=max_context_tokens,
-            compact_reserve_tokens=compact_reserve_tokens,
-            keep_recent_tokens=keep_recent_tokens,
-        )
-        options = RuntimeOptions(
-            headless=headless,
-            progress_every=progress_every,
-            background_check_every=background_check_every,
-            notifications=notifications,
-            transport=transport,
-        )
-        resolved_view = (
-            view_config
-            if view_config is not None
-            else ViewConfig(
-                verbose=verbose,
-                plain_output=plain_output,
-                show_thinking=show_thinking,
-                show_details=show_details,
-            )
-        )
-        resolved_session = (
-            session_state
+        self._init_from_parts(
+            cwd=cwd,
+            kernel=kernel,
+            client=client,
+            model_config=ModelConfig(
+                provider_name=provider_name,
+                model=model,
+                effort=effort,
+                system_prompt=system_prompt,
+                max_context_tokens=max_context_tokens,
+                compact_reserve_tokens=compact_reserve_tokens,
+                keep_recent_tokens=keep_recent_tokens,
+            ),
+            session_state=session_state
             if session_state is not None
             else SessionState(
                 session=active_session,
@@ -151,16 +184,22 @@ class AgentRuntime:
                 cell_history=cell_history if cell_history is not None else [],
                 total_elapsed_s=total_elapsed_s,
                 turn_count=turn_count,
-            )
-        )
-        self._init_from_parts(
-            cwd=cwd,
-            kernel=kernel,
-            client=client,
-            model_config=model_config,
-            session_state=resolved_session,
-            view_config=resolved_view,
-            options=options,
+            ),
+            view_config=view_config
+            if view_config is not None
+            else ViewConfig(
+                verbose=verbose,
+                plain_output=plain_output,
+                show_thinking=show_thinking,
+                show_details=show_details,
+            ),
+            options=RuntimeOptions(
+                headless=headless,
+                progress_every=progress_every,
+                background_check_every=background_check_every,
+                notifications=notifications,
+                transport=transport,
+            ),
             pending_images=pending_images if pending_images is not None else [],
         )
 
@@ -213,182 +252,6 @@ class AgentRuntime:
         )
         return runtime
 
-    @property
-    def provider_name(self) -> str:
-        return self.model_config.provider_name
-
-    @provider_name.setter
-    def provider_name(self, value: str) -> None:
-        self.model_config.provider_name = value
-
-    @property
-    def model(self) -> str:
-        return self.model_config.model
-
-    @model.setter
-    def model(self, value: str) -> None:
-        self.model_config.model = value
-
-    @property
-    def effort(self) -> str:
-        return self.model_config.effort
-
-    @effort.setter
-    def effort(self, value: str) -> None:
-        self.model_config.effort = value
-
-    @property
-    def system_prompt(self) -> str:
-        return self.model_config.system_prompt
-
-    @system_prompt.setter
-    def system_prompt(self, value: str) -> None:
-        self.model_config.system_prompt = value
-
-    @property
-    def max_context_tokens(self) -> int:
-        return self.model_config.max_context_tokens
-
-    @max_context_tokens.setter
-    def max_context_tokens(self, value: int) -> None:
-        self.model_config.max_context_tokens = value
-
-    @property
-    def compact_reserve_tokens(self) -> int:
-        return self.model_config.compact_reserve_tokens
-
-    @compact_reserve_tokens.setter
-    def compact_reserve_tokens(self, value: int) -> None:
-        self.model_config.compact_reserve_tokens = value
-
-    @property
-    def keep_recent_tokens(self) -> int:
-        return self.model_config.keep_recent_tokens
-
-    @keep_recent_tokens.setter
-    def keep_recent_tokens(self, value: int) -> None:
-        self.model_config.keep_recent_tokens = value
-
-    @property
-    def headless(self) -> bool:
-        return self.options.headless
-
-    @headless.setter
-    def headless(self, value: bool) -> None:
-        self.options.headless = value
-
-    @property
-    def progress_every(self) -> int:
-        return self.options.progress_every
-
-    @progress_every.setter
-    def progress_every(self, value: int) -> None:
-        self.options.progress_every = value
-
-    @property
-    def background_check_every(self) -> int:
-        return self.options.background_check_every
-
-    @background_check_every.setter
-    def background_check_every(self, value: int) -> None:
-        self.options.background_check_every = value
-
-    @property
-    def notifications(self) -> bool:
-        return self.options.notifications
-
-    @notifications.setter
-    def notifications(self, value: bool) -> None:
-        self.options.notifications = value
-
-    @property
-    def transport(self) -> str:
-        return self.options.transport
-
-    @transport.setter
-    def transport(self, value: str) -> None:
-        self.options.transport = value
-
-    @property
-    def active_session(self) -> Session:
-        return self.session_state.session
-
-    @active_session.setter
-    def active_session(self, s: Session) -> None:
-        self.session_state.session = s
-
-    @property
-    def messages(self) -> list[dict[str, Any]]:
-        return self.session_state.messages
-
-    @messages.setter
-    def messages(self, m: list[dict[str, Any]]) -> None:
-        self.session_state.messages = m
-
-    @property
-    def usage_stats(self) -> TurnUsage:
-        return self.session_state.usage
-
-    @usage_stats.setter
-    def usage_stats(self, u: TurnUsage) -> None:
-        self.session_state.usage = u
-
-    @property
-    def cell_history(self) -> list[tuple[str, CellResult, float]]:
-        return self.session_state.cell_history
-
-    @cell_history.setter
-    def cell_history(self, ch: list[tuple[str, CellResult, float]]) -> None:
-        self.session_state.cell_history = ch
-
-    @property
-    def total_elapsed_s(self) -> float:
-        return self.session_state.total_elapsed_s
-
-    @total_elapsed_s.setter
-    def total_elapsed_s(self, t: float) -> None:
-        self.session_state.total_elapsed_s = t
-
-    @property
-    def turn_count(self) -> int:
-        return self.session_state.turn_count
-
-    @turn_count.setter
-    def turn_count(self, c: int) -> None:
-        self.session_state.turn_count = c
-
-    @property
-    def verbose(self) -> bool:
-        return self.view_config.verbose
-
-    @verbose.setter
-    def verbose(self, v: bool) -> None:
-        self.view_config.verbose = v
-
-    @property
-    def plain_output(self) -> bool:
-        return self.view_config.plain_output
-
-    @plain_output.setter
-    def plain_output(self, p: bool) -> None:
-        self.view_config.plain_output = p
-
-    @property
-    def show_thinking(self) -> bool:
-        return self.view_config.show_thinking
-
-    @show_thinking.setter
-    def show_thinking(self, st: bool) -> None:
-        self.view_config.show_thinking = st
-
-    @property
-    def show_details(self) -> bool:
-        return self.view_config.show_details
-
-    @show_details.setter
-    def show_details(self, sd: bool) -> None:
-        self.view_config.show_details = sd
-
     def wait_snapshot(self) -> None:
         """Wait for any in-flight background kernel snapshot to complete."""
         with self._snapshot_lock:
@@ -409,18 +272,13 @@ class AgentRuntime:
                 prev = self._snapshot_thread
                 if prev is not None and prev.is_alive():
                     prev.join(timeout=30.0)
-                session = self.active_session
-                kernel = self.kernel
+                session, kernel = self.active_session, self.kernel
 
                 def _save_kernel_bg() -> None:
                     try:
                         manifest = session.save_kernel(kernel)
                     except Exception as exc:
-                        warnings.warn(
-                            f"Background kernel snapshot failed: {exc}",
-                            RuntimeWarning,
-                            stacklevel=2,
-                        )
+                        warnings.warn(f"Background kernel snapshot failed: {exc}", RuntimeWarning, stacklevel=2)
                         return
                     skipped = manifest.get("skipped") or []
                     if skipped:
