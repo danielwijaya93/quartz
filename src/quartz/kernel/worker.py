@@ -46,6 +46,14 @@ from quartz.kernel.helpers import (
     load_helpers,
 )
 from quartz.kernel.pycheck import unresolved_global_names
+from quartz.kernel.snapshots import (
+    is_json_safe,
+    load_or_create_snapshot_key,
+    load_snapshot_key,
+    sha256_hex,
+    sign_manifest,
+    verify_manifest_hmac,
+)
 from quartz.mcp.client import HostMCPProxy, MCPManager
 
 logger = logging.getLogger(__name__)
@@ -94,14 +102,18 @@ _CELL_MODULES: tuple[str | None, ...] = ("__main__", "<cell>", None)
 
 
 class _UnpickleFailed:
-    """Sentinel cached for a snapshot file that would not unpickle.
+    """Sentinel cached for a snapshot file that failed verification or unpickling.
 
     Two names can share one file now, so a failure has to be remembered rather
-    than retried: otherwise the "unpickle error" line is recorded once per alias.
+    than retried: otherwise the skip line is recorded once per alias.
     """
 
+    def __init__(self, reason: str = "unpickle error") -> None:
+        self.reason = reason
 
-_UNPICKLE_FAILED = _UnpickleFailed()
+
+_UNPICKLE_FAILED = _UnpickleFailed("unpickle error")
+_TAMPERED_SNAPSHOT = _UnpickleFailed("tampered snapshot")
 
 
 def _skip_reason(pickle_err: BaseException, dill_err: BaseException) -> str:
@@ -517,7 +529,17 @@ class KernelWorker:
         self._send_bg_count()
         return handle
 
-    def _launch_worker(self, prompt_file: str, cwd: str, session_id: str, timeout: float | None = 600) -> BashHandle:
+    def _launch_worker(
+        self,
+        prompt_file: str,
+        cwd: str,
+        session_id: str,
+        timeout: float | None = 600,
+        provider: str | None = None,
+        model: str | None = None,
+        effort: str | None = None,
+        sandbox_off: bool = False,
+    ) -> BashHandle:
         """Launch a forked Quartz worker via bash() so [bash-done] wake-up is guaranteed.
 
         Never use subprocess.Popen directly for a forked session: the process
@@ -542,6 +564,14 @@ class KernelWorker:
         else:
             py_exe = _shlex.quote(sys.executable)
             command = f"{py_exe} -m quartz -p \"$(cat {prompt_path})\" -r {sid} --fork --cwd {cwd_path}"
+        if provider:
+            command += f" --provider {_shlex.quote(str(provider))}"
+        if model:
+            command += f" --model {_shlex.quote(str(model))}"
+        if effort:
+            command += f" --effort {_shlex.quote(str(effort))}"
+        if sandbox_off:
+            command += " --sandbox-off"
         return self._start_bash(command, timeout)
 
     def _send(self, payload: dict[str, Any]) -> None:
@@ -822,7 +852,7 @@ class KernelWorker:
         return vars_info
 
     def snapshot_vars(self, snapshot_dir: str) -> dict[str, Any]:
-        """Serialize user-defined variables to `snapshot_dir` using C pickle first, falling back to dill."""
+        """Serialize user-defined variables to `snapshot_dir` (JSON-first, then pickle/dill) with SHA-256 + HMAC."""
         import pickle
         import shutil
         from pathlib import Path
@@ -847,6 +877,7 @@ class KernelWorker:
         # two names point at. Keyed by `id()` while `self._namespace` keeps every
         # value alive, so an id cannot be recycled mid-loop.
         files: dict[str, str] = {}
+        hashes: dict[str, str] = {}
         written: dict[int, str] = {}
 
         try:
@@ -871,20 +902,30 @@ class KernelWorker:
                     saved.append(name)
                     continue
 
-                try:
-                    blob = pickle.dumps(val, protocol=pickle.HIGHEST_PROTOCOL)
-                except Exception as pickle_err:
+                ext = ".dill"
+                blob: bytes | None = None
+                if is_json_safe(val):
                     try:
-                        blob = dill.dumps(val, recurse=True)
-                    except Exception as dill_err:
-                        # Both serializers failed, so this value genuinely cannot ride
-                        # along. Name the reason from the *fallback* failure: pickle
-                        # rejecting a lambda or a live socket is expected and boring,
-                        # while dill failing on plain data is the surprising case.
-                        skipped.append(
-                            f"{name} ({type(val).__name__}: {_skip_reason(pickle_err, dill_err)})"
-                        )
-                        continue
+                        blob = json.dumps(val, ensure_ascii=False, allow_nan=False).encode("utf-8")
+                        ext = ".json"
+                    except Exception:
+                        blob = None
+
+                if blob is None:
+                    try:
+                        blob = pickle.dumps(val, protocol=pickle.HIGHEST_PROTOCOL)
+                    except Exception as pickle_err:
+                        try:
+                            blob = dill.dumps(val, recurse=True)
+                        except Exception as dill_err:
+                            # Both serializers failed, so this value genuinely cannot ride
+                            # along. Name the reason from the *fallback* failure: pickle
+                            # rejecting a lambda or a live socket is expected and boring,
+                            # while dill failing on plain data is the surprising case.
+                            skipped.append(
+                                f"{name} ({type(val).__name__}: {_skip_reason(pickle_err, dill_err)})"
+                            )
+                            continue
 
                 if len(blob) > MAX_VAR_BYTES:
                     skipped.append(f"{name} (>16 MiB)")
@@ -893,20 +934,25 @@ class KernelWorker:
                     skipped.append(f"{name} (snapshot >256 MiB)")
                     continue
 
-                fname = f"obj{len(written):05d}.dill"
+                fname = f"obj{len(written):05d}{ext}"
                 (tmp_dir / fname).write_bytes(blob)
                 written[key] = fname
                 files[name] = fname
+                hashes[fname] = sha256_hex(blob)
                 total_bytes += len(blob)
                 saved.append(name)
 
-            manifest = {
+            manifest: dict[str, Any] = {
                 "saved": saved,
                 "skipped": skipped,
                 "modules": module_hints,
                 "files": files,
+                "hashes": hashes,
                 "cwd": os.getcwd(),
             }
+            hmac_key = load_or_create_snapshot_key()
+            if hmac_key is not None:
+                manifest["hmac"] = sign_manifest(manifest, hmac_key)
             (tmp_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
             backup_dir: Path | None = None
             if target.exists():
@@ -999,8 +1045,20 @@ class KernelWorker:
         skipped: list[str] = list(manifest.get("skipped", []))
         self._reimport_modules(manifest.get("modules", {}), restored, skipped)
 
-        # Snapshot files are keyed by object (`obj00000.dill`) since dedup landed;
-        # older snapshots keyed them by variable name. Unpickling through a cache
+        hmac_rejected = False
+        strict_unsigned = False
+        if "hmac" in manifest:
+            hmac_key = load_snapshot_key()
+            if hmac_key is None or not verify_manifest_hmac(manifest, hmac_key):
+                hmac_rejected = True
+        elif os.environ.get("QUARTZ_STRICT_SNAPSHOTS") == "1":
+            strict_unsigned = True
+
+        has_hashes = "hashes" in manifest and isinstance(manifest.get("hashes"), dict)
+        hashes: dict[str, Any] = manifest.get("hashes") if has_hashes else {}
+
+        # Snapshot files are keyed by object (`obj00000.json` / `obj00000.dill`) since dedup landed;
+        # older snapshots keyed them by variable name. Restoring through a cache
         # keyed on the file keeps aliasing intact on the way back in, so a snapshot
         # where `rows2 is rows` restores as `rows2 is rows` rather than two copies.
         files: dict[str, str] = manifest.get("files") or {}
@@ -1008,6 +1066,14 @@ class KernelWorker:
 
         for name in manifest.get("saved", []):
             fname = files.get(name) or f"{name}.dill"
+            is_json = fname.endswith(".json")
+            if not is_json:
+                if hmac_rejected:
+                    skipped.append(f"{name} (tampered snapshot)")
+                    continue
+                if strict_unsigned:
+                    skipped.append(f"{name} (unsigned snapshot rejected)")
+                    continue
             var_file = target / fname
             if not var_file.is_file():
                 skipped.append(f"{name} (missing)")
@@ -1015,29 +1081,38 @@ class KernelWorker:
             if fname in loaded_by_file:
                 loaded = loaded_by_file[fname]
                 if isinstance(loaded, _UnpickleFailed):
-                    skipped.append(f"{name} (unpickle error)")
+                    skipped.append(f"{name} ({loaded.reason})")
                     continue
                 self._namespace[name] = loaded
                 restored.append(name)
                 continue
             try:
                 raw = var_file.read_bytes()
-                try:
-                    loaded = pickle.loads(raw)
-                except Exception:
-                    loaded = dill.loads(raw)
-                if inspect.isfunction(loaded) and loaded.__module__ in _CELL_MODULES:
-                    rebuilt = types.FunctionType(
-                        loaded.__code__,
-                        self._namespace,
-                        loaded.__name__,
-                        loaded.__defaults__,
-                        loaded.__closure__,
-                    )
-                    rebuilt.__kwdefaults__ = loaded.__kwdefaults__
-                    rebuilt.__doc__ = loaded.__doc__
-                    rebuilt.__annotations__ = loaded.__annotations__
-                    loaded = rebuilt
+                if has_hashes:
+                    expected_hash = hashes.get(fname)
+                    if not isinstance(expected_hash, str) or sha256_hex(raw) != expected_hash:
+                        loaded_by_file[fname] = _TAMPERED_SNAPSHOT
+                        skipped.append(f"{name} (tampered snapshot)")
+                        continue
+                if is_json:
+                    loaded = json.loads(raw.decode("utf-8"))
+                else:
+                    try:
+                        loaded = pickle.loads(raw)
+                    except Exception:
+                        loaded = dill.loads(raw)
+                    if inspect.isfunction(loaded) and loaded.__module__ in _CELL_MODULES:
+                        rebuilt = types.FunctionType(
+                            loaded.__code__,
+                            self._namespace,
+                            loaded.__name__,
+                            loaded.__defaults__,
+                            loaded.__closure__,
+                        )
+                        rebuilt.__kwdefaults__ = loaded.__kwdefaults__
+                        rebuilt.__doc__ = loaded.__doc__
+                        rebuilt.__annotations__ = loaded.__annotations__
+                        loaded = rebuilt
                 loaded_by_file[fname] = loaded
                 self._namespace[name] = loaded
                 restored.append(name)

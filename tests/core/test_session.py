@@ -92,8 +92,8 @@ def test_snapshot_stores_aliased_objects_once(tmp_path: Path) -> None:
 
     files = manifest["files"]
     assert files["rows"] == files["rows2"] == files["rows3"]
-    dill_files = [p.name for p in s.snapshot_dir.glob("*.dill")]
-    assert len([n for n in dill_files if n.startswith("obj")]) == 1
+    obj_files = [p.name for p in s.snapshot_dir.glob("obj*")]
+    assert len(obj_files) == 1
 
     k2 = KernelClient(cwd=tmp_path)
     k2.start()
@@ -109,24 +109,20 @@ def test_snapshot_stores_aliased_objects_once(tmp_path: Path) -> None:
 def test_restore_reads_legacy_name_keyed_snapshot(tmp_path: Path) -> None:
     """Snapshots written before dedup used `<name>.dill`; resume must still work."""
     import json
+    import pickle
 
     sessions_dir = tmp_path / "sessions"
     s = Session.create(tmp_path, sessions_dir=sessions_dir)
 
-    k1 = KernelClient(cwd=tmp_path)
-    k1.start()
-    try:
-        assert k1.exec_cell("legacy_value = 41").ok
-        s.save_kernel(k1)
-    finally:
-        k1.close()
-
-    # Rewrite the snapshot in the old on-disk shape.
-    for f in list(s.snapshot_dir.glob("*.dill")):
-        f.rename(s.snapshot_dir / "legacy_value.dill")
-    manifest = json.loads((s.snapshot_dir / "manifest.json").read_text())
-    manifest.pop("files")
-    manifest["saved"] = ["legacy_value"]
+    # Write a legacy pre-dedup, pre-signing `<name>.dill` snapshot directly.
+    s.snapshot_dir.mkdir(parents=True, exist_ok=True)
+    (s.snapshot_dir / "legacy_value.dill").write_bytes(pickle.dumps(41, protocol=pickle.HIGHEST_PROTOCOL))
+    manifest = {
+        "saved": ["legacy_value"],
+        "skipped": [],
+        "modules": {},
+        "cwd": str(tmp_path),
+    }
     (s.snapshot_dir / "manifest.json").write_text(json.dumps(manifest))
 
     k2 = KernelClient(cwd=tmp_path)

@@ -414,3 +414,55 @@ def test_launch_worker_uses_quartz_shim_when_bridge_sock_set(
     monkeypatch.delenv("QUARTZ_HOST_BRIDGE_SOCK", raising=False)
     worker._launch_worker(str(tmp_path / "p.md"), str(tmp_path), "sess-local")
     assert "-m quartz -p " in captured[-1]
+
+
+def test_launch_worker_accepts_provider_model_effort_and_sandbox_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from quartz.kernel.worker import KernelWorker
+
+    captured: list[str] = []
+    worker = KernelWorker.__new__(KernelWorker)
+    worker.headless = False
+
+    def _fake_start_bash(cmd: str, timeout: float | None = None):
+        captured.append(cmd)
+        return "handle"
+
+    worker._start_bash = _fake_start_bash  # type: ignore[method-assign]
+
+    # With QUARTZ_HOST_BRIDGE_SOCK set
+    monkeypatch.setenv("QUARTZ_HOST_BRIDGE_SOCK", str(tmp_path / "bridge.sock"))
+    worker._launch_worker(
+        str(tmp_path / "p.md"),
+        str(tmp_path),
+        "sess-1",
+        provider="anthropic",
+        model="claude-sonnet-4-6",
+        effort="high",
+        sandbox_off=True,
+    )
+    cmd_bridge = captured[-1]
+    assert cmd_bridge.startswith("quartz -p ")
+    assert "--provider anthropic" in cmd_bridge
+    assert "--model claude-sonnet-4-6" in cmd_bridge
+    assert "--effort high" in cmd_bridge
+    assert "--sandbox-off" in cmd_bridge
+
+    # Without QUARTZ_HOST_BRIDGE_SOCK
+    monkeypatch.delenv("QUARTZ_HOST_BRIDGE_SOCK", raising=False)
+    worker._launch_worker(
+        str(tmp_path / "p.md"),
+        str(tmp_path),
+        "sess-2",
+        provider="openai",
+        model="gpt-5.4",
+        effort="medium",
+        sandbox_off=False,
+    )
+    cmd_local = captured[-1]
+    assert "-m quartz -p " in cmd_local
+    assert "--provider openai" in cmd_local
+    assert "--model gpt-5.4" in cmd_local
+    assert "--effort medium" in cmd_local
+    assert "--sandbox-off" not in cmd_local
