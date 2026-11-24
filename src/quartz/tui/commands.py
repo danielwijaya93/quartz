@@ -30,13 +30,13 @@ from quartz.core.commands import (  # re-exported: the registry is the public su
     CommandRegistry,
     CommandResult,
     SlashCommand,
-    _cmd_jobs,
-    _cmd_mcp,
-    _cmd_settings,
-    _format_mcp_detail,
+    cmd_compact,
+    cmd_jobs,
+    cmd_mcp,
+    cmd_settings,
+    format_mcp_detail,
     reload_runtime_mcp,
 )
-from quartz.core.commands import _cmd_compact as _cmd_compact
 from quartz.core.compact import CompactionReason, CompactionResult
 from quartz.core.images import load_clipboard_image, load_image_file
 from quartz.core.loop import TurnUsage
@@ -74,6 +74,9 @@ from quartz.tui.render import (
     dock_status,
 )
 from quartz.tui.replay import _replay_session
+
+# Backward-compatible alias for tests importing `_cmd_compact` from `quartz.tui.commands`.
+_cmd_compact = cmd_compact
 
 __all__ = [
     "COMMAND_REGISTRY",
@@ -511,7 +514,7 @@ def _run_core_handler(
 def _terminal_settings(rt: AgentRuntime, arg: str) -> None:
     trimmed = arg.strip()
     if trimmed or getattr(rt, "headless", True):
-        result = _run_core_handler("/settings", _cmd_settings, rt, trimmed)
+        result = _run_core_handler("/settings", cmd_settings, rt, trimmed)
         if result is not None:
             _render_settings(rt, result)
         return
@@ -553,13 +556,13 @@ def _terminal_settings(rt: AgentRuntime, arg: str) -> None:
 
         if picked == "notifications":
             next_state = "off" if getattr(rt, "notifications", True) else "on"
-            result = _cmd_settings(rt, f"notifications {next_state}")
+            result = cmd_settings(rt, f"notifications {next_state}")
             if result is not None:
                 _render_settings(rt, result)
             continue
 
         if picked == "reset":
-            result = _cmd_settings(rt, "reset")
+            result = cmd_settings(rt, "reset")
             if result is not None:
                 _render_settings(rt, result)
             continue
@@ -575,13 +578,13 @@ def _terminal_settings(rt: AgentRuntime, arg: str) -> None:
         if entered is None or not entered.strip():
             continue
 
-        result = _cmd_settings(rt, f"{picked} {entered.strip()}")
+        result = cmd_settings(rt, f"{picked} {entered.strip()}")
         if result is not None:
             _render_settings(rt, result)
 
 
 def _terminal_jobs(rt: AgentRuntime, arg: str) -> None:
-    result = _run_core_handler("/jobs", _cmd_jobs, rt, arg)
+    result = _run_core_handler("/jobs", cmd_jobs, rt, arg)
     if getattr(rt, "headless", True) or result is None or not result.items:
         if result is not None:
             _render_jobs(rt, result)
@@ -591,7 +594,7 @@ def _terminal_jobs(rt: AgentRuntime, arg: str) -> None:
     from quartz.tui.render import _fmt_stopwatch
 
     while True:
-        result = _run_core_handler("/jobs", _cmd_jobs, rt, arg)
+        result = _run_core_handler("/jobs", cmd_jobs, rt, arg)
         if result is None or not result.items:
             if result is not None:
                 _render_jobs(rt, result)
@@ -663,7 +666,7 @@ def _render_mcp(rt: AgentRuntime, result: CommandResult) -> None:
 def _terminal_mcp(rt: AgentRuntime, arg: str) -> None:
     trimmed = arg.strip()
     if trimmed or getattr(rt, "headless", True):
-        result = _run_core_handler("/mcp", _cmd_mcp, rt, trimmed)
+        result = _run_core_handler("/mcp", cmd_mcp, rt, trimmed)
         if result is not None:
             _render_mcp(rt, result)
         return
@@ -672,7 +675,7 @@ def _terminal_mcp(rt: AgentRuntime, arg: str) -> None:
     while True:
         servers = load_raw_mcp_config(cfg_path)
         opts: list[tuple[str, str]] = [
-            (f"srv:{name}", f"{name} — {_format_mcp_detail(spec)}")
+            (f"srv:{name}", f"{name} — {format_mcp_detail(spec)}")
             for name, spec in sorted(servers.items())
         ]
         opts.append(("__add__", "+ Add MCP server"))
@@ -685,13 +688,13 @@ def _terminal_mcp(rt: AgentRuntime, arg: str) -> None:
             return
 
         if picked == "__enable_all__":
-            res = _cmd_mcp(rt, "enable --all")
+            res = cmd_mcp(rt, "enable --all")
             if res is not None:
                 _render_mcp(rt, res)
             continue
 
         if picked == "__disable_all__":
-            res = _cmd_mcp(rt, "disable --all")
+            res = cmd_mcp(rt, "disable --all")
             if res is not None:
                 _render_mcp(rt, res)
             continue
@@ -753,11 +756,11 @@ def _terminal_mcp(rt: AgentRuntime, arg: str) -> None:
             )
             if action == "toggle":
                 subcmd = "disable" if enabled else "enable"
-                res = _cmd_mcp(rt, f"{subcmd} {srv_name}")
+                res = cmd_mcp(rt, f"{subcmd} {srv_name}")
                 if res is not None:
                     _render_mcp(rt, res)
             elif action == "remove":
-                res = _cmd_mcp(rt, f"remove {srv_name}")
+                res = cmd_mcp(rt, f"remove {srv_name}")
                 if res is not None:
                     _render_mcp(rt, res)
 

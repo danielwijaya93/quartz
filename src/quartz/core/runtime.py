@@ -23,7 +23,31 @@ from quartz.providers.base import LLMProvider
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AgentRuntime", "SessionState", "ViewConfig"]
+__all__ = ["AgentRuntime", "ModelConfig", "RuntimeOptions", "SessionState", "ViewConfig"]
+
+
+@dataclasses.dataclass
+class ModelConfig:
+    """Provider, model, prompt, and context/compaction budget configuration."""
+
+    provider_name: str
+    model: str
+    effort: str
+    system_prompt: str
+    max_context_tokens: int
+    compact_reserve_tokens: int
+    keep_recent_tokens: int
+
+
+@dataclasses.dataclass
+class RuntimeOptions:
+    """Transport and execution-loop behavior flags for an agent runtime."""
+
+    headless: bool = False
+    progress_every: int = 0
+    background_check_every: int = 0
+    notifications: bool = True
+    transport: str = "cli"
 
 
 @dataclasses.dataclass
@@ -54,18 +78,8 @@ class AgentRuntime:
     cwd: Path
     kernel: Kernel
     client: LLMProvider
-    provider_name: str
-    model: str
-    effort: str
-    system_prompt: str
-    max_context_tokens: int
-    compact_reserve_tokens: int
-    keep_recent_tokens: int
-    headless: bool
-    progress_every: int
-    background_check_every: int
-    notifications: bool
-    transport: str
+    model_config: ModelConfig
+    options: RuntimeOptions
     session_state: SessionState
     view_config: ViewConfig
     pending_images: list[ImageAttachment]
@@ -101,39 +115,36 @@ class AgentRuntime:
         total_elapsed_s: float = 0.0,
         turn_count: int = 0,
     ) -> None:
-        self.cwd = cwd
-        self.kernel = kernel
-        self.client = client
-        self.provider_name = provider_name
-        self.model = model
-        self.effort = effort
-        self.system_prompt = system_prompt
-        self.max_context_tokens = max_context_tokens
-        self.compact_reserve_tokens = compact_reserve_tokens
-        self.keep_recent_tokens = keep_recent_tokens
-        self.headless = headless
-        self.progress_every = progress_every
-        self.background_check_every = background_check_every
-        self.notifications = notifications
-        self.transport = transport
-        self.pending_images = pending_images if pending_images is not None else []
-        self._snapshot_thread: threading.Thread | None = None
-        self._snapshot_lock = threading.Lock()
-
-        if view_config is not None:
-            self.view_config = view_config
-        else:
-            self.view_config = ViewConfig(
+        model_config = ModelConfig(
+            provider_name=provider_name,
+            model=model,
+            effort=effort,
+            system_prompt=system_prompt,
+            max_context_tokens=max_context_tokens,
+            compact_reserve_tokens=compact_reserve_tokens,
+            keep_recent_tokens=keep_recent_tokens,
+        )
+        options = RuntimeOptions(
+            headless=headless,
+            progress_every=progress_every,
+            background_check_every=background_check_every,
+            notifications=notifications,
+            transport=transport,
+        )
+        resolved_view = (
+            view_config
+            if view_config is not None
+            else ViewConfig(
                 verbose=verbose,
                 plain_output=plain_output,
                 show_thinking=show_thinking,
                 show_details=show_details,
             )
-
-        if session_state is not None:
-            self.session_state = session_state
-        else:
-            self.session_state = SessionState(
+        )
+        resolved_session = (
+            session_state
+            if session_state is not None
+            else SessionState(
                 session=active_session,
                 messages=messages,
                 usage=usage_stats,
@@ -141,6 +152,162 @@ class AgentRuntime:
                 total_elapsed_s=total_elapsed_s,
                 turn_count=turn_count,
             )
+        )
+        self._init_from_parts(
+            cwd=cwd,
+            kernel=kernel,
+            client=client,
+            model_config=model_config,
+            session_state=resolved_session,
+            view_config=resolved_view,
+            options=options,
+            pending_images=pending_images if pending_images is not None else [],
+        )
+
+    def _init_from_parts(
+        self,
+        *,
+        cwd: Path,
+        kernel: Kernel,
+        client: LLMProvider,
+        model_config: ModelConfig,
+        session_state: SessionState,
+        view_config: ViewConfig,
+        options: RuntimeOptions,
+        pending_images: list[ImageAttachment],
+    ) -> None:
+        self.cwd = cwd
+        self.kernel = kernel
+        self.client = client
+        self.model_config = model_config
+        self.session_state = session_state
+        self.view_config = view_config
+        self.options = options
+        self.pending_images = pending_images
+        self._snapshot_thread: threading.Thread | None = None
+        self._snapshot_lock = threading.Lock()
+
+    @classmethod
+    def from_configs(
+        cls,
+        cwd: Path,
+        kernel: Kernel,
+        client: LLMProvider,
+        model_config: ModelConfig,
+        session_state: SessionState,
+        view_config: ViewConfig | None = None,
+        options: RuntimeOptions | None = None,
+        pending_images: list[ImageAttachment] | None = None,
+    ) -> AgentRuntime:
+        """Construct an `AgentRuntime` from structured config dataclasses."""
+        runtime = cls.__new__(cls)
+        runtime._init_from_parts(
+            cwd=cwd,
+            kernel=kernel,
+            client=client,
+            model_config=model_config,
+            session_state=session_state,
+            view_config=view_config if view_config is not None else ViewConfig(),
+            options=options if options is not None else RuntimeOptions(),
+            pending_images=pending_images if pending_images is not None else [],
+        )
+        return runtime
+
+    @property
+    def provider_name(self) -> str:
+        return self.model_config.provider_name
+
+    @provider_name.setter
+    def provider_name(self, value: str) -> None:
+        self.model_config.provider_name = value
+
+    @property
+    def model(self) -> str:
+        return self.model_config.model
+
+    @model.setter
+    def model(self, value: str) -> None:
+        self.model_config.model = value
+
+    @property
+    def effort(self) -> str:
+        return self.model_config.effort
+
+    @effort.setter
+    def effort(self, value: str) -> None:
+        self.model_config.effort = value
+
+    @property
+    def system_prompt(self) -> str:
+        return self.model_config.system_prompt
+
+    @system_prompt.setter
+    def system_prompt(self, value: str) -> None:
+        self.model_config.system_prompt = value
+
+    @property
+    def max_context_tokens(self) -> int:
+        return self.model_config.max_context_tokens
+
+    @max_context_tokens.setter
+    def max_context_tokens(self, value: int) -> None:
+        self.model_config.max_context_tokens = value
+
+    @property
+    def compact_reserve_tokens(self) -> int:
+        return self.model_config.compact_reserve_tokens
+
+    @compact_reserve_tokens.setter
+    def compact_reserve_tokens(self, value: int) -> None:
+        self.model_config.compact_reserve_tokens = value
+
+    @property
+    def keep_recent_tokens(self) -> int:
+        return self.model_config.keep_recent_tokens
+
+    @keep_recent_tokens.setter
+    def keep_recent_tokens(self, value: int) -> None:
+        self.model_config.keep_recent_tokens = value
+
+    @property
+    def headless(self) -> bool:
+        return self.options.headless
+
+    @headless.setter
+    def headless(self, value: bool) -> None:
+        self.options.headless = value
+
+    @property
+    def progress_every(self) -> int:
+        return self.options.progress_every
+
+    @progress_every.setter
+    def progress_every(self, value: int) -> None:
+        self.options.progress_every = value
+
+    @property
+    def background_check_every(self) -> int:
+        return self.options.background_check_every
+
+    @background_check_every.setter
+    def background_check_every(self, value: int) -> None:
+        self.options.background_check_every = value
+
+    @property
+    def notifications(self) -> bool:
+        return self.options.notifications
+
+    @notifications.setter
+    def notifications(self, value: bool) -> None:
+        self.options.notifications = value
+
+    @property
+    def transport(self) -> str:
+        return self.options.transport
+
+    @transport.setter
+    def transport(self, value: str) -> None:
+        self.options.transport = value
 
     @property
     def active_session(self) -> Session:
