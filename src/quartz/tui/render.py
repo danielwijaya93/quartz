@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import dataclasses
-import json
 import threading
 import time
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 from prompt_toolkit.styles import Style
@@ -15,15 +12,16 @@ from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.text import Text
 
-from quartz.kernel.actions import describe_cell_actions, describe_cell_intent
-from quartz.tui.banner import _fmt_k, _short_path, format_usage_metrics
-from quartz.core.compact import CompactionReason, CompactionResult
+from quartz.core.commands import parse_expand_range as _parse_expand_range  # noqa: F401
+
 # `/expand` parses in core so the web transport can read the same ranges; the
 # name stays here because this is where callers (and tests) look for it.
-from quartz.core.commands import parse_expand_range as _parse_expand_range
-from quartz.core.images import content_to_text
-from quartz.kernel.client import CellResult
+from quartz.core.compact import CompactionReason, CompactionResult
 from quartz.core.loop import TurnUsage
+from quartz.kernel.actions import describe_cell_actions, describe_cell_intent
+from quartz.kernel.client import CellResult
+from quartz.tui.banner import _fmt_k, format_usage_metrics
+from quartz.tui.banner import _short_path as _short_path
 
 console = Console()
 
@@ -139,7 +137,7 @@ class MarkdownBlockStreamer:
 
         for line in complete.splitlines(keepends=True):
             stripped = line.strip()
-            if stripped.startswith("```") or stripped.startswith("~~~"):
+            if stripped.startswith(("```", "~~~")):
                 self._in_fence = not self._in_fence
             self._block_lines.append(line)
             if not self._in_fence and stripped == "":

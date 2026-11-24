@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from quartz.auth.google import GoogleCredentials, antigravity_user_agent
 from quartz.providers.google import (
-    ANTIGRAVITY_MODEL_ENUM,
-    ANTIGRAVITY_ROUTING,
     STATIC_ANTIGRAVITY_MODELS,
     build_cloudcode_request,
     clear_antigravity_catalog_cache,
@@ -20,7 +17,7 @@ from quartz.providers.google import (
     get_thinking_config,
     resolve_antigravity_runtime,
 )
-from quartz.providers.registry import PROVIDERS, discover_models
+from quartz.providers.registry import discover_models
 
 
 @pytest.fixture(autouse=True)

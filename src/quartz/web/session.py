@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import inspect
+import logging
 import os
 import queue
 import subprocess
@@ -25,7 +26,7 @@ import time
 import uuid
 import weakref
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -38,18 +39,20 @@ from quartz.core.commands import (
 from quartz.core.images import ImageAttachment, build_user_content
 from quartz.core.loop import drain_bash_events
 from quartz.core.session import Session
-from quartz.settings import project_trust_status, trust_project
 from quartz.core.turn import TurnOutcome, TurnStatus, run_interactive_turn
+from quartz.settings import project_trust_status, trust_project
 from quartz.web.attachments import AttachedFileRegistry
 from quartz.web.bridge import Frame, Push, WebObserver
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from quartz.core.runtime import AgentRuntime
 
 __all__ = [
+    "RECONNECT_GRACE_S",
     "BuildRuntime",
     "NoActiveTurnError",
-    "RECONNECT_GRACE_S",
     "SessionManager",
     "TurnBusyError",
     "WebSession",
@@ -80,7 +83,7 @@ class BuildRuntime(Protocol):
 
     def __call__(
         self, session_id: str | None, cwd: Path | None = None
-    ) -> "tuple[AgentRuntime, bool]": ...
+    ) -> tuple[AgentRuntime, bool]: ...
 
 TurnRunner = Callable[..., TurnOutcome]
 
@@ -335,10 +338,7 @@ class WebSession:
                 if cancel_ev.is_set():
                     break
         with self._perm_lock:
-            if event.is_set():
-                decision = self._perm_decision or "reject"
-            else:
-                decision = "reject"
+            decision = self._perm_decision or "reject" if event.is_set() else "reject"
             if self._pending_permission and self._pending_permission.get("requestId") == req_id:
                 self._pending_permission = None
                 self._perm_event = None
@@ -416,8 +416,8 @@ class WebSession:
             runtime.wait_snapshot()
             if runtime.messages and not runtime.headless and runtime.kernel.dirty:
                 runtime.active_session.save_kernel(runtime.kernel)
-        except Exception:  # noqa: BLE001 - a failed snapshot must not block a swap
-            pass
+        except Exception:
+            logger.debug("Web session kernel save on close failed", exc_info=True)
         runtime.kernel.close()
         with contextlib.suppress(Exception):
             runtime.client.close()
@@ -561,7 +561,7 @@ class WebSession:
         for sink in sinks:
             try:
                 sink(frame)
-            except Exception:  # noqa: BLE001 - a dead socket must not kill a turn
+            except Exception:
                 self.detach(sink)
         self._notify_event(frame)
 
@@ -658,7 +658,7 @@ class WebSession:
                     has_events = bool(
                         runtime.kernel.wait_until_event(stop_event, timeout=wait_timeout)
                     )
-            except Exception:  # noqa: BLE001 - retired/broken kernel must not crash watcher
+            except Exception:
                 has_events = False
                 stop_event.wait(0.25)
                 continue
@@ -673,14 +673,12 @@ class WebSession:
                 return False
             try:
                 notice = drain_bash_events(runtime.kernel, runtime.messages)
-            except Exception:  # noqa: BLE001 - do not crash watcher on kernel drain failure
+            except Exception:
                 return False
             if not notice:
                 return False
-            try:
+            with contextlib.suppress(OSError):
                 runtime.active_session.save_messages(runtime.messages)
-            except OSError:
-                pass
             turn = _Turn(id=f"turn-{uuid.uuid4().hex[:12]}")
             self._turn = turn
             self._turn_done.clear()
@@ -724,10 +722,8 @@ class WebSession:
             runtime.messages.append(
                 {"role": "user", "content": build_user_content(text, images)}
             )
-            try:
+            with contextlib.suppress(OSError):
                 runtime.active_session.save_messages(runtime.messages)
-            except OSError:
-                pass
             # The observer pushes through `self.emit`, not through the socket that
             # started the turn: that socket may be gone (a phone asleep) and another
             # may be listening by the time the next token arrives.
@@ -758,7 +754,7 @@ class WebSession:
                 abort_event=turn.abort,
                 steering_queue=turn.steering,
             )
-        except BaseException as exc:  # noqa: BLE001 - a turn must never die silently
+        except BaseException as exc:
             # `run_interactive_turn` already maps ordinary failures into an ERROR
             # outcome. This catches what it does not: a KeyboardInterrupt, or a
             # runner swapped in by a test.
@@ -811,10 +807,8 @@ class WebSession:
         runtime.messages.append(
             {"role": "assistant", "content": f"{text}\n\n_(interrupted)_"}
         )
-        try:
+        with contextlib.suppress(OSError):
             runtime.active_session.save_messages(runtime.messages)
-        except OSError:
-            pass
 
     def steer(self, text: str) -> None:
         self.mark_active()
@@ -837,8 +831,8 @@ class WebSession:
         if runtime is not None:
             try:
                 runtime.kernel.interrupt()
-            except Exception:  # noqa: BLE001 - an already-dead kernel is not an error
-                pass
+            except Exception:
+                logger.debug("Kernel interrupt during cancel failed", exc_info=True)
         return True
 
     def _abort_and_join(self, timeout: float = 10.0) -> None:
@@ -849,8 +843,8 @@ class WebSession:
         turn.abort.set()
         try:
             self.runtime.kernel.interrupt()
-        except Exception:  # noqa: BLE001 - an already-dead kernel is not an error
-            pass
+        except Exception:
+            logger.debug("Kernel interrupt during _abort_and_join failed", exc_info=True)
         thread = turn.thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=timeout)
@@ -1240,7 +1234,7 @@ class SessionManager:
                         "title": self._session_title(ws),
                         "kind": "working",
                         "read": False,
-                        "updatedAt": datetime.now(timezone.utc).isoformat(),
+                        "updatedAt": datetime.now(UTC).isoformat(),
                         "_seq": self._active_sessions_seq,
                     }
             items = list(by_id.values())
@@ -1319,7 +1313,7 @@ class SessionManager:
                     "title": self._session_title(ws),
                     "kind": "working",
                     "read": False,
-                    "updatedAt": datetime.now(timezone.utc).isoformat(),
+                    "updatedAt": datetime.now(UTC).isoformat(),
                     "_seq": self._active_sessions_seq,
                 }
                 changed = True
@@ -1334,7 +1328,7 @@ class SessionManager:
                     "title": self._session_title(ws),
                     "kind": "permission",
                     "read": False,
-                    "updatedAt": datetime.now(timezone.utc).isoformat(),
+                    "updatedAt": datetime.now(UTC).isoformat(),
                     "preview": preview if len(preview) <= 120 else f"{preview[:119]}…",
                     "_seq": self._active_sessions_seq,
                 }
@@ -1349,7 +1343,7 @@ class SessionManager:
                             "title": self._session_title(ws),
                             "kind": "working",
                             "read": False,
-                            "updatedAt": datetime.now(timezone.utc).isoformat(),
+                            "updatedAt": datetime.now(UTC).isoformat(),
                             "_seq": self._active_sessions_seq,
                         }
                     else:
@@ -1377,7 +1371,7 @@ class SessionManager:
                         "title": self._session_title(ws),
                         "kind": item_kind,
                         "read": False,
-                        "updatedAt": datetime.now(timezone.utc).isoformat(),
+                        "updatedAt": datetime.now(UTC).isoformat(),
                         "preview": preview,
                         "_seq": self._active_sessions_seq,
                     }
@@ -1406,7 +1400,7 @@ class SessionManager:
         for sink in sinks:
             try:
                 sink(frame)
-            except Exception:  # noqa: BLE001 - dead socket
+            except Exception:
                 self.unregister_sink(sink)
 
     def _idle_hours(self) -> float:

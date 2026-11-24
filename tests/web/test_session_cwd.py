@@ -13,13 +13,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import make_runtime  # type: ignore[import-not-found]
 from fastapi.testclient import TestClient
 
 from quartz.core.session import Session
 from quartz.web.app import create_app
 from quartz.web.session import WebSession, resolve_cwd
-
-from conftest import make_runtime  # type: ignore[import-not-found]
 
 
 class Recorder:

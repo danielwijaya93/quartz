@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import threading
@@ -75,7 +76,8 @@ class StreamHandle(Protocol):
 
 
 class LLMProvider(Protocol):
-    capabilities: ProviderCapabilities
+    @property
+    def capabilities(self) -> ProviderCapabilities: ...
 
     def stream(
         self,
@@ -236,10 +238,8 @@ class SSEStreamHandle:
             ctx = self._ctx
             self._ctx = None
         if ctx is not None:
-            try:
+            with contextlib.suppress(Exception):
                 ctx.__exit__(None, None, None)
-            except Exception:
-                pass
 
     def __iter__(self) -> Iterator[StreamEvent]:
         try:

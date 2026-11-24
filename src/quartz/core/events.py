@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from quartz.core.compact import CompactionResult
-    from quartz.kernel.client import CellResult
+    from quartz.kernel.base import CellResult
 
 __all__ = ["NO_OBSERVER", "TurnObserver"]
 

@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from quartz.auth.google import _token_request
 from quartz.auth.store import (
     GoogleCredentials,
     load_provider_auth,
@@ -25,9 +26,6 @@ from quartz.errors import (
     ProviderError,
     RateLimitError,
 )
-from quartz.auth.google import _token_request
-from quartz.providers.google import GoogleAntigravityProvider
-from quartz.providers.openai import OpenAIProvider
 from quartz.providers.base import (
     SSEStreamHandle,
     TextDelta,
@@ -36,6 +34,8 @@ from quartz.providers.base import (
     UsageEvent,
     collect_completion,
 )
+from quartz.providers.google import GoogleAntigravityProvider
+from quartz.providers.openai import OpenAIProvider
 
 
 class _FakeStreamResp:
@@ -353,10 +353,9 @@ def test_openai_build_body_keeps_reasoning_effort_for_openrouter() -> None:
 
 
 def test_openai_stream_parses_reasoning_details_summaries(monkeypatch: Any) -> None:
-    from quartz.providers.base import ThinkingDelta
-
     # Simulate SSE payloads via the stream handle by monkeypatching iter_sse_events.
     import quartz.providers.openai as oc
+    from quartz.providers.base import ThinkingDelta
 
     payloads = [
         {
@@ -374,7 +373,7 @@ def test_openai_stream_parses_reasoning_details_summaries(monkeypatch: Any) -> N
         },
         {"choices": [{"delta": {"content": "hi"}}]},
     ]
-    client = OpenAIProvider(api_key="sk-test", base_url="https://openrouter.ai/api/v1")
+    OpenAIProvider(api_key="sk-test", base_url="https://openrouter.ai/api/v1")
 
     class _FakeCtx:
         def __exit__(self, *a: Any) -> None:

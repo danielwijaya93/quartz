@@ -2,22 +2,22 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from rich.console import Console
 
-from quartz.kernel.actions import describe_job_label
-from quartz.tui.banner import BannerState, format_banner_plain
-from quartz.tui.commands import _handle_slash_command
-from quartz.kernel.client import KernelClient
+import quartz.tui.render as ui
 from quartz.core.loop import TurnUsage
 from quartz.core.runtime import AgentRuntime
-import quartz.tui.render as ui
+from quartz.kernel.actions import describe_job_label
+from quartz.kernel.client import KernelClient
+from quartz.tui.banner import BannerState, format_banner_plain
+from quartz.tui.commands import _handle_slash_command
 from quartz.tui.render import BlockPrinter
-from rich.console import Console
-import io
 
 
 def test_describe_job_label_known_shapes() -> None:
@@ -231,7 +231,6 @@ def test_jobs_slash_command_lists_and_empty(tmp_path: Path, monkeypatch: pytest.
     buf = io.StringIO()
     test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
     test_printer = BlockPrinter(test_console)
-    import quartz.tui.render as ui
 
     monkeypatch.setattr(ui, "printer", test_printer)
     rt = AgentRuntime(

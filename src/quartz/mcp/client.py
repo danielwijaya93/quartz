@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import tempfile
 import warnings
@@ -13,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from quartz.settings import is_project_trusted
+
+logger = logging.getLogger(__name__)
 
 
 def default_mcp_config_path() -> Path:
@@ -51,7 +54,7 @@ def save_mcp_tool_cache(
     try:
         _write_mcp_json(path, existing)
     except Exception:
-        pass
+        logger.debug("Failed to save MCP tool cache", exc_info=True)
 
 
 def load_raw_mcp_config(config_path: Path | None = None) -> dict[str, dict[str, Any]]:
@@ -72,26 +75,24 @@ def load_raw_mcp_config(config_path: Path | None = None) -> dict[str, dict[str, 
 def _write_mcp_json(path: Path, data: dict[str, Any]) -> None:
     """Atomically write MCP config JSON with 0o600 permissions."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        delete=False,
-    )
-    tmp_path = Path(tmp.name)
+    tmp_path: Path | None = None
     try:
-        os.chmod(tmp_path, 0o600)
-        tmp.write(json.dumps(data, indent=2) + "\n")
-        tmp.flush()
-        os.fsync(tmp.fileno())
-        tmp.close()
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            os.chmod(tmp_path, 0o600)
+            tmp.write(json.dumps(data, indent=2) + "\n")
+            tmp.flush()
+            os.fsync(tmp.fileno())
         os.replace(tmp_path, path)
     except BaseException:
-        if not tmp.closed:
-            tmp.close()
-        if tmp_path.exists():
+        if tmp_path is not None and tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
         raise
 
@@ -347,7 +348,7 @@ class MCPManager:
                     env=merged_env,
                     cwd=str(spec["cwd"]) if spec.get("cwd") else str(self._cwd),
                 )
-                errlog = stack.enter_context(open(os.devnull, "w", encoding="utf-8"))
+                errlog = stack.enter_context(Path(os.devnull).open("w", encoding="utf-8"))  # noqa: SIM115
                 read_stream, write_stream = await stack.enter_async_context(
                     stdio_client(params, errlog=errlog)
                 )
@@ -412,7 +413,7 @@ class MCPManager:
 
         batches = await asyncio.gather(*(_fetch_one(srv) for srv in target_servers))
         cache_updates: dict[str, list[dict[str, Any]]] = {}
-        for srv, batch in zip(target_servers, batches):
+        for srv, batch in zip(target_servers, batches, strict=False):
             cache_updates[srv] = [
                 {
                     "name": t["name"],
@@ -475,7 +476,7 @@ class MCPManager:
             try:
                 await stack.aclose()
             except Exception:
-                pass
+                logger.debug("Failed to close MCP server stack", exc_info=True)
 
     def _call_timeout(self, server: str) -> float:
         raw = self._servers().get(server, {}).get("timeout", DEFAULT_CALL_TIMEOUT)
@@ -493,7 +494,7 @@ class MCPManager:
         timeout = self._call_timeout(server)
         try:
             result = await asyncio.wait_for(session.call_tool(tool, arguments or {}), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await self._drop_session(server, session)
             raise TimeoutError(f"MCP tool {server}.{tool} timed out after {timeout:g}s") from None
         except Exception as exc:

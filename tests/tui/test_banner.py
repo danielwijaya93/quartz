@@ -6,8 +6,8 @@ from pathlib import Path
 
 from prompt_toolkit.formatted_text import FormattedText
 
-from quartz.tui.banner import BannerState, _fmt_k, format_banner_lines, format_banner_plain
 from quartz.core.loop import TurnUsage
+from quartz.tui.banner import BannerState, _fmt_k, format_banner_lines, format_banner_plain
 
 
 def _make_state(

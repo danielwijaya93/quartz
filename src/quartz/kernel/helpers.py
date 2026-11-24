@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import ast
-import builtins
 import contextvars
 import dataclasses
 import difflib
@@ -23,8 +21,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from quartz.core.images import load_image_file
 from quartz.kernel.pycheck import check_python_source
+from quartz.media import load_image_file
 from quartz.settings import is_project_trusted
 
 _IGNORE_DIRS = {
@@ -198,10 +196,7 @@ def _rg_python(pattern: str, path: str, glob: str | None, max_hits: int, fixed: 
     except re.error as exc:
         return f"Invalid regex {pattern!r}: {exc}"
     root = Path(path).expanduser()
-    if root.is_file():
-        files = [root]
-    else:
-        files = [root / rel for rel in find(glob or "*", str(root), limit=2000)]
+    files = [root] if root.is_file() else [root / rel for rel in find(glob or "*", str(root), limit=2000)]
     hits: list[str] = []
     for fpath in files:
         try:
@@ -623,10 +618,7 @@ def load_helpers(
 
     # 3. Project-local helpers (.quartz/helpers.py) -- only when project is trusted
     base_dir = (cwd or Path.cwd()).resolve()
-    if project_helpers_path is not None:
-        p_path = project_helpers_path
-    else:
-        p_path = base_dir / ".quartz" / "helpers.py"
+    p_path = project_helpers_path if project_helpers_path is not None else base_dir / ".quartz" / "helpers.py"
     if p_path.is_file():
         is_trusted = is_project_trusted(base_dir) if trusted is None else trusted
         if is_trusted:

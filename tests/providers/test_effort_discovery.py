@@ -197,8 +197,8 @@ def test_model_command_picker_uses_discovered_levels(
 ) -> None:
     """The /model picker offers discovered levels and preselects the model default."""
     import quartz.tui.commands as commands
-    from quartz.core.runtime import AgentRuntime
     from quartz.core.loop import TurnUsage
+    from quartz.core.runtime import AgentRuntime
 
     monkeypatch.setattr(commands, "_provider_ready", lambda p: True)
     monkeypatch.setattr(commands, "discover_models", lambda p: (["meta/muse-ember"], None))

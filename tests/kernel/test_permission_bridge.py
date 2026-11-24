@@ -226,11 +226,9 @@ def test_killed_bridge_command_cancels_permission_and_unblocks_retry(tmp_path: P
 
 
 def test_bridge_sets_waiting_env_while_inflight(tmp_path: Path) -> None:
-    import os
     import threading
 
     repo, _remote = _init_git_repo_with_bare_remote(tmp_path)
-    seen_waiting: list[str | None] = []
     handler_entered = threading.Event()
     release_handler = threading.Event()
 

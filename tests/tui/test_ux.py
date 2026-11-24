@@ -2,24 +2,23 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from prompt_toolkit.completion import CompleteEvent
-from prompt_toolkit.document import Document
-
 import io
+from pathlib import Path
+from typing import Any
 
 import pytest
 from conftest import RecordingObserver
+from prompt_toolkit.completion import CompleteEvent
+from prompt_toolkit.document import Document
 from rich.console import Console
 
 import quartz.cli.app as cli
 import quartz.core.turn as turn
 import quartz.tui.render as ui
-from quartz.tui.completer import AgentCompleter
-from quartz.kernel.client import CellResult, KernelClient
 from quartz.core.loop import TurnUsage, agent_loop
 from quartz.core.runtime import AgentRuntime
+from quartz.kernel.client import CellResult, KernelClient
+from quartz.tui.completer import AgentCompleter
 from quartz.tui.render import BlockPrinter, MarkdownBlockStreamer, format_compact_cell_summary
 
 
@@ -50,11 +49,11 @@ def test_at_file_autocomplete(tmp_path: Path) -> None:
 def test_compact_cell_summary() -> None:
     ok_res = CellResult(ok=True, stdout="line1\nline2\nline3\n", stderr="", result=None)
     s1 = format_compact_cell_summary(1, "x = 1\nprint('line1')\nprint('line2')", ok_res, 0.12)
-    assert "· #1 · Run Python · 3 lines out · 0.12s" == s1
+    assert s1 == "· #1 · Run Python · 3 lines out · 0.12s"
 
     err_res = CellResult(ok=False, stdout="", stderr="Traceback...\nNameError: name 'foo' is not defined\n", result=None)
     s2 = format_compact_cell_summary(2, "foo", err_res, 0.04)
-    assert "× #2 · Run Python · NameError: name 'foo' is not defined · 0.04s" == s2
+    assert s2 == "× #2 · Run Python · NameError: name 'foo' is not defined · 0.04s"
 
 
 def test_streaming_agent_loop_with_tool_call(tmp_path: Path) -> None:
@@ -128,6 +127,7 @@ def test_streaming_agent_loop_with_tool_call(tmp_path: Path) -> None:
 
 def test_keyboard_interrupt_preserves_valid_tool_history(tmp_path: Path) -> None:
     import pytest
+
     from quartz.providers.base import ToolCallDelta
 
     class _FakeStream:

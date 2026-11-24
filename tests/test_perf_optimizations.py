@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from typing import Any
 
 from quartz.bootstrap import BootstrapOptions, build_runtime
-from quartz.core.commands import reload_runtime_mcp
 
 
 def test_dock_sets_low_ttimeoutlen_and_redraw_interval(tmp_path: Path) -> None:
@@ -97,6 +96,7 @@ def test_build_runtime_does_not_block_on_slow_model_discovery(tmp_path: Path, mo
 def test_standalone_modal_sets_low_ttimeoutlen() -> None:
     from prompt_toolkit.buffer import Buffer
     from prompt_toolkit.layout import Layout
+
     from quartz.tui.modals import InlineModalState, build_modal_container
 
     state = InlineModalState(

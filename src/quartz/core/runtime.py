@@ -6,8 +6,6 @@ import dataclasses
 import logging
 import threading
 import warnings
-
-logger = logging.getLogger(__name__)
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +20,8 @@ from quartz.core.loop import TurnUsage
 from quartz.core.session import Session
 from quartz.kernel.base import CellResult, Kernel
 from quartz.providers.base import LLMProvider
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["AgentRuntime", "SessionState", "ViewConfig"]
 

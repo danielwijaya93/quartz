@@ -90,3 +90,95 @@ def test_core_never_imports_a_front_end() -> None:
         or _belongs_to(imported, "quartz.tui")
     )
     assert offenders == []
+
+
+_SUBPACKAGES = ("auth", "mcp", "providers", "kernel", "core", "tui", "web", "cli")
+
+
+def _subpackage_of(module: str) -> str | None:
+    for pkg in _SUBPACKAGES:
+        if _belongs_to(module, f"quartz.{pkg}"):
+            return pkg
+    return None
+
+
+def test_subpackage_dependency_graph_is_acyclic() -> None:
+    """The subpackage dependency graph across src/quartz must be a strict DAG."""
+    edges: dict[str, set[str]] = {pkg: set() for pkg in _SUBPACKAGES}
+    for name, tree in _modules().items():
+        src_pkg = _subpackage_of(name)
+        if src_pkg is None:
+            continue
+        for imported in _imports(name, tree):
+            dst_pkg = _subpackage_of(imported)
+            if dst_pkg is not None and dst_pkg != src_pkg:
+                edges[src_pkg].add(dst_pkg)
+
+    # Standard 3-color DFS cycle detection
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color: dict[str, int] = {pkg: WHITE for pkg in _SUBPACKAGES}
+    cycles: list[list[str]] = []
+
+    def dfs(node: str, stack: list[str]) -> None:
+        color[node] = GRAY
+        stack.append(node)
+        for nxt in sorted(edges[node]):
+            if color[nxt] == GRAY:
+                idx = stack.index(nxt)
+                cycles.append([*stack[idx:], nxt])
+            elif color[nxt] == WHITE:
+                dfs(nxt, stack)
+        stack.pop()
+        color[node] = BLACK
+
+    for pkg in _SUBPACKAGES:
+        if color[pkg] == WHITE:
+            dfs(pkg, [])
+
+    assert cycles == [], f"Circular subpackage dependencies found: {cycles}"
+
+
+def _forbidden_edges(src_pkg: str, forbidden: tuple[str, ...]) -> list[str]:
+    offenders: list[str] = []
+    for name, tree in _modules().items():
+        if not _belongs_to(name, f"quartz.{src_pkg}"):
+            continue
+        for imported in _imports(name, tree):
+            for target in forbidden:
+                if "." in target:
+                    hit = _belongs_to(imported, target)
+                elif target in _SUBPACKAGES:
+                    hit = _belongs_to(imported, f"quartz.{target}")
+                else:
+                    hit = imported == target or imported.startswith(f"{target}.")
+                if hit:
+                    offenders.append(f"{name} -> {imported}")
+    return sorted(offenders)
+
+
+def test_auth_layer_boundaries() -> None:
+    assert _forbidden_edges("auth", ("providers", "kernel", "core", "tui", "web", "cli")) == []
+
+
+def test_providers_layer_boundaries() -> None:
+    assert _forbidden_edges("providers", ("core", "kernel", "tui", "web", "cli")) == []
+
+
+def test_kernel_layer_boundaries() -> None:
+    assert _forbidden_edges("kernel", ("core", "providers", "auth", "tui", "web", "cli")) == []
+
+
+def test_mcp_layer_boundaries() -> None:
+    assert _forbidden_edges("mcp", ("core", "kernel", "providers", "auth", "tui", "web", "cli")) == []
+
+
+def test_core_layer_boundaries() -> None:
+    assert _forbidden_edges("core", ("tui", "web", "cli", "rich", "fastapi")) == []
+
+
+def test_web_layer_boundaries() -> None:
+    assert _forbidden_edges("web", ("tui", "cli", "rich")) == []
+
+
+def test_tui_layer_boundaries() -> None:
+    assert _forbidden_edges("tui", ("web", "cli", "fastapi")) == []

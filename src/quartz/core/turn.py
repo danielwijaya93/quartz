@@ -94,8 +94,9 @@ def run_turn(
     chips), and a final answer the provider never streamed is handed to
     ``view.show_final``.
     """
-    if hasattr(rt.client, "resolve"):
-        res = rt.client.resolve()
+    resolve_fn = getattr(rt.client, "resolve", None)
+    if callable(resolve_fn):
+        res: Any = resolve_fn()
         if len(res) == 5:
             client, pname, model, effort, resolved_ctx = res
             if resolved_ctx is not None:
@@ -150,7 +151,7 @@ def _record_cell_meta(rt: AgentRuntime, updated_msgs: list[dict[str, Any]], cell
                             tc_id = str(tc.get("id", ""))
                             if tc_id and tc_id not in existing_meta:
                                 unrecorded_ids.append(tc_id)
-            for tc_id, (_, res, dur) in zip(unrecorded_ids[-len(new_cells):], new_cells):
+            for tc_id, (_, res, dur) in zip(unrecorded_ids[-len(new_cells):], new_cells, strict=False):
                 rt.active_session.record_cell_meta(tc_id, ok=res.ok, duration_s=dur)
 
 

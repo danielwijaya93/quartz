@@ -145,10 +145,7 @@ def _handle_mcp_cli(argv: list[str]) -> None:
 
     if args.action in ("enable", "disable"):
         target_enabled = args.action == "enable"
-        if args.all:
-            targets = sorted(load_raw_mcp_config(cfg_path).keys())
-        else:
-            targets = list(args.names)
+        targets = sorted(load_raw_mcp_config(cfg_path).keys()) if args.all else list(args.names)
         if not targets:
             console.print("[red]Error: specify server name(s) or --all[/red]")
             sys.exit(2)
@@ -240,7 +237,7 @@ def _port_owner(port: int) -> _PortOwner | None:
     """
     try:
         found = _owner_via_ss(port) or _owner_via_proc(port)
-    except Exception:  # noqa: BLE001 - diagnostics must never mask the real error
+    except Exception:
         return None
     if found is None:
         return None
@@ -413,10 +410,7 @@ def _handle_prune_cli(argv: list[str]) -> None:
     root = default_sessions_dir()
     result = prune_snapshots(root, older_than_days=days, dry_run=args.dry_run)
 
-    if args.dry_run:
-        verb = "Would remove"
-    else:
-        verb = "Removed"
+    verb = "Would remove" if args.dry_run else "Removed"
 
     if days == 0:
         console.print("Retention is 0 days, which disables pruning. Pass --days N to prune.")
@@ -501,9 +495,11 @@ def _handle_web_cli(argv: list[str]) -> None:
 
     from quartz.bootstrap import BootstrapOptions, build_runtime
 
+    base_cwd = cwd
+
     def build(
         session_id: str | None,
-        session_cwd: Path | None = None,
+        cwd: Path | None = None,
         *,
         sandbox: bool | None = None,
     ) -> Any:
@@ -525,7 +521,7 @@ def _handle_web_cli(argv: list[str]) -> None:
         """
         return build_runtime(
             BootstrapOptions(
-                cwd=session_cwd or cwd,
+                cwd=cwd or base_cwd,
                 resume_id=session_id,
                 headless=False,
                 plain_output=False,

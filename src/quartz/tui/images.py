@@ -7,8 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from rich.console import Console, ConsoleOptions, RenderResult
-from rich.control import ControlType
-from rich.segment import Segment
+from rich.segment import ControlType, Segment
 
 from quartz.core.images import ImageAttachment
 

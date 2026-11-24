@@ -20,9 +20,10 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import shlex
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Literal
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from quartz.core.loop import TurnUsage
 from quartz.core.session import Session
@@ -48,6 +49,8 @@ from quartz.settings import (
     validate_tokens,
     validate_web_idle_hours,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from quartz.core.runtime import AgentRuntime
@@ -394,17 +397,17 @@ def apply_model_switch(
             try:
                 close_fn()
             except Exception:
-                pass
+                logger.debug("Failed to close previous client", exc_info=True)
 
     try:
         save_model_config(rt.provider_name, rt.model, rt.effort)
     except Exception:
-        pass
+        logger.debug("Failed to save model config", exc_info=True)
 
     try:
         rt.max_context_tokens = resolve_context_tokens(rt.provider_name, rt.model, rt.client)
     except Exception:
-        pass
+        logger.debug("Failed to resolve context tokens", exc_info=True)
 
     return True, f"Switched to {rt.provider_name} / {rt.model} (effort: {rt.effort})."
 
@@ -969,7 +972,7 @@ def _cmd_jobs(rt: AgentRuntime, arg: str) -> CommandResult | None:
     del arg
     try:
         jobs_fn = getattr(rt.kernel, "running_bash_jobs", None)
-        jobs = list(jobs_fn()) if callable(jobs_fn) else []
+        jobs = list(cast(Iterable[dict[str, Any]], jobs_fn())) if callable(jobs_fn) else []
     except Exception:
         jobs = []
     if not jobs:
@@ -996,7 +999,7 @@ def reload_runtime_mcp(rt: AgentRuntime) -> None:
         if callable(exec_fn):
             exec_fn("await mcp.close()", timeout=5.0)
     except Exception:
-        pass
+        logger.debug("Failed to close kernel MCP sessions", exc_info=True)
     try:
         from quartz.core.prompt import build_system_prompt
         from quartz.settings import is_project_trusted
@@ -1004,7 +1007,7 @@ def reload_runtime_mcp(rt: AgentRuntime) -> None:
         trusted = is_project_trusted(rt.cwd)
         rt.system_prompt = build_system_prompt(rt.cwd, trusted=trusted)
     except Exception:
-        pass
+        logger.debug("Failed to rebuild system prompt", exc_info=True)
 
 
 def _format_mcp_detail(spec: dict[str, Any]) -> str:

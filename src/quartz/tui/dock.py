@@ -2,20 +2,21 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
+import logging
 import queue
 import shutil
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from prompt_toolkit import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.filters import Condition, has_completions
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples, to_formatted_text
-from prompt_toolkit.formatted_text.utils import split_lines
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
@@ -53,6 +54,8 @@ from quartz.tui.render import (
 )
 from quartz.tui.replay import _replay_session
 from quartz.tui.terminal import install_sync_output, supports_sync_output, wrap_sync
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from quartz.core.runtime import AgentRuntime
@@ -268,7 +271,7 @@ class InteractiveDock:
             if cols and cols > 0:
                 return max(20, int(cols))
         except Exception:
-            pass
+            logger.debug("Failed to query app output width", exc_info=True)
         return max(20, shutil.get_terminal_size((80, 24)).columns)
 
     @property
@@ -296,7 +299,7 @@ class InteractiveDock:
                 tracker.show_thinking = on
                 tracker._render_current()
             except Exception:
-                pass
+                logger.debug("Failed to re-render tracker on toggle_thinking", exc_info=True)
         self._invalidate()
         return on
 
@@ -310,7 +313,7 @@ class InteractiveDock:
                 tracker.show_details = on
                 tracker._render_current()
             except Exception:
-                pass
+                logger.debug("Failed to re-render tracker on toggle_details", exc_info=True)
         self._invalidate()
         return on
 
@@ -345,7 +348,7 @@ class InteractiveDock:
                 loop.call_soon_threadsafe(fn)
                 return
         except Exception:
-            pass
+            logger.debug("Failed to dispatch callback on app loop", exc_info=True)
         fn()
 
     def _invalidate(self) -> None:
@@ -354,7 +357,7 @@ class InteractiveDock:
                 if self.app.is_running:
                     self.app.invalidate()
             except Exception:
-                pass
+                logger.debug("App invalidate failed", exc_info=True)
 
         self._call_on_loop(_do)
 
@@ -364,7 +367,7 @@ class InteractiveDock:
                 if self.app.is_running:
                     self.app.layout.focus(win)
             except Exception:
-                pass
+                logger.debug("App focus failed", exc_info=True)
 
         self._call_on_loop(_do)
 
@@ -375,7 +378,7 @@ class InteractiveDock:
                     self.app.layout.focus(win)
                     self.app.invalidate()
             except Exception:
-                pass
+                logger.debug("App focus+invalidate failed", exc_info=True)
 
         self._call_on_loop(_do)
 
@@ -695,7 +698,7 @@ class InteractiveDock:
         try:
             self.rt.kernel.interrupt()
         except Exception:
-            pass
+            logger.debug("Kernel interrupt during abort_turn failed", exc_info=True)
         self._invalidate()
 
     def _input_context(self) -> InputContext:
@@ -724,7 +727,7 @@ class InteractiveDock:
                 if self.app.is_running:
                     self.app.exit()
             except Exception:
-                pass
+                logger.debug("App exit failed", exc_info=True)
 
         self._call_on_loop(_do)
 
@@ -787,13 +790,11 @@ class InteractiveDock:
 
     def _announce_queued(self, name: str) -> None:
         """Say that a command is waiting for the running turn to finish."""
-        try:
+        with contextlib.suppress(Exception):
+            # A courtesy line is never worth breaking a turn over.
             _active_printer().block(
                 Text(f"{name} queued — runs when this turn finishes.", style="dim")
             )
-        except Exception:
-            # A courtesy line is never worth breaking a turn over.
-            pass
 
     def _launch_worker(self, fn: Callable[[], None]) -> None:
         def _runner() -> None:
@@ -805,8 +806,8 @@ class InteractiveDock:
         t.start()
 
     def _handle_submitted_idle(self, text: str) -> None:
-        from quartz.tui.commands import _handle_slash_command
         from quartz.core.images import build_user_content, extract_inline_image_mentions
+        from quartz.tui.commands import _handle_slash_command
 
         cmd_res = _handle_slash_command(self.rt, text)
         if cmd_res is True:
@@ -913,7 +914,7 @@ class InteractiveDock:
             count = 0
         try:
             jobs_fn = getattr(self.rt.kernel, "running_bash_jobs", None)
-            jobs = list(jobs_fn()) if callable(jobs_fn) else []
+            jobs = list(cast(Iterable[dict[str, Any]], jobs_fn())) if callable(jobs_fn) else []
         except Exception:
             jobs = []
         with self._lock:

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import ast
+import contextlib
+import logging
 import re
 import shlex
 import warnings
+
+logger = logging.getLogger(__name__)
 
 _CATEGORY_ORDER = ("list_dir", "find", "read", "edit", "mcp", "run")
 
@@ -244,16 +248,14 @@ def _shorten_url(url: str) -> str:
     text = url.strip()
     if not text:
         return text
-    try:
+    with contextlib.suppress(ValueError):
         from urllib.parse import urlparse
 
         parsed = urlparse(text)
         if parsed.netloc:
             host = parsed.netloc.split("@")[-1]
             path = parsed.path if parsed.path and parsed.path != "/" else ""
-            return f"{host}{path}"
-    except Exception:
-        pass
+            return f"{host}{path}" 
     return text
 
 
@@ -311,9 +313,7 @@ def _is_prompt_indirection(prompt: str) -> bool:
     text = prompt.strip()
     if not text:
         return True
-    if text.startswith(("$(", "`", "$'", "$(cat", "`cat", "cat ")):
-        return True
-    return False
+    return bool(text.startswith(("$(", "`", "$'", "$(cat", "`cat", "cat ")))
 
 
 def _describe_quartz_command(args: list[str]) -> str:
@@ -426,7 +426,7 @@ def _describe_shell_command(cmd_str: str) -> str | None:
             return f"Read {_shorten_path(files[-1])}"
         return f"Run {prog}"
     if prog in ("grep", "rg"):
-        positional = [a for a in args if not a.startswith("-")]
+        [a for a in args if not a.startswith("-")]
         # Drop options that consume the next token (-e PAT, -m N, ...).
         skip_next = False
         cleaned: list[str] = []
@@ -591,6 +591,7 @@ def _intents_from_source(code: str) -> list[str]:
         try:
             label = _describe_call_intent(node)
         except Exception:
+            logger.debug("Call intent inspection failed", exc_info=True)
             continue
         if label is None:
             continue

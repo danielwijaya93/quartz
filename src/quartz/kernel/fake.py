@@ -59,7 +59,10 @@ class FakeKernel:
         self.events.clear()
         return ev
 
-    def wait_until_event(self, stop_event: threading.Event, timeout: float = 0.25) -> bool:
+    def has_pending_events(self) -> bool:
+        return bool(self.events)
+
+    def wait_until_event(self, stop_event: threading.Event, timeout: float | None = 0.25) -> bool:
         return stop_event.wait(timeout)
 
     def consume_restart_notice(self) -> str | None:

@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 import quartz.providers.registry as models
+from quartz.providers.openai import ModelDetails, parse_model_detail, parse_model_details
 from quartz.providers.registry import (
     DEFAULT_CONTEXT_TOKENS,
     PROVIDERS,
     resolve_context_tokens,
 )
-from quartz.providers.openai import ModelDetails, parse_model_detail, parse_model_details
 
 
 class _DetailsClient:
@@ -21,7 +22,7 @@ class _DetailsClient:
     def __init__(self, details: list[Any]) -> None:
         self._details = details
 
-    def list_model_details(self, raw: list[Any] | None = None):  # noqa: ARG002
+    def list_model_details(self, raw: list[Any] | None = None):
         return list(self._details)
 
 
@@ -36,7 +37,7 @@ class _ListModelsClient:
 
 
 class _RaisingClient:
-    def list_model_details(self, raw: list[Any] | None = None):  # noqa: ARG002
+    def list_model_details(self, raw: list[Any] | None = None):
         raise RuntimeError("network down")
 
 
@@ -199,7 +200,7 @@ def test_max_context_tokens_env_no_longer_affects_resolution(
     assert resolve_context_tokens("deepseek", "deepseek-flash") == 1_048_576
     assert resolve_context_tokens("openai", "unknown-model") == 128_000
     # Resolution module must not reference the removed env var.
-    assert "MAX_CONTEXT_TOKENS" not in open(models.__file__).read()
+    assert "MAX_CONTEXT_TOKENS" not in Path(models.__file__).read_text(encoding="utf-8")
 
 
 def test_resolve_context_tokens_mock_client_not_masked_by_cache() -> None:

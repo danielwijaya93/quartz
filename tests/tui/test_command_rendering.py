@@ -14,8 +14,8 @@ from types import SimpleNamespace
 import pytest
 from rich.console import Console
 
-import quartz.tui.render as render
 import quartz.tui.commands as commands
+import quartz.tui.render as render
 from quartz.core.commands import CommandResult
 from quartz.core.loop import TurnUsage
 from quartz.core.runtime import AgentRuntime

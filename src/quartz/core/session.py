@@ -10,7 +10,7 @@ import shutil
 import time
 import uuid
 import warnings
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +26,7 @@ def default_sessions_dir() -> Path:
 
 
 def _new_session_id() -> str:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     return f"{stamp}-{uuid.uuid4().hex[:6]}"
 
 
@@ -310,7 +310,7 @@ class Session:
             "type": "meta",
             "id": session.id,
             "cwd": str(cwd.resolve()),
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
             "origin": session.origin,
         }
         return session
@@ -488,7 +488,7 @@ class Session:
             entry: dict[str, Any] = {
                 "sessionId": f.stem,
                 "cwd": facts.cwd,
-                "updatedAt": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                "updatedAt": datetime.fromtimestamp(mtime, tz=UTC).isoformat(),
                 "origin": facts.origin,
                 "cwdExists": _is_dir(facts.cwd),
             }

@@ -23,6 +23,12 @@ jobs:
       - name: Install bubblewrap
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
 
+      - name: Lint with ruff
+        run: uv run ruff check src tests
+
+      - name: Typecheck with pyright
+        run: uv run pyright
+
       - name: Run tests
         run: uv run pytest
 

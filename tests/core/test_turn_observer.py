@@ -256,9 +256,7 @@ def test_loop_module_keeps_no_on_star_identifiers() -> None:
     for node in ast.walk(tree):
         if isinstance(node, ast.Name):
             identifiers.add(node.id)
-        elif isinstance(node, ast.arg):
-            identifiers.add(node.arg)
-        elif isinstance(node, ast.keyword) and node.arg is not None:
+        elif isinstance(node, ast.arg) or (isinstance(node, ast.keyword) and node.arg is not None):
             identifiers.add(node.arg)
         # ast.Attribute is skipped on purpose: `observer.on_text_delta` is the port.
     assert not sorted(name for name in identifiers if name.startswith("on_"))

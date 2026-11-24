@@ -44,7 +44,7 @@ _MIN_CLEARABLE_TOOL_CHARS = 400
 CLEARED_TOOL_PLACEHOLDER = "[tool output cleared to free context]"
 
 
-class CompactionReason(str, enum.Enum):
+class CompactionReason(enum.StrEnum):
     """What a compaction call actually did."""
 
     SUMMARIZED = "summarized"
@@ -88,9 +88,7 @@ def _content_tokens(content: Any) -> int:
                 total += estimate_text_tokens(str(part))
                 continue
             part_type = part.get("type")
-            if part_type == "image_url" or "image_url" in part:
-                total += IMAGE_TOKEN_ESTIMATE
-            elif part_type == "image" or "inlineData" in part:
+            if part_type == "image_url" or "image_url" in part or part_type == "image" or "inlineData" in part:
                 total += IMAGE_TOKEN_ESTIMATE
             else:
                 total += estimate_text_tokens(str(part.get("text", "")))

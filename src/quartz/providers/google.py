@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import secrets
 import threading
@@ -11,14 +12,14 @@ from typing import Any
 
 import httpx2
 
-from quartz.errors import parse_retry_after, provider_error, ProviderError
 from quartz.auth.google import (
     antigravity_user_agent,
     get_valid_google_credentials,
     load_google_credentials,
     refresh_google_credentials,
 )
-from quartz.core.images import parse_data_url
+from quartz.errors import ProviderError, parse_retry_after, provider_error
+from quartz.media import parse_data_url
 from quartz.providers.base import (
     CompletionResult,
     ProviderCapabilities,
@@ -33,6 +34,8 @@ from quartz.providers.base import (
     collect_completion,
 )
 from quartz.providers.config import resolve_cloudcode_endpoint, resolve_http_timeout
+
+logger = logging.getLogger(__name__)
 
 ANTIGRAVITY_SYSTEM_INSTRUCTION = (
     "You are Antigravity, a powerful agentic AI coding assistant designed by the "
@@ -298,9 +301,7 @@ def is_selectable_runtime_id(model_id: str, info: dict[str, Any]) -> bool:
         return False
     if model_id.startswith(("tab_", "chat_")):
         return False
-    if "image" in model_id.lower() or "image" in str(info.get("displayName", "")).lower():
-        return False
-    return True
+    return not ("image" in model_id.lower() or "image" in str(info.get("displayName", "")).lower())
 
 
 def register_discovered_model_enums(raw_models: dict[str, Any]) -> None:
@@ -321,10 +322,7 @@ def resolve_antigravity_runtime(model: str, effort: str | None = None) -> tuple[
 
     # Dynamic discovered routes first, then static routing table
     routes = _ROUTING_CACHE.get(model) or ANTIGRAVITY_ROUTING.get(model)
-    if routes:
-        runtime_model = routes.get(effort_key) or routes.get("default") or model
-    else:
-        runtime_model = model
+    runtime_model = routes.get(effort_key) or routes.get("default") or model if routes else model
 
     model_enum = get_model_enum(runtime_model) or get_model_enum(model)
     return runtime_model, model_enum
@@ -413,6 +411,7 @@ def fetch_available_models_catalog(
                 if isinstance(data, dict) and isinstance(data.get("models"), dict):
                     return data
         except Exception:
+            logger.debug("Cloud Code Assist model fetch failed", exc_info=True)
             continue
     raise ProviderError("Failed to fetch available models from Cloud Code Assist endpoints", provider="google")
 
@@ -479,7 +478,7 @@ def discover_antigravity_models(
                 _DISCOVERED_MODELS_CACHE = (now, models_list)
             return models_list
     except Exception:
-        pass
+        logger.debug("Antigravity model discovery failed; falling back to static list", exc_info=True)
 
     return list(STATIC_ANTIGRAVITY_MODELS)
 
@@ -648,7 +647,7 @@ def build_cloudcode_request(
         sys_text = "\n\n".join(p["text"] for p in system_parts if p.get("text"))
         if sys_text:
             if contents and contents[0].get("role") == "user":
-                contents[0]["parts"] = [{"text": sys_text}] + contents[0].get("parts", [])
+                contents[0]["parts"] = [{"text": sys_text}, *contents[0].get("parts", [])]
             else:
                 contents.insert(0, {"role": "user", "parts": [{"text": sys_text}]})
     else:
@@ -834,7 +833,7 @@ class GoogleAntigravityProvider:
                 ctx,
                 resp,
                 provider="google",
-                parse=lambda payload: parse_sse_payload(payload, tc_counter),
+                parse=lambda payload, c=tc_counter: parse_sse_payload(payload, c),
             )
 
     def complete(

@@ -9,8 +9,6 @@ from typing import Any
 
 import pytest
 
-from quartz.providers.selection import build_provider as _build_client
-from quartz.errors import ProviderError
 from quartz.auth.google import (
     GoogleCredentials,
     delete_google_credentials,
@@ -18,14 +16,16 @@ from quartz.auth.google import (
     load_google_credentials,
     save_google_credentials,
 )
+from quartz.core.loop import TOOLS
+from quartz.errors import ProviderError
+from quartz.providers.base import TextDelta, ToolCallDelta, UsageEvent
 from quartz.providers.google import (
     GoogleAntigravityProvider,
     build_cloudcode_request,
     parse_sse_payload,
 )
-from quartz.core.loop import TOOLS
 from quartz.providers.registry import load_model_config, save_model_config
-from quartz.providers.base import TextDelta, ToolCallDelta, UsageEvent
+from quartz.providers.selection import build_provider as _build_client
 
 
 def test_google_credentials_storage_and_expiry(tmp_path: Path, monkeypatch) -> None:
@@ -182,7 +182,7 @@ class _FakeResp:
         self._lines = lines or []
         self._body = body
 
-    def __enter__(self) -> "_FakeResp":
+    def __enter__(self) -> _FakeResp:
         return self
 
     def __exit__(self, *args: Any) -> bool:

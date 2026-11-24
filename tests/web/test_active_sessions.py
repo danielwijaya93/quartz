@@ -7,13 +7,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+from conftest import make_runtime  # type: ignore[import-not-found]
 from fastapi.testclient import TestClient
 
 from quartz.core.turn import TurnOutcome, TurnStatus
 from quartz.web.app import create_app
 from quartz.web.session import SessionManager, WebSession
-
-from conftest import make_runtime  # type: ignore[import-not-found]
 
 
 def _build_factory(tmp_path: Path):

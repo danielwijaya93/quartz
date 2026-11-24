@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from quartz.core.commands import COMMAND_REGISTRY, serves_web
 from quartz.core.turn import TurnStatus
@@ -621,9 +622,8 @@ def test_a_hand_built_app_never_writes_into_the_real_home(
 def test_websocket_rejects_disallowed_origin(
     app_client: AppClient, headers: dict[str, str]
 ) -> None:
-    with pytest.raises(Exception):
-        with app_client.client.websocket_connect("/ws", headers=headers):
-            pass
+    with pytest.raises(WebSocketDisconnect), app_client.client.websocket_connect("/ws", headers=headers):
+        pass
 
 
 @pytest.mark.parametrize(
@@ -710,12 +710,11 @@ def test_websocket_allows_cross_port_loopback_in_dev_mode(
         static_dir=tmp_path / "missing",
         dev=True,
     )
-    with TestClient(app) as client:
-        with client.websocket_connect(
-            "/ws",
-            headers={"Host": "127.0.0.1:5199", "Origin": "http://localhost:5173"},
-        ) as socket:
-            state = wire.hello(socket)
+    with TestClient(app) as client, client.websocket_connect(
+        "/ws",
+        headers={"Host": "127.0.0.1:5199", "Origin": "http://localhost:5173"},
+    ) as socket:
+        state = wire.hello(socket)
     assert state["type"] == "session_state"
 
 
@@ -823,8 +822,10 @@ def test_set_sandbox_toggles_per_session_without_changing_new_sessions(
     tmp_path: Path, wire: Any
 ) -> None:
     from types import SimpleNamespace
-    from fastapi.testclient import TestClient
+
     from conftest import make_runtime  # type: ignore[import-not-found]
+    from fastapi.testclient import TestClient
+
     from quartz.web.app import create_app
 
     calls: list[bool | None] = []

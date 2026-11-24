@@ -16,12 +16,11 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.layout.containers import FloatContainer, HSplit
 from prompt_toolkit.output import DummyOutput
-from rich.text import Text
 
 import quartz.cli.app as cli
+from quartz.core.loop import TurnUsage
 from quartz.core.runtime import AgentRuntime as _CLIRuntime
 from quartz.tui.dock import InteractiveDock
-from quartz.core.loop import TurnUsage
 from quartz.tui.modals import _pick_option, _pick_searchable_option, _prompt_input
 from quartz.tui.render import (
     DOCK_STYLE,
@@ -41,7 +40,7 @@ def _make_runtime(tmp_path: Path, *, plain_output: bool = False, headless: bool 
         running_bash_count=lambda: 0,
         has_pending_events=lambda: False,
         wait_until_event=lambda stop, timeout=0.25: False,
-        drain_events=lambda: [],
+        drain_events=list,
         dirty=False,
     )
     session = SimpleNamespace(
@@ -306,8 +305,7 @@ def test_completions_and_modal_render_compact_nonempty_screen(tmp_path: Path) ->
     from quartz.tui.modals import InlineModalState
 
     async def _check() -> None:
-        with _make_dock(tmp_path) as (dock, _):
-            with set_app(dock.app):
+        with _make_dock(tmp_path) as (dock, _), set_app(dock.app):
                 # 1. Completions active
                 dock.input_buffer.text = "/h"
                 dock.input_buffer.cursor_position = 2

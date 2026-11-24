@@ -15,39 +15,39 @@ of two renderers over it (the web transport will be the other):
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from quartz.core.commands import (  # re-exported: the registry is the public surface
+from quartz.core.commands import (  # re-exported: the registry is the public surface  # re-exported: callers reach for it directly
     COMMAND_REGISTRY,
     CommandRegistry,
     CommandResult,
     SlashCommand,
-)
-from quartz.core.commands import (  # re-exported: callers reach for it directly
-    _cmd_compact,
     _cmd_jobs,
     _cmd_mcp,
     _cmd_settings,
     _format_mcp_detail,
     reload_runtime_mcp,
 )
-from quartz.mcp.client import (
-    add_mcp_server,
-    default_mcp_config_path,
-    load_raw_mcp_config,
-)
+from quartz.core.commands import _cmd_compact as _cmd_compact
 from quartz.core.compact import CompactionReason, CompactionResult
 from quartz.core.images import load_clipboard_image, load_image_file
 from quartz.core.loop import TurnUsage
 from quartz.core.runtime import AgentRuntime
 from quartz.core.session import Session
 from quartz.errors import CredentialError, EndpointConfigError
+from quartz.mcp.client import (
+    add_mcp_server,
+    default_mcp_config_path,
+    load_raw_mcp_config,
+)
 from quartz.providers.registry import (
     PROVIDERS,
     discover_models,
@@ -364,10 +364,8 @@ def _terminal_model(rt: AgentRuntime, arg: str) -> None:
     if old_client is not None and old_client is not rt.client:
         close_fn = getattr(old_client, "close", None)
         if callable(close_fn):
-            try:
+            with contextlib.suppress(Exception):
                 close_fn()
-            except Exception:
-                pass
     save_model_config(rt.provider_name, rt.model, rt.effort)
     # The ctx denominator is per-model: re-resolve after a switch or the
     # banner/footer would keep showing the previous model's window
@@ -630,7 +628,8 @@ def _terminal_jobs(rt: AgentRuntime, arg: str) -> None:
             tail_fn = getattr(rt.kernel, "bash_tail", None)
             tail_text: str | None = None
             if callable(tail_fn) and picked_pid.isdigit():
-                tail_text = tail_fn(int(picked_pid))
+                raw_tail = tail_fn(int(picked_pid))
+                tail_text = str(raw_tail) if raw_tail is not None else None
             body = f"$ {command}\n\n" if command else ""
             if tail_text is None:
                 body += "(output tail unavailable)"
@@ -738,9 +737,10 @@ def _terminal_mcp(rt: AgentRuntime, arg: str) -> None:
 
         if picked.startswith("srv:"):
             srv_name = picked[4:]
-            spec = servers.get(srv_name)
-            if spec is None:
+            spec_item = servers.get(srv_name)
+            if not isinstance(spec_item, dict):
                 continue
+            spec = spec_item
             enabled = spec.get("enabled", True) is not False
             toggle_label = "Disable server" if enabled else "Enable server"
             action = _pick_option(
@@ -801,7 +801,7 @@ def _handle_slash_command(rt: AgentRuntime, user_input: str) -> bool | None:
     terminal = _TERMINAL_HANDLERS.get(cmd.name)
     if terminal is not None:
         terminal(rt, arg)
-        return True if cmd.exits else False
+        return bool(cmd.exits)
 
     result = cmd.handler(rt, arg)
     if isinstance(result, CommandResult):
@@ -810,4 +810,4 @@ def _handle_slash_command(rt: AgentRuntime, user_input: str) -> bool | None:
             renderer(rt, result)
         else:
             render_command_result(result)
-    return True if cmd.exits else False
+    return bool(cmd.exits)

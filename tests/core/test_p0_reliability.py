@@ -2,27 +2,25 @@
 
 from __future__ import annotations
 
-import json
 import queue
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from conftest import RecordingObserver
 
-from quartz.tui.commands import _cmd_compact
-from quartz.core.runtime import AgentRuntime as _CLIRuntime
 from quartz.core.compact import _serialize_for_summary, clear_old_tool_results
+from quartz.core.loop import TurnAborted, TurnUsage, agent_loop
+from quartz.core.runtime import AgentRuntime as _CLIRuntime
+from quartz.core.session import Session
 from quartz.errors import ProviderError
 from quartz.kernel.client import KernelClient
-from quartz.core.loop import TurnAborted, TurnUsage, agent_loop
-from quartz.providers.registry import resolve_provider_credentials
 from quartz.providers.base import CompletionResult, TextDelta, Usage, UsageEvent
-from quartz.core.session import Session
+from quartz.providers.registry import resolve_provider_credentials
+from quartz.tui.commands import _cmd_compact
 
 
 class _FakeStream:

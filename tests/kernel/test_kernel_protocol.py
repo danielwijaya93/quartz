@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from quartz.kernel.base import (
     CellExecutor,
-    CellResult,
     Kernel,
     KernelIntrospector,
     KernelSnapshotter,
@@ -60,7 +61,9 @@ def test_kernel_client_start_distinguishes_early_exit_from_timeout(
 ) -> None:
     import io
     import subprocess
+
     import pytest
+
     from quartz.kernel.client import KernelClient
 
     class _DeadProc:

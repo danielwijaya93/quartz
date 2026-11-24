@@ -58,9 +58,13 @@ def unresolved_global_names(table: symtable.SymbolTable, allowed: frozenset[str]
 def _first_load_lines(tree: ast.AST, names: set[str]) -> dict[str, int]:
     lines: dict[str, int] = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in names:
-            if node.id not in lines or node.lineno < lines[node.id]:
-                lines[node.id] = node.lineno
+        if (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id in names
+            and (node.id not in lines or node.lineno < lines[node.id])
+        ):
+            lines[node.id] = node.lineno
     return lines
 
 

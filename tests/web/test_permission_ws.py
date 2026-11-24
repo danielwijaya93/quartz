@@ -6,8 +6,6 @@ import threading
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from quartz.kernel.bridge import PermissionRequest
 from quartz.web.session import WebSession
 

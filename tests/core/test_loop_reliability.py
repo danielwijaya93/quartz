@@ -5,14 +5,13 @@ from __future__ import annotations
 import queue
 import threading
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from conftest import RecordingObserver
 
+from quartz.core.loop import TurnAborted, agent_loop
 from quartz.errors import ContextOverflowError
 from quartz.kernel.client import KernelClient
-from quartz.core.loop import TurnAborted, agent_loop
 from quartz.providers.base import CompletionResult, TextDelta, Usage, UsageEvent
 
 

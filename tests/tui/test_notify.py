@@ -6,9 +6,9 @@ import io
 from pathlib import Path
 
 from quartz.core.commands import _cmd_settings
+from quartz.core.loop import TurnUsage
 from quartz.core.runtime import AgentRuntime
 from quartz.core.session import Session
-from quartz.core.loop import TurnUsage
 from quartz.kernel.fake import FakeKernel
 from quartz.settings import load_settings
 from quartz.tui.notify import notify_desktop
@@ -39,7 +39,7 @@ def test_notify_osc9_for_iterm_and_wt() -> None:
     buf2 = _TtyBuffer()
     method2 = notify_desktop("Quartz", "Approval", stream=buf2, env={"WT_SESSION": "1"})
     assert method2 == "osc9"
-    assert "\x1b]9;Quartz: Approval\x07" == buf2.getvalue()
+    assert buf2.getvalue() == "\x1b]9;Quartz: Approval\x07"
 
 
 def test_notify_osc777_for_ghostty_wezterm_kitty() -> None:
