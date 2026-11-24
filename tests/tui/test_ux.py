@@ -56,30 +56,31 @@ def test_compact_cell_summary() -> None:
     assert s2 == "× #2 · Run Python · NameError: name 'foo' is not defined · 0.04s"
 
 
-def test_streaming_agent_loop_with_tool_call(tmp_path: Path) -> None:
+async def test_streaming_agent_loop_with_tool_call(tmp_path: Path) -> None:
     from quartz.providers.base import TextDelta, ToolCallDelta, Usage, UsageEvent
 
     class _FakeStream:
         def __init__(self, events) -> None:
             self._events = events
 
-        def __iter__(self):
-            return iter(self._events)
+        async def __aiter__(self):
+            for ev in self._events:
+                yield ev
 
-        def close(self) -> None:
+        async def aclose(self) -> None:
             pass
 
-        def __enter__(self):
+        async def __aenter__(self):
             return self
 
-        def __exit__(self, *args) -> None:
+        async def __aexit__(self, *args) -> None:
             pass
 
     class _FakeClient:
         def __init__(self) -> None:
             self.call_idx = 0
 
-        def stream(self, model, messages, tools=None, *, effort=None):
+        async def stream(self, model, messages, tools=None, *, effort=None):
             del model, messages, tools, effort
             self.call_idx += 1
             usage = Usage(input_tokens=120, output_tokens=30)
@@ -104,7 +105,7 @@ def test_streaming_agent_loop_with_tool_call(tmp_path: Path) -> None:
     observer = RecordingObserver()
     usage = TurnUsage()
     try:
-        answer, msgs, pt = agent_loop(
+        answer, msgs, pt = await agent_loop(
             _FakeClient(),  # type: ignore[arg-type]
             "fake-model",
             "sys",
@@ -125,7 +126,7 @@ def test_streaming_agent_loop_with_tool_call(tmp_path: Path) -> None:
         kernel.close()
 
 
-def test_keyboard_interrupt_preserves_valid_tool_history(tmp_path: Path) -> None:
+async def test_keyboard_interrupt_preserves_valid_tool_history(tmp_path: Path) -> None:
     import pytest
 
     from quartz.providers.base import ToolCallDelta
@@ -134,20 +135,21 @@ def test_keyboard_interrupt_preserves_valid_tool_history(tmp_path: Path) -> None
         def __init__(self, events) -> None:
             self._events = events
 
-        def __iter__(self):
-            return iter(self._events)
+        async def __aiter__(self):
+            for ev in self._events:
+                yield ev
 
-        def close(self) -> None:
+        async def aclose(self) -> None:
             pass
 
-        def __enter__(self):
+        async def __aenter__(self):
             return self
 
-        def __exit__(self, *args) -> None:
+        async def __aexit__(self, *args) -> None:
             pass
 
     class _FakeClient:
-        def stream(self, model, messages, tools=None, *, effort=None):
+        async def stream(self, model, messages, tools=None, *, effort=None):
             del model, messages, tools, effort
             return _FakeStream(
                 [
@@ -164,7 +166,7 @@ def test_keyboard_interrupt_preserves_valid_tool_history(tmp_path: Path) -> None
         def drain_events(self):
             return []
 
-        def exec_cell(self, code: str):
+        async def exec_cell(self, code: str):
             raise KeyboardInterrupt()
 
         def interrupt(self):
@@ -172,7 +174,7 @@ def test_keyboard_interrupt_preserves_valid_tool_history(tmp_path: Path) -> None
 
     msgs: list[dict] = [{"role": "user", "content": "hang"}]
     with pytest.raises(KeyboardInterrupt):
-        agent_loop(
+        await agent_loop(
             _FakeClient(),  # type: ignore[arg-type]
             "fake-model",
             "sys",
@@ -204,26 +206,26 @@ def test_markdown_block_streamer_respects_fences() -> None:
     assert emitted[-1] == "Last"
 
 
-def test_agent_loop_forwards_reasoning_effort(tmp_path: Path) -> None:
+async def test_agent_loop_forwards_reasoning_effort(tmp_path: Path) -> None:
     from quartz.providers.base import TextDelta
 
     captured_kwargs: dict = {}
 
     class _FakeStream:
-        def __iter__(self):
-            return iter([TextDelta(text="ok")])
+        async def __aiter__(self):
+            yield TextDelta(text="ok")
 
-        def close(self) -> None:
+        async def aclose(self) -> None:
             pass
 
-        def __enter__(self):
+        async def __aenter__(self):
             return self
 
-        def __exit__(self, *args) -> None:
+        async def __aexit__(self, *args) -> None:
             pass
 
     class _FakeClient:
-        def stream(self, model, messages, tools=None, *, effort=None):
+        async def stream(self, model, messages, tools=None, *, effort=None):
             del model, messages, tools
             captured_kwargs["effort"] = effort
             return _FakeStream()
@@ -232,7 +234,7 @@ def test_agent_loop_forwards_reasoning_effort(tmp_path: Path) -> None:
         def drain_events(self):
             return []
 
-    ans, _, _ = agent_loop(
+    ans, _, _ = await agent_loop(
         _FakeClient(),  # type: ignore[arg-type]
         "deepseek-flash",
         "sys",
@@ -649,7 +651,7 @@ def test_format_thought_duration_and_stopwatch() -> None:
     assert ui._fmt_stopwatch(90.2) == "1m 30s"
 
 
-def test_run_turn_thought_line_separate_from_grouped_cells(
+async def test_run_turn_thought_line_separate_from_grouped_cells(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     buf = io.StringIO()
@@ -658,7 +660,7 @@ def test_run_turn_thought_line_separate_from_grouped_cells(
     monkeypatch.setattr(ui, "console", test_console)
     monkeypatch.setattr(ui, "printer", test_printer)
 
-    def _fake_agent_loop(*args, **kwargs):
+    async def _fake_agent_loop(*args, **kwargs):
         observer = kwargs["observer"]
 
         observer.on_status("Thinking...")
@@ -700,7 +702,7 @@ def test_run_turn_thought_line_separate_from_grouped_cells(
         plain_output=False,
         headless=True,
     )
-    cli._run_turn(rt)
+    await cli._run_turn(rt)
 
     lines = [ln.strip() for ln in buf.getvalue().splitlines() if ln.strip()]
     assert lines[0].startswith("Thought for ")
@@ -710,7 +712,7 @@ def test_run_turn_thought_line_separate_from_grouped_cells(
     assert lines[4] == "All done."
 
 
-def test_run_turn_matches_out_of_order_tool_call_ids(
+async def test_run_turn_matches_out_of_order_tool_call_ids(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     test_console, _ = _recording_console()
@@ -718,7 +720,7 @@ def test_run_turn_matches_out_of_order_tool_call_ids(
     monkeypatch.setattr(ui, "console", test_console)
     monkeypatch.setattr(ui, "printer", test_printer)
 
-    def _fake_agent_loop(*args, **kwargs):
+    async def _fake_agent_loop(*args, **kwargs):
         observer = kwargs["observer"]
         observer.on_tool_call("tc_first", "first_code = 1")
         observer.on_tool_call("tc_second", "second_code = 2")
@@ -746,7 +748,7 @@ def test_run_turn_matches_out_of_order_tool_call_ids(
         plain_output=False,
         headless=True,
     )
-    cli._run_turn(rt)
+    await cli._run_turn(rt)
     assert len(rt.cell_history) == 2
     assert rt.cell_history[0][0] == "second_code = 2"
     assert rt.cell_history[0][1].stdout == "two\n"

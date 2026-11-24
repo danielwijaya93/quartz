@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import contextlib
 import importlib
 import logging
@@ -128,11 +129,11 @@ class _HeadlessTurnView:
         sys.stdout.flush()
 
 
-def _run_turn(rt: AgentRuntime) -> tuple[str, list[dict[str, Any]], int]:
+async def _run_turn(rt: AgentRuntime) -> tuple[str, list[dict[str, Any]], int]:
     """Run one turn, rendered by the terminal view (`core.turn.run_turn` + `TuiTurnView`)."""
     from quartz.core.turn import run_turn
 
-    return run_turn(rt, _get_attr("make_turn_view")(rt))
+    return await run_turn(rt, _get_attr("make_turn_view")(rt))
 
 
 def _emit_bash_notice(rt: AgentRuntime, notice: str) -> None:
@@ -141,7 +142,7 @@ def _emit_bash_notice(rt: AgentRuntime, notice: str) -> None:
     rt.messages.append({"role": "user", "content": notice})
 
 
-def _run_headless(rt: AgentRuntime, prompt: str, image_args: list[str]) -> None:
+async def _run_headless_async(rt: AgentRuntime, prompt: str, image_args: list[str]) -> None:
     from quartz.core.images import (
         ImageAttachment,
         build_user_content,
@@ -167,10 +168,14 @@ def _run_headless(rt: AgentRuntime, prompt: str, image_args: list[str]) -> None:
         return
     rt.messages.append({"role": "user", "content": build_user_content(prompt, cli_images)})
     if getattr(rt, "plain_output", True) and not getattr(rt, "verbose", False) and not getattr(rt, "show_details", False):
-        _, rt.messages, _ = run_turn(rt, _HeadlessTurnView(rt))  # type: ignore[arg-type]
+        _, rt.messages, _ = await run_turn(rt, _HeadlessTurnView(rt))  # type: ignore[arg-type]
     else:
-        _, rt.messages, _ = _run_turn(rt)
+        _, rt.messages, _ = await _run_turn(rt)
     rt.persist()
+
+
+def _run_headless(rt: AgentRuntime, prompt: str, image_args: list[str]) -> None:
+    asyncio.run(_run_headless_async(rt, prompt, image_args))
     # Nothing to wait for afterwards: a `-p` kernel runs `bash()` inline, so by the
     # time the turn returns, every command it started has already finished and its
     # output is in the transcript. The old `--background-wait` loop existed only to
@@ -235,8 +240,8 @@ def _run_interactive(rt: AgentRuntime, resumed: bool) -> None:
                 Text(_format_turn_footer(rt.usage_stats, rt.max_context_tokens), style="dim")
             )
 
-    def _run_one_turn() -> None:
-        outcome = run_interactive_turn(rt, make_turn_view(rt))
+    async def _run_one_turn() -> None:
+        outcome = await run_interactive_turn(rt, make_turn_view(rt))
         if outcome.status is TurnStatus.ABORTED:
             console.print("\n[yellow]Aborted (Esc).[/yellow]")
         elif outcome.status is TurnStatus.INTERRUPTED:
@@ -252,37 +257,40 @@ def _run_interactive(rt: AgentRuntime, resumed: bool) -> None:
             )
             _active_printer().block(Text(footer, style="dim"))
 
-    while True:
-        while rt.kernel.has_pending_events():
-            notice = drain_bash_events(rt.kernel, rt.messages)
-            if notice:
-                _render_bash_notice(notice)
-                _run_one_turn()
+    async def _plain_loop() -> None:
+        from quartz.tui.commands import _handle_slash_command_async
 
-        raw_line = sys.stdin.readline()
-        if not raw_line:
-            break
-        user_input = raw_line.strip()
-        if not user_input:
-            continue
+        while True:
+            while rt.kernel.has_pending_events():
+                notice = drain_bash_events(rt.kernel, rt.messages)
+                if notice:
+                    _render_bash_notice(notice)
+                    await _run_one_turn()
 
-        from quartz.tui.commands import _handle_slash_command
+            raw_line = await asyncio.to_thread(sys.stdin.readline)
+            if not raw_line:
+                break
+            user_input = raw_line.strip()
+            if not user_input:
+                continue
 
-        cmd_res = _handle_slash_command(rt, user_input)
-        if cmd_res is True:
-            break
-        if cmd_res is False:
-            continue
+            cmd_res = await _handle_slash_command_async(rt, user_input)
+            if cmd_res is True:
+                break
+            if cmd_res is False:
+                continue
 
-        try:
-            inline_images = extract_inline_image_mentions(user_input, rt.cwd)
-        except (OSError, ValueError) as exc:
-            console.print(f"[red]Error: {escape(str(exc))}[/red]")
-            continue
-        attached_images = [*rt.pending_images, *inline_images]
-        rt.pending_images.clear()
-        rt.messages.append({"role": "user", "content": build_user_content(user_input, attached_images)})
-        _run_one_turn()
+            try:
+                inline_images = extract_inline_image_mentions(user_input, rt.cwd)
+            except (OSError, ValueError) as exc:
+                console.print(f"[red]Error: {escape(str(exc))}[/red]")
+                continue
+            attached_images = [*rt.pending_images, *inline_images]
+            rt.pending_images.clear()
+            rt.messages.append({"role": "user", "content": build_user_content(user_input, attached_images)})
+            await _run_one_turn()
+
+    asyncio.run(_plain_loop())
 
 
 def _bootstrap_options(args: argparse.Namespace) -> BootstrapOptions:
@@ -532,9 +540,17 @@ def main() -> None:
             except Exception:
                 logger.debug("Kernel snapshot save on exit failed", exc_info=True)
         rt.kernel.close()
-        close_client = getattr(rt.client, "close", None)
-        if callable(close_client):
+        aclose_client = getattr(rt.client, "aclose", None)
+        if callable(aclose_client):
             try:
-                close_client()
+                res = aclose_client()
+                if asyncio.iscoroutine(res):
+                    asyncio.run(res)
             except Exception:
                 logger.debug("Client close on exit failed", exc_info=True)
+        try:
+            from quartz.providers.http_pool import close_shared_async_http_clients
+
+            asyncio.run(close_shared_async_http_clients())
+        except Exception:
+            logger.debug("HTTP pool close on exit failed", exc_info=True)

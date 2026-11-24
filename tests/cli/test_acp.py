@@ -21,23 +21,24 @@ def _make_fake_client():
         def __init__(self, events):
             self._events = events
 
-        def __iter__(self):
-            return iter(self._events)
+        async def __aiter__(self):
+            for ev in self._events:
+                yield ev
 
-        def close(self) -> None:
+        async def aclose(self) -> None:
             pass
 
-        def __enter__(self):
+        async def __aenter__(self):
             return self
 
-        def __exit__(self, *args) -> None:
+        async def __aexit__(self, *args) -> None:
             pass
 
     class _FakeClient:
         def __init__(self) -> None:
             self.n = 0
 
-        def stream(self, model, messages, tools=None, *, effort=None):
+        async def stream(self, model, messages, tools=None, *, effort=None):
             del model, messages, tools, effort
             self.n += 1
             usage = Usage(input_tokens=100, output_tokens=20)
@@ -197,23 +198,24 @@ def test_acp_parallel_tool_call_ids_and_cancel(tmp_path: Path, monkeypatch) -> N
         def __init__(self, events) -> None:
             self._events = events
 
-        def __iter__(self):
-            return iter(self._events)
+        async def __aiter__(self):
+            for ev in self._events:
+                yield ev
 
-        def close(self) -> None:
+        async def aclose(self) -> None:
             pass
 
-        def __enter__(self):
+        async def __aenter__(self):
             return self
 
-        def __exit__(self, *args) -> None:
+        async def __aexit__(self, *args) -> None:
             pass
 
     class _ParallelClient:
         def __init__(self) -> None:
             self.n = 0
 
-        def stream(self, model, messages, tools=None, *, effort=None):
+        async def stream(self, model, messages, tools=None, *, effort=None):
             del model, messages, tools, effort
             self.n += 1
             if self.n == 1:
@@ -324,29 +326,34 @@ def test_acp_session_cancel_stops_active_turn(tmp_path: Path, monkeypatch) -> No
         def __init__(self, events) -> None:
             self._events = events
 
-        def __iter__(self):
-            return iter(self._events)
+        async def __aiter__(self):
+            for ev in self._events:
+                yield ev
 
-        def close(self) -> None:
+        async def aclose(self) -> None:
             pass
 
-        def __enter__(self):
+        async def __aenter__(self):
             return self
 
-        def __exit__(self, *args) -> None:
+        async def __aexit__(self, *args) -> None:
             pass
 
     class _SlowClient:
-        def stream(self, model, messages, tools=None, *, effort=None):
+        async def stream(self, model, messages, tools=None, *, effort=None):
+            import asyncio
+
             del model, messages, tools, effort
             started.set()
-            release.wait(timeout=3.0)
+            await asyncio.to_thread(release.wait, 3.0)
             return _FakeStream([TextDelta(text="late")])
 
-        def complete(self, model, messages, tools=None, *, effort=None):
+        async def complete(self, model, messages, tools=None, *, effort=None):
+            import asyncio
+
             del model, messages, tools, effort
             started.set()
-            release.wait(timeout=3.0)
+            await asyncio.to_thread(release.wait, 3.0)
             return CompletionResult(text="late", tool_calls=[], usage=Usage())
 
     def _factory():
@@ -443,17 +450,19 @@ def test_acp_serve_prunes_finished_worker_threads(tmp_path: Path, monkeypatch) -
         st.kernel.close()
     server._sessions.clear()
 
-    # Feed multiple session/prompt requests (which will fail fast with unknown session, finishing threads)
-    # and spy on threading.Thread to ensure workers list is pruned.
-    created_threads = []
-    orig_thread = __import__("threading").Thread
+    # Feed multiple session/prompt requests (which will fail fast with unknown session)
+    # and spy on asyncio.create_task to ensure all prompt tasks complete.
+    import asyncio
 
-    def _spy_thread(*args, **kwargs):
-        t = orig_thread(*args, **kwargs)
-        created_threads.append(t)
+    created_tasks: list[asyncio.Task[Any]] = []
+    orig_create_task = asyncio.create_task
+
+    def _spy_create_task(coro, *args, **kwargs):
+        t = orig_create_task(coro, *args, **kwargs)
+        created_tasks.append(t)
         return t
 
-    monkeypatch.setattr("quartz.cli.acp.threading.Thread", _spy_thread)
+    monkeypatch.setattr("quartz.cli.acp.asyncio.create_task", _spy_create_task)
 
     lines = [
         json.dumps({"jsonrpc": "2.0", "id": i, "method": "session/prompt", "params": {"sessionId": sid, "prompt": [{"type": "text", "text": "hi"}]}})
@@ -468,8 +477,8 @@ def test_acp_serve_prunes_finished_worker_threads(tmp_path: Path, monkeypatch) -
 
     server2 = ACPServer(_make_fake_client, in_stream=_SlowLineReader(), out_stream=io.StringIO())
     server2.serve()
-    assert len(created_threads) == 4
-    assert all(not t.is_alive() for t in created_threads)
+    assert len(created_tasks) == 4
+    assert all(t.done() for t in created_tasks)
 
 
 def test_acp_invalid_params_map_to_32602(tmp_path: Path, monkeypatch) -> None:
@@ -506,7 +515,7 @@ def test_acp_tool_result_forwards_images(tmp_path: Path, monkeypatch) -> None:
     server = ACPServer(_make_fake_client, in_stream=io.StringIO(""), out_stream=out)
     sid = server._handle_session_new({"cwd": str(tmp_path)})["sessionId"]
 
-    def fake_loop(*_a, observer=None, **_k):
+    async def fake_loop(*_a, observer=None, **_k):
         observer.on_tool_call("t1", "view_image('x.png')")
         observer.on_tool_result(
             "t1",
@@ -543,16 +552,24 @@ def test_acp_retire_session_aborts_and_waits_before_closing(tmp_path: Path, monk
     aborted = threading.Event()
 
     def worker() -> None:
+        import asyncio
+
         with state.prompt_lock:
-            def wait_runner(rt, view, *, abort_event=None, steering_queue=None):
+            async def wait_runner(rt, view, *, abort_event=None, steering_queue=None):
                 del rt, view, steering_queue
-                if abort_event is not None and abort_event.wait(timeout=5):
-                    aborted.set()
-                time.sleep(0.2)
+                if abort_event is not None:
+                    try:
+                        await asyncio.wait_for(abort_event.wait(), timeout=5)
+                        aborted.set()
+                    except asyncio.CancelledError:
+                        aborted.set()
+                    except asyncio.TimeoutError:
+                        pass
+                await asyncio.sleep(0.2)
                 events.append("prompt-done")
                 return TurnOutcome(status=TurnStatus.ABORTED)
 
-            state.controller.run_turn_sync(TurnView(), runner=wait_runner)
+            asyncio.run(state.controller.run_turn(TurnView(), runner=wait_runner))
 
     t = threading.Thread(target=worker)
     t.start()
@@ -576,10 +593,15 @@ def test_acp_serve_aborts_active_prompts_on_eof(tmp_path: Path, monkeypatch) -> 
     server = ACPServer(_make_fake_client, in_stream=io.StringIO(""), out_stream=out)
     sid = server._handle_session_new({"cwd": str(tmp_path)})["sessionId"]
 
-    def fake_loop(*_a, abort_event=None, **_k):
+    async def fake_loop(*_a, abort_event=None, **_k):
+        import asyncio
+
         started.set()
-        if abort_event.wait(timeout=5):
-            saw_abort.set()
+        try:
+            await asyncio.wait_for(abort_event.wait(), timeout=5)
+        except asyncio.CancelledError:
+            pass
+        saw_abort.set()
         raise acp_mod.TurnAborted()
 
     monkeypatch.setattr(acp_mod, "agent_loop", fake_loop)

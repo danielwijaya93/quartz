@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import dataclasses
+import inspect
 import json
 import logging
 import sys
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -234,7 +236,7 @@ class ACPServer:
         client_factory: Callable[[], tuple[Any, ...]] | None = None,
         *,
         build_runtime_fn: Callable[[BootstrapOptions], tuple[AgentRuntime, bool]] | None = None,
-        turn_runner: Callable[..., TurnOutcome] = run_interactive_turn,
+        turn_runner: Callable[..., Awaitable[TurnOutcome] | TurnOutcome] = run_interactive_turn,
         in_stream: TextIO | None = None,
         out_stream: TextIO | None = None,
         max_context_tokens: int | None = None,
@@ -325,6 +327,38 @@ class ACPServer:
         }
 
     @staticmethod
+    def _close_client_sync(client: Any) -> None:
+        if client is None:
+            return
+        aclose = getattr(client, "aclose", None)
+        if callable(aclose):
+            with contextlib.suppress(Exception):
+                res = aclose()
+                if inspect.isawaitable(res):
+                    asyncio.run(res)
+            return
+        close = getattr(client, "close", None)
+        if callable(close):
+            with contextlib.suppress(Exception):
+                close()
+
+    @staticmethod
+    async def _close_client_async(client: Any) -> None:
+        if client is None:
+            return
+        aclose = getattr(client, "aclose", None)
+        if callable(aclose):
+            with contextlib.suppress(Exception):
+                res = aclose()
+                if inspect.isawaitable(res):
+                    await res
+            return
+        close = getattr(client, "close", None)
+        if callable(close):
+            with contextlib.suppress(Exception):
+                close()
+
+    @staticmethod
     def _abort_session(state: _ActiveSession) -> None:
         if state.controller.cancel():
             state.kernel.interrupt()
@@ -339,8 +373,7 @@ class ACPServer:
                 with contextlib.suppress(Exception):
                     state.runtime.active_session.save_kernel(state.runtime.kernel)
             state.kernel.close()
-            with contextlib.suppress(Exception):
-                state.runtime.client.close()
+            self._close_client_sync(state.runtime.client)
         finally:
             if acquired:
                 state.prompt_lock.release()
@@ -446,6 +479,15 @@ class ACPServer:
             result["nextCursor"] = next_cursor
         return result
 
+    async def _run_prompt_async(self, state: _ActiveSession, observer: _AcpObserver) -> TurnOutcome:
+        async def _runner(rt: AgentRuntime, view: TurnView, **kw: Any) -> TurnOutcome:
+            if inspect.iscoroutinefunction(self._runner):
+                return await self._runner(rt, view, loop_fn=agent_loop, **kw)
+            res = await asyncio.to_thread(self._runner, rt, view, loop_fn=agent_loop, **kw)
+            return await res if inspect.isawaitable(res) else res
+
+        return await state.controller.run_turn(observer, runner=_runner)
+
     def _handle_session_prompt(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = str(params.get("sessionId", "")).strip()
         with self._sessions_lock:
@@ -458,10 +500,7 @@ class ACPServer:
             state.runtime.messages.append({"role": "user", "content": prompt_content})
 
             observer = _AcpObserver(self, session_id, runtime=state.runtime)
-            outcome = state.controller.run_turn_sync(
-                observer,
-                runner=lambda rt, view, **kw: self._runner(rt, view, loop_fn=agent_loop, **kw),
-            )
+            outcome = asyncio.run(self._run_prompt_async(state, observer))
 
             if outcome.status == TurnStatus.ERROR and outcome.error is not None:
                 raise outcome.error
@@ -512,11 +551,49 @@ class ACPServer:
             if req_id is not None:
                 self._send_error(req_id, -32000, str(exc))
 
-    def serve(self) -> None:
-        """Read JSON-RPC 2.0 requests from stdin until EOF."""
-        workers: list[threading.Thread] = []
+    async def _handle_session_prompt_async(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = str(params.get("sessionId", "")).strip()
+        with self._sessions_lock:
+            state = self._sessions.get(session_id)
+        if state is None:
+            raise KeyError(f"Unknown sessionId: {session_id}")
+
+        with state.prompt_lock:
+            prompt_content = _extract_prompt_content(params.get("prompt"))
+            state.runtime.messages.append({"role": "user", "content": prompt_content})
+
+            observer = _AcpObserver(self, session_id, runtime=state.runtime)
+            outcome = await self._run_prompt_async(state, observer)
+
+            if outcome.status == TurnStatus.ERROR and outcome.error is not None:
+                raise outcome.error
+            if outcome.status in (TurnStatus.ABORTED, TurnStatus.INTERRUPTED):
+                return {"stopReason": "cancelled"}
+            return {"stopReason": "end_turn"}
+
+    async def _dispatch_prompt_async(self, req: dict[str, Any]) -> None:
+        req_id = req.get("id")
+        params = req.get("params") or {}
         try:
-            for raw_line in self._in:
+            res = await self._handle_session_prompt_async(params)
+            if req_id is not None:
+                self._send_result(req_id, res)
+        except (KeyError, ValueError) as exc:
+            if req_id is not None:
+                message = str(exc.args[0]) if isinstance(exc, KeyError) and exc.args else str(exc)
+                self._send_error(req_id, -32602, message)
+        except Exception as exc:
+            if req_id is not None:
+                self._send_error(req_id, -32000, str(exc))
+
+    async def _serve_async(self) -> None:
+        tasks: set[asyncio.Task[None]] = set()
+        in_iter = iter(self._in)
+        try:
+            while True:
+                raw_line = await asyncio.to_thread(next, in_iter, None)
+                if raw_line is None:
+                    break
                 line = raw_line.strip()
                 if not line:
                     continue
@@ -529,13 +606,13 @@ class ACPServer:
                     self._send_error(None, -32600, "Invalid Request")
                     continue
 
-                if req.get("method") == "session/prompt":
-                    workers = [w for w in workers if w.is_alive()]
-                    t = threading.Thread(
-                        target=self._dispatch_request, args=(req,), daemon=True
-                    )
-                    t.start()
-                    workers.append(t)
+                method = req.get("method")
+                if method == "session/prompt":
+                    task = asyncio.create_task(self._dispatch_prompt_async(req))
+                    tasks.add(task)
+                    task.add_done_callback(tasks.discard)
+                elif method in ("session/new", "session/load"):
+                    await asyncio.to_thread(self._dispatch_request, req)
                 else:
                     self._dispatch_request(req)
         finally:
@@ -543,14 +620,14 @@ class ACPServer:
                 active = list(self._sessions.values())
             for state in active:
                 self._abort_session(state)
-            for t in workers:
-                t.join(timeout=2.0)
+            if tasks:
+                _, pending = await asyncio.wait(tasks, timeout=2.0)
+                for task in pending:
+                    task.cancel()
             with self._client_lock:
                 client = self._client
                 self._client = None
-            if client is not None and hasattr(client, "close"):
-                with contextlib.suppress(Exception):
-                    client.close()
+            await self._close_client_async(client)
             with self._sessions_lock:
                 for state in self._sessions.values():
                     try:
@@ -560,6 +637,13 @@ class ACPServer:
                     except Exception:
                         logger.debug("ACP session cleanup failed", exc_info=True)
                     state.kernel.close()
-                    with contextlib.suppress(Exception):
-                        state.runtime.client.close()
+                    await self._close_client_async(state.runtime.client)
                 self._sessions.clear()
+            with contextlib.suppress(Exception):
+                from quartz.providers.http_pool import close_shared_async_http_clients
+
+                await close_shared_async_http_clients()
+
+    def serve(self) -> None:
+        """Read JSON-RPC 2.0 requests from stdin until EOF."""
+        asyncio.run(self._serve_async())

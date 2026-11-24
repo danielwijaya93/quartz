@@ -94,7 +94,7 @@ def create_router(ctx: AppContext) -> APIRouter:
             return JSONResponse({"error": "Missing setting key"}, status_code=400)
         current = await asyncio.to_thread(manager.ensure_default_session)
         request.app.state.session = current
-        ok, result = await asyncio.to_thread(current.run_command, "settings", arg)
+        ok, result = await current.run_command_async("settings", arg)
         if not ok:
             return JSONResponse(
                 {"ok": False, "error": getattr(result, "message", None) or "Invalid setting"},

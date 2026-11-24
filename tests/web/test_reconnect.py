@@ -99,8 +99,13 @@ def test_a_disconnect_leaves_the_turn_running(session: WebSession) -> None:
 def test_a_detached_turn_is_not_aborted_by_the_detach_itself(tmp_path: Path) -> None:
     stopped = threading.Event()
 
-    def runner(rt: AgentRuntime, view: Any, *, abort_event: Any = None, **_: Any) -> TurnOutcome:
-        while abort_event is not None and not abort_event.wait(timeout=0.01):
+    async def runner(rt: AgentRuntime, view: Any, *, abort_event: Any = None, **_: Any) -> TurnOutcome:
+        import asyncio
+
+        try:
+            if abort_event is not None:
+                await abort_event.wait()
+        except asyncio.CancelledError:
             pass
         stopped.set()
         return TurnOutcome(TurnStatus.ABORTED, elapsed_s=0.0)
@@ -121,7 +126,7 @@ def test_a_detached_turn_is_not_aborted_by_the_detach_itself(tmp_path: Path) -> 
 
     turn = session._turn
     assert turn is not None
-    turn.abort.set()
+    session.cancel()
     assert stopped.wait(timeout=10)
 
 
@@ -185,8 +190,13 @@ def test_the_grace_is_cancelled_by_a_reconnect(tmp_path: Path) -> None:
     """A tab that comes back must not be killed by the timer it raced."""
     stopped = threading.Event()
 
-    def runner(rt: AgentRuntime, view: Any, *, abort_event: Any = None, **_: Any) -> TurnOutcome:
-        while abort_event is not None and not abort_event.wait(timeout=0.01):
+    async def runner(rt: AgentRuntime, view: Any, *, abort_event: Any = None, **_: Any) -> TurnOutcome:
+        import asyncio
+
+        try:
+            if abort_event is not None:
+                await abort_event.wait()
+        except asyncio.CancelledError:
             pass
         stopped.set()
         return TurnOutcome(TurnStatus.ABORTED, elapsed_s=0.0)
@@ -211,14 +221,19 @@ def test_the_grace_is_cancelled_by_a_reconnect(tmp_path: Path) -> None:
     assert stopped.is_set() is False, "the reconnected tab's turn was aborted anyway"
     turn = session._turn
     if turn is not None:
-        turn.abort.set()
+        session.cancel()
 
 
 def test_the_grace_stops_a_turn_nobody_came_back_for(tmp_path: Path) -> None:
     stopped = threading.Event()
 
-    def runner(rt: AgentRuntime, view: Any, *, abort_event: Any = None, **_: Any) -> TurnOutcome:
-        while abort_event is not None and not abort_event.wait(timeout=0.01):
+    async def runner(rt: AgentRuntime, view: Any, *, abort_event: Any = None, **_: Any) -> TurnOutcome:
+        import asyncio
+
+        try:
+            if abort_event is not None:
+                await abort_event.wait()
+        except asyncio.CancelledError:
             pass
         stopped.set()
         return TurnOutcome(TurnStatus.ABORTED, elapsed_s=0.0)
@@ -245,10 +260,15 @@ def test_an_aborted_turn_keeps_what_it_had_already_written(tmp_path: Path) -> No
     """Losing the socket must not lose the paragraphs already on screen."""
     stopped = threading.Event()
 
-    def runner(rt: AgentRuntime, view: Any, *, abort_event: Any = None, **_: Any) -> TurnOutcome:
+    async def runner(rt: AgentRuntime, view: Any, *, abort_event: Any = None, **_: Any) -> TurnOutcome:
+        import asyncio
+
         view.on_text_delta("Loom weaving began")
         view.on_text_delta(" in the Neolithic.")
-        while abort_event is not None and not abort_event.wait(timeout=0.01):
+        try:
+            if abort_event is not None:
+                await abort_event.wait()
+        except asyncio.CancelledError:
             pass
         stopped.set()
         return TurnOutcome(TurnStatus.ABORTED, elapsed_s=0.0)

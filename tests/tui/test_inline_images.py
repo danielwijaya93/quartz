@@ -97,5 +97,5 @@ def test_corrupt_inline_image_mention_does_not_crash_cli_or_dock(
         "quartz.tui.dock._active_printer",
         lambda: SimpleNamespace(block=printed.append),
     )
-    InteractiveDock._handle_submitted_idle(fake_dock, "check @bad.png")  # type: ignore[arg-type]
+    __import__("asyncio").run(InteractiveDock._handle_submitted_idle(fake_dock, "check @bad.png"))  # type: ignore[arg-type]
     assert any("Error:" in str(item) for item in printed)

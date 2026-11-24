@@ -11,6 +11,7 @@ it and run a turn; while a turn is already running, do not.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from pathlib import Path
 
@@ -24,8 +25,8 @@ def _dock(rt: AgentRuntime) -> InteractiveDock:
     dock = InteractiveDock.__new__(InteractiveDock)
     dock.rt = rt
     dock._lock = threading.RLock()
-    dock._worker_lock = threading.Lock()
-    dock._stop_event = threading.Event()
+    dock._worker_lock = asyncio.Lock()
+    dock._stop_event = asyncio.Event()
     dock._turn_running = False
     dock._aborting = False
     dock._live_renderable = None
@@ -59,33 +60,36 @@ def _runtime(kernel: KernelClient, tmp_path: Path) -> AgentRuntime:
     )
 
 
-def _run_watcher(dock: InteractiveDock, turns: list[str], *, seconds: float = 1.0) -> None:
-    """Run the (endless) watcher loop on a thread for a bounded moment, then stop it."""
+async def _run_watcher(dock: InteractiveDock, turns: list[str], *, seconds: float = 1.0) -> None:
+    """Run the (endless) watcher loop as an asyncio task for a bounded moment, then stop it."""
+    assert dock._stop_event is not None
+    stop_event = dock._stop_event
 
-    def fake_turn() -> None:
+    async def fake_turn() -> None:
         turns.append("turn")
-        dock._stop_event.set()
+        stop_event.set()
 
     dock._execute_dock_turn = fake_turn  # type: ignore[assignment]
-    t = threading.Thread(target=dock._bg_watcher_loop, daemon=True)
-    t.start()
-    t.join(timeout=seconds)
-    dock._stop_event.set()
-    t.join(timeout=2.0)
-    assert not t.is_alive(), "watcher loop did not stop"
+    task = asyncio.create_task(dock._bg_watcher_loop())
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=seconds)
+    except asyncio.TimeoutError:
+        stop_event.set()
+    await asyncio.wait_for(task, timeout=2.0)
+    assert task.done(), "watcher loop did not stop"
 
 
-def test_idle_session_wakes_on_a_status_notice(tmp_path: Path) -> None:
+async def test_idle_session_wakes_on_a_status_notice(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
         kernel.configure(background_check_every=0.4)
         rt = _runtime(kernel, tmp_path)
-        assert kernel.exec_cell("bg = bash('sleep 3')").ok
+        assert (await kernel.exec_cell("bg = bash('sleep 3')")).ok
 
         dock = _dock(rt)
         turns: list[str] = []
-        _run_watcher(dock, turns)
+        await _run_watcher(dock, turns)
 
         assert turns == ["turn"], "a status event did not wake the session"
         assert rt.messages, "the notice never reached the conversation"
@@ -94,25 +98,25 @@ def test_idle_session_wakes_on_a_status_notice(tmp_path: Path) -> None:
         kernel.close()
 
 
-def test_a_running_turn_is_not_interrupted_by_a_status(tmp_path: Path) -> None:
+async def test_a_running_turn_is_not_interrupted_by_a_status(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
         kernel.configure(background_check_every=0.4)
         rt = _runtime(kernel, tmp_path)
-        assert kernel.exec_cell("bg = bash('sleep 3')").ok
+        assert (await kernel.exec_cell("bg = bash('sleep 3')")).ok
         # Let a status event actually arrive before checking the busy path.
         import time
 
         deadline = time.monotonic() + 6.0
         while not kernel.has_pending_events() and time.monotonic() < deadline:
-            time.sleep(0.05)
+            await asyncio.sleep(0.05)
         assert kernel.has_pending_events()
 
         dock = _dock(rt)
         dock._turn_running = True
         turns: list[str] = []
-        _run_watcher(dock, turns)
+        await _run_watcher(dock, turns, seconds=0.4)
         # Busy session: the event stays queued for the turn to pick up itself.
         assert turns == []
         assert kernel.has_pending_events()
