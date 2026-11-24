@@ -817,3 +817,35 @@ def test_ls_find_rg_accept_cwd(tmp_path: Path) -> None:
     assert find("*.py", ".", cwd=sub) == ["a.py"]
     assert "needle = 1" in rg("needle", ".", cwd=sub)
     assert rg("needle", ".", cwd=tmp_path / "missing").startswith("Path not found")
+
+
+def test_path_helpers_include_closest_match_hints(tmp_path: Path) -> None:
+    from quartz.kernel.helpers import ls, read, rg
+
+    sub = tmp_path / "src"
+    sub.mkdir()
+    (sub / "helpers.py").write_text("x = 1\n", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match=r"helpers\.py"):
+        read(str(sub / "helper.py"))
+
+    with pytest.raises(FileNotFoundError, match=r"src"):
+        ls(str(tmp_path / "srcc"))
+
+    rg_out = rg("x", str(sub / "helper.py"))
+    assert rg_out.startswith("Path not found") and "helpers.py" in rg_out
+
+
+async def test_kernel_module_not_found_hints_project_venv(tmp_path: Path) -> None:
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python").write_text("#!/bin/sh\n", encoding="utf-8")
+
+    kernel = KernelClient(cwd=tmp_path)
+    kernel.start()
+    try:
+        res = await kernel.exec_cell("import nonexistent_pkg_xyz_123")
+        assert not res.ok
+        assert ".venv/bin/python" in res.stderr
+    finally:
+        kernel.close()

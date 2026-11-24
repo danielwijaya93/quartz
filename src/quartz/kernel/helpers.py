@@ -114,11 +114,26 @@ def _truncate(text: str, limit: int) -> str:
 # --- Built-in Helpers ---
 
 
+def _closest_path_hint(p: Path) -> str:
+    """Return a closest-sibling hint when `p` does not exist."""
+    parent = p.parent
+    if not parent.is_dir() or not p.name:
+        return ""
+    try:
+        candidates = [entry.name for entry in parent.iterdir()]
+    except OSError:
+        return ""
+    matches = difflib.get_close_matches(p.name, candidates, n=3, cutoff=0.5)
+    if not matches:
+        return ""
+    return f" (did you mean: {', '.join(matches)}?)"
+
+
 def _require_dir(path: str) -> Path:
     """Expand `path` and raise a clear error unless it is an existing directory."""
     p = Path(path).expanduser()
     if not p.exists():
-        raise FileNotFoundError(f"No such directory: {path}")
+        raise FileNotFoundError(f"No such directory: {path}{_closest_path_hint(p)}")
     if not p.is_dir():
         raise NotADirectoryError(f"Not a directory: {path}")
     return p
@@ -237,7 +252,7 @@ def rg(
     """Search files for a regex pattern (or literal string if fixed=True) and return `file:line:text` matches."""
     expanded_path = str(Path(_resolve_with_cwd(path, cwd)).expanduser())
     if not Path(expanded_path).exists():
-        return f"Path not found: {path}"
+        return f"Path not found: {path}{_closest_path_hint(Path(expanded_path))}"
     if shutil.which("rg"):
         return _rg_external(pattern, expanded_path, glob, max_hits, fixed)
     return _rg_python(pattern, expanded_path, glob, max_hits, fixed)
@@ -246,6 +261,8 @@ def rg(
 def read(path: str, start: int = 1, end: int = 200) -> str:
     """Read 1-based inclusive line range from a file with line numbers."""
     p = Path(path).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"No such file: {path}{_closest_path_hint(p)}")
     s = max(1, start)
     out: list[str] = []
     total_lines = 0
