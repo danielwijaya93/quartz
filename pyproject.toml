@@ -1,6 +1,6 @@
 [project]
 name = "quartz-agent"
-version = "0.4.5"
+version = "0.5.0"
 description = "Minimal coding agent with a persistent Python REPL"
 requires-python = ">=3.14"
 dependencies = [
