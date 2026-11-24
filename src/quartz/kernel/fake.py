@@ -51,6 +51,13 @@ class FakeKernel:
         self.cells.append((code, res))
         return res
 
+    async def aexec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
+        return self.exec_cell(code, timeout=timeout)
+
+    async def await_event(self, timeout: float | None = None) -> bool:
+        del timeout
+        return bool(self.events)
+
     def interrupt(self) -> None:
         pass
 

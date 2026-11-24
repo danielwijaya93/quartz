@@ -59,9 +59,11 @@ class KernelClient:
         self.cwd = (cwd or Path.cwd()).resolve()
         self._proc: subprocess.Popen[str] | None = None
         self._pending: dict[str, queue.Queue[dict[str, Any]]] = {}
+        self._pending_async: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Future[dict[str, Any]]]] = {}
         self._pending_lock = threading.Lock()
         self._write_lock = threading.Lock()
         self._events: list[dict[str, Any]] = []
+        self._event_waiters: list[tuple[asyncio.AbstractEventLoop, asyncio.Future[bool]]] = []
         self._events_cond = threading.Condition()
         self._ready_event = threading.Event()
         self._worker_exited = False
@@ -502,13 +504,21 @@ class KernelClient:
                 with self._events_cond:
                     self._events.append(msg)
                     self._events_cond.notify_all()
+                    waiters = list(self._event_waiters)
+                    self._event_waiters.clear()
+                for loop, fut in waiters:
+                    self._resolve_async_future(loop, fut, True)
             else:
                 req_id = msg.get("id")
                 if req_id:
                     with self._pending_lock:
                         q = self._pending.get(req_id)
+                        async_waiter = self._pending_async.get(req_id)
                     if q is not None:
                         q.put(msg)
+                    if async_waiter is not None:
+                        loop, fut = async_waiter
+                        self._resolve_async_future(loop, fut, msg)
 
         # Unblock any waiters if the worker exited unexpectedly
         self._worker_exited = True
@@ -521,12 +531,20 @@ class KernelClient:
         self._ready_event.set()
         with self._events_cond:
             self._events_cond.notify_all()
+            waiters = list(self._event_waiters)
+            self._event_waiters.clear()
+        for loop, fut in waiters:
+            self._resolve_async_future(loop, fut, False)
         with self._host_cancel_lock:
             for cancel_ev in self._host_cancel_events.values():
                 cancel_ev.set()
+        err_msg = {"type": "error", "error": "Kernel process exited unexpectedly"}
         with self._pending_lock:
             for q in self._pending.values():
-                q.put({"type": "error", "error": "Kernel process exited unexpectedly"})
+                q.put(err_msg)
+            async_waiters = list(self._pending_async.values())
+        for loop, fut in async_waiters:
+            self._resolve_async_future(loop, fut, err_msg)
 
     def consume_restart_notice(self) -> str | None:
         """Return (and clear) the notice describing an unexpected kernel exit + auto-restart."""
@@ -590,14 +608,60 @@ class KernelClient:
             with self._pending_lock:
                 self._pending.pop(req_id, None)
 
-    def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
-        self.dirty = True
-        # A headless cell waits for the `bash()` jobs it started (see
-        # `KernelWorker._run_cell_jobs_inline`), so the client must not time it out
-        # first: the command's own `timeout=` is what bounds the wait there.
-        if self._headless:
-            timeout = None
-        resp = self._request({"type": "exec", "code": code}, timeout=timeout)
+    @staticmethod
+    def _resolve_async_future(
+        loop: asyncio.AbstractEventLoop,
+        fut: asyncio.Future[Any],
+        value: Any,
+    ) -> None:
+        if loop.is_closed():
+            return
+
+        def _set() -> None:
+            if not fut.done():
+                fut.set_result(value)
+
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(_set)
+
+    async def _request_async(self, payload: dict[str, Any], timeout: float | None) -> dict[str, Any]:
+        if self._proc is None or self._proc.poll() is not None:
+            if self._proc is not None:
+                self._note_unexpected_exit()
+            await asyncio.to_thread(self.start)
+        assert self._proc is not None and self._proc.stdin is not None
+
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[dict[str, Any]] = loop.create_future()
+        req_id = uuid.uuid4().hex
+        payload["id"] = req_id
+        with self._pending_lock:
+            self._pending_async[req_id] = (loop, fut)
+
+        try:
+            line = json.dumps(payload, ensure_ascii=False) + "\n"
+            with self._write_lock:
+                self._proc.stdin.write(line)
+                self._proc.stdin.flush()
+            if timeout is None:
+                return await fut
+            try:
+                return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
+            except TimeoutError:
+                if payload.get("type") == "exec":
+                    self.interrupt()
+                    with contextlib.suppress(TimeoutError):
+                        return await asyncio.wait_for(asyncio.shield(fut), timeout=3.0)
+                raise TimeoutError(f"Kernel request timed out after {timeout}s") from None
+        except asyncio.CancelledError:
+            if payload.get("type") == "exec":
+                self.interrupt()
+            raise
+        finally:
+            with self._pending_lock:
+                self._pending_async.pop(req_id, None)
+
+    def _format_exec_response(self, resp: dict[str, Any]) -> CellResult:
         notice = self.consume_restart_notice()
         prefix = f"{notice}\n" if notice else ""
         if resp.get("type") == "error":
@@ -612,6 +676,23 @@ class KernelClient:
             images=list(resp.get("images") or []),
             files=list(resp.get("files") or []),
         )
+
+    def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
+        self.dirty = True
+        # A headless cell waits for the `bash()` jobs it started (see
+        # `KernelWorker._run_cell_jobs_inline`), so the client must not time it out
+        # first: the command's own `timeout=` is what bounds the wait there.
+        if self._headless:
+            timeout = None
+        resp = self._request({"type": "exec", "code": code}, timeout=timeout)
+        return self._format_exec_response(resp)
+
+    async def aexec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
+        self.dirty = True
+        if self._headless:
+            timeout = None
+        resp = await self._request_async({"type": "exec", "code": code}, timeout=timeout)
+        return self._format_exec_response(resp)
 
     def list_helpers(self, timeout: float = 5.0) -> dict[str, Any]:
         if self._proc is None or self._proc.poll() is not None:
@@ -707,9 +788,35 @@ class KernelClient:
             return bool(self._events)
 
     def wake_event_waiters(self) -> None:
-        """Wake any thread blocked inside :meth:`wait_until_event` or :meth:`wait_for_events`."""
+        """Wake any thread or coroutine blocked waiting on kernel events."""
         with self._events_cond:
             self._events_cond.notify_all()
+            waiters = list(self._event_waiters)
+            self._event_waiters.clear()
+            has_events = bool(self._events)
+        for loop, fut in waiters:
+            self._resolve_async_future(loop, fut, has_events)
+
+    async def await_event(self, timeout: float | None = None) -> bool:
+        """Asynchronously wait until a kernel event is pending (zero polling)."""
+        loop = asyncio.get_running_loop()
+        with self._events_cond:
+            if self._events:
+                return True
+            if self._worker_exited:
+                return False
+            fut: asyncio.Future[bool] = loop.create_future()
+            entry = (loop, fut)
+            self._event_waiters.append(entry)
+        try:
+            if timeout is None:
+                return await fut
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except TimeoutError:
+            return False
+        finally:
+            with self._events_cond, contextlib.suppress(ValueError):
+                self._event_waiters.remove(entry)
 
     def wait_until_event(self, stop_event: threading.Event, timeout: float | None = 0.25) -> bool:
         """Block until a kernel event arrives or `stop_event` is set. Returns True if events are pending.
