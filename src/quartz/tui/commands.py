@@ -219,14 +219,8 @@ def _render_compact(rt: AgentRuntime, result: CommandResult) -> None:
 
 def _render_settings(rt: AgentRuntime, result: CommandResult) -> None:
     del rt
-    if result.kind == "error":
-        message = f"[red]{escape(result.message)}[/red]"
-        if result.body:
-            message = f"{message}\n[dim]{escape(result.body)}[/dim]"
-        console_print(message)
-        return
-    if result.title:
-        console_print(Panel(Text(result.body), title=result.title, border_style="dim"))
+    if result.kind == "error" or result.title:
+        render_command_result(result)
         return
     console_print(f"[green]{escape(result.body)}[/green]")
 
@@ -466,11 +460,12 @@ def _terminal_image(rt: AgentRuntime, arg: str) -> None:
     except (FileNotFoundError, ValueError) as exc:
         console.print(f"[red]Error: {escape(str(exc))}[/red]")
         return
+    _queue_image(rt, img, f"[bold]{escape(img.label)}[/bold] ([cyan]{escape(img.mime_type)}[/cyan])")
+
+
+def _queue_image(rt: AgentRuntime, img: Any, label: str) -> None:
     rt.pending_images.append(img)
-    console.print(
-        f"[green]Attached [bold]{escape(img.label)}[/bold] ([cyan]{escape(img.mime_type)}[/cyan]); "
-        f"{len(rt.pending_images)} image(s) queued for next message.[/green]"
-    )
+    console.print(f"[green]Attached {label}; {len(rt.pending_images)} image(s) queued for next message.[/green]")
     show_image_preview(img)
 
 
@@ -481,12 +476,7 @@ def _terminal_paste(rt: AgentRuntime, arg: str) -> None:
     except Exception as exc:
         console.print(f"[red]Error: {escape(str(exc))}[/red]")
         return
-    rt.pending_images.append(img)
-    console.print(
-        f"[green]Attached clipboard image ([bold]{escape(img.mime_type)}[/bold]); "
-        f"{len(rt.pending_images)} image(s) queued for next message.[/green]"
-    )
-    show_image_preview(img)
+    _queue_image(rt, img, f"clipboard image ([bold]{escape(img.mime_type)}[/bold])")
 
 
 def _terminal_session(rt: AgentRuntime, arg: str) -> None:
@@ -560,31 +550,22 @@ def _terminal_settings(rt: AgentRuntime, arg: str) -> None:
             return
 
         if picked == "notifications":
-            next_state = "off" if getattr(rt, "notifications", True) else "on"
-            result = _resolve_command_result_sync(cmd_settings(rt, f"notifications {next_state}"))
-            if result is not None:
-                _render_settings(rt, result)
-            continue
-
-        if picked == "reset":
-            result = _resolve_command_result_sync(cmd_settings(rt, "reset"))
-            if result is not None:
-                _render_settings(rt, result)
-            continue
-
-        prompts = {
-            "reserve": ("Reserve tokens", str(rt.compact_reserve_tokens)),
-            "keep": ("Keep recent tokens", str(rt.keep_recent_tokens)),
-            "progress": ("Progress update interval (turns, 0 disables)", str(rt.progress_every)),
-            "bg": ("Background check interval (seconds, 0 disables)", str(rt.background_check_every)),
-        }
-        label, current_val = prompts[picked]
-        entered = _prompt_input(f"{label} (current: {current_val}): ")
-        if entered is None or not entered.strip():
-            continue
-
-        result = _resolve_command_result_sync(cmd_settings(rt, f"{picked} {entered.strip()}"))
-        if result is not None:
+            cmd_arg = f"notifications {'off' if getattr(rt, 'notifications', True) else 'on'}"
+        elif picked == "reset":
+            cmd_arg = "reset"
+        else:
+            prompts = {
+                "reserve": ("Reserve tokens", str(rt.compact_reserve_tokens)),
+                "keep": ("Keep recent tokens", str(rt.keep_recent_tokens)),
+                "progress": ("Progress update interval (turns, 0 disables)", str(rt.progress_every)),
+                "bg": ("Background check interval (seconds, 0 disables)", str(rt.background_check_every)),
+            }
+            label, current_val = prompts[picked]
+            entered = _prompt_input(f"{label} (current: {current_val}): ")
+            if entered is None or not entered.strip():
+                continue
+            cmd_arg = f"{picked} {entered.strip()}"
+        if (result := _resolve_command_result_sync(cmd_settings(rt, cmd_arg))) is not None:
             _render_settings(rt, result)
 
 
@@ -692,55 +673,47 @@ def _terminal_mcp(rt: AgentRuntime, arg: str) -> None:
         if not picked:
             return
 
-        if picked == "__enable_all__":
-            res = _resolve_command_result_sync(cmd_mcp(rt, "enable --all"))
-            if res is not None:
+        def _run_mcp(cmd_arg: str) -> None:
+            if (res := _resolve_command_result_sync(cmd_mcp(rt, cmd_arg))) is not None:
                 _render_mcp(rt, res)
-            continue
 
-        if picked == "__disable_all__":
-            res = _resolve_command_result_sync(cmd_mcp(rt, "disable --all"))
-            if res is not None:
-                _render_mcp(rt, res)
+        if picked in ("__enable_all__", "__disable_all__"):
+            _run_mcp("enable --all" if picked == "__enable_all__" else "disable --all")
             continue
 
         if picked == "__add__":
-            name = _prompt_input("Server name: ")
-            if not name or not name.strip():
+            name = (_prompt_input("Server name: ") or "").strip()
+            if not name:
                 continue
             transport = _pick_option(
-                f"Transport for {name.strip()}",
-                [("stdio", "stdio (local command)"), ("http", "http (Streamable HTTP URL)")],
+                f"Transport for {name}", [("stdio", "stdio (local command)"), ("http", "http (Streamable HTTP URL)")]
             )
             if not transport:
                 continue
             spec: dict[str, Any] = {}
             if transport == "http":
-                url = _prompt_input("Streamable HTTP URL: ")
-                if not url or not url.strip():
+                url = (_prompt_input("Streamable HTTP URL: ") or "").strip()
+                if not url:
                     continue
-                spec["url"] = url.strip()
-                hdr = _prompt_input("Optional header (KEY=VALUE, blank to skip): ")
-                if hdr and "=" in hdr:
-                    k, v = hdr.split("=", 1)
-                    if k.strip():
-                        spec["headers"] = {k.strip(): v.strip()}
+                spec["url"] = url
+                kv_prompt, kv_key = "Optional header (KEY=VALUE, blank to skip): ", "headers"
             else:
-                cmd_line = _prompt_input("Command & args (e.g. npx -y @modelcontextprotocol/server-filesystem .): ")
-                if not cmd_line or not cmd_line.strip():
+                cmd_line = (_prompt_input("Command & args (e.g. npx -y @modelcontextprotocol/server-filesystem .): ") or "").strip()
+                if not cmd_line:
                     continue
-                parts = cmd_line.strip().split()
+                parts = cmd_line.split()
                 spec["command"] = parts[0]
                 if len(parts) > 1:
                     spec["args"] = parts[1:]
-                env_line = _prompt_input("Optional env var (KEY=VALUE, blank to skip): ")
-                if env_line and "=" in env_line:
-                    k, v = env_line.split("=", 1)
-                    if k.strip():
-                        spec["env"] = {k.strip(): v.strip()}
-            add_mcp_server(name.strip(), spec, cfg_path)
+                kv_prompt, kv_key = "Optional env var (KEY=VALUE, blank to skip): ", "env"
+            kv_raw = _prompt_input(kv_prompt)
+            if kv_raw and "=" in kv_raw:
+                k, v = kv_raw.split("=", 1)
+                if k.strip():
+                    spec[kv_key] = {k.strip(): v.strip()}
+            add_mcp_server(name, spec, cfg_path)
             reload_runtime_mcp(rt)
-            _render_mcp(rt, CommandResult.text(f"Saved MCP server '{name.strip()}'."))
+            _render_mcp(rt, CommandResult.text(f"Saved MCP server '{name}'."))
             continue
 
         if picked.startswith("srv:"):
@@ -748,26 +721,15 @@ def _terminal_mcp(rt: AgentRuntime, arg: str) -> None:
             spec_item = servers.get(srv_name)
             if not isinstance(spec_item, dict):
                 continue
-            spec = spec_item
-            enabled = spec.get("enabled", True) is not False
-            toggle_label = "Disable server" if enabled else "Enable server"
+            enabled = spec_item.get("enabled", True) is not False
             action = _pick_option(
                 f"{srv_name} ({'enabled' if enabled else 'disabled'})",
-                [
-                    ("toggle", toggle_label),
-                    ("remove", "Remove server"),
-                    ("back", "Back"),
-                ],
+                [("toggle", "Disable server" if enabled else "Enable server"), ("remove", "Remove server"), ("back", "Back")],
             )
             if action == "toggle":
-                subcmd = "disable" if enabled else "enable"
-                res = _resolve_command_result_sync(cmd_mcp(rt, f"{subcmd} {srv_name}"))
-                if res is not None:
-                    _render_mcp(rt, res)
+                _run_mcp(f"{'disable' if enabled else 'enable'} {srv_name}")
             elif action == "remove":
-                res = _resolve_command_result_sync(cmd_mcp(rt, f"remove {srv_name}"))
-                if res is not None:
-                    _render_mcp(rt, res)
+                _run_mcp(f"remove {srv_name}")
 
 
 _TERMINAL_HANDLERS: dict[str, TerminalHandler] = {
@@ -789,14 +751,7 @@ _TERMINAL_HANDLERS: dict[str, TerminalHandler] = {
 # ---------------------------------------------------------------------------
 
 
-def _handle_slash_command(rt: AgentRuntime, user_input: str) -> bool | None:
-    """Handle a slash command. Returns True to exit, False if handled, None if not a command.
-
-    The terminal dispatches here, so this is also where a ``needs_terminal``
-    command becomes its terminal implementation. A handler that returns a
-    `CommandResult` has not drawn anything yet; one that returns ``None`` (or a
-    bare bool from an older test double) has already drawn it.
-    """
+def _parse_slash_command(user_input: str) -> tuple[SlashCommand, str] | None:
     trimmed = user_input.strip()
     if not trimmed.startswith("/"):
         return None
@@ -804,46 +759,41 @@ def _handle_slash_command(rt: AgentRuntime, user_input: str) -> bool | None:
     if cmd is None:
         return None
     parts = trimmed.split(maxsplit=1)
-    arg = parts[1].strip() if len(parts) > 1 else ""
+    return cmd, (parts[1].strip() if len(parts) > 1 else "")
 
-    terminal = _TERMINAL_HANDLERS.get(cmd.name)
-    if terminal is not None:
-        terminal(rt, arg)
-        return bool(cmd.exits)
 
-    raw = cmd.handler(rt, arg)
-    result = asyncio.run(raw) if inspect.isawaitable(raw) else raw
+def _draw_result(rt: AgentRuntime, cmd_name: str, result: Any) -> None:
     if isinstance(result, CommandResult):
-        renderer = _RENDERERS.get(cmd.name)
+        renderer = _RENDERERS.get(cmd_name)
         if renderer is not None:
             renderer(rt, result)
         else:
             render_command_result(result)
+
+
+def _handle_slash_command(rt: AgentRuntime, user_input: str) -> bool | None:
+    """Handle a slash command. Returns True to exit, False if handled, None if not a command."""
+    parsed = _parse_slash_command(user_input)
+    if parsed is None:
+        return None
+    cmd, arg = parsed
+    if (terminal := _TERMINAL_HANDLERS.get(cmd.name)) is not None:
+        terminal(rt, arg)
+        return bool(cmd.exits)
+    raw = cmd.handler(rt, arg)
+    _draw_result(rt, cmd.name, asyncio.run(raw) if inspect.isawaitable(raw) else raw)
     return bool(cmd.exits)
 
 
 async def _handle_slash_command_async(rt: AgentRuntime, user_input: str) -> bool | None:
     """Async counterpart to :func:`_handle_slash_command` for event-loop callers."""
-    trimmed = user_input.strip()
-    if not trimmed.startswith("/"):
+    parsed = _parse_slash_command(user_input)
+    if parsed is None:
         return None
-    cmd = COMMAND_REGISTRY.lookup(trimmed)
-    if cmd is None:
-        return None
-    parts = trimmed.split(maxsplit=1)
-    arg = parts[1].strip() if len(parts) > 1 else ""
-
-    terminal = _TERMINAL_HANDLERS.get(cmd.name)
-    if terminal is not None:
+    cmd, arg = parsed
+    if (terminal := _TERMINAL_HANDLERS.get(cmd.name)) is not None:
         await asyncio.to_thread(terminal, rt, arg)
         return bool(cmd.exits)
-
     raw = cmd.handler(rt, arg)
-    result = await raw if inspect.isawaitable(raw) else raw
-    if isinstance(result, CommandResult):
-        renderer = _RENDERERS.get(cmd.name)
-        if renderer is not None:
-            renderer(rt, result)
-        else:
-            render_command_result(result)
+    _draw_result(rt, cmd.name, await raw if inspect.isawaitable(raw) else raw)
     return bool(cmd.exits)

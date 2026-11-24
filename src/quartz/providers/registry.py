@@ -198,64 +198,35 @@ def _coerce_context_length(value: Any) -> int | None:
     return None
 
 
-def _discovered_context_length(client: Any, model: str) -> int | None:
-    """Best-effort discovered ``context_length`` for ``model`` via ``client``.
+def _extract_item_context(item: Any) -> int | None:
+    if isinstance(item, dict):
+        val = item.get("context_length")
+        if val is None:
+            val = item.get("max_context_tokens")
+        if val is None:
+            val = item.get("context_window")
+        return _coerce_context_length(val)
+    return _coerce_context_length(getattr(item, "context_length", None))
 
-    Supports OpenAI-compatible clients exposing ``list_model_details()``
-    (returning objects/ dicts with id + context_length) or
-    ``list_models()`` (returning dicts with context_length). Any failure
-    returns None so callers fall through to the static table.
-    """
+
+def _discovered_context_length(client: Any, model: str) -> int | None:
+    """Best-effort discovered ``context_length`` for ``model`` via ``client``."""
     if client is None or not model:
         return None
     try:
-        details_fn = getattr(client, "list_model_details", None)
-        if callable(details_fn):
-            details_list = details_fn()
-            if isinstance(details_list, (list, tuple)):
-                for details in details_list:
-                    detail_id: Any = None
-                    raw: Any = None
-                    if isinstance(details, dict):
-                        detail_id = details.get("id")
-                        raw = details
-                    else:
-                        detail_id = getattr(details, "id", None)
-                        raw = details
-                    if detail_id != model:
-                        continue
-                    value: Any = None
-                    if isinstance(raw, dict):
-                        value = raw.get("context_length")
-                        if value is None:
-                            value = raw.get("max_context_tokens")
-                        if value is None:
-                            # DeepSeek's direct API uses ``context_window``.
-                            value = raw.get("context_window")
-                    else:
-                        value = getattr(raw, "context_length", None)
-                    coerced = _coerce_context_length(value)
-                    if coerced is not None:
-                        return coerced
+        for attr in ("list_model_details", "list_models"):
+            fn = getattr(client, attr, None)
+            if not callable(fn):
+                continue
+            items = fn()
+            if not isinstance(items, (list, tuple)):
+                continue
+            for item in items:
+                item_id = item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
+                if item_id == model and (coerced := _extract_item_context(item)) is not None:
+                    return coerced
+            if attr == "list_model_details":
                 return None
-        list_fn = getattr(client, "list_models", None)
-        if callable(list_fn):
-            items = list_fn()
-            if isinstance(items, (list, tuple)):
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    if item.get("id") != model:
-                        continue
-                    value = item.get("context_length")
-                    if value is None:
-                        value = item.get("max_context_tokens")
-                    if value is None:
-                        # DeepSeek's direct API uses ``context_window``.
-                        value = item.get("context_window")
-                    coerced = _coerce_context_length(value)
-                    if coerced is not None:
-                        return coerced
     except Exception:
         return None
     return None

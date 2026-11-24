@@ -109,111 +109,40 @@ ANTIGRAVITY_MODEL_ENUM: dict[str, str] = {
     "gpt-oss-120b-medium": "MODEL_OPENAI_GPT_OSS_120B_MEDIUM",
 }
 
+def _tier_routing(base: str, *, default: str = "medium", has_xhigh: bool = False) -> dict[str, str]:
+    high = f"{base}-high"
+    return {
+        "off": f"{base}-low",
+        "low": f"{base}-low",
+        "medium": f"{base}-medium",
+        "high": high,
+        "xhigh": f"{base}-xhigh" if has_xhigh else high,
+        "default": f"{base}-{default}",
+    }
+
+
+def _fixed_routing(target: str) -> dict[str, str]:
+    return {k: target for k in ("off", "low", "medium", "high", "xhigh", "default")}
+
+
+def _split_routing(low_target: str, high_target: str) -> dict[str, str]:
+    return {"off": low_target, "low": low_target, "medium": low_target, "high": high_target, "xhigh": high_target, "default": low_target}
+
+
 ANTIGRAVITY_ROUTING: dict[str, dict[str, str]] = {
-    "gemini-4-hydrogen": {
-        "off": "gemini-4-hydrogen-low",
-        "low": "gemini-4-hydrogen-low",
-        "medium": "gemini-4-hydrogen-medium",
-        "high": "gemini-4-hydrogen-high",
-        "xhigh": "gemini-4-hydrogen-xhigh",
-        "default": "gemini-4-hydrogen-medium",
-    },
-    "gemini-4-neon": {
-        "off": "gemini-4-neon-low",
-        "low": "gemini-4-neon-low",
-        "medium": "gemini-4-neon-medium",
-        "high": "gemini-4-neon-high",
-        "xhigh": "gemini-4-neon-xhigh",
-        "default": "gemini-4-neon-medium",
-    },
-    "gemini-4-argon": {
-        "off": "gemini-4-argon-low",
-        "low": "gemini-4-argon-low",
-        "medium": "gemini-4-argon-medium",
-        "high": "gemini-4-argon-high",
-        "xhigh": "gemini-4-argon-high",
-        "default": "gemini-4-argon-low",
-    },
-    "gemini-3.8-flash": {
-        "off": "gemini-3.8-flash-low",
-        "low": "gemini-3.8-flash-low",
-        "medium": "gemini-3.8-flash-medium",
-        "high": "gemini-3.8-flash-high",
-        "xhigh": "gemini-3.8-flash-high",
-        "default": "gemini-3.8-flash-medium",
-    },
-    "gemini-3.7-flash": {
-        "off": "gemini-3.7-flash-low",
-        "low": "gemini-3.7-flash-low",
-        "medium": "gemini-3.7-flash-medium",
-        "high": "gemini-3.7-flash-high",
-        "xhigh": "gemini-3.7-flash-high",
-        "default": "gemini-3.7-flash-medium",
-    },
-    "gemini-3.6-flash": {
-        "off": "gemini-3.6-flash-low",
-        "low": "gemini-3.6-flash-low",
-        "medium": "gemini-3.6-flash-medium",
-        "high": "gemini-3.6-flash-high",
-        "xhigh": "gemini-3.6-flash-high",
-        "default": "gemini-3.6-flash-low",
-    },
-    "gemini-3.5-flash": {
-        "off": "gemini-3.5-flash-low",
-        "low": "gemini-3.5-flash-low",
-        "medium": "gemini-3.5-flash-low",
-        "high": "gemini-3-flash-agent",
-        "xhigh": "gemini-3-flash-agent",
-        "default": "gemini-3.5-flash-low",
-    },
-    "gemini-3.1-pro": {
-        "off": "gemini-3.1-pro-low",
-        "low": "gemini-3.1-pro-low",
-        "medium": "gemini-3.1-pro-low",
-        "high": "gemini-pro-agent",
-        "xhigh": "gemini-pro-agent",
-        "default": "gemini-3.1-pro-low",
-    },
-    "claude-opus-5-5": {
-        "off": "claude-opus-5-5-low",
-        "low": "claude-opus-5-5-low",
-        "medium": "claude-opus-5-5-medium",
-        "high": "claude-opus-5-5-high",
-        "xhigh": "claude-opus-5-5-high",
-        "default": "claude-opus-5-5-medium",
-    },
-    "claude-sonnet-5-5": {
-        "off": "claude-sonnet-5-5-low",
-        "low": "claude-sonnet-5-5-low",
-        "medium": "claude-sonnet-5-5-medium",
-        "high": "claude-sonnet-5-5-high",
-        "xhigh": "claude-sonnet-5-5-high",
-        "default": "claude-sonnet-5-5-medium",
-    },
-    "claude-sonnet-4-6": {
-        "off": "claude-sonnet-4-6",
-        "low": "claude-sonnet-4-6",
-        "medium": "claude-sonnet-4-6",
-        "high": "claude-sonnet-4-6",
-        "xhigh": "claude-sonnet-4-6",
-        "default": "claude-sonnet-4-6",
-    },
-    "claude-opus-4-6": {
-        "off": "claude-opus-4-6-thinking",
-        "low": "claude-opus-4-6-thinking",
-        "medium": "claude-opus-4-6-thinking",
-        "high": "claude-opus-4-6-thinking",
-        "xhigh": "claude-opus-4-6-thinking",
-        "default": "claude-opus-4-6-thinking",
-    },
-    "gpt-oss-120b": {
-        "off": "gpt-oss-120b-medium",
-        "low": "gpt-oss-120b-medium",
-        "medium": "gpt-oss-120b-medium",
-        "high": "gpt-oss-120b-medium",
-        "xhigh": "gpt-oss-120b-medium",
-        "default": "gpt-oss-120b-medium",
-    },
+    "gemini-4-hydrogen": _tier_routing("gemini-4-hydrogen", has_xhigh=True),
+    "gemini-4-neon": _tier_routing("gemini-4-neon", has_xhigh=True),
+    "gemini-4-argon": _tier_routing("gemini-4-argon", default="low"),
+    "gemini-3.8-flash": _tier_routing("gemini-3.8-flash"),
+    "gemini-3.7-flash": _tier_routing("gemini-3.7-flash"),
+    "gemini-3.6-flash": _tier_routing("gemini-3.6-flash", default="low"),
+    "gemini-3.5-flash": _split_routing("gemini-3.5-flash-low", "gemini-3-flash-agent"),
+    "gemini-3.1-pro": _split_routing("gemini-3.1-pro-low", "gemini-pro-agent"),
+    "claude-opus-5-5": _tier_routing("claude-opus-5-5"),
+    "claude-sonnet-5-5": _tier_routing("claude-sonnet-5-5"),
+    "claude-sonnet-4-6": _fixed_routing("claude-sonnet-4-6"),
+    "claude-opus-4-6": _fixed_routing("claude-opus-4-6-thinking"),
+    "gpt-oss-120b": _fixed_routing("gpt-oss-120b-medium"),
 }
 
 RUNTIME_MAX_OUTPUT_TOKENS: dict[str, int] = {
