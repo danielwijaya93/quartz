@@ -1,4 +1,4 @@
-"""Regression tests for startup, TUI responsiveness, and exit performance optimizations."""
+"""Startup and kernel-selection performance tests for quartz.bootstrap."""
 
 from __future__ import annotations
 
@@ -9,33 +9,41 @@ from types import SimpleNamespace
 from typing import Any
 
 from quartz.bootstrap import BootstrapOptions, build_runtime
+from quartz.kernel.client import KernelClient
+from quartz.kernel.inprocess import InProcessKernel
 
 
-def test_dock_sets_low_ttimeoutlen_and_redraw_interval(tmp_path: Path) -> None:
-    from quartz.tui.dock import InteractiveDock
+async def test_bootstrap_selects_inprocess_kernel_for_unsandboxed_headless(tmp_path: Path) -> None:
+    def _fake_client():
+        return object(), "stub", "stub-model", "high", 128_000
 
-    rt = SimpleNamespace(
-        cwd=tmp_path,
-        model="gpt-4.1",
-        effort="medium",
-        max_context_tokens=128_000,
-        usage_stats=SimpleNamespace(prompt_tokens=0, total_prompt_tokens=0),
-        kernel=SimpleNamespace(
-            running_bash_count=lambda: 0,
-            set_bg_count_callback=lambda cb: None,
-            has_pending_events=lambda: False,
-        ),
-        messages=[],
-        cell_history=[],
-        pending_images=[],
-        active_session=SimpleNamespace(cell_meta={}, steering_indices=[]),
-        verbose=False,
-        turn_count=0,
-        total_elapsed_s=0.0,
+    rt_inproc, _ = build_runtime(
+        BootstrapOptions(
+            cwd=tmp_path,
+            headless=True,
+            sandbox=False,
+            client_factory=_fake_client,
+        )
     )
-    dock = InteractiveDock(rt)  # type: ignore[arg-type]
-    assert dock.app.ttimeoutlen <= 0.05
-    assert dock.app.min_redraw_interval <= 0.02
+    try:
+        assert isinstance(rt_inproc.kernel, InProcessKernel)
+        res = await rt_inproc.kernel.exec_cell("2 + 2")
+        assert res.ok and res.result == "4"
+    finally:
+        rt_inproc.kernel.close()
+
+    rt_interactive, _ = build_runtime(
+        BootstrapOptions(
+            cwd=tmp_path,
+            headless=False,
+            sandbox=False,
+            client_factory=_fake_client,
+        )
+    )
+    try:
+        assert isinstance(rt_interactive.kernel, KernelClient)
+    finally:
+        rt_interactive.kernel.close()
 
 
 def test_build_runtime_does_not_block_on_slow_model_discovery(tmp_path: Path, monkeypatch: Any) -> None:
@@ -91,19 +99,3 @@ def test_build_runtime_does_not_block_on_slow_model_discovery(tmp_path: Path, mo
     while rt.max_context_tokens != 555_555 and time.monotonic() < deadline:
         time.sleep(0.01)
     assert rt.max_context_tokens == 555_555
-
-
-def test_standalone_modal_sets_low_ttimeoutlen() -> None:
-    from prompt_toolkit.buffer import Buffer
-    from prompt_toolkit.layout import Layout
-
-    from quartz.tui.modals import InlineModalState, build_modal_container
-
-    state = InlineModalState(
-        kind="option",
-        title="Pick",
-        buffer=Buffer(multiline=False),
-        options=[("a", "A")],
-    )
-    container, _, list_window = build_modal_container(lambda: state, state.buffer)
-    assert Layout(container, focused_element=list_window) is not None

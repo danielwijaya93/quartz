@@ -27,15 +27,15 @@ async def test_status_event_reports_a_running_job(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        kernel.configure(background_check_every=1.0)
-        res = await kernel.exec_cell("bg = bash('echo tick; sleep 2.5')")
+        kernel.configure(background_check_every=0.3)
+        res = await kernel.exec_cell("bg = bash('echo tick; sleep 0.9')")
         assert res.ok
 
-        status = await _wait_for_event(kernel, "bash_status", timeout=6.0)
+        status = await _wait_for_event(kernel, "bash_status", timeout=4.0)
         assert status is not None, "no status event while the job was still running"
-        assert status["command"] == "echo tick; sleep 2.5"
+        assert status["command"] == "echo tick; sleep 0.9"
         assert isinstance(status["pid"], int)
-        assert float(status["elapsed_s"]) >= 1.0
+        assert float(status["elapsed_s"]) >= 0.3
         # The tail is what makes the notice useful: it shows the job is alive.
         assert "tick" in status["tail"]
 
@@ -50,8 +50,8 @@ async def test_status_repeats_every_period(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        kernel.configure(background_check_every=0.4)
-        assert (await kernel.exec_cell("bg = bash('sleep 3')")).ok
+        kernel.configure(background_check_every=0.25)
+        assert (await kernel.exec_cell("bg = bash('sleep 1.2')")).ok
 
         seen: list[float] = []
         deadline = time.monotonic() + 8.0
@@ -70,13 +70,13 @@ async def test_no_status_after_the_job_finishes(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        kernel.configure(background_check_every=0.4)
+        kernel.configure(background_check_every=0.25)
         assert (await kernel.exec_cell("bg = bash('echo done_quickly')")).ok
-        assert await _wait_for_event(kernel, "bash_done", timeout=6.0) is not None
+        assert await _wait_for_event(kernel, "bash_done", timeout=4.0) is not None
 
         # The ticker stops with the job: a finished command is never reported as
         # still running, which would be the one actively misleading notice.
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(0.8)
         assert [e for e in kernel.drain_events() if e.get("event") == "bash_status"] == []
     finally:
         kernel.close()
@@ -86,8 +86,8 @@ async def test_status_disabled_by_default(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        assert (await kernel.exec_cell("bg = bash('sleep 1.2')")).ok
-        await asyncio.sleep(1.0)
+        assert (await kernel.exec_cell("bg = bash('sleep 0.6')")).ok
+        await asyncio.sleep(0.5)
         assert [e for e in kernel.drain_events() if e.get("event") == "bash_status"] == []
         assert await _wait_for_event(kernel, "bash_done", timeout=6.0) is not None
     finally:
@@ -98,9 +98,9 @@ async def test_configure_survives_a_kernel_restart(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        kernel.configure(background_check_every=0.4)
+        kernel.configure(background_check_every=0.25)
         kernel.restart()
-        assert (await kernel.exec_cell("bg = bash('sleep 2')")).ok
+        assert (await kernel.exec_cell("bg = bash('sleep 1.0')")).ok
         assert await _wait_for_event(kernel, "bash_status", timeout=6.0) is not None
     finally:
         kernel.close()
