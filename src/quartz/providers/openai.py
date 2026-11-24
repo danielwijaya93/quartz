@@ -10,8 +10,6 @@ import httpx2
 
 from quartz.errors import parse_retry_after, provider_error
 from quartz.providers.base import (
-    AsyncSSEStreamHandle,
-    AsyncStreamHandle,
     CompletionResult,
     ProviderCapabilities,
     SSEStreamHandle,
@@ -223,7 +221,7 @@ def _parse_completion_payload(payload: dict[str, Any]) -> CompletionResult:
 
 
 class OpenAIProvider:
-    """OpenAI-compatible LLMProvider backed by persistent httpx2 sync/async clients."""
+    """OpenAI-compatible LLMProvider backed by persistent httpx2.AsyncClient."""
 
     def __init__(
         self,
@@ -232,15 +230,12 @@ class OpenAIProvider:
         base_url: str | None = None,
         timeout: httpx2.Timeout | float | None = None,
         capabilities: ProviderCapabilities | None = None,
-        http_client: httpx2.Client | None = None,
         async_http_client: httpx2.AsyncClient | None = None,
         shared_http: bool = False,
     ) -> None:
         self.api_key = api_key
         self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
         self._timeout = timeout or resolve_http_timeout()
-        self._owns_http = http_client is None
-        self._http = http_client if http_client is not None else httpx2.Client(timeout=self._timeout)
         self._shared_http = shared_http
         self._async_client: httpx2.AsyncClient | None = async_http_client
         self._owns_async_http = async_http_client is None and not shared_http
@@ -297,7 +292,7 @@ class OpenAIProvider:
             changed = True
         return changed
 
-    def stream(
+    async def stream(
         self,
         model: str,
         messages: list[dict[str, Any]],
@@ -305,77 +300,6 @@ class OpenAIProvider:
         *,
         effort: str | None = None,
     ) -> StreamHandle:
-        url = f"{self.base_url}/chat/completions"
-        headers = self._headers()
-        for _ in range(3):
-            body = self._build_body(
-                model=model,
-                messages=messages,
-                tools=tools,
-                stream=True,
-                effort=effort,
-            )
-            ctx = self._http.stream("POST", url, json=body, headers=headers)
-            resp = ctx.__enter__()
-            if resp.status_code < 400:
-                return SSEStreamHandle(ctx, resp, provider=self.base_url, parse=_openai_events)
-            try:
-                err_text = resp.read().decode("utf-8", errors="replace")
-            finally:
-                ctx.__exit__(None, None, None)
-            if self._maybe_downgrade_capabilities(resp.status_code, err_text, body):
-                continue
-            raise provider_error(
-                self.base_url,
-                resp.status_code,
-                err_text,
-                retry_after=parse_retry_after(getattr(resp, "headers", None)),
-            )
-        raise AssertionError("unreachable")
-
-    def complete(
-        self,
-        model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        *,
-        effort: str | None = None,
-    ) -> CompletionResult:
-        url = f"{self.base_url}/chat/completions"
-        headers = self._headers()
-        resp = None
-        for _ in range(3):
-            body = self._build_body(
-                model=model,
-                messages=messages,
-                tools=tools,
-                stream=False,
-                effort=effort,
-            )
-            resp = self._http.post(url, json=body, headers=headers)
-            if resp.status_code < 400:
-                break
-            err_text = resp.text
-            if self._maybe_downgrade_capabilities(resp.status_code, err_text, body):
-                continue
-            raise provider_error(
-                self.base_url,
-                resp.status_code,
-                err_text,
-                retry_after=parse_retry_after(getattr(resp, "headers", None)),
-            )
-
-        assert resp is not None
-        return _parse_completion_payload(resp.json())
-
-    async def astream(
-        self,
-        model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        *,
-        effort: str | None = None,
-    ) -> AsyncStreamHandle:
         url = f"{self.base_url}/chat/completions"
         headers = self._headers()
         client = self._get_async_http()
@@ -390,7 +314,7 @@ class OpenAIProvider:
             ctx = client.stream("POST", url, json=body, headers=headers)
             resp = await ctx.__aenter__()
             if resp.status_code < 400:
-                return AsyncSSEStreamHandle(
+                return SSEStreamHandle(
                     ctx, resp, provider=self.base_url, parse=_openai_events
                 )
             try:
@@ -408,7 +332,7 @@ class OpenAIProvider:
             )
         raise AssertionError("unreachable")
 
-    async def acomplete(
+    async def complete(
         self,
         model: str,
         messages: list[dict[str, Any]],
@@ -446,7 +370,8 @@ class OpenAIProvider:
 
     def _fetch_raw_models(self) -> list[Any]:
         url = f"{self.base_url}/models"
-        resp = self._http.get(url, headers=self._headers())
+        with httpx2.Client(timeout=self._timeout) as client:
+            resp = client.get(url, headers=self._headers())
         if resp.status_code >= 400:
             raise provider_error(
                 self.base_url,
@@ -469,10 +394,6 @@ class OpenAIProvider:
         """
         items = self._fetch_raw_models() if raw is None else raw
         return parse_model_details(items)
-
-    def close(self) -> None:
-        if self._owns_http:
-            self._http.close()
 
     async def aclose(self) -> None:
         client = self._async_client

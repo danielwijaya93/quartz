@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
-from collections.abc import Callable
+import inspect
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
@@ -61,7 +63,10 @@ class CommandResult:
         return cls(kind="needs_terminal", message=message)
 
 
-CommandHandler = Callable[["AgentRuntime", str], "CommandResult | None"]
+CommandHandler = Callable[
+    ["AgentRuntime", str],
+    "CommandResult | Awaitable[CommandResult | None] | None",
+]
 
 #: Set on a handler that answers outside a terminal too, even though its command is
 #: registered `needs_terminal`. The flag stays because the *terminal* owns these
@@ -189,6 +194,22 @@ class CommandRegistry:
         lines.extend(["", "Keybindings:", *keys])
         return "\n".join(lines)
 
+    async def handle_async(self, rt: AgentRuntime, user_input: str) -> CommandResult | None:
+        """Run the command a line invokes asynchronously, if any."""
+        trimmed = user_input.strip()
+        if not trimmed.startswith("/"):
+            return None
+        parts = trimmed.split(maxsplit=1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        cmd = self.lookup(trimmed)
+        if cmd is None:
+            return None
+        res = cmd.handler(rt, arg)
+        if inspect.isawaitable(res):
+            return await res
+        return res
+
     def handle(self, rt: AgentRuntime, user_input: str) -> CommandResult | None:
         """Run the command a line invokes, if any. ``None`` means "not a command"."""
         trimmed = user_input.strip()
@@ -200,7 +221,10 @@ class CommandRegistry:
         cmd = self.lookup(trimmed)
         if cmd is None:
             return None
-        return cmd.handler(rt, arg)
+        res = cmd.handler(rt, arg)
+        if inspect.isawaitable(res):
+            return asyncio.run(res)
+        return res
 
 
 COMMAND_REGISTRY = CommandRegistry()

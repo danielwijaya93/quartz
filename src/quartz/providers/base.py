@@ -1,14 +1,11 @@
-"""Unified provider protocol, stream events, and shared SSE framing."""
+"""Unified async provider protocol, stream events, and shared SSE framing."""
 
 from __future__ import annotations
 
-import asyncio
-import concurrent.futures
 import contextlib
 import dataclasses
 import json
-import threading
-from collections.abc import AsyncIterator, Callable, Iterable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterable
 from typing import Any, Protocol, cast
 
 from quartz.errors import ProviderError, is_context_overflow, provider_error
@@ -71,16 +68,9 @@ class CompletionResult:
 
 
 class StreamHandle(Protocol):
-    def __iter__(self) -> Iterator[StreamEvent]: ...
-    def close(self) -> None: ...
-    def __enter__(self) -> StreamHandle: ...
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None: ...
-
-
-class AsyncStreamHandle(Protocol):
     def __aiter__(self) -> AsyncIterator[StreamEvent]: ...
     async def aclose(self) -> None: ...
-    async def __aenter__(self) -> AsyncStreamHandle: ...
+    async def __aenter__(self) -> StreamHandle: ...
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None: ...
 
 
@@ -88,7 +78,7 @@ class LLMProvider(Protocol):
     @property
     def capabilities(self) -> ProviderCapabilities: ...
 
-    def stream(
+    async def stream(
         self,
         model: str,
         messages: list[dict[str, Any]],
@@ -97,7 +87,7 @@ class LLMProvider(Protocol):
         effort: str | None = None,
     ) -> StreamHandle: ...
 
-    def complete(
+    async def complete(
         self,
         model: str,
         messages: list[dict[str, Any]],
@@ -107,31 +97,6 @@ class LLMProvider(Protocol):
     ) -> CompletionResult: ...
 
     def list_models(self) -> list[str]: ...
-    def close(self) -> None: ...
-
-
-class AsyncLLMProvider(Protocol):
-    @property
-    def capabilities(self) -> ProviderCapabilities: ...
-
-    async def astream(
-        self,
-        model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        *,
-        effort: str | None = None,
-    ) -> AsyncStreamHandle: ...
-
-    async def acomplete(
-        self,
-        model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        *,
-        effort: str | None = None,
-    ) -> CompletionResult: ...
-
     async def aclose(self) -> None: ...
 
 
@@ -236,36 +201,13 @@ def _flush_sse_lines(
     return _parse_sse_frame(data_lines, provider=provider)
 
 
-def iter_sse_events(
-    resp: Any,
-    *,
-    provider: str,
-    is_closed: Callable[[], bool] | None = None,
-) -> Iterator[dict[str, Any]]:
-    """Yield decoded JSON objects from an SSE response stream."""
-    data_lines: list[str] = []
-    for raw_line in resp.iter_lines():
-        if is_closed is not None and is_closed():
-            return
-        done, parsed = _feed_sse_line(raw_line, data_lines, provider=provider)
-        if done:
-            return
-        if parsed is not None:
-            yield parsed
-
-    if not (is_closed is not None and is_closed()):
-        parsed = _flush_sse_lines(data_lines, provider=provider)
-        if parsed is not None:
-            yield parsed
-
-
 async def aiter_sse_events(
     resp: Any,
     *,
     provider: str,
     is_closed: Callable[[], bool] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Async counterpart of :func:`iter_sse_events`."""
+    """Yield decoded JSON objects from an async SSE response stream."""
     data_lines: list[str] = []
     lines_fn = getattr(resp, "aiter_lines", None)
     line_iter: AsyncIterator[str | bytes] = (
@@ -289,59 +231,7 @@ async def aiter_sse_events(
 
 
 class SSEStreamHandle:
-    """StreamHandle over an SSE response; each provider supplies only a parser.
-
-    Owns the one cross-thread close contract: ``close()`` is idempotent, safe to call
-    from another thread while ``__iter__`` is blocked in ``iter_lines()``, and always
-    releases the request context.
-    """
-
-    def __init__(
-        self,
-        ctx: Any,
-        resp: Any,
-        *,
-        provider: str,
-        parse: Callable[[dict[str, Any]], Iterable[StreamEvent]],
-    ) -> None:
-        self._ctx = ctx
-        self._resp = resp
-        self._provider = provider
-        self._parse = parse
-        self._closed = False
-        self._lock = threading.Lock()
-
-    def __enter__(self) -> SSEStreamHandle:
-        return self
-
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        self.close()
-
-    def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            ctx = self._ctx
-            self._ctx = None
-        if ctx is not None:
-            with contextlib.suppress(Exception):
-                ctx.__exit__(None, None, None)
-
-    def __iter__(self) -> Iterator[StreamEvent]:
-        try:
-            for payload in iter_sse_events(
-                self._resp,
-                provider=self._provider,
-                is_closed=lambda: self._closed,
-            ):
-                yield from self._parse(payload)
-        finally:
-            self.close()
-
-
-class AsyncSSEStreamHandle:
-    """AsyncStreamHandle over an async SSE response or line iterator."""
+    """Async StreamHandle over an async SSE response or line iterator."""
 
     def __init__(
         self,
@@ -357,7 +247,7 @@ class AsyncSSEStreamHandle:
         self._parse = parse
         self._closed = False
 
-    async def __aenter__(self) -> AsyncSSEStreamHandle:
+    async def __aenter__(self) -> SSEStreamHandle:
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
@@ -394,7 +284,7 @@ class AsyncSSEStreamHandle:
 
 
 class _CompletionAccumulator:
-    """Shared event accumulator for sync and async completion collection."""
+    """Shared event accumulator for completion collection."""
 
     def __init__(self) -> None:
         self.text_parts: list[str] = []
@@ -437,138 +327,10 @@ class _CompletionAccumulator:
         )
 
 
-def collect_completion(stream_handle: StreamHandle) -> CompletionResult:
-    """Consume a StreamHandle into a single CompletionResult."""
-    acc = _CompletionAccumulator()
-    with stream_handle as events:
-        for event in events:
-            acc.feed(event)
-    return acc.build()
-
-
-async def collect_completion_async(stream_handle: AsyncStreamHandle) -> CompletionResult:
-    """Consume an AsyncStreamHandle into a single CompletionResult."""
+async def collect_completion(stream_handle: StreamHandle) -> CompletionResult:
+    """Consume an async StreamHandle into a single CompletionResult."""
     acc = _CompletionAccumulator()
     async with stream_handle as events:
         async for event in events:
             acc.feed(event)
     return acc.build()
-
-
-_STREAM_SENTINEL = object()
-
-
-@dataclasses.dataclass
-class _StreamErrorBox:
-    exc: BaseException
-
-
-class _SyncToAsyncStreamHandle:
-    """Adapt a synchronous ``StreamHandle`` to ``AsyncStreamHandle`` via a bounded queue."""
-
-    def __init__(self, handle: StreamHandle, *, maxsize: int = 64) -> None:
-        self._handle = handle
-        self._queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=maxsize)
-        self._closed = False
-        self._producer_task: asyncio.Task[None] | None = None
-        self._fut_lock = threading.Lock()
-        self._pending_put: concurrent.futures.Future[None] | None = None
-
-    async def __aenter__(self) -> _SyncToAsyncStreamHandle:
-        return self
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        await self.aclose()
-
-    def _put_sentinel_nowait(self) -> None:
-        if self._queue.full():
-            with contextlib.suppress(asyncio.QueueEmpty):
-                self._queue.get_nowait()
-        with contextlib.suppress(asyncio.QueueFull):
-            self._queue.put_nowait(_STREAM_SENTINEL)
-
-    def _pump(self, loop: asyncio.AbstractEventLoop) -> None:
-        try:
-            with self._handle as events:
-                for event in events:
-                    if self._closed:
-                        break
-                    fut = asyncio.run_coroutine_threadsafe(self._queue.put(event), loop)
-                    with self._fut_lock:
-                        self._pending_put = fut
-                    try:
-                        fut.result()
-                    finally:
-                        with self._fut_lock:
-                            self._pending_put = None
-        except BaseException as exc:
-            if not self._closed:
-                with contextlib.suppress(Exception):
-                    asyncio.run_coroutine_threadsafe(
-                        self._queue.put(_StreamErrorBox(exc)), loop
-                    ).result()
-        finally:
-            with contextlib.suppress(Exception):
-                loop.call_soon_threadsafe(self._put_sentinel_nowait)
-
-    async def aclose(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        with self._fut_lock:
-            if self._pending_put is not None:
-                self._pending_put.cancel()
-        while not self._queue.empty():
-            with contextlib.suppress(asyncio.QueueEmpty):
-                self._queue.get_nowait()
-        with contextlib.suppress(Exception):
-            await asyncio.to_thread(self._handle.close)
-        if self._producer_task is not None:
-            with contextlib.suppress(Exception):
-                await self._producer_task
-            self._producer_task = None
-
-    async def __aiter__(self) -> AsyncIterator[StreamEvent]:
-        loop = asyncio.get_running_loop()
-        self._producer_task = asyncio.create_task(asyncio.to_thread(self._pump, loop))
-        try:
-            while True:
-                item = await self._queue.get()
-                if item is _STREAM_SENTINEL:
-                    break
-                if isinstance(item, _StreamErrorBox):
-                    raise item.exc
-                yield item
-        finally:
-            await self.aclose()
-
-
-async def astream_provider(
-    provider: Any,
-    model: str,
-    messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]] | None = None,
-    *,
-    effort: str | None = None,
-) -> AsyncStreamHandle:
-    """Stream from ``provider`` natively via ``astream`` or adapt sync ``stream``."""
-    astream_fn = getattr(provider, "astream", None)
-    if callable(astream_fn):
-        return await cast(Any, astream_fn)(model, messages, tools, effort=effort)
-    handle = await asyncio.to_thread(provider.stream, model, messages, tools, effort=effort)
-    return _SyncToAsyncStreamHandle(handle)
-
-
-async def acomplete_provider(
-    provider: Any,
-    model: str,
-    messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]] | None = None,
-    *,
-    effort: str | None = None,
-) -> CompletionResult:
-    """Complete from ``provider`` natively via ``acomplete`` or adapt sync ``complete``."""
-    acomplete_fn = getattr(provider, "acomplete", None)
-    if callable(acomplete_fn):
-        return await cast(Any, acomplete_fn)(model, messages, tools, effort=effort)
-    return await asyncio.to_thread(provider.complete, model, messages, tools, effort=effort)

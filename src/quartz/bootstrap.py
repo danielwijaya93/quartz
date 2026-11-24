@@ -78,23 +78,27 @@ class LazyClient:
     def capabilities(self) -> ProviderCapabilities:
         return self.client.capabilities
 
-    def stream(self, *args: Any, **kwargs: Any) -> Any:
-        return self.client.stream(*args, **kwargs)
+    async def stream(self, *args: Any, **kwargs: Any) -> Any:
+        return await self.client.stream(*args, **kwargs)
 
-    def complete(self, *args: Any, **kwargs: Any) -> Any:
-        return self.client.complete(*args, **kwargs)
+    async def complete(self, *args: Any, **kwargs: Any) -> Any:
+        return await self.client.complete(*args, **kwargs)
 
     def list_models(self) -> list[str]:
         return self.client.list_models()
 
-    def close(self) -> None:
+    async def aclose(self) -> None:
         with self._lock:
-            if self._resolved is not None:
-                c = self._resolved[0]
-                if hasattr(c, "close"):
-                    with contextlib.suppress(Exception):
-                        c.close()
-                self._resolved = None
+            resolved = self._resolved
+            self._resolved = None
+        if resolved is not None:
+            c = resolved[0]
+            if hasattr(c, "aclose"):
+                with contextlib.suppress(Exception):
+                    await c.aclose()
+            elif hasattr(c, "close"):
+                with contextlib.suppress(Exception):
+                    c.close()
 
 
 @dataclasses.dataclass(frozen=True)

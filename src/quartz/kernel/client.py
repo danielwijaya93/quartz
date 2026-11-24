@@ -677,18 +677,11 @@ class KernelClient:
             files=list(resp.get("files") or []),
         )
 
-    def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
+    async def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
         self.dirty = True
         # A headless cell waits for the `bash()` jobs it started (see
         # `KernelWorker._run_cell_jobs_inline`), so the client must not time it out
         # first: the command's own `timeout=` is what bounds the wait there.
-        if self._headless:
-            timeout = None
-        resp = self._request({"type": "exec", "code": code}, timeout=timeout)
-        return self._format_exec_response(resp)
-
-    async def aexec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
-        self.dirty = True
         if self._headless:
             timeout = None
         resp = await self._request_async({"type": "exec", "code": code}, timeout=timeout)
@@ -797,7 +790,7 @@ class KernelClient:
         for loop, fut in waiters:
             self._resolve_async_future(loop, fut, has_events)
 
-    async def await_event(self, timeout: float | None = None) -> bool:
+    async def wait_event(self, timeout: float | None = None) -> bool:
         """Asynchronously wait until a kernel event is pending (zero polling)."""
         loop = asyncio.get_running_loop()
         with self._events_cond:
@@ -817,25 +810,6 @@ class KernelClient:
         finally:
             with self._events_cond, contextlib.suppress(ValueError):
                 self._event_waiters.remove(entry)
-
-    def wait_until_event(self, stop_event: threading.Event, timeout: float | None = 0.25) -> bool:
-        """Block until a kernel event arrives or `stop_event` is set. Returns True if events are pending.
-
-        Callers that invoke :meth:`wake_event_waiters` alongside ``stop_event.set()``
-        may pass ``timeout=None`` for zero-polling blocking waits.
-        """
-        while not stop_event.is_set():
-            with self._events_cond:
-                if self._events:
-                    return True
-                if self._worker_exited:
-                    return False
-                self._events_cond.wait(timeout=timeout)
-                if self._events:
-                    return True
-                if self._worker_exited:
-                    return False
-        return False
 
     def wait_for_events(self, timeout: float | None = None) -> list[dict[str, Any]]:
         with self._events_cond:

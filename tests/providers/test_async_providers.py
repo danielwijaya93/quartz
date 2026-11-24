@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -14,19 +14,16 @@ import pytest
 
 from quartz.errors import ProviderError
 from quartz.providers.base import (
-    AsyncSSEStreamHandle,
+    SSEStreamHandle,
     CompletionResult,
-    ProviderCapabilities,
-    StreamEvent,
+    SSEStreamHandle,
     TextDelta,
     ThinkingDelta,
     ToolCall,
     ToolCallDelta,
     Usage,
     UsageEvent,
-    acomplete_provider,
-    astream_provider,
-    collect_completion_async,
+    collect_completion,
 )
 from quartz.providers.google import GoogleAntigravityProvider, parse_sse_payload
 from quartz.providers.http_pool import (
@@ -137,7 +134,7 @@ class _FakeAsyncClient:
 
 
 # ---------------------------------------------------------------------------
-# AsyncSSEStreamHandle
+# SSEStreamHandle
 # ---------------------------------------------------------------------------
 
 
@@ -194,19 +191,19 @@ def test_async_sse_stream_handle_parses_events_and_closes() -> None:
     ctx = _FakeAsyncCtx(resp)
 
     async def _run() -> tuple[list[StreamEvent], CompletionResult]:
-        handle = AsyncSSEStreamHandle(ctx, resp, provider="openai", parse=_openai_events)
+        handle = SSEStreamHandle(ctx, resp, provider="openai", parse=_openai_events)
         events: list[StreamEvent] = []
         async with handle as stream:
             async for ev in stream:
                 events.append(ev)
 
-        # Also verify collect_completion_async on a direct AsyncIterator[str]
+        # Also verify collect_completion on a direct AsyncIterator[str]
         async def _line_iter() -> AsyncIterator[str]:
             for ln in lines:
                 yield ln
 
-        handle2 = AsyncSSEStreamHandle(None, _line_iter(), provider="openai", parse=_openai_events)
-        result = await collect_completion_async(handle2)
+        handle2 = SSEStreamHandle(None, _line_iter(), provider="openai", parse=_openai_events)
+        result = await collect_completion(handle2)
         return events, result
 
     events, result = asyncio.run(_run())
@@ -229,7 +226,7 @@ def test_async_sse_stream_handle_raises_on_sse_error_and_early_close() -> None:
     ctx = _FakeAsyncCtx(resp)
 
     async def _run_error() -> None:
-        handle = AsyncSSEStreamHandle(ctx, resp, provider="openai", parse=_openai_events)
+        handle = SSEStreamHandle(ctx, resp, provider="openai", parse=_openai_events)
         async with handle as stream:
             async for _ in stream:
                 pass
@@ -250,7 +247,7 @@ def test_async_sse_stream_handle_raises_on_sse_error_and_early_close() -> None:
     ctx2 = _FakeAsyncCtx(resp2)
 
     async def _run_early_break() -> str:
-        handle = AsyncSSEStreamHandle(ctx2, resp2, provider="openai", parse=_openai_events)
+        handle = SSEStreamHandle(ctx2, resp2, provider="openai", parse=_openai_events)
         async with handle as stream:
             async for ev in stream:
                 if isinstance(ev, TextDelta):
@@ -307,10 +304,10 @@ def test_openai_provider_astream_and_acomplete() -> None:
     provider = OpenAIProvider(api_key="sk-test", base_url="https://api.example.com/v1", async_http_client=client)  # type: ignore[arg-type]
 
     async def _run() -> tuple[CompletionResult, CompletionResult]:
-        stream_res = await collect_completion_async(
-            await provider.astream("gpt-4o", [{"role": "user", "content": "hi"}], effort="medium")
+        stream_res = await collect_completion(
+            await provider.stream("gpt-4o", [{"role": "user", "content": "hi"}], effort="medium")
         )
-        comp_res = await provider.acomplete("gpt-4o", [{"role": "user", "content": "hi"}])
+        comp_res = await provider.complete("gpt-4o", [{"role": "user", "content": "hi"}])
         await provider.aclose()
         return stream_res, comp_res
 
@@ -338,11 +335,11 @@ def test_openai_provider_astream_error_downgrade_and_owned_aclose() -> None:
     provider = OpenAIProvider(api_key="sk-test", async_http_client=client)  # type: ignore[arg-type]
 
     async def _run() -> CompletionResult:
-        res = await collect_completion_async(
-            await provider.astream("gpt-4o", [{"role": "user", "content": "hi"}])
+        res = await collect_completion(
+            await provider.stream("gpt-4o", [{"role": "user", "content": "hi"}])
         )
         with pytest.raises(ProviderError) as exc_info:
-            await provider.astream("gpt-4o", [{"role": "user", "content": "hi"}])
+            await provider.stream("gpt-4o", [{"role": "user", "content": "hi"}])
         assert exc_info.value.status_code == 500
         return res
 
@@ -417,12 +414,12 @@ def test_google_provider_astream_401_refresh_and_acomplete() -> None:
     ):
         async def _run() -> tuple[list[StreamEvent], CompletionResult]:
             events: list[StreamEvent] = []
-            async with await provider.astream(
+            async with await provider.stream(
                 "gemini-3.8-flash", [{"role": "user", "content": "hi"}]
             ) as stream:
                 async for ev in stream:
                     events.append(ev)
-            comp = await provider.acomplete(
+            comp = await provider.complete(
                 "gemini-3.8-flash", [{"role": "user", "content": "hi"}]
             )
             await provider.aclose()
@@ -439,132 +436,6 @@ def test_google_provider_astream_401_refresh_and_acomplete() -> None:
     assert client.closed is False
     assert all(ctx.exited for ctx in client.contexts)
     assert parse_sse_payload({}, [0]) == []
-
-
-# ---------------------------------------------------------------------------
-# Universal adapters: astream_provider & acomplete_provider
-# ---------------------------------------------------------------------------
-
-
-class _NativeAsyncProvider:
-    capabilities = ProviderCapabilities()
-
-    def __init__(self) -> None:
-        self.astream_called = False
-        self.acomplete_called = False
-
-    async def astream(
-        self,
-        model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        *,
-        effort: str | None = None,
-    ) -> AsyncSSEStreamHandle:
-        self.astream_called = True
-
-        async def _lines() -> AsyncIterator[str]:
-            yield "data: " + json.dumps({"choices": [{"delta": {"content": "native"}}]})
-            yield ""
-            yield "data: [DONE]"
-            yield ""
-
-        return AsyncSSEStreamHandle(None, _lines(), provider="native", parse=_openai_events)
-
-    async def acomplete(
-        self,
-        model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        *,
-        effort: str | None = None,
-    ) -> CompletionResult:
-        self.acomplete_called = True
-        return CompletionResult(text="native-complete", tool_calls=[], usage=Usage(1, 2, 0))
-
-    async def aclose(self) -> None:
-        return None
-
-
-class _SyncStreamHandle:
-    def __init__(self, events: list[StreamEvent]) -> None:
-        self._events = events
-        self.closed = False
-
-    def __iter__(self) -> Iterator[StreamEvent]:
-        yield from self._events
-
-    def close(self) -> None:
-        self.closed = True
-
-    def __enter__(self) -> _SyncStreamHandle:
-        return self
-
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        self.close()
-
-
-class _SyncOnlyProvider:
-    capabilities = ProviderCapabilities()
-
-    def __init__(self) -> None:
-        self.last_handle: _SyncStreamHandle | None = None
-
-    def stream(
-        self,
-        model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        *,
-        effort: str | None = None,
-    ) -> _SyncStreamHandle:
-        self.last_handle = _SyncStreamHandle(
-            [TextDelta(text="sync-"), TextDelta(text="stream"), UsageEvent(Usage(3, 4, 0))]
-        )
-        return self.last_handle
-
-    def complete(
-        self,
-        model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        *,
-        effort: str | None = None,
-    ) -> CompletionResult:
-        return CompletionResult(text="sync-complete", tool_calls=[], usage=Usage(5, 6, 0))
-
-    def list_models(self) -> list[str]:
-        return ["m1"]
-
-    def close(self) -> None:
-        return None
-
-
-def test_adapters_native_and_sync_fallback() -> None:
-    native = _NativeAsyncProvider()
-    sync_only = _SyncOnlyProvider()
-
-    async def _run() -> None:
-        n_res = await collect_completion_async(
-            await astream_provider(native, "m", [{"role": "user", "content": "hi"}])
-        )
-        n_comp = await acomplete_provider(native, "m", [{"role": "user", "content": "hi"}])
-        assert native.astream_called is True
-        assert native.acomplete_called is True
-        assert n_res.text == "native"
-        assert n_comp.text == "native-complete"
-
-        s_res = await collect_completion_async(
-            await astream_provider(sync_only, "m", [{"role": "user", "content": "hi"}])
-        )
-        s_comp = await acomplete_provider(sync_only, "m", [{"role": "user", "content": "hi"}])
-        assert s_res.text == "sync-stream"
-        assert s_res.usage == Usage(3, 4, 0)
-        assert sync_only.last_handle is not None and sync_only.last_handle.closed is True
-        assert s_comp.text == "sync-complete"
-        assert s_comp.usage == Usage(5, 6, 0)
-
-    asyncio.run(_run())
 
 
 # ---------------------------------------------------------------------------

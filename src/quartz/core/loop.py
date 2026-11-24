@@ -6,9 +6,6 @@ import asyncio
 import contextlib
 import dataclasses
 import json
-import queue
-import threading
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from quartz.core.background import format_bash_events
@@ -17,7 +14,6 @@ from quartz.core.compact import (
     CompactionReason,
     CompactionResult,
     compact_messages,
-    compact_messages_async,
     estimate_context_tokens,
 )
 from quartz.core.events import NO_OBSERVER, TurnObserver
@@ -25,9 +21,8 @@ from quartz.core.images import prune_old_images
 from quartz.core.progress import ProgressCheckpointer, announced_to_user
 from quartz.core.session import repair_dangling_tool_calls
 from quartz.errors import ContextOverflowError
-from quartz.kernel.base import CellExecutor, CellResult, Kernel, exec_cell_async
+from quartz.kernel.base import CellExecutor, CellResult, Kernel
 from quartz.providers.base import (
-    AsyncLLMProvider,
     CompletionResult,
     LLMProvider,
     TextDelta,
@@ -35,8 +30,6 @@ from quartz.providers.base import (
     ToolCallDelta,
     Usage,
     UsageEvent,
-    acomplete_provider,
-    astream_provider,
 )
 
 __all__ = [
@@ -44,7 +37,6 @@ __all__ = [
     "TurnAborted",
     "TurnUsage",
     "agent_loop",
-    "agent_loop_async",
     "drain_bash_events",
 ]
 
@@ -200,147 +192,10 @@ def _completion_to_dict(result: CompletionResult) -> dict[str, Any]:
     return out
 
 
-def _call_model(
-    client: LLMProvider,
-    model: str,
-    full_messages: list[dict[str, Any]],
-    *,
-    stream: bool,
-    observer: TurnObserver = NO_OBSERVER,
-    effort: str | None = None,
-    abort_event: threading.Event | None = None,
-    steering_queue: queue.Queue[str] | None = None,
-) -> tuple[dict[str, Any], Usage | None]:
-    """Call provider (streaming or non-streaming) and return (assistant_dict, usage)."""
-    if abort_event is not None and abort_event.is_set():
-        raise TurnAborted()
-
-    if not stream:
-        observer.on_status("Thinking...")
-        try:
-            result = client.complete(
-                model=model,
-                messages=full_messages,
-                tools=TOOLS,
-                effort=effort,
-            )
-        finally:
-            observer.on_status(None)
-        if abort_event is not None and abort_event.is_set():
-            raise TurnAborted()
-        return _completion_to_dict(result), result.usage
-
-    observer.on_status("Thinking...")
-    stream_done = threading.Event()
-    preempted = threading.Event()
-    aborted_stream = threading.Event()
-    content_parts: list[str] = []
-    thinking_parts: list[str] = []
-    tool_calls_acc: dict[int, dict[str, Any]] = {}
-    usage: Usage | None = None
-    try:
-        stream_handle = client.stream(
-            model=model,
-            messages=full_messages,
-            tools=TOOLS,
-            effort=effort,
-        )
-
-        if abort_event is not None or steering_queue is not None:
-            def _watch_preempt() -> None:
-                while not stream_done.is_set():
-                    if abort_event is not None and abort_event.is_set():
-                        aborted_stream.set()
-                        with contextlib.suppress(Exception):
-                            stream_handle.close()
-                        return
-                    if steering_queue is not None and not steering_queue.empty():
-                        preempted.set()
-                        with contextlib.suppress(Exception):
-                            stream_handle.close()
-                        return
-                    if stream_done.wait(timeout=0.05):
-                        return
-
-            threading.Thread(target=_watch_preempt, daemon=True).start()
-
-        status_cleared = False
-
-        with stream_handle as events:
-            for event in events:
-                if abort_event is not None and abort_event.is_set():
-                    aborted_stream.set()
-                    raise TurnAborted()
-                if steering_queue is not None and not steering_queue.empty():
-                    preempted.set()
-                    with contextlib.suppress(Exception):
-                        stream_handle.close()
-                    break
-
-                if isinstance(event, UsageEvent):
-                    usage = event.usage
-                elif isinstance(event, ThinkingDelta):
-                    if event.text:
-                        thinking_parts.append(event.text)
-                        observer.on_thinking_delta(event.text)
-                elif isinstance(event, TextDelta):
-                    if event.text:
-                        if not status_cleared:
-                            observer.on_status(None)
-                            status_cleared = True
-                        content_parts.append(event.text)
-                        observer.on_text_delta(event.text)
-                elif isinstance(event, ToolCallDelta):
-                    entry = tool_calls_acc.setdefault(
-                        event.index,
-                        {"id": "", "name": "", "arguments": "", "meta": {}},
-                    )
-                    if event.id:
-                        entry["id"] = event.id
-                    if event.name:
-                        entry["name"] += event.name
-                    if event.arguments_delta:
-                        entry["arguments"] += event.arguments_delta
-                    if event.meta:
-                        entry["meta"].update(event.meta)
-    except Exception:
-        if aborted_stream.is_set() or (abort_event is not None and abort_event.is_set()):
-            raise TurnAborted() from None
-        if not preempted.is_set():
-            raise
-    finally:
-        stream_done.set()
-        observer.on_status(None)
-
-    if preempted.is_set():
-        tool_calls_acc.clear()
-        content_parts.clear()
-        thinking_parts.clear()
-
-    assistant_dict: dict[str, Any] = {
-        "role": "assistant",
-        "content": "".join(content_parts) if content_parts else None,
-    }
-    reasoning_text = "".join(thinking_parts)
-    if reasoning_text:
-        assistant_dict["reasoning"] = reasoning_text
-    if tool_calls_acc:
-        tc_list: list[dict[str, Any]] = []
-        for _, entry in sorted(tool_calls_acc.items()):
-            tc_obj: dict[str, Any] = {
-                "id": entry["id"],
-                "type": "function",
-                "function": {"name": entry["name"], "arguments": entry["arguments"]},
-            }
-            if entry["meta"].get("thought_signature"):
-                tc_obj["thought_signature"] = entry["meta"]["thought_signature"]
-            tc_list.append(tc_obj)
-        assistant_dict["tool_calls"] = tc_list
-    return assistant_dict, usage
 
 
 def _drain_steering(
-    steering_queue: asyncio.Queue[str] | queue.Queue[str] | None,
+    steering_queue: asyncio.Queue[str] | None,
     messages: list[dict[str, Any]],
     observer: TurnObserver = NO_OBSERVER,
 ) -> list[str]:
@@ -351,7 +206,7 @@ def _drain_steering(
     while True:
         try:
             text = steering_queue.get_nowait().strip()
-        except (queue.Empty, asyncio.QueueEmpty):
+        except asyncio.QueueEmpty:
             break
         if not text:
             continue
@@ -361,16 +216,16 @@ def _drain_steering(
     return injected
 
 
-async def _wait_preempt_async(
-    abort_event: asyncio.Event | threading.Event | None,
-    steering_queue: asyncio.Queue[str] | queue.Queue[str] | None,
+async def _wait_preempt(
+    abort_event: asyncio.Event | None,
+    steering_queue: asyncio.Queue[str] | None,
 ) -> str:
     """Wait until either abort is requested or a steering message arrives."""
     if abort_event is not None and abort_event.is_set():
         return "abort"
     if steering_queue is not None and not steering_queue.empty():
         return "steer"
-    if isinstance(abort_event, asyncio.Event) and steering_queue is None:
+    if abort_event is not None and steering_queue is None:
         await abort_event.wait()
         return "abort"
     while True:
@@ -381,26 +236,25 @@ async def _wait_preempt_async(
         await asyncio.sleep(0.02)
 
 
-async def _call_model_async(
-    client: LLMProvider | AsyncLLMProvider,
+async def _call_model(
+    client: LLMProvider,
     model: str,
     full_messages: list[dict[str, Any]],
     *,
     stream: bool,
     observer: TurnObserver = NO_OBSERVER,
     effort: str | None = None,
-    abort_event: asyncio.Event | threading.Event | None = None,
-    steering_queue: asyncio.Queue[str] | queue.Queue[str] | None = None,
+    abort_event: asyncio.Event | None = None,
+    steering_queue: asyncio.Queue[str] | None = None,
 ) -> tuple[dict[str, Any], Usage | None]:
-    """Native async provider call (streaming or non-streaming)."""
+    """Async provider call (streaming or non-streaming)."""
     if abort_event is not None and abort_event.is_set():
         raise TurnAborted()
 
     if not stream:
         observer.on_status("Thinking...")
         try:
-            result = await acomplete_provider(
-                client,
+            result = await client.complete(
                 model=model,
                 messages=full_messages,
                 tools=TOOLS,
@@ -421,15 +275,14 @@ async def _call_model_async(
     usage: Usage | None = None
     preempt_task: asyncio.Task[str] | None = None
     try:
-        stream_handle = await astream_provider(
-            client,
+        stream_handle = await client.stream(
             model=model,
             messages=full_messages,
             tools=TOOLS,
             effort=effort,
         )
         if abort_event is not None or steering_queue is not None:
-            preempt_task = asyncio.create_task(_wait_preempt_async(abort_event, steering_queue))
+            preempt_task = asyncio.create_task(_wait_preempt(abort_event, steering_queue))
 
         status_cleared = False
         async with stream_handle as events:
@@ -555,7 +408,8 @@ async def _call_model_async(
     return assistant_dict, usage
 
 
-def agent_loop(
+
+async def agent_loop(
     client: LLMProvider,
     model: str,
     system_prompt: str,
@@ -570,249 +424,11 @@ def agent_loop(
     usage_stats: TurnUsage | None = None,
     initial_prompt_tokens: int = 0,
     effort: str | None = None,
-    abort_event: threading.Event | None = None,
-    steering_queue: queue.Queue[str] | None = None,
+    abort_event: asyncio.Event | None = None,
+    steering_queue: asyncio.Queue[str] | None = None,
     progress_every: int = 0,
 ) -> tuple[str, list[dict[str, Any]], int]:
-    """Run one turn of the agent loop until the model stops calling tools.
-
-    Every lifecycle event (streamed text, thinking, tool call/result, compaction,
-    background bash notices, steering) is reported to ``observer``; the default
-    observer ignores all of them. Returns (final_text, updated_messages,
-    last_prompt_tokens).
-
-    ``progress_every`` schedules user updates: every that many executed ipython
-    calls, a ``[progress]`` notice asks the model to tell the user where things
-    stand before carrying on in the same response. ``0`` (the default) never asks,
-    which is what a headless run wants.
-    """
-    messages[:] = repair_dangling_tool_calls(messages)
-    progress = ProgressCheckpointer(progress_every)
-    last_prompt_tokens = initial_prompt_tokens
-    # Number of leading messages already covered by `last_prompt_tokens`.
-    measured_message_count = max(0, len(messages) - 1) if initial_prompt_tokens > 0 else 0
-    system_tokens = estimate_context_tokens([{"role": "system", "content": system_prompt}])
-    compact_threshold = max(4096, max_context_tokens - compact_reserve_tokens)
-    overflow_recoveries = 0
-
-    def projected_prompt_tokens() -> int:
-        """Provider-reported size plus an estimate for messages appended since."""
-        return last_prompt_tokens + estimate_context_tokens(messages[measured_message_count:])
-
-    def run_compaction(*, budget: int | None, keep_tokens: int) -> CompactionResult:
-        nonlocal last_prompt_tokens, measured_message_count
-        result = compact_messages(
-            client,
-            model,
-            messages,
-            kernel,
-            budget_tokens=budget,
-            keep_recent_tokens=keep_tokens,
-        )
-        messages[:] = result.messages
-        if result.changed:
-            last_prompt_tokens = system_tokens + result.estimated_tokens_after
-            measured_message_count = len(messages)
-            observer.on_compaction(result)
-        return result
-
-    while True:
-        if abort_event is not None and abort_event.is_set():
-            raise TurnAborted()
-
-        notice = drain_bash_events(kernel, messages)
-        if notice:
-            observer.on_bash_notice(notice)
-
-        if projected_prompt_tokens() >= compact_threshold and len(messages) > 1:
-            run_compaction(budget=compact_threshold, keep_tokens=keep_recent_tokens)
-
-        # Scheduled user update: the harness owns the timing, the model the words.
-        # Injected after compaction so the request the model sees is never the one
-        # copy that got summarised away.
-        update_request = progress.take(user_was_told=announced_to_user(messages))
-        if update_request is not None:
-            messages.append(update_request)
-
-        full_messages = [{"role": "system", "content": system_prompt}, *prune_old_images(messages)]
-        try:
-            assistant_dict, usage = _call_model(
-                client,
-                model,
-                full_messages,
-                stream=stream,
-                observer=observer,
-                effort=effort,
-                abort_event=abort_event,
-                steering_queue=steering_queue,
-            )
-        except ContextOverflowError:
-            # The provider says the prompt is too long: compact harder, retry once.
-            if overflow_recoveries >= 1:
-                raise
-            overflow_recoveries += 1
-            forced = run_compaction(
-                budget=None,
-                keep_tokens=max(4_000, keep_recent_tokens // 2),
-            )
-            if forced.reason is not CompactionReason.SUMMARIZED:
-                raise
-            continue
-
-        if usage and usage.input_tokens:
-            last_prompt_tokens = int(usage.input_tokens)
-        measured_message_count = len(messages)
-        if usage_stats is not None and usage is not None:
-            usage_stats.update(usage)
-
-        tool_calls = assistant_dict.get("tool_calls") or []
-        if (
-            not tool_calls
-            and assistant_dict.get("content") is None
-            and _drain_steering(steering_queue, messages, observer)
-        ):
-            continue
-
-        # A checkpoint the model answered with work instead of words: hand back an
-        # error in place of the tool results, so the next thing it reads is what the
-        # user did not get. Thinking is not an update -- the user cannot see it.
-        answered = bool((assistant_dict.get("content") or "").strip())
-        progress.settle(updated=answered)
-        if not answered:
-            refusal = progress.refuse()
-            if refusal is not None:
-                if tool_calls:
-                    messages.append(assistant_dict)
-                    for tc in tool_calls:
-                        messages.append({"role": "tool", "tool_call_id": tc["id"], "content": refusal})
-                else:
-                    messages.append({"role": "user", "content": refusal})
-                continue
-
-        messages.append(assistant_dict)
-
-        if not tool_calls:
-            if _drain_steering(steering_queue, messages, observer):
-                continue
-            return (assistant_dict.get("content") or "").strip(), messages, last_prompt_tokens
-
-        parsed_calls: list[tuple[str, str, str | None]] = []
-        for tc in tool_calls:
-            fn_name = tc["function"]["name"]
-            tc_id = tc["id"]
-            if fn_name != "ipython":
-                parsed_calls.append((tc_id, fn_name, None))
-                continue
-            try:
-                args = json.loads(tc["function"]["arguments"] or "{}")
-                code = args.get("code", "")
-            except json.JSONDecodeError:
-                code = tc["function"]["arguments"] or ""
-            parsed_calls.append((tc_id, fn_name, code))
-
-        ipython_indices = [i for i, (_, fn, _) in enumerate(parsed_calls) if fn == "ipython"]
-        step_images: list[dict[str, str]] = []
-        results_by_idx: dict[int, CellResult] = {}
-
-        if ipython_indices:
-            for i in ipython_indices:
-                tc_id, _, code = parsed_calls[i]
-                observer.on_tool_call(tc_id, code or "")
-            observer.on_status("Running ipython...")
-            try:
-                if len(ipython_indices) > 1:
-                    with ThreadPoolExecutor(max_workers=min(len(ipython_indices), 8)) as pool:
-                        futures = {i: pool.submit(kernel.exec_cell, parsed_calls[i][2] or "") for i in ipython_indices}
-                        for i in ipython_indices:
-                            results_by_idx[i] = futures[i].result()
-                else:
-                    i = ipython_indices[0]
-                    results_by_idx[i] = kernel.exec_cell(parsed_calls[i][2] or "")
-            except (KeyboardInterrupt, TurnAborted) as exc:
-                observer.on_status(None)
-                kernel.interrupt()
-                marker = "[aborted by user]" if isinstance(exc, TurnAborted) else "[interrupted by user]"
-                for rem_tc in tool_calls:
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": rem_tc["id"],
-                            "content": marker,
-                        }
-                    )
-                raise
-            except Exception:
-                if messages and messages[-1] is assistant_dict:
-                    messages.pop()
-                raise
-            finally:
-                observer.on_status(None)
-
-        for i, (tc_id, fn_name, _) in enumerate(parsed_calls):
-            if fn_name != "ipython":
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc_id,
-                        "content": f"Unknown tool: {fn_name}. Only `ipython` is available.",
-                    }
-                )
-                continue
-            cell_res = results_by_idx[i]
-            if cell_res.images:
-                step_images.extend(cell_res.images)
-            observer.on_tool_result(tc_id, cell_res)
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc_id,
-                    "content": cell_res.format_for_model(),
-                }
-            )
-        progress.record(len(ipython_indices))
-
-        if step_images:
-            messages.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "[tool-images] Attached image(s) from tool output:"},
-                        *[
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:{img['mime_type']};base64,{img['data']}"},
-                            }
-                            for img in step_images
-                        ],
-                    ],
-                }
-            )
-
-        if abort_event is not None and abort_event.is_set():
-            raise TurnAborted()
-        _drain_steering(steering_queue, messages, observer)
-
-
-async def agent_loop_async(
-    client: LLMProvider | AsyncLLMProvider,
-    model: str,
-    system_prompt: str,
-    messages: list[dict[str, Any]],
-    kernel: Kernel,
-    *,
-    observer: TurnObserver = NO_OBSERVER,
-    max_context_tokens: int = 128_000,
-    compact_reserve_tokens: int = 16_384,
-    keep_recent_tokens: int = DEFAULT_KEEP_RECENT_TOKENS,
-    stream: bool = True,
-    usage_stats: TurnUsage | None = None,
-    initial_prompt_tokens: int = 0,
-    effort: str | None = None,
-    abort_event: asyncio.Event | threading.Event | None = None,
-    steering_queue: asyncio.Queue[str] | queue.Queue[str] | None = None,
-    progress_every: int = 0,
-) -> tuple[str, list[dict[str, Any]], int]:
-    """Native async variant of :func:`agent_loop`."""
+    """Run the pure-async single-tool (`ipython`) agent loop until completion or abort."""
     messages[:] = repair_dangling_tool_calls(messages)
     progress = ProgressCheckpointer(progress_every)
     last_prompt_tokens = initial_prompt_tokens
@@ -826,7 +442,7 @@ async def agent_loop_async(
 
     async def run_compaction(*, budget: int | None, keep_tokens: int) -> CompactionResult:
         nonlocal last_prompt_tokens, measured_message_count
-        result = await compact_messages_async(
+        result = await compact_messages(
             client,
             model,
             messages,
@@ -858,7 +474,7 @@ async def agent_loop_async(
 
         full_messages = [{"role": "system", "content": system_prompt}, *prune_old_images(messages)]
         try:
-            assistant_dict, usage = await _call_model_async(
+            assistant_dict, usage = await _call_model(
                 client,
                 model,
                 full_messages,
@@ -940,13 +556,13 @@ async def agent_loop_async(
             try:
                 if len(ipython_indices) > 1:
                     results = await asyncio.gather(
-                        *(exec_cell_async(kernel, parsed_calls[i][2] or "") for i in ipython_indices)
+                        *(kernel.exec_cell(parsed_calls[i][2] or "") for i in ipython_indices)
                     )
                     for i, cell_res in zip(ipython_indices, results, strict=True):
                         results_by_idx[i] = cell_res
                 else:
                     i = ipython_indices[0]
-                    results_by_idx[i] = await exec_cell_async(kernel, parsed_calls[i][2] or "")
+                    results_by_idx[i] = await kernel.exec_cell(parsed_calls[i][2] or "")
             except (KeyboardInterrupt, TurnAborted, asyncio.CancelledError) as exc:
                 observer.on_status(None)
                 kernel.interrupt()

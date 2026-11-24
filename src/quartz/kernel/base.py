@@ -2,22 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
-import threading
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
     "STATUS_TAIL_LINES",
-    "AsyncCellExecutor",
     "CellExecutor",
     "CellResult",
     "Kernel",
     "KernelIntrospector",
     "KernelSnapshotter",
-    "exec_cell_async",
-    "wait_event_async",
 ]
 
 STATUS_TAIL_LINES = 10
@@ -50,7 +45,7 @@ class CellResult:
 class CellExecutor(Protocol):
     """Executes code cells, interrupts execution, and drains async events."""
 
-    def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult: ...
+    async def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult: ...
 
     def interrupt(self) -> None: ...
 
@@ -58,40 +53,9 @@ class CellExecutor(Protocol):
 
     def has_pending_events(self) -> bool: ...
 
-    def wait_until_event(self, stop_event: threading.Event, timeout: float | None = 0.25) -> bool: ...
+    async def wait_event(self, timeout: float | None = None) -> bool: ...
 
     def consume_restart_notice(self) -> str | None: ...
-
-
-@runtime_checkable
-class AsyncCellExecutor(Protocol):
-    """Optional native-async extension for :class:`CellExecutor`."""
-
-    async def aexec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult: ...
-
-    async def await_event(self, timeout: float | None = None) -> bool: ...
-
-
-async def exec_cell_async(
-    kernel: CellExecutor, code: str, timeout: float | None = 300.0
-) -> CellResult:
-    """Execute *code* on *kernel* using native async when supported, else a worker thread."""
-    if isinstance(kernel, AsyncCellExecutor):
-        return await kernel.aexec_cell(code, timeout=timeout)
-    return await asyncio.to_thread(kernel.exec_cell, code, timeout)
-
-
-async def wait_event_async(kernel: CellExecutor, timeout: float | None = None) -> bool:
-    """Wait for a pending kernel event using native async when supported, else a worker thread."""
-    if isinstance(kernel, AsyncCellExecutor):
-        return await kernel.await_event(timeout=timeout)
-    if kernel.has_pending_events():
-        return True
-    stop_event = threading.Event()
-    try:
-        return await asyncio.to_thread(kernel.wait_until_event, stop_event, timeout)
-    finally:
-        stop_event.set()
 
 
 @runtime_checkable

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import threading
 from pathlib import Path
 from typing import Any
 
@@ -46,15 +45,13 @@ class FakeKernel:
             self.configured["background_check_every"] = background_check_every
         self.configured.update(kwargs)
 
-    def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
+    async def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
+        del timeout
         res = CellResult(ok=True, stdout="", stderr="", result=None)
         self.cells.append((code, res))
         return res
 
-    async def aexec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
-        return self.exec_cell(code, timeout=timeout)
-
-    async def await_event(self, timeout: float | None = None) -> bool:
+    async def wait_event(self, timeout: float | None = None) -> bool:
         del timeout
         return bool(self.events)
 
@@ -68,9 +65,6 @@ class FakeKernel:
 
     def has_pending_events(self) -> bool:
         return bool(self.events)
-
-    def wait_until_event(self, stop_event: threading.Event, timeout: float | None = 0.25) -> bool:
-        return stop_event.wait(timeout)
 
     def consume_restart_notice(self) -> str | None:
         notice = self.restart_notice

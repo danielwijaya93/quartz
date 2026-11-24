@@ -47,7 +47,6 @@ from quartz.core.turn import (
     TurnOutcome,
     TurnStatus,
     run_interactive_turn,
-    run_interactive_turn_async,
 )
 from quartz.settings import project_trust_status, trust_project
 from quartz.web.attachments import AttachedFileRegistry
@@ -850,7 +849,7 @@ class WebSession:
         """Native asyncio turn task. Must always emit exactly one `turn_end`."""
         outcome: TurnOutcome
         try:
-            outcome = await run_interactive_turn_async(
+            outcome = await run_interactive_turn(
                 self.runtime,
                 observer,
                 abort_event=turn.async_abort or turn.abort,
