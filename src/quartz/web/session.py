@@ -421,6 +421,42 @@ class WebSession:
         with contextlib.suppress(Exception):
             runtime.client.close()
 
+    @property
+    def has_running_background_jobs(self) -> bool:
+        rt = self._runtime
+        if rt is None:
+            return False
+        return bool(getattr(rt.kernel, "running_bash_count", 0) or getattr(rt.kernel, "_running_bash_count", 0))
+
+    @property
+    def has_pending_permission(self) -> bool:
+        with self._perm_lock:
+            return self._pending_permission is not None
+
+    def can_hibernate(self) -> bool:
+        """Return True when this session's kernel can be safely evicted to disk."""
+        return (
+            self.built
+            and not self.turn_running
+            and not self.attached
+            and not self.has_running_background_jobs
+            and not self.has_pending_permission
+        )
+
+    def hibernate(self) -> bool:
+        """Persist the kernel snapshot to disk and close the live runtime to free RAM."""
+        if not self.can_hibernate():
+            return False
+        rt = self._runtime
+        if rt is not None:
+            with contextlib.suppress(Exception):
+                rt.wait_snapshot()
+            if rt.messages and getattr(rt.kernel, "dirty", False):
+                with contextlib.suppress(Exception):
+                    rt.active_session.save_kernel(rt.kernel)
+        self._retire()
+        return True
+
     def close(self) -> None:
         self._retire()
 
@@ -1029,6 +1065,7 @@ class SessionManager:
         runner: TurnRunner = run_interactive_turn,
         idle_hours: float | None = None,
         check_interval_s: float = 60.0,
+        max_live_sessions: int | None = None,
     ) -> None:
         self._build = build
         self._cwd = cwd
@@ -1042,6 +1079,7 @@ class SessionManager:
         self._inbox: dict[str, dict[str, Any]] = {}
         self._inbox_seq = 0
         self._idle_hours_override = idle_hours
+        self._max_live_sessions_override = max_live_sessions
         self._check_interval_s = max(0.05, float(check_interval_s))
         self._watcher_timer: threading.Timer | None = None
         self._closed = False
@@ -1111,6 +1149,7 @@ class SessionManager:
         with self._lock:
             self._sessions[sid] = ws
             self._current_id = sid
+        self.evict_lru_sessions(keep_id=sid)
         return ws
 
     def create_session(self, cwd: Path | None = None) -> WebSession:
@@ -1123,6 +1162,7 @@ class SessionManager:
         with self._lock:
             self._sessions[sid] = ws
             self._current_id = sid
+        self.evict_lru_sessions(keep_id=sid)
         return ws
 
     def get_or_load_session(self, session_id: str) -> WebSession:
@@ -1148,6 +1188,7 @@ class SessionManager:
                 return race
             self._sessions[cleaned] = ws
             self._current_id = cleaned
+        self.evict_lru_sessions(keep_id=cleaned)
         return ws
 
     def _new_web_session(self) -> WebSession:
@@ -1185,7 +1226,22 @@ class SessionManager:
     def inbox_items(self) -> list[dict[str, Any]]:
         """Return current active session items ordered: needs you, working, done (newest first)."""
         with self._lock:
-            items = list(self._inbox.values())
+            by_id = dict(self._inbox)
+            for ws in self._sessions.values():
+                if not ws.built or not ws.turn_running:
+                    continue
+                sid = ws.runtime.active_session.id
+                if sid not in by_id:
+                    by_id[sid] = {
+                        "sessionId": sid,
+                        "cwd": str(ws.runtime.cwd),
+                        "title": self._session_title(ws),
+                        "kind": "working",
+                        "read": False,
+                        "updatedAt": datetime.now(timezone.utc).isoformat(),
+                        "_seq": self._inbox_seq,
+                    }
+            items = list(by_id.values())
 
         def _priority(kind: str) -> int:
             if kind in ("permission", "error"):
@@ -1358,6 +1414,48 @@ class SessionManager:
 
         return float(load_settings().web_idle_hours)
 
+    def _max_live_sessions(self) -> int:
+        if self._max_live_sessions_override is not None:
+            return int(self._max_live_sessions_override)
+        from quartz.settings import load_settings
+
+        return int(load_settings().web_max_live_sessions)
+
+    def evict_lru_sessions(self, *, keep_id: str | None = None) -> list[str]:
+        """Hibernate least-recently-active idle background sessions over the live cap.
+
+        Never evicts the current session, any browser-attached session, or any session
+        with an active turn, pending permission, or running background bash job.
+        Hibernated sessions save their kernel snapshot to disk first and transparently
+        restore on the next `get_or_load_session(sid)`.
+        """
+        limit = self._max_live_sessions()
+        if limit <= 0:
+            return []
+        to_evict: list[tuple[str, WebSession]] = []
+        with self._lock:
+            excess = len(self._sessions) - limit
+            if excess <= 0:
+                return []
+            candidates = [
+                (ws.last_active_at, sid, ws)
+                for sid, ws in self._sessions.items()
+                if sid != keep_id and sid != self._current_id and ws.can_hibernate()
+            ]
+            candidates.sort(key=lambda item: item[0])
+            for _, sid, ws in candidates[:excess]:
+                self._sessions.pop(sid, None)
+                to_evict.append((sid, ws))
+        hibernated: list[str] = []
+        for sid, ws in to_evict:
+            if ws.hibernate():
+                hibernated.append(sid)
+            else:
+                # Session became busy between check and hibernate; put it back.
+                with self._lock:
+                    self._sessions.setdefault(sid, ws)
+        return hibernated
+
     def start_watcher(self) -> None:
         with self._lock:
             if self._closed:
@@ -1389,7 +1487,8 @@ class SessionManager:
             timer.cancel()
 
     def check_idle_sessions(self, now: float | None = None) -> list[Frame]:
-        """Check for idle backgrounded sessions and prompt the user in the browser."""
+        """Check for idle backgrounded sessions, enforce LRU cap, and prompt in the browser."""
+        self.evict_lru_sessions()
         hours = self._idle_hours()
         if hours <= 0:
             return []
