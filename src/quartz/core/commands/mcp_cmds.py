@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 import shlex
 from typing import TYPE_CHECKING, Any
@@ -23,12 +25,14 @@ logger = logging.getLogger(__name__)
 __all__ = ["cmd_mcp", "format_mcp_detail", "reload_runtime_mcp"]
 
 
-def reload_runtime_mcp(rt: AgentRuntime) -> None:
+async def areload_runtime_mcp(rt: AgentRuntime) -> None:
     """Close cached MCP sessions in the active kernel and refresh system_prompt."""
     try:
         exec_fn = getattr(rt.kernel, "exec_cell", None)
         if callable(exec_fn):
-            exec_fn("await mcp.close()", timeout=5.0)
+            res = exec_fn("await mcp.close()", timeout=5.0)
+            if inspect.isawaitable(res):
+                await res
     except Exception:
         logger.debug("Failed to close kernel MCP sessions", exc_info=True)
     try:
@@ -39,6 +43,11 @@ def reload_runtime_mcp(rt: AgentRuntime) -> None:
         rt.system_prompt = build_system_prompt(rt.cwd, trusted=trusted)
     except Exception:
         logger.debug("Failed to rebuild system prompt", exc_info=True)
+
+
+def reload_runtime_mcp(rt: AgentRuntime) -> None:
+    """Sync wrapper around :func:`areload_runtime_mcp` for legacy sync callers."""
+    asyncio.run(areload_runtime_mcp(rt))
 
 
 def format_mcp_detail(spec: dict[str, Any]) -> str:
@@ -122,7 +131,7 @@ def _parse_mcp_add_tokens(tokens: list[str]) -> tuple[str, dict[str, Any]]:
     "List, add, remove, enable, or disable MCP servers",
     usage="[list|enable|disable|remove|add ...]",
 )
-def cmd_mcp(rt: AgentRuntime, arg: str) -> CommandResult | None:
+async def cmd_mcp(rt: AgentRuntime, arg: str) -> CommandResult | None:
     """List or modify configured MCP servers."""
     try:
         tokens = shlex.split(arg) if arg.strip() else []
@@ -158,7 +167,7 @@ def cmd_mcp(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 missing.append(name)
         updated = [n for n in targets if n not in missing]
         if updated:
-            reload_runtime_mcp(rt)
+            await areload_runtime_mcp(rt)
         verb = "Enabled" if target_enabled else "Disabled"
         if missing and not updated:
             return CommandResult.error(f"MCP server(s) not found: {', '.join(missing)}")
@@ -173,7 +182,7 @@ def cmd_mcp(rt: AgentRuntime, arg: str) -> CommandResult | None:
         name = rest[0]
         if not remove_mcp_server(name, cfg_path):
             return CommandResult.error(f"MCP server '{name}' not found.")
-        reload_runtime_mcp(rt)
+        await areload_runtime_mcp(rt)
         return CommandResult.text(f"Removed MCP server '{name}'.")
 
     if action == "add":
@@ -182,7 +191,7 @@ def cmd_mcp(rt: AgentRuntime, arg: str) -> CommandResult | None:
         except ValueError as exc:
             return CommandResult.error(str(exc))
         add_mcp_server(name, spec, cfg_path)
-        reload_runtime_mcp(rt)
+        await areload_runtime_mcp(rt)
         return CommandResult.text(f"Saved MCP server '{name}'.")
 
     return CommandResult.error(

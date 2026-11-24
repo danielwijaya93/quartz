@@ -72,13 +72,16 @@ def live_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     state: dict[str, Any] = {"aborted": False}
 
-    def runner(rt: AgentRuntime, observer: Any, *, abort_event: Any = None, steering_queue: Any = None, **_: Any):
+    async def runner(rt: AgentRuntime, observer: Any, *, abort_event: Any = None, steering_queue: Any = None, **_: Any):
         """A turn that ends only when it is aborted -- never on its own.
 
         A blocking wait rather than a poll, so the turn is provably still running
         between `turn_start` and the abort instead of merely running *yet*.
         """
-        if abort_event is not None and abort_event.wait(timeout=30):
+        import asyncio
+
+        if abort_event is not None:
+            await asyncio.wait_for(abort_event.wait(), timeout=30)
             state["aborted"] = True
             return TurnOutcome(TurnStatus.ABORTED, elapsed_s=0.01)
         raise AssertionError("the turn was never aborted")

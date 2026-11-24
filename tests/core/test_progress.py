@@ -37,16 +37,17 @@ class _ScriptedStream:
     def __init__(self, events: list[Any]) -> None:
         self._events = events
 
-    def __iter__(self):
-        return iter(self._events)
+    async def __aiter__(self):
+        for ev in self._events:
+            yield ev
 
-    def close(self) -> None:
+    async def aclose(self) -> None:
         pass
 
-    def __enter__(self):
+    async def __aenter__(self):
         return self
 
-    def __exit__(self, *args: object) -> None:
+    async def __aexit__(self, *args: object) -> None:
         pass
 
 
@@ -80,7 +81,7 @@ class _ToolLoopClient:
                 return False
         return False
 
-    def stream(self, model, messages, tools=None, *, effort=None):
+    async def stream(self, model, messages, tools=None, *, effort=None):
         del model, tools, effort
         self.seen_messages.append([dict(m) for m in messages])
         usage = Usage(input_tokens=100, output_tokens=20)
@@ -110,7 +111,7 @@ class _StubKernel:
     def drain_events(self) -> list[dict[str, Any]]:
         return []
 
-    def exec_cell(self, code: str) -> CellResult:
+    async def exec_cell(self, code: str) -> CellResult:
         self.executed.append(code)
         return CellResult(ok=True, stdout="", stderr="", result="2")
 
@@ -118,13 +119,13 @@ class _StubKernel:
         pass
 
 
-def _run(
+async def _run(
     calls: int, *, progress_every: int, narrate: bool = False, comply: bool = True
 ) -> tuple[Any, list[dict[str, Any]]]:
     client = _ToolLoopClient(calls, narrate=narrate, comply=comply)
     messages: list[dict[str, Any]] = [{"role": "user", "content": "find it"}]
     kernel = _StubKernel()
-    _, updated, _ = agent_loop(
+    _, updated, _ = await agent_loop(
         client,  # type: ignore[arg-type]
         "fake-model",
         "sys",
@@ -147,19 +148,19 @@ def _progress_messages(messages: list[dict[str, Any]]) -> list[str]:
 # --- the schedule -----------------------------------------------------------
 
 
-def test_disabled_by_default_never_asks_for_an_update() -> None:
-    _, messages = _run(6, progress_every=0)
+async def test_disabled_by_default_never_asks_for_an_update() -> None:
+    _, messages = await _run(6, progress_every=0)
     assert _progress_messages(messages) == []
 
 
-def test_asks_once_every_n_tool_calls() -> None:
+async def test_asks_once_every_n_tool_calls() -> None:
     # 12 cells at n=5 -> checkpoints after cell 5 and cell 10, not a third at 12.
-    _, messages = _run(12, progress_every=5)
+    _, messages = await _run(12, progress_every=5)
     assert len(_progress_messages(messages)) == 2
 
 
-def test_notice_lands_after_the_tool_results_it_was_raised_by() -> None:
-    _, messages = _run(5, progress_every=5)
+async def test_notice_lands_after_the_tool_results_it_was_raised_by() -> None:
+    _, messages = await _run(5, progress_every=5)
     notice_idx = next(
         i for i, m in enumerate(messages) if str(m.get("content", "")).startswith("[progress]")
     )
@@ -214,8 +215,8 @@ def test_announced_to_user_follows_the_latest_assistant_message() -> None:
     )
 
 
-def test_no_checkpoint_when_the_model_already_narrated() -> None:
-    _, messages = _run(12, progress_every=5, narrate=True)
+async def test_no_checkpoint_when_the_model_already_narrated() -> None:
+    _, messages = await _run(12, progress_every=5, narrate=True)
     assert _progress_messages(messages) == []
 
 
@@ -247,9 +248,9 @@ def test_notice_is_one_line_and_names_no_call_count() -> None:
 # --- the gate: no work until the user has been updated ----------------------
 
 
-def test_tool_calls_are_refused_while_the_update_is_owed() -> None:
+async def test_tool_calls_are_refused_while_the_update_is_owed() -> None:
     # The observed failure: the notice is answered with another tool call, no words.
-    client, messages = _run(12, progress_every=5, comply=False)
+    client, messages = await _run(12, progress_every=5, comply=False)
     refusals = [
         m for m in messages if m.get("role") == "tool" and m.get("content") == REFUSAL
     ]
@@ -262,9 +263,9 @@ def test_tool_calls_are_refused_while_the_update_is_owed() -> None:
             assert messages[i - 1].get("content") is None
 
 
-def test_the_gate_stops_the_cell_the_checkpoint_was_raised_for() -> None:
+async def test_the_gate_stops_the_cell_the_checkpoint_was_raised_for() -> None:
     # 5 cells run, the notice goes out, and the 6th call is refused rather than run.
-    _, messages = _run(6, progress_every=5, comply=False)
+    _, messages = await _run(6, progress_every=5, comply=False)
     notice_idx = next(
         i for i, m in enumerate(messages) if str(m.get("content", "")).startswith("[progress]")
     )
@@ -277,16 +278,16 @@ def test_the_gate_stops_the_cell_the_checkpoint_was_raised_for() -> None:
     }
 
 
-def test_writing_the_update_releases_the_gate_and_work_continues() -> None:
-    client, messages = _run(8, progress_every=5, comply=True)
+async def test_writing_the_update_releases_the_gate_and_work_continues() -> None:
+    client, messages = await _run(8, progress_every=5, comply=True)
     # The model that obeys loses no cells to the gate: nothing was refused.
     assert not [m for m in messages if m.get("content") == REFUSAL]
     assert len(client.kernel.executed) == 8
 
 
-def test_reasoning_is_not_an_update() -> None:
+async def test_reasoning_is_not_an_update() -> None:
     class _ThinkingClient(_ToolLoopClient):
-        def stream(self, model, messages, tools=None, *, effort=None):
+        async def stream(self, model, messages, tools=None, *, effort=None):
             del model, tools, effort
             self.seen_messages.append([dict(m) for m in messages])
             usage = Usage(input_tokens=100, output_tokens=20)
@@ -308,7 +309,7 @@ def test_reasoning_is_not_an_update() -> None:
 
     kernel = _StubKernel()
     messages: list[dict[str, Any]] = [{"role": "user", "content": "find it"}]
-    agent_loop(
+    await agent_loop(
         _ThinkingClient(6),  # type: ignore[arg-type]
         "fake-model",
         "sys",
@@ -321,8 +322,8 @@ def test_reasoning_is_not_an_update() -> None:
     assert any(m.get("content") == REFUSAL for m in messages)
 
 
-def test_the_gate_gives_up_after_max_refusals_so_a_turn_cannot_wedge() -> None:
-    client, messages = _run(20, progress_every=5, comply=False)
+async def test_the_gate_gives_up_after_max_refusals_so_a_turn_cannot_wedge() -> None:
+    client, messages = await _run(20, progress_every=5, comply=False)
     refusals = [m for m in messages if m.get("content") == REFUSAL]
     # The cap is per checkpoint: two thresholds, three attempts each.
     assert len(_progress_messages(messages)) == 2
@@ -334,11 +335,11 @@ def test_the_gate_gives_up_after_max_refusals_so_a_turn_cannot_wedge() -> None:
     assert messages[-1]["content"] == "All done."
 
 
-def test_a_silent_response_with_no_tool_call_is_also_refused() -> None:
+async def test_a_silent_response_with_no_tool_call_is_also_refused() -> None:
     class _MuteClient(_ToolLoopClient):
         """Answers the first checkpoint with nothing -- no text and no call."""
 
-        def stream(self, model, messages, tools=None, *, effort=None):
+        async def stream(self, model, messages, tools=None, *, effort=None):
             del model, tools, effort
             self.seen_messages.append([dict(m) for m in messages])
             usage = Usage(input_tokens=100, output_tokens=0)
@@ -364,7 +365,7 @@ def test_a_silent_response_with_no_tool_call_is_also_refused() -> None:
 
     kernel = _StubKernel()
     messages: list[dict[str, Any]] = [{"role": "user", "content": "find it"}]
-    agent_loop(
+    await agent_loop(
         _MuteClient(7),  # type: ignore[arg-type]
         "fake-model",
         "sys",
@@ -379,8 +380,8 @@ def test_a_silent_response_with_no_tool_call_is_also_refused() -> None:
     assert messages[-1]["content"] == "All done."
 
 
-def test_the_notice_is_not_repeated_while_the_update_is_owed() -> None:
-    _, messages = _run(12, progress_every=2, comply=False)
+async def test_the_notice_is_not_repeated_while_the_update_is_owed() -> None:
+    _, messages = await _run(12, progress_every=2, comply=False)
     # One notice per threshold, however many calls the gate has to refuse.
     assert len(_progress_messages(messages)) >= 1
     for i, m in enumerate(messages):

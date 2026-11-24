@@ -180,7 +180,7 @@ def test_mcp_unwrap_tool_result_collects_images() -> None:
     assert sink == [{"mime_type": "image/png", "data": b64}]
 
 
-def test_kernel_view_image_and_loop_forwards_mid_turn(tmp_path: Path) -> None:
+async def test_kernel_view_image_and_loop_forwards_mid_turn(tmp_path: Path) -> None:
     from quartz.core.loop import agent_loop
     from quartz.kernel.client import KernelClient
 
@@ -190,7 +190,7 @@ def test_kernel_view_image_and_loop_forwards_mid_turn(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        res = kernel.exec_cell("view_image('shot.png')")
+        res = await kernel.exec_cell("view_image('shot.png')")
         assert res.ok
         assert len(res.images) == 1
         assert res.images[0]["mime_type"] == "image/png"
@@ -202,7 +202,7 @@ def test_kernel_view_image_and_loop_forwards_mid_turn(tmp_path: Path) -> None:
         from quartz.providers.base import CompletionResult, ToolCall, Usage
 
         class _DummyClient:
-            def complete(self, model: str, messages: list[dict[str, object]], tools: object = None, *, effort: str | None = None) -> CompletionResult:
+            async def complete(self, model: str, messages: list[dict[str, object]], tools: object = None, *, effort: str | None = None) -> CompletionResult:
                 del model, tools, effort
                 calls[0] += 1
                 seen_messages.append(list(messages))
@@ -225,7 +225,7 @@ def test_kernel_view_image_and_loop_forwards_mid_turn(tmp_path: Path) -> None:
                 )
 
         dummy_client = _DummyClient()
-        answer, _, _ = agent_loop(
+        answer, _, _ = await agent_loop(
             dummy_client,  # type: ignore[arg-type]
             "m",
             "sys",

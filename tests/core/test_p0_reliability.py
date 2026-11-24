@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import queue
-import threading
+import asyncio
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -27,16 +25,17 @@ class _FakeStream:
     def __init__(self, events) -> None:
         self._events = events
 
-    def __iter__(self):
-        return iter(self._events)
+    async def __aiter__(self):
+        for ev in self._events:
+            yield ev
 
-    def close(self) -> None:
+    async def aclose(self) -> None:
         pass
 
-    def __enter__(self):
+    async def __aenter__(self):
         return self
 
-    def __exit__(self, *args) -> None:
+    async def __aexit__(self, *args) -> None:
         pass
 
 
@@ -48,27 +47,26 @@ def _make_events(text: str | None = None, prompt_tokens: int = 100) -> _FakeStre
     return _FakeStream(events)
 
 
-def test_running_bash_count_push_does_not_kill_sync_cell(tmp_path: Path) -> None:
+async def test_running_bash_count_push_does_not_kill_sync_cell(tmp_path: Path) -> None:
     """Repeated running_bash_count() calls must not use IPC or SIGINT-kill a running sync cell."""
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
         assert kernel.running_bash_count() == 0
 
-        # Run a 1.2s synchronous sleep in a worker thread while querying running_bash_count repeatedly.
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            fut = pool.submit(kernel.exec_cell, "import time; time.sleep(1.2); 'done'")
-            counts: list[int] = []
-            for _ in range(15):
-                counts.append(kernel.running_bash_count(timeout=0.05))
-                time.sleep(0.05)
-            res = fut.result(timeout=10.0)
+        # Run a 1.2s synchronous sleep in a task while querying running_bash_count repeatedly.
+        task = asyncio.create_task(kernel.exec_cell("import time; time.sleep(1.2); 'done'"))
+        counts: list[int] = []
+        for _ in range(15):
+            counts.append(kernel.running_bash_count(timeout=0.05))
+            await asyncio.sleep(0.05)
+        res = await asyncio.wait_for(task, timeout=10.0)
         assert res.ok, res.stderr
         assert res.result == "'done'"
         assert all(c == 0 for c in counts)
 
         # Now start a background bash job and verify bg_count push updates start -> 1 -> finish -> 0.
-        res_start = kernel.exec_cell("h = bash('sleep 0.3')")
+        res_start = await kernel.exec_cell("h = bash('sleep 0.3')")
         assert res_start.ok, res_start.stderr
         deadline = time.monotonic() + 3.0
         saw_one = False
@@ -89,19 +87,18 @@ def test_running_bash_count_push_does_not_kill_sync_cell(tmp_path: Path) -> None
         kernel.close()
 
 
-def test_request_timeout_does_not_interrupt_non_exec(tmp_path: Path) -> None:
+async def test_request_timeout_does_not_interrupt_non_exec(tmp_path: Path) -> None:
     """_request() must not send SIGINT when a non-exec request times out."""
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
         interrupts: list[bool] = []
         kernel.interrupt = lambda: interrupts.append(True)  # type: ignore[method-assign]
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            fut = pool.submit(kernel.exec_cell, "import time; time.sleep(0.6); 'ok'")
-            time.sleep(0.1)
-            with pytest.raises(TimeoutError):
-                kernel.list_vars(timeout=0.05)
-            res = fut.result(timeout=5.0)
+        task = asyncio.create_task(kernel.exec_cell("import time; time.sleep(0.6); 'ok'"))
+        await asyncio.sleep(0.1)
+        with pytest.raises(TimeoutError):
+            await asyncio.to_thread(kernel.list_vars, timeout=0.05)
+        res = await asyncio.wait_for(task, timeout=5.0)
         assert res.ok
         assert res.result == "'ok'"
         assert interrupts == []
@@ -109,12 +106,12 @@ def test_request_timeout_does_not_interrupt_non_exec(tmp_path: Path) -> None:
         kernel.close()
 
 
-def test_kernel_stderr_over_128kib_does_not_deadlock(tmp_path: Path) -> None:
+async def test_kernel_stderr_over_128kib_does_not_deadlock(tmp_path: Path) -> None:
     """Writing >128 KiB to fd 2 / sys.__stderr__ must be drained without deadlocking."""
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        res = kernel.exec_cell(
+        res = await kernel.exec_cell(
             "import os\n"
             "payload = (b'X' * 1023 + b'\\n') * 140\n"  # > 140 KiB
             "os.write(2, payload)\n"
@@ -143,25 +140,25 @@ def test_resolve_provider_credentials_no_openai_fallback_for_deepseek(tmp_path: 
     assert oai_src == "none"
 
 
-def test_agent_loop_raises_provider_error_with_nonempty_steering_queue(tmp_path: Path) -> None:
+async def test_agent_loop_raises_provider_error_with_nonempty_steering_queue(tmp_path: Path) -> None:
     """A real ProviderError during stream iteration must not be swallowed when steering_queue is non-empty."""
 
     class _ErrorStream:
-        def __enter__(self):
+        async def __aenter__(self):
             return self
 
-        def __exit__(self, *args) -> None:
-            self.close()
+        async def __aexit__(self, *args) -> None:
+            await self.aclose()
 
-        def __iter__(self):
+        async def __aiter__(self):
             yield TextDelta(text="partial ")
             raise ProviderError("upstream failure", status_code=502)
 
-        def close(self) -> None:
+        async def aclose(self) -> None:
             pass
 
     class _FakeClient:
-        def stream(self, model, messages, tools=None, *, effort=None):
+        async def stream(self, model, messages, tools=None, *, effort=None):
             del model, messages, tools, effort
             return _ErrorStream()
 
@@ -169,11 +166,11 @@ def test_agent_loop_raises_provider_error_with_nonempty_steering_queue(tmp_path:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        sq: queue.Queue[str] = queue.Queue()
-        sq.put("steer me")
+        sq: asyncio.Queue[str] = asyncio.Queue()
+        sq.put_nowait("steer me")
         messages: list[dict[str, Any]] = [{"role": "user", "content": "hi"}]
         with pytest.raises(ProviderError, match="upstream failure"):
-            agent_loop(
+            await agent_loop(
                 client,
                 "test-model",
                 "sys",
@@ -185,28 +182,28 @@ def test_agent_loop_raises_provider_error_with_nonempty_steering_queue(tmp_path:
         kernel.close()
 
 
-def test_agent_loop_abort_event_closes_stream_immediately(tmp_path: Path) -> None:
-    closed = threading.Event()
-    started = threading.Event()
+async def test_agent_loop_abort_event_closes_stream_immediately(tmp_path: Path) -> None:
+    closed = asyncio.Event()
+    started = asyncio.Event()
 
     class _SlowStream:
-        def __enter__(self):
+        async def __aenter__(self):
             return self
 
-        def __exit__(self, *args) -> None:
-            self.close()
+        async def __aexit__(self, *args) -> None:
+            await self.aclose()
 
-        def __iter__(self):
+        async def __aiter__(self):
             started.set()
             yield TextDelta(text="hello ")
-            closed.wait(timeout=5.0)
+            await asyncio.wait_for(closed.wait(), timeout=5.0)
             raise RuntimeError("stream closed")
 
-        def close(self) -> None:
+        async def aclose(self) -> None:
             closed.set()
 
     class _FakeClient:
-        def stream(self, model, messages, tools=None, *, effort=None):
+        async def stream(self, model, messages, tools=None, *, effort=None):
             del model, messages, tools, effort
             return _SlowStream()
 
@@ -214,16 +211,16 @@ def test_agent_loop_abort_event_closes_stream_immediately(tmp_path: Path) -> Non
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        abort_ev = threading.Event()
+        abort_ev = asyncio.Event()
 
-        def _trigger_abort() -> None:
-            started.wait(timeout=2.0)
+        async def _trigger_abort() -> None:
+            await asyncio.wait_for(started.wait(), timeout=2.0)
             abort_ev.set()
 
-        threading.Thread(target=_trigger_abort, daemon=True).start()
+        trig = asyncio.create_task(_trigger_abort())
         messages: list[dict[str, Any]] = [{"role": "user", "content": "hi"}]
         with pytest.raises(TurnAborted):
-            agent_loop(
+            await agent_loop(
                 client,
                 "test-model",
                 "sys",
@@ -231,35 +228,36 @@ def test_agent_loop_abort_event_closes_stream_immediately(tmp_path: Path) -> Non
                 kernel,
                 abort_event=abort_ev,
             )
+        await trig
         assert closed.is_set()
         assert len(messages) == 1
     finally:
         kernel.close()
 
 
-def test_agent_loop_steering_preemption_discards_partial_text(tmp_path: Path) -> None:
-    closed = threading.Event()
-    started = threading.Event()
+async def test_agent_loop_steering_preemption_discards_partial_text(tmp_path: Path) -> None:
+    closed = asyncio.Event()
+    started = asyncio.Event()
     calls = 0
 
     class _PreemptedStream:
-        def __enter__(self):
+        async def __aenter__(self):
             return self
 
-        def __exit__(self, *args) -> None:
-            self.close()
+        async def __aexit__(self, *args) -> None:
+            await self.aclose()
 
-        def __iter__(self):
+        async def __aiter__(self):
             started.set()
             yield TextDelta(text="truncated half-")
-            closed.wait(timeout=5.0)
+            await asyncio.wait_for(closed.wait(), timeout=5.0)
             raise RuntimeError("stream closed by preempt")
 
-        def close(self) -> None:
+        async def aclose(self) -> None:
             closed.set()
 
     class _FakeClient:
-        def stream(self, model, messages, tools=None, *, effort=None):
+        async def stream(self, model, messages, tools=None, *, effort=None):
             nonlocal calls
             del model, messages, tools, effort
             calls += 1
@@ -271,15 +269,15 @@ def test_agent_loop_steering_preemption_discards_partial_text(tmp_path: Path) ->
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        sq: queue.Queue[str] = queue.Queue()
+        sq: asyncio.Queue[str] = asyncio.Queue()
 
-        def _push_steering() -> None:
-            started.wait(timeout=2.0)
-            sq.put("change direction")
+        async def _push_steering() -> None:
+            await asyncio.wait_for(started.wait(), timeout=2.0)
+            sq.put_nowait("change direction")
 
-        threading.Thread(target=_push_steering, daemon=True).start()
+        steer_task = asyncio.create_task(_push_steering())
         messages: list[dict[str, Any]] = [{"role": "user", "content": "hi"}]
-        final_text, updated, _ = agent_loop(
+        final_text, updated, _ = await agent_loop(
             client,
             "test-model",
             "sys",
@@ -287,6 +285,7 @@ def test_agent_loop_steering_preemption_discards_partial_text(tmp_path: Path) ->
             kernel,
             steering_queue=sq,
         )
+        await steer_task
         assert final_text == "Final steered answer."
         # No truncated half-sentence should remain in messages.
         assert all("truncated half-" not in (m.get("content") or "") for m in updated)
@@ -295,13 +294,13 @@ def test_agent_loop_steering_preemption_discards_partial_text(tmp_path: Path) ->
         kernel.close()
 
 
-def test_cmd_compact_resets_prompt_tokens_preventing_double_compact(tmp_path: Path, monkeypatch) -> None:
+async def test_cmd_compact_resets_prompt_tokens_preventing_double_compact(tmp_path: Path, monkeypatch) -> None:
     class _FakeClient:
-        def complete(self, model, messages, tools=None, *, effort=None):
+        async def complete(self, model, messages, tools=None, *, effort=None):
             del model, messages, tools, effort
             return CompletionResult(text="Compact summary.", tool_calls=[], usage=Usage())
 
-        def stream(self, model, messages, tools=None, *, effort=None):
+        async def stream(self, model, messages, tools=None, *, effort=None):
             del model, messages, tools, effort
             return _make_events("Done.", prompt_tokens=2_000)
 
@@ -333,11 +332,11 @@ def test_cmd_compact_resets_prompt_tokens_preventing_double_compact(tmp_path: Pa
             plain_output=True,
             headless=True,
         )
-        _cmd_compact(rt, "")
+        await _cmd_compact(rt, "")
         assert rt.usage_stats.prompt_tokens < 16_000
 
         observer = RecordingObserver()
-        text, _, _ = agent_loop(
+        text, _, _ = await agent_loop(
             client,
             "test-model",
             "sys",
@@ -408,21 +407,21 @@ def test_serialize_for_summary_respects_max_total_chars_and_clear_old_tool_resul
     assert cleared_msgs == conv
 
 
-def test_kernel_crash_restart_surfaces_notice(tmp_path: Path) -> None:
+async def test_kernel_crash_restart_surfaces_notice(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        assert kernel.exec_cell("x = 1").ok
+        assert (await kernel.exec_cell("x = 1")).ok
         assert kernel._proc is not None
         kernel._proc.kill()
         kernel._proc.wait(timeout=2.0)
-        res = kernel.exec_cell("1 + 1")
+        res = await kernel.exec_cell("1 + 1")
         assert res.ok
         assert res.result == "2"
         assert "kernel exited unexpectedly" in res.stderr
         assert kernel.consume_restart_notice() is None
         # A clean second call carries no notice
-        assert "unexpectedly" not in kernel.exec_cell("2").stderr
+        assert "unexpectedly" not in (await kernel.exec_cell("2")).stderr
     finally:
         kernel.close()
 

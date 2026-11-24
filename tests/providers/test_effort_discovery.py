@@ -83,14 +83,14 @@ def test_parse_model_details_dedupes_and_skips_bad_entries() -> None:
     assert details[0].default_effort == "max"
 
 
-def test_list_model_details_offline_parse() -> None:
+async def test_list_model_details_offline_parse() -> None:
     from quartz.providers.openai import OpenAIProvider
 
     client = OpenAIProvider(api_key="k", base_url="https://openrouter.ai/api/v1")
     try:
         details = client.list_model_details(raw=[OPENROUTER_ITEM, DEEPSEEK_ITEM])
     finally:
-        client.close()
+        await client.aclose()
     assert [d.id for d in details] == ["meta/muse-ember", "deepseek-flash"]
 
 

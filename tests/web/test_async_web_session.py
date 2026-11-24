@@ -44,7 +44,7 @@ class _AsyncProvider:
     def __init__(self, streams: list[_AsyncStream]) -> None:
         self._streams = list(streams)
 
-    async def astream(
+    async def stream(
         self,
         model: str,
         messages: list[dict[str, Any]],
@@ -55,7 +55,7 @@ class _AsyncProvider:
         del model, messages, tools, effort
         return self._streams.pop(0)
 
-    def close(self) -> None:
+    async def aclose(self) -> None:
         pass
 
 

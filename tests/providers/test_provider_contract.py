@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-import threading
 import time
+from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -52,18 +53,19 @@ class _FakeStreamResp:
         self.headers = headers or {}
         self.exit_count = 0
 
-    def __enter__(self) -> _FakeStreamResp:
+    async def __aenter__(self) -> _FakeStreamResp:
         return self
 
-    def __exit__(self, *args: Any) -> bool:
+    async def __aexit__(self, *args: Any) -> bool:
         self.exit_count += 1
         return False
 
-    def read(self) -> bytes:
+    async def aread(self) -> bytes:
         return self._body
 
-    def iter_lines(self) -> Any:
-        return iter(self._lines)
+    async def aiter_lines(self) -> AsyncIterator[str]:
+        for line in self._lines:
+            yield line
 
 
 class _FakePostResp:
@@ -89,44 +91,34 @@ def _make_provider(
     monkeypatch: Any,
     stream_responses: list[_FakeStreamResp],
 ) -> Any:
-    if kind == "openai":
-        provider = OpenAIProvider(api_key="sk-test", base_url="https://example.test/v1")
-        idx = [0]
-
-        def _fake_stream(*args: Any, **kwargs: Any) -> _FakeStreamResp:
-            del args, kwargs
-            resp = stream_responses[idx[0]]
-            idx[0] += 1
-            return resp
-
-        monkeypatch.setattr(provider._http, "stream", _fake_stream)
-        return provider
-
-    monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "auth.json"))
-    save_google_credentials(
-        GoogleCredentials("tok", "ref", int(time.time() * 1000) + 600_000, "proj-1")
-    )
     idx = [0]
 
-    class _FakeHTTP:
-        def __init__(self, **kwargs: Any) -> None:
-            del kwargs
-
+    class _FakeAsyncHTTP:
         def stream(self, *args: Any, **kwargs: Any) -> _FakeStreamResp:
             del args, kwargs
             resp = stream_responses[idx[0]]
             idx[0] += 1
             return resp
 
-        def close(self) -> None:
+        async def aclose(self) -> None:
             pass
 
-    monkeypatch.setattr("quartz.providers.google.httpx2.Client", _FakeHTTP)
+    if kind == "openai":
+        return OpenAIProvider(
+            api_key="sk-test",
+            base_url="https://example.test/v1",
+            async_http_client=_FakeAsyncHTTP(),  # type: ignore[arg-type]
+        )
+
+    monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "auth.json"))
+    save_google_credentials(
+        GoogleCredentials("tok", "ref", int(time.time() * 1000) + 600_000, "proj-1")
+    )
     monkeypatch.setattr(
         "quartz.providers.google.refresh_google_credentials",
         lambda creds: GoogleCredentials("tok2", creds.refresh, creds.expires_ms, creds.project_id),
     )
-    return GoogleAntigravityProvider()
+    return GoogleAntigravityProvider(async_http_client=_FakeAsyncHTTP())
 
 
 def _sse_lines_for(kind: str) -> list[str]:
@@ -158,12 +150,13 @@ def _sse_lines_for(kind: str) -> list[str]:
 
 
 @pytest.mark.parametrize("kind", ["openai", "google"])
-def test_contract_streaming_events_and_complete_parity(
+async def test_contract_streaming_events_and_complete_parity(
     kind: str, tmp_path: Path, monkeypatch: Any
 ) -> None:
     lines = _sse_lines_for(kind)
     p1 = _make_provider(kind, tmp_path, monkeypatch, [_FakeStreamResp(200, lines=lines)])
-    events = list(p1.stream("m", [{"role": "user", "content": "hi"}]))
+    async with await p1.stream("m", [{"role": "user", "content": "hi"}]) as stream:
+        events = [e async for e in stream]
 
     thinking = [e.text for e in events if isinstance(e, ThinkingDelta)]
     texts = [e.text for e in events if isinstance(e, TextDelta)]
@@ -183,7 +176,7 @@ def test_contract_streaming_events_and_complete_parity(
 
     # collect_completion parity
     p2 = _make_provider(kind, tmp_path, monkeypatch, [_FakeStreamResp(200, lines=lines)])
-    comp = collect_completion(p2.stream("m", [{"role": "user", "content": "hi"}]))
+    comp = await collect_completion(await p2.stream("m", [{"role": "user", "content": "hi"}]))
     assert comp.text == "Hello world"
     assert len(comp.tool_calls) == 1
     assert comp.tool_calls[0].meta["thought_signature"] == "sig_1"
@@ -193,7 +186,7 @@ def test_contract_streaming_events_and_complete_parity(
 
 
 @pytest.mark.parametrize("kind", ["openai", "google"])
-def test_contract_multiline_sse_and_midstream_errors(
+async def test_contract_multiline_sse_and_midstream_errors(
     kind: str, tmp_path: Path, monkeypatch: Any
 ) -> None:
     # Multi-line data: frame
@@ -214,37 +207,42 @@ def test_contract_multiline_sse_and_midstream_errors(
             "",
         ]
     p_multi = _make_provider(kind, tmp_path, monkeypatch, [_FakeStreamResp(200, lines=multiline)])
-    events = list(p_multi.stream("m", [{"role": "user", "content": "hi"}]))
+    async with await p_multi.stream("m", [{"role": "user", "content": "hi"}]) as stream:
+        events = [e async for e in stream]
     assert [e.text for e in events if isinstance(e, TextDelta)] == ["split"]
 
     # Mid-stream {"error": ...} raises ProviderError
     err_lines = ['data: {"error": {"code": 503, "message": "overloaded"}}', ""]
     p_err = _make_provider(kind, tmp_path, monkeypatch, [_FakeStreamResp(200, lines=err_lines)])
     with pytest.raises(ProviderError) as exc_info:
-        list(p_err.stream("m", [{"role": "user", "content": "hi"}]))
+        async with await p_err.stream("m", [{"role": "user", "content": "hi"}]) as s:
+            _ = [e async for e in s]
     assert exc_info.value.status_code == 503
 
     # Mid-stream {"error": {"code": "<string>"}} does not crash with ValueError
     str_err_lines = ['data: {"error": {"code": "context_length_exceeded", "message": "too long"}}', ""]
     p_str_err = _make_provider(kind, tmp_path, monkeypatch, [_FakeStreamResp(200, lines=str_err_lines)])
     with pytest.raises(ContextOverflowError):
-        list(p_str_err.stream("m", [{"role": "user", "content": "hi"}]))
+        async with await p_str_err.stream("m", [{"role": "user", "content": "hi"}]) as s:
+            _ = [e async for e in s]
 
     str_unknown_lines = ['data: {"error": {"code": "server_error", "message": "boom"}}', ""]
     p_str_unk = _make_provider(kind, tmp_path, monkeypatch, [_FakeStreamResp(200, lines=str_unknown_lines)])
     with pytest.raises(ProviderError) as unk_exc:
-        list(p_str_unk.stream("m", [{"role": "user", "content": "hi"}]))
+        async with await p_str_unk.stream("m", [{"role": "user", "content": "hi"}]) as s:
+            _ = [e async for e in s]
     assert unk_exc.value.status_code == 500
 
     # Malformed JSON raises ProviderError
     bad_json = ["data: {not-valid-json", ""]
     p_bad = _make_provider(kind, tmp_path, monkeypatch, [_FakeStreamResp(200, lines=bad_json)])
     with pytest.raises(ProviderError, match="malformed SSE payload"):
-        list(p_bad.stream("m", [{"role": "user", "content": "hi"}]))
+        async with await p_bad.stream("m", [{"role": "user", "content": "hi"}]) as s:
+            _ = [e async for e in s]
 
 
 @pytest.mark.parametrize("kind", ["openai", "google"])
-def test_contract_http_error_mapping(kind: str, tmp_path: Path, monkeypatch: Any) -> None:
+async def test_contract_http_error_mapping(kind: str, tmp_path: Path, monkeypatch: Any) -> None:
     # 400 context overflow (new markers)
     p_ovf = _make_provider(
         kind,
@@ -253,7 +251,7 @@ def test_contract_http_error_mapping(kind: str, tmp_path: Path, monkeypatch: Any
         [_FakeStreamResp(400, body=b"too many input tokens for this model")],
     )
     with pytest.raises(ContextOverflowError):
-        p_ovf.stream("m", [{"role": "user", "content": "hi"}])
+        await p_ovf.stream("m", [{"role": "user", "content": "hi"}])
 
     # 413 context overflow
     p_413 = _make_provider(
@@ -263,7 +261,7 @@ def test_contract_http_error_mapping(kind: str, tmp_path: Path, monkeypatch: Any
         [_FakeStreamResp(413, body=b"request too large")],
     )
     with pytest.raises(ContextOverflowError):
-        p_413.stream("m", [{"role": "user", "content": "hi"}])
+        await p_413.stream("m", [{"role": "user", "content": "hi"}])
 
     # 403 AuthenticationError
     p_403 = _make_provider(
@@ -273,7 +271,7 @@ def test_contract_http_error_mapping(kind: str, tmp_path: Path, monkeypatch: Any
         [_FakeStreamResp(403, body=b"forbidden")],
     )
     with pytest.raises(AuthenticationError) as exc_403:
-        p_403.stream("m", [{"role": "user", "content": "hi"}])
+        await p_403.stream("m", [{"role": "user", "content": "hi"}])
     assert exc_403.value.status_code == 403
 
     # 429 RateLimitError with Retry-After
@@ -284,7 +282,7 @@ def test_contract_http_error_mapping(kind: str, tmp_path: Path, monkeypatch: Any
         [_FakeStreamResp(429, body=b"slow down", headers={"Retry-After": "12.5"})],
     )
     with pytest.raises(RateLimitError) as exc_429:
-        p_429.stream("m", [{"role": "user", "content": "hi"}])
+        await p_429.stream("m", [{"role": "user", "content": "hi"}])
     assert exc_429.value.status_code == 429
     assert exc_429.value.retry_after == 12.5
 
@@ -296,31 +294,31 @@ def test_contract_http_error_mapping(kind: str, tmp_path: Path, monkeypatch: Any
         [_FakeStreamResp(502, body=b"bad gateway")],
     )
     with pytest.raises(ProviderError) as exc_502:
-        p_502.stream("m", [{"role": "user", "content": "hi"}])
+        await p_502.stream("m", [{"role": "user", "content": "hi"}])
     assert exc_502.value.status_code == 502
     assert not isinstance(exc_502.value, (ContextOverflowError, AuthenticationError, RateLimitError))
 
 
 @pytest.mark.parametrize("kind", ["openai", "google"])
-def test_contract_cross_thread_close_preempts_stream(
+async def test_contract_cross_thread_close_preempts_stream(
     kind: str, tmp_path: Path, monkeypatch: Any
 ) -> None:
-    first_yielded = threading.Event()
-    closed_event = threading.Event()
+    first_yielded = asyncio.Event()
+    closed_event = asyncio.Event()
 
     class _BlockingResp(_FakeStreamResp):
-        def __exit__(self, *args: Any) -> bool:
+        async def __aexit__(self, *args: Any) -> bool:
             closed_event.set()
-            return super().__exit__(*args)
+            return await super().__aexit__(*args)
 
-        def iter_lines(self) -> Any:
+        async def aiter_lines(self) -> AsyncIterator[str]:
             if kind == "openai":
                 yield 'data: {"choices": [{"delta": {"content": "one"}}]}'
             else:
                 yield 'data: {"response": {"candidates": [{"content": {"parts": [{"text": "one"}]}}]}}'
             yield ""
             first_yielded.set()
-            closed_event.wait(timeout=2.0)
+            await asyncio.wait_for(closed_event.wait(), timeout=2.0)
             if kind == "openai":
                 yield 'data: {"choices": [{"delta": {"content": "two"}}]}'
             else:
@@ -328,16 +326,15 @@ def test_contract_cross_thread_close_preempts_stream(
             yield ""
 
     provider = _make_provider(kind, tmp_path, monkeypatch, [_BlockingResp(200)])
-    handle = provider.stream("m", [{"role": "user", "content": "hi"}])
+    handle = await provider.stream("m", [{"role": "user", "content": "hi"}])
 
-    def _closer() -> None:
-        assert first_yielded.wait(timeout=2.0)
-        handle.close()
+    async def _closer() -> None:
+        await asyncio.wait_for(first_yielded.wait(), timeout=2.0)
+        await handle.aclose()
 
-    t = threading.Thread(target=_closer, daemon=True)
-    t.start()
-    events = list(handle)
-    t.join(timeout=2.0)
+    closer_task = asyncio.create_task(_closer())
+    events = [e async for e in handle]
+    await closer_task
 
     assert [e.text for e in events if isinstance(e, TextDelta)] == ["one"]
 
@@ -352,8 +349,8 @@ def test_openai_build_body_keeps_reasoning_effort_for_openrouter() -> None:
     assert "reasoning" not in body
 
 
-def test_openai_stream_parses_reasoning_details_summaries(monkeypatch: Any) -> None:
-    # Simulate SSE payloads via the stream handle by monkeypatching iter_sse_events.
+async def test_openai_stream_parses_reasoning_details_summaries(monkeypatch: Any) -> None:
+    # Simulate SSE payloads via the stream handle by monkeypatching aiter_sse_events.
     import quartz.providers.openai as oc
     from quartz.providers.base import ThinkingDelta
 
@@ -373,10 +370,9 @@ def test_openai_stream_parses_reasoning_details_summaries(monkeypatch: Any) -> N
         },
         {"choices": [{"delta": {"content": "hi"}}]},
     ]
-    OpenAIProvider(api_key="sk-test", base_url="https://openrouter.ai/api/v1")
 
     class _FakeCtx:
-        def __exit__(self, *a: Any) -> None:
+        async def __aexit__(self, *a: Any) -> None:
             pass
 
     handle = SSEStreamHandle(
@@ -385,49 +381,56 @@ def test_openai_stream_parses_reasoning_details_summaries(monkeypatch: Any) -> N
         provider="test",
         parse=oc._openai_events,
     )
-    monkeypatch.setattr(
-        "quartz.providers.base.iter_sse_events",
-        lambda resp, provider, is_closed: iter(payloads),
-    )
-    events = list(handle)
+
+    async def _fake_aiter(resp: Any, provider: str, is_closed: Any) -> AsyncIterator[dict[str, Any]]:
+        del resp, provider, is_closed
+        for item in payloads:
+            yield item
+
+    monkeypatch.setattr("quartz.providers.base.aiter_sse_events", _fake_aiter)
+    events = [e async for e in handle]
     thinking = [e.text for e in events if isinstance(e, ThinkingDelta)]
     assert thinking == ["short plan", "summary text"]
 
 
-def test_openai_non_streaming_preserves_thought_signature_and_capability_fallback(
+async def test_openai_non_streaming_preserves_thought_signature_and_capability_fallback(
     monkeypatch: Any,
 ) -> None:
-    client = OpenAIProvider(api_key="sk-test", base_url="https://example.test/v1")
     seen_bodies: list[dict[str, Any]] = []
 
-    def _fake_post(url: str, json: dict[str, Any], headers: dict[str, str]) -> _FakePostResp:
-        del url, headers
-        seen_bodies.append(dict(json))
-        if len(seen_bodies) == 1:
-            return _FakePostResp(400, text="Unknown parameter: reasoning_effort")
-        return _FakePostResp(
-            200,
-            payload={
-                "choices": [
-                    {
-                        "message": {
-                            "content": "ok",
-                            "tool_calls": [
-                                {
-                                    "id": "call_1",
-                                    "thought_signature": "sig_nonstream",
-                                    "function": {"name": "ipython", "arguments": "{}"},
-                                }
-                            ],
+    class _FakePostClient:
+        async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> _FakePostResp:
+            del url, headers
+            seen_bodies.append(dict(json))
+            if len(seen_bodies) == 1:
+                return _FakePostResp(400, text="Unknown parameter: reasoning_effort")
+            return _FakePostResp(
+                200,
+                payload={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "ok",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "thought_signature": "sig_nonstream",
+                                        "function": {"name": "ipython", "arguments": "{}"},
+                                    }
+                                ],
+                            }
                         }
-                    }
-                ],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-            },
-        )
+                    ],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                },
+            )
 
-    monkeypatch.setattr(client._http, "post", _fake_post)
-    res = client.complete("m", [{"role": "user", "content": "hi"}], effort="high")
+    client = OpenAIProvider(
+        api_key="sk-test",
+        base_url="https://example.test/v1",
+        async_http_client=_FakePostClient(),  # type: ignore[arg-type]
+    )
+    res = await client.complete("m", [{"role": "user", "content": "hi"}], effort="high")
 
     assert len(seen_bodies) == 2
     assert "reasoning_effort" in seen_bodies[0]

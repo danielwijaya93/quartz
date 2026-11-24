@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import queue
-import threading
+import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 from conftest import RecordingObserver
@@ -16,24 +16,25 @@ from quartz.providers.base import CompletionResult, TextDelta, Usage, UsageEvent
 
 
 class _FakeStream:
-    def __init__(self, events) -> None:
+    def __init__(self, events: list[Any]) -> None:
         self._events = events
 
-    def __iter__(self):
-        return iter(self._events)
+    async def __aiter__(self):
+        for ev in self._events:
+            yield ev
 
-    def close(self) -> None:
+    async def aclose(self) -> None:
         pass
 
-    def __enter__(self):
+    async def __aenter__(self):
         return self
 
-    def __exit__(self, *args) -> None:
+    async def __aexit__(self, *args: object) -> None:
         pass
 
 
-def _make_events(content: str | None = None, prompt_tokens: int = 0):
-    events = []
+def _make_events(content: str | None = None, prompt_tokens: int = 0) -> _FakeStream:
+    events: list[Any] = []
     if content is not None:
         events.append(TextDelta(text=content))
     if prompt_tokens:
@@ -41,38 +42,38 @@ def _make_events(content: str | None = None, prompt_tokens: int = 0):
     return _FakeStream(events)
 
 
-def test_steering_preemption_swallows_close_error_and_omits_empty_assistant(tmp_path: Path) -> None:
-    steering_q: queue.Queue[str] = queue.Queue()
-    stream_started = threading.Event()
-    stream_closed = threading.Event()
+async def test_steering_preemption_swallows_close_error_and_omits_empty_assistant(tmp_path: Path) -> None:
+    steering_q: asyncio.Queue[str] = asyncio.Queue()
+    stream_started = asyncio.Event()
+    stream_closed = asyncio.Event()
     calls = 0
 
     class _BlockingStream:
         def __init__(self) -> None:
             self._done = False
 
-        def __enter__(self):
+        async def __aenter__(self):
             return self
 
-        def __exit__(self, *args) -> None:
-            self.close()
+        async def __aexit__(self, *args: object) -> None:
+            await self.aclose()
 
-        def __iter__(self):
+        def __aiter__(self):
             return self
 
-        def __next__(self):
+        async def __anext__(self):
             if self._done:
-                raise StopIteration
+                raise StopAsyncIteration
             stream_started.set()
-            stream_closed.wait(timeout=3.0)
+            await asyncio.wait_for(stream_closed.wait(), timeout=3.0)
             self._done = True
             raise OSError("socket closed by preemption")
 
-        def close(self) -> None:
+        async def aclose(self) -> None:
             stream_closed.set()
 
     class _FakeClient:
-        def stream(self, model, messages, tools=None, *, effort=None):
+        async def stream(self, model, messages, tools=None, *, effort=None):
             nonlocal calls
             del model, messages, tools, effort
             calls += 1
@@ -84,23 +85,22 @@ def test_steering_preemption_swallows_close_error_and_omits_empty_assistant(tmp_
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        def _inject_steering() -> None:
-            assert stream_started.wait(timeout=2.0)
-            steering_q.put("please stop and do B")
+        async def _inject_steering() -> None:
+            await asyncio.wait_for(stream_started.wait(), timeout=2.0)
+            steering_q.put_nowait("please stop and do B")
 
-        t = threading.Thread(target=_inject_steering, daemon=True)
-        t.start()
+        steer_task = asyncio.create_task(_inject_steering())
 
         messages = [{"role": "user", "content": "start A"}]
-        text, updated, _ = agent_loop(
-            client,
+        text, updated, _ = await agent_loop(
+            client,  # type: ignore[arg-type]
             "test-model",
             "sys",
             messages,
             kernel,
             steering_queue=steering_q,
         )
-        t.join(timeout=2.0)
+        await steer_task
 
         assert text == "Done B"
         assert updated == [
@@ -112,11 +112,11 @@ def test_steering_preemption_swallows_close_error_and_omits_empty_assistant(tmp_
         kernel.close()
 
 
-def test_initial_prompt_tokens_does_not_trigger_premature_compaction(tmp_path: Path) -> None:
+async def test_initial_prompt_tokens_does_not_trigger_premature_compaction(tmp_path: Path) -> None:
     observer = RecordingObserver()
 
     class _FakeClient:
-        def stream(self, model, messages, tools=None, *, effort=None):
+        async def stream(self, model, messages, tools=None, *, effort=None):
             del model, messages, tools, effort
             return _make_events("ok", prompt_tokens=60_100)
 
@@ -130,8 +130,8 @@ def test_initial_prompt_tokens_does_not_trigger_premature_compaction(tmp_path: P
             {"role": "assistant", "content": "y" * 120_000},
             {"role": "user", "content": "next question"},
         ]
-        text, _, _ = agent_loop(
-            client,
+        text, _, _ = await agent_loop(
+            client,  # type: ignore[arg-type]
             "test-model",
             "sys",
             messages,
@@ -147,16 +147,16 @@ def test_initial_prompt_tokens_does_not_trigger_premature_compaction(tmp_path: P
         kernel.close()
 
 
-def test_overflow_compaction_does_not_double_compact(tmp_path: Path) -> None:
+async def test_overflow_compaction_does_not_double_compact(tmp_path: Path) -> None:
     observer = RecordingObserver()
     calls = 0
 
     class _FakeClient:
-        def complete(self, model, messages, tools=None, *, effort=None):
+        async def complete(self, model, messages, tools=None, *, effort=None):
             del model, messages, tools, effort
             return CompletionResult(text="Short summary.", tool_calls=[], usage=Usage())
 
-        def stream(self, model, messages, tools=None, *, effort=None):
+        async def stream(self, model, messages, tools=None, *, effort=None):
             nonlocal calls
             del model, messages, tools, effort
             calls += 1
@@ -176,8 +176,8 @@ def test_overflow_compaction_does_not_double_compact(tmp_path: Path) -> None:
             messages.append({"role": "user", "content": f"u{i} " + ("a" * 4_000)})
             messages.append({"role": "assistant", "content": f"a{i} " + ("b" * 4_000)})
 
-        text, _, _ = agent_loop(
-            client,
+        text, _, _ = await agent_loop(
+            client,  # type: ignore[arg-type]
             "test-model",
             "sys",
             messages,
@@ -193,16 +193,16 @@ def test_overflow_compaction_does_not_double_compact(tmp_path: Path) -> None:
         kernel.close()
 
 
-def test_compaction_mutates_messages_in_place_before_turn_aborted(tmp_path: Path) -> None:
-    abort_event = threading.Event()
+async def test_compaction_mutates_messages_in_place_before_turn_aborted(tmp_path: Path) -> None:
+    abort_event = asyncio.Event()
     observer = RecordingObserver()
 
     class _FakeClient:
-        def complete(self, model, messages, tools=None, *, effort=None):
+        async def complete(self, model, messages, tools=None, *, effort=None):
             del model, messages, tools, effort
             return CompletionResult(text="Compacted summary.", tool_calls=[], usage=Usage())
 
-        def stream(self, model, messages, tools=None, *, effort=None):
+        async def stream(self, model, messages, tools=None, *, effort=None):
             del model, messages, tools, effort
             abort_event.set()
             return _make_events("partial")
@@ -218,8 +218,8 @@ def test_compaction_mutates_messages_in_place_before_turn_aborted(tmp_path: Path
         original_len = len(messages)
 
         with pytest.raises(TurnAborted):
-            agent_loop(
-                client,
+            await agent_loop(
+                client,  # type: ignore[arg-type]
                 "test-model",
                 "sys",
                 messages,
@@ -237,11 +237,12 @@ def test_compaction_mutates_messages_in_place_before_turn_aborted(tmp_path: Path
         kernel.close()
 
 
-def test_agent_loop_rolls_back_assistant_tool_call_on_exec_error() -> None:
+async def test_agent_loop_rolls_back_assistant_tool_call_on_exec_error() -> None:
     from quartz.providers.base import ToolCall
 
     class _FailingKernel:
-        def exec_cell(self, code: str, timeout: float | None = 300.0):
+        async def exec_cell(self, code: str, timeout: float | None = 300.0):
+            del code, timeout
             raise RuntimeError("Python kernel failed to start within 10.0s.")
 
         def drain_events(self) -> list[dict]:
@@ -251,7 +252,8 @@ def test_agent_loop_rolls_back_assistant_tool_call_on_exec_error() -> None:
             pass
 
     class _Provider:
-        def complete(self, **kwargs):
+        async def complete(self, **kwargs):
+            del kwargs
             return CompletionResult(
                 text="",
                 tool_calls=[ToolCall(id="tc_1", name="ipython", arguments='{"code": "1+1"}')],
@@ -260,6 +262,6 @@ def test_agent_loop_rolls_back_assistant_tool_call_on_exec_error() -> None:
 
     messages: list[dict] = [{"role": "user", "content": "Run 1+1"}]
     with pytest.raises(RuntimeError, match="Python kernel failed to start"):
-        agent_loop(_Provider(), "test-model", "sys", messages, _FailingKernel(), stream=False)
+        await agent_loop(_Provider(), "test-model", "sys", messages, _FailingKernel(), stream=False)  # type: ignore[arg-type]
 
     assert messages == [{"role": "user", "content": "Run 1+1"}]

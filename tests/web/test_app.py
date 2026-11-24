@@ -224,12 +224,15 @@ def test_cancel_aborts_the_running_turn(
 
     seen: list[Any] = []
 
-    def abortable_runner(rt: Any, observer: Any, *, abort_event: Any = None, steering_queue: Any = None, **_: Any):
+    async def abortable_runner(rt: Any, observer: Any, *, abort_event: Any = None, steering_queue: Any = None, **_: Any):
         """Runs until aborted -- a wait, not a sleep, so the turn cannot end early."""
+        import asyncio
+
         from quartz.core.turn import TurnOutcome
 
         seen.append(abort_event)
-        if abort_event is not None and abort_event.wait(timeout=10):
+        if abort_event is not None:
+            await asyncio.wait_for(abort_event.wait(), timeout=10)
             return TurnOutcome(TurnStatus.ABORTED, elapsed_s=0.01)
         raise AssertionError("the turn was never cancelled")
 
@@ -448,11 +451,14 @@ def test_a_closed_socket_leaves_no_turn_running(tmp_path: Any, monkeypatch: pyte
     monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
     monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(tmp_path / "config.json"))
 
-    def abortable_runner(rt: Any, observer: Any, *, abort_event: Any = None, steering_queue: Any = None, **_: Any):
+    async def abortable_runner(rt: Any, observer: Any, *, abort_event: Any = None, steering_queue: Any = None, **_: Any):
         """Held open until the abort event, so `turn_running` is a fact, not a race."""
+        import asyncio
+
         from quartz.core.turn import TurnOutcome
 
-        if abort_event is not None and abort_event.wait(timeout=10):
+        if abort_event is not None:
+            await asyncio.wait_for(abort_event.wait(), timeout=10)
             return TurnOutcome(TurnStatus.ABORTED, elapsed_s=0.01)
         raise AssertionError("the turn was never cancelled")
 

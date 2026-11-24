@@ -111,19 +111,12 @@ def build_provider(
         override_source=effort_source,
     )
 
-    http_client = None
-    if shared_http:
-        from quartz.providers.http_pool import get_shared_http_client
-
-        http_client = get_shared_http_client()
-
     if spec.backend == "google":
         if not has_google:
             raise CredentialError(
                 "Not logged in to Google. Run `/login google` or `quartz auth login google` first."
             )
         return GoogleAntigravityProvider(
-            http_client=http_client,
             shared_http=shared_http,
         ), chosen_provider, model, effort
 
@@ -138,7 +131,6 @@ def build_provider(
     client = OpenAIProvider(
         api_key=api_key,
         base_url=base_url,
-        http_client=http_client,
         shared_http=shared_http,
     )
     return client, chosen_provider, model, effort

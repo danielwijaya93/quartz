@@ -143,7 +143,7 @@ def test_resolve_sandbox_enabled_precedence(monkeypatch: pytest.MonkeyPatch) -> 
     not sys.platform.startswith("linux") or shutil.which("bwrap") is None,
     reason="Linux bwrap integration test requires bubblewrap",
 )
-def test_kernel_client_bwrap_isolates_filesystem(tmp_path: Path) -> None:
+async def test_kernel_client_bwrap_isolates_filesystem(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     (workspace / ".git").mkdir(parents=True)
     git_cfg = workspace / ".git" / "config"
@@ -160,7 +160,7 @@ def test_kernel_client_bwrap_isolates_filesystem(tmp_path: Path) -> None:
         pytest.skip(f"bwrap cannot start in this environment: {exc}")
 
     try:
-        res_ok = kernel.exec_cell(
+        res_ok = await kernel.exec_cell(
             f"from pathlib import Path\n"
             f"p = Path({str(workspace / 'hello.txt')!r})\n"
             f"p.write_text('ok')\n"
@@ -169,14 +169,14 @@ def test_kernel_client_bwrap_isolates_filesystem(tmp_path: Path) -> None:
         assert res_ok.ok, res_ok.stderr
         assert "ok" in res_ok.stdout
 
-        res_outside = kernel.exec_cell(
+        res_outside = await kernel.exec_cell(
             f"from pathlib import Path\n"
             f"Path({str(outside_file)!r}).write_text('nope')"
         )
         assert not res_outside.ok
         assert not outside_file.exists()
 
-        res_gitcfg = kernel.exec_cell(
+        res_gitcfg = await kernel.exec_cell(
             f"from pathlib import Path\n"
             f"Path({str(git_cfg)!r}).write_text('pwned')"
         )

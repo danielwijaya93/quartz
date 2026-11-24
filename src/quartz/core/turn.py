@@ -2,9 +2,7 @@
 
 `agent_loop` runs the model/kernel conversation; a turn also has to record the
 ipython cells it produced, persist the session, and advance the session's timing
-counters. That lifecycle lived twice — in `cli/app.py` for the plain REPL and in
-`tui/dock.py` for the prompt_toolkit dock — so `tui/` had to import `cli/` to
-reuse it and the two packages formed an import cycle. It lives here now.
+counters.
 
 Nothing in this module imports from `tui/` or `cli/`: a transport passes a
 `TurnView` (a `TurnObserver` plus the three turn-level hooks it can render) and
@@ -17,13 +15,11 @@ import asyncio
 import dataclasses
 import enum
 import inspect
-import queue
-import threading
 import time
 from typing import TYPE_CHECKING, Any
 
 from quartz.core.events import TurnObserver
-from quartz.core.loop import TurnAborted, agent_loop, agent_loop_async
+from quartz.core.loop import TurnAborted, agent_loop
 
 if TYPE_CHECKING:
     from quartz.core.runtime import AgentRuntime
@@ -33,9 +29,7 @@ __all__ = [
     "TurnStatus",
     "TurnView",
     "run_interactive_turn",
-    "run_interactive_turn_async",
     "run_turn",
-    "run_turn_async",
 ]
 
 
@@ -82,65 +76,6 @@ class TurnOutcome:
     error: BaseException | None = None
 
 
-def run_turn(
-    rt: AgentRuntime,
-    view: TurnView,
-    *,
-    abort_event: threading.Event | None = None,
-    steering_queue: queue.Queue[str] | None = None,
-    loop_fn: Any = None,
-) -> tuple[str, list[dict[str, Any]], int]:
-    """Run one agent-loop turn for ``rt``, reporting every event to ``view``.
-
-    `TurnView` *is* a `TurnObserver`, so ``view`` goes straight into
-    ``agent_loop(observer=...)``. After the turn the ipython cells it produced are
-    recorded in the session's cell metadata (a replayed session renders the same
-    chips), and a final answer the provider never streamed is handed to
-    ``view.show_final``.
-    """
-    resolve_fn = getattr(rt.client, "resolve", None)
-    if callable(resolve_fn):
-        res: Any = resolve_fn()
-        if len(res) == 5:
-            client, pname, model, effort, resolved_ctx = res
-            if resolved_ctx is not None:
-                rt.max_context_tokens = int(resolved_ctx)
-        else:
-            client, pname, model, effort = res[:4]
-        rt.client = client
-        rt.provider_name = pname
-        rt.model = model
-        rt.effort = effort
-
-    view.reset()
-    cell_start_idx = len(rt.cell_history)
-    effective_loop = loop_fn if loop_fn is not None else agent_loop
-    try:
-        answer, updated_msgs, tokens = effective_loop(
-            rt.client,
-            rt.model,
-            rt.system_prompt,
-            rt.messages,
-            rt.kernel,
-            max_context_tokens=rt.max_context_tokens,
-            compact_reserve_tokens=rt.compact_reserve_tokens,
-            keep_recent_tokens=rt.keep_recent_tokens,
-            observer=view,
-            usage_stats=rt.usage_stats,
-            initial_prompt_tokens=rt.usage_stats.prompt_tokens,
-            effort=rt.effort,
-            abort_event=abort_event,
-            steering_queue=steering_queue,
-            progress_every=rt.progress_every,
-        )
-    finally:
-        view.finish()
-    _record_cell_meta(rt, updated_msgs, cell_start_idx)
-    if not view.streamed_any[0] and answer:
-        view.show_final(answer)
-    return answer, updated_msgs, tokens
-
-
 def _record_cell_meta(rt: AgentRuntime, updated_msgs: list[dict[str, Any]], cell_start_idx: int) -> None:
     """Store per-cell ok/duration in the session so replay can render the chips."""
     if hasattr(rt.active_session, "record_cell_meta"):
@@ -159,58 +94,15 @@ def _record_cell_meta(rt: AgentRuntime, updated_msgs: list[dict[str, Any]], cell
                 rt.active_session.record_cell_meta(tc_id, ok=res.ok, duration_s=dur)
 
 
-def run_interactive_turn(
+async def run_turn(
     rt: AgentRuntime,
     view: TurnView,
     *,
-    abort_event: threading.Event | None = None,
-    steering_queue: queue.Queue[str] | None = None,
-    loop_fn: Any = None,
-) -> TurnOutcome:
-    """Run one turn and keep the session's bookkeeping in step, then report how it ended.
-
-    The persistence and counter updates below are identical for every interactive
-    front end and only make sense in this order, so they are shared here; how an
-    abort, an interrupt, an error, or the timing line is *rendered* stays with the
-    caller. An aborted turn persists the messages up to that point; an interrupt or
-    a failed turn persists nothing.
-    """
-    started = time.monotonic()
-    msg_count = len(rt.messages)
-    try:
-        _, rt.messages, tokens = run_turn(
-            rt,
-            view,
-            abort_event=abort_event,
-            steering_queue=steering_queue,
-            loop_fn=loop_fn,
-        )
-    except TurnAborted:
-        rt.kernel.interrupt()
-        rt.persist()
-        return TurnOutcome(TurnStatus.ABORTED, elapsed_s=time.monotonic() - started)
-    except KeyboardInterrupt:
-        rt.kernel.interrupt()
-        return TurnOutcome(TurnStatus.INTERRUPTED, elapsed_s=time.monotonic() - started)
-    except Exception as exc:
-        del rt.messages[msg_count:]
-        return TurnOutcome(TurnStatus.ERROR, elapsed_s=time.monotonic() - started, error=exc)
-    elapsed = time.monotonic() - started
-    rt.total_elapsed_s += elapsed
-    rt.turn_count += 1
-    rt.persist()
-    return TurnOutcome(TurnStatus.OK, tokens=tokens, elapsed_s=elapsed)
-
-
-async def run_turn_async(
-    rt: AgentRuntime,
-    view: TurnView,
-    *,
-    abort_event: asyncio.Event | threading.Event | None = None,
-    steering_queue: asyncio.Queue[str] | queue.Queue[str] | None = None,
+    abort_event: asyncio.Event | None = None,
+    steering_queue: asyncio.Queue[str] | None = None,
     loop_fn: Any = None,
 ) -> tuple[str, list[dict[str, Any]], int]:
-    """Native async variant of :func:`run_turn`."""
+    """Run one agent-loop turn for ``rt``, reporting every event to ``view``."""
     resolve_fn = getattr(rt.client, "resolve", None)
     if callable(resolve_fn):
         if inspect.iscoroutinefunction(resolve_fn):
@@ -230,7 +122,7 @@ async def run_turn_async(
 
     view.reset()
     cell_start_idx = len(rt.cell_history)
-    effective_loop = loop_fn if loop_fn is not None else agent_loop_async
+    effective_loop = loop_fn if loop_fn is not None else agent_loop
     try:
         call_res = effective_loop(
             rt.client,
@@ -261,19 +153,19 @@ async def run_turn_async(
     return answer, updated_msgs, tokens
 
 
-async def run_interactive_turn_async(
+async def run_interactive_turn(
     rt: AgentRuntime,
     view: TurnView,
     *,
-    abort_event: asyncio.Event | threading.Event | None = None,
-    steering_queue: asyncio.Queue[str] | queue.Queue[str] | None = None,
+    abort_event: asyncio.Event | None = None,
+    steering_queue: asyncio.Queue[str] | None = None,
     loop_fn: Any = None,
 ) -> TurnOutcome:
-    """Native async variant of :func:`run_interactive_turn`."""
+    """Run one turn and keep the session's bookkeeping in step, then report how it ended."""
     started = time.monotonic()
     msg_count = len(rt.messages)
     try:
-        _, rt.messages, tokens = await run_turn_async(
+        _, rt.messages, tokens = await run_turn(
             rt,
             view,
             abort_event=abort_event,

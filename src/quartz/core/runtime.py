@@ -436,9 +436,9 @@ class AgentRuntime:
                 self._snapshot_thread = t
                 t.start()
 
-    def compact(self, focus: str | None = None) -> CompactionResult:
+    async def compact(self, focus: str | None = None) -> CompactionResult:
         """Compact older messages while keeping the kernel alive."""
-        result = compact_messages(
+        result = await compact_messages(
             self.client,
             self.model,
             self.messages,

@@ -15,8 +15,10 @@ of two renderers over it (the web transport will be the other):
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
-from collections.abc import Callable
+import inspect
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,7 @@ from rich.text import Text
 
 from quartz.core.commands import (  # re-exported: the registry is the public surface  # re-exported: callers reach for it directly
     COMMAND_REGISTRY,
+    CommandHandler,
     CommandRegistry,
     CommandResult,
     SlashCommand,
@@ -499,16 +502,22 @@ def _terminal_session(rt: AgentRuntime, arg: str) -> None:
     )
 
 
+def _resolve_command_result_sync(
+    raw: CommandResult | Awaitable[CommandResult | None] | None,
+) -> CommandResult | None:
+    res = asyncio.run(raw) if inspect.isawaitable(raw) else raw
+    return res if isinstance(res, CommandResult) else None
+
+
 def _run_core_handler(
     name: str,
-    fallback: Callable[[AgentRuntime, str], CommandResult | None],
+    fallback: CommandHandler,
     rt: AgentRuntime,
     arg: str,
 ) -> CommandResult | None:
     cmd = COMMAND_REGISTRY.get(name)
     handler = cmd.handler if cmd is not None else fallback
-    res = handler(rt, arg)
-    return res if isinstance(res, CommandResult) else None
+    return _resolve_command_result_sync(handler(rt, arg))
 
 
 def _terminal_settings(rt: AgentRuntime, arg: str) -> None:
@@ -556,13 +565,13 @@ def _terminal_settings(rt: AgentRuntime, arg: str) -> None:
 
         if picked == "notifications":
             next_state = "off" if getattr(rt, "notifications", True) else "on"
-            result = cmd_settings(rt, f"notifications {next_state}")
+            result = _resolve_command_result_sync(cmd_settings(rt, f"notifications {next_state}"))
             if result is not None:
                 _render_settings(rt, result)
             continue
 
         if picked == "reset":
-            result = cmd_settings(rt, "reset")
+            result = _resolve_command_result_sync(cmd_settings(rt, "reset"))
             if result is not None:
                 _render_settings(rt, result)
             continue
@@ -578,7 +587,7 @@ def _terminal_settings(rt: AgentRuntime, arg: str) -> None:
         if entered is None or not entered.strip():
             continue
 
-        result = cmd_settings(rt, f"{picked} {entered.strip()}")
+        result = _resolve_command_result_sync(cmd_settings(rt, f"{picked} {entered.strip()}"))
         if result is not None:
             _render_settings(rt, result)
 
@@ -688,13 +697,13 @@ def _terminal_mcp(rt: AgentRuntime, arg: str) -> None:
             return
 
         if picked == "__enable_all__":
-            res = cmd_mcp(rt, "enable --all")
+            res = _resolve_command_result_sync(cmd_mcp(rt, "enable --all"))
             if res is not None:
                 _render_mcp(rt, res)
             continue
 
         if picked == "__disable_all__":
-            res = cmd_mcp(rt, "disable --all")
+            res = _resolve_command_result_sync(cmd_mcp(rt, "disable --all"))
             if res is not None:
                 _render_mcp(rt, res)
             continue
@@ -756,11 +765,11 @@ def _terminal_mcp(rt: AgentRuntime, arg: str) -> None:
             )
             if action == "toggle":
                 subcmd = "disable" if enabled else "enable"
-                res = cmd_mcp(rt, f"{subcmd} {srv_name}")
+                res = _resolve_command_result_sync(cmd_mcp(rt, f"{subcmd} {srv_name}"))
                 if res is not None:
                     _render_mcp(rt, res)
             elif action == "remove":
-                res = cmd_mcp(rt, f"remove {srv_name}")
+                res = _resolve_command_result_sync(cmd_mcp(rt, f"remove {srv_name}"))
                 if res is not None:
                     _render_mcp(rt, res)
 
@@ -806,7 +815,35 @@ def _handle_slash_command(rt: AgentRuntime, user_input: str) -> bool | None:
         terminal(rt, arg)
         return bool(cmd.exits)
 
-    result = cmd.handler(rt, arg)
+    raw = cmd.handler(rt, arg)
+    result = asyncio.run(raw) if inspect.isawaitable(raw) else raw
+    if isinstance(result, CommandResult):
+        renderer = _RENDERERS.get(cmd.name)
+        if renderer is not None:
+            renderer(rt, result)
+        else:
+            render_command_result(result)
+    return bool(cmd.exits)
+
+
+async def _handle_slash_command_async(rt: AgentRuntime, user_input: str) -> bool | None:
+    """Async counterpart to :func:`_handle_slash_command` for event-loop callers."""
+    trimmed = user_input.strip()
+    if not trimmed.startswith("/"):
+        return None
+    cmd = COMMAND_REGISTRY.lookup(trimmed)
+    if cmd is None:
+        return None
+    parts = trimmed.split(maxsplit=1)
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    terminal = _TERMINAL_HANDLERS.get(cmd.name)
+    if terminal is not None:
+        await asyncio.to_thread(terminal, rt, arg)
+        return bool(cmd.exits)
+
+    raw = cmd.handler(rt, arg)
+    result = await raw if inspect.isawaitable(raw) else raw
     if isinstance(result, CommandResult):
         renderer = _RENDERERS.get(cmd.name)
         if renderer is not None:

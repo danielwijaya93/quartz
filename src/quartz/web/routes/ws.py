@@ -175,7 +175,7 @@ async def _dispatch(
             before_id = session.runtime.active_session.id
             before_model = session.runtime.model
             before_effort = session.runtime.effort
-            ok, result = await asyncio.to_thread(session.run_command, name, arg)
+            ok, result = await session.run_command_async(name, arg)
             push(
                 {
                     "type": "command_result",

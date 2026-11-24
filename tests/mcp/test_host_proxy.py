@@ -75,7 +75,7 @@ async def test_host_mcp_proxy_error_mapping(error_type: str, expected_exc: type[
         await proxy.call_tool("missing", "tool")
 
 
-def test_kernel_client_host_mcp_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_kernel_client_host_mcp_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     mcp_cfg = tmp_path / "mcp.json"
     mcp_cfg.write_text(
         json.dumps({"mcpServers": {"echo": {"command": "echo", "args": ["hi"]}}}),
@@ -105,7 +105,7 @@ def test_kernel_client_host_mcp_roundtrip(tmp_path: Path, monkeypatch: pytest.Mo
         monkeypatch.setattr(mgr, "list_tools", stub_list_tools)
         monkeypatch.setattr(mgr, "call_tool", stub_call_tool)
 
-        res = kc.exec_cell(
+        res = await kc.exec_cell(
             "servers = mcp.list_servers()\n"
             "tools = await mcp.list_tools('echo')\n"
             "out = await mcp.echo.say(msg='hello')\n"
@@ -123,7 +123,7 @@ def test_kernel_client_host_mcp_roundtrip(tmp_path: Path, monkeypatch: pytest.Mo
     not sys.platform.startswith("linux") or shutil.which("bwrap") is None,
     reason="Linux bwrap integration test requires bubblewrap",
 )
-def test_sandboxed_kernel_uses_host_mcp_proxy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_sandboxed_kernel_uses_host_mcp_proxy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     mcp_cfg = tmp_path / "mcp.json"
     mcp_cfg.write_text(
         json.dumps({"mcpServers": {"web": {"url": "https://example.com/mcp"}}}),
@@ -138,7 +138,7 @@ def test_sandboxed_kernel_uses_host_mcp_proxy(tmp_path: Path, monkeypatch: pytes
         pytest.skip(f"bwrap cannot start in this environment: {exc}")
 
     try:
-        res = kc.exec_cell("print(type(mcp).__name__, mcp.list_servers())")
+        res = await kc.exec_cell("print(type(mcp).__name__, mcp.list_servers())")
         assert res.ok, res.stderr
         assert "HostMCPProxy ['web']" in res.stdout
     finally:

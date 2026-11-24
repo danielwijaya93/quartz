@@ -20,13 +20,12 @@ import dataclasses
 import inspect
 import logging
 import os
-import queue
 import subprocess
 import threading
 import time
 import uuid
 import weakref
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -47,7 +46,6 @@ from quartz.core.turn import (
     TurnOutcome,
     TurnStatus,
     run_interactive_turn,
-    run_interactive_turn_async,
 )
 from quartz.settings import project_trust_status, trust_project
 from quartz.web.attachments import AttachedFileRegistry
@@ -95,7 +93,7 @@ class BuildRuntime(Protocol):
         self, session_id: str | None, cwd: Path | None = None
     ) -> tuple[AgentRuntime, bool]: ...
 
-TurnRunner = Callable[..., TurnOutcome]
+TurnRunner = Callable[..., Awaitable[TurnOutcome] | TurnOutcome]
 
 
 @dataclasses.dataclass
@@ -103,10 +101,8 @@ class _Turn:
     """The mutable state of the turn in flight."""
 
     id: str
-    abort: threading.Event = dataclasses.field(default_factory=threading.Event)
-    async_abort: asyncio.Event | None = None
-    steering: queue.Queue[str] = dataclasses.field(default_factory=queue.Queue)
-    async_steering: asyncio.Queue[str] | None = None
+    abort_event: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
+    steering_queue: asyncio.Queue[str] = dataclasses.field(default_factory=asyncio.Queue)
     thread: threading.Thread | None = None
     task: asyncio.Task[None] | None = None
     loop: asyncio.AbstractEventLoop | None = None
@@ -166,10 +162,13 @@ class WebSession:
         self._last_active_at: float = time.monotonic()
         self._idle_prompted_at: float | None = None
         self._sandbox_override: bool | None = None
-        self._bg_stop: threading.Event | None = None
+        self._bg_stop: asyncio.Event | None = None
+        self._bg_task: asyncio.Task[None] | None = None
         self._bg_thread: threading.Thread | None = None
+        self._bg_loop: asyncio.AbstractEventLoop | None = None
         self._turn_done = threading.Event()
         self._turn_done.set()
+        self._turn_done_async: asyncio.Event | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
 
     # -- lifecycle ---------------------------------------------------------
@@ -434,8 +433,24 @@ class WebSession:
         except Exception:
             logger.debug("Web session kernel save on close failed", exc_info=True)
         runtime.kernel.close()
-        with contextlib.suppress(Exception):
-            runtime.client.close()
+        aclose = getattr(runtime.client, "aclose", None)
+        if callable(aclose):
+            with contextlib.suppress(Exception):
+                res = aclose()
+                if inspect.iscoroutine(res):
+                    try:
+                        running = asyncio.get_running_loop()
+                    except RuntimeError:
+                        running = None
+                    if running is not None and running.is_running() and not running.is_closed():
+                        running.create_task(res)
+                    else:
+                        asyncio.run(res)
+        else:
+            close = getattr(runtime.client, "close", None)
+            if callable(close):
+                with contextlib.suppress(Exception):
+                    close()
 
     @property
     def has_running_background_jobs(self) -> bool:
@@ -630,32 +645,76 @@ class WebSession:
         with self._lock:
             return self._turn is not None
 
+    def _mark_turn_done(self) -> None:
+        self._turn_done.set()
+        done_async = self._turn_done_async
+        bg_loop = self._bg_loop
+        if done_async is not None and bg_loop is not None and not bg_loop.is_closed():
+            with contextlib.suppress(RuntimeError):
+                bg_loop.call_soon_threadsafe(done_async.set)
+
     def _start_bg_watcher(self, runtime: AgentRuntime) -> None:
         self._stop_bg_watcher()
         kernel = runtime.kernel
         if not (
             callable(getattr(kernel, "has_pending_events", None))
-            and callable(getattr(kernel, "wait_until_event", None))
+            and callable(getattr(kernel, "wait_event", None))
             and callable(getattr(kernel, "drain_events", None))
         ):
             return
-        stop_event = threading.Event()
+        loop = self._resolve_async_loop()
+        if loop is not None:
+            def _spawn() -> None:
+                stop_event = asyncio.Event()
+                self._bg_stop = stop_event
+                self._bg_loop = loop
+                self._turn_done_async = asyncio.Event()
+                if not self.turn_running:
+                    self._turn_done_async.set()
+                self._bg_task = loop.create_task(self._bg_watcher_loop(runtime, stop_event))
+
+            try:
+                current = asyncio.get_running_loop()
+            except RuntimeError:
+                current = None
+            if current is loop:
+                _spawn()
+            else:
+                loop.call_soon_threadsafe(_spawn)
+            return
+
+        def _thread_runner() -> None:
+            async def _run() -> None:
+                stop_event = asyncio.Event()
+                self._bg_stop = stop_event
+                self._bg_loop = asyncio.get_running_loop()
+                self._turn_done_async = asyncio.Event()
+                if not self.turn_running:
+                    self._turn_done_async.set()
+                await self._bg_watcher_loop(runtime, stop_event)
+
+            asyncio.run(_run())
+
         thread = threading.Thread(
-            target=self._bg_watcher_loop,
-            args=(runtime, stop_event),
+            target=_thread_runner,
             name="quartz-web-bg-watcher",
             daemon=True,
         )
-        self._bg_stop = stop_event
         self._bg_thread = thread
         thread.start()
 
     def _stop_bg_watcher(self) -> None:
         stop_event, self._bg_stop = self._bg_stop, None
+        task, self._bg_task = self._bg_task, None
         thread, self._bg_thread = self._bg_thread, None
-        if stop_event is not None:
-            stop_event.set()
-        self._turn_done.set()
+        bg_loop, self._bg_loop = self._bg_loop, None
+        if stop_event is not None and bg_loop is not None and not bg_loop.is_closed():
+            with contextlib.suppress(RuntimeError):
+                bg_loop.call_soon_threadsafe(stop_event.set)
+        if task is not None and bg_loop is not None and not bg_loop.is_closed():
+            with contextlib.suppress(RuntimeError):
+                bg_loop.call_soon_threadsafe(task.cancel)
+        self._mark_turn_done()
         rt = self._runtime
         if rt is not None:
             wake = getattr(rt.kernel, "wake_event_waiters", None)
@@ -665,7 +724,7 @@ class WebSession:
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=1.0)
 
-    def _bg_watcher_loop(self, runtime: AgentRuntime, stop_event: threading.Event) -> None:
+    async def _bg_watcher_loop(self, runtime: AgentRuntime, stop_event: asyncio.Event) -> None:
         # Real KernelClient exposes wake_event_waiters(), allowing true zero-polling
         # waits (timeout=None). Minimal test fakes fall back to a short timeout.
         wait_timeout: float | None = (
@@ -675,26 +734,43 @@ class WebSession:
             if self._runtime is not runtime:
                 break
             if self.turn_running:
-                self._turn_done.wait()
+                if self._turn_done_async is not None:
+                    await self._turn_done_async.wait()
+                else:
+                    await asyncio.sleep(0.05)
                 continue
             has_events = False
             try:
                 if runtime.kernel.has_pending_events():
                     has_events = True
                 else:
-                    has_events = bool(
-                        runtime.kernel.wait_until_event(stop_event, timeout=wait_timeout)
+                    wait_task = asyncio.create_task(runtime.kernel.wait_event(timeout=wait_timeout))
+                    stop_task = asyncio.create_task(stop_event.wait())
+                    done, pending = await asyncio.wait(
+                        {wait_task, stop_task},
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
+                    for p in pending:
+                        p.cancel()
+                    for p in pending:
+                        with contextlib.suppress(Exception):
+                            await p
+                    if wait_task in done:
+                        has_events = bool(wait_task.result())
+            except asyncio.CancelledError:
+                break
             except Exception:
                 has_events = False
-                stop_event.wait(0.25)
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(stop_event.wait(), timeout=0.25)
                 continue
             if has_events and not stop_event.is_set():
                 if self._start_bg_turn(runtime, stop_event):
                     continue
-                stop_event.wait(0.25)
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(stop_event.wait(), timeout=0.25)
 
-    def _start_bg_turn(self, runtime: AgentRuntime, stop_event: threading.Event) -> bool:
+    def _start_bg_turn(self, runtime: AgentRuntime, stop_event: asyncio.Event) -> bool:
         with self._lock:
             if stop_event.is_set() or self._runtime is not runtime or self._turn is not None:
                 return False
@@ -709,6 +785,8 @@ class WebSession:
             turn = _Turn(id=f"turn-{uuid.uuid4().hex[:12]}")
             self._turn = turn
             self._turn_done.clear()
+            if self._turn_done_async is not None:
+                self._turn_done_async.clear()
             self._streaming = ""
             self._status = None
             self._last_active_at = time.monotonic()
@@ -724,8 +802,6 @@ class WebSession:
         return True
 
     def _resolve_async_loop(self) -> asyncio.AbstractEventLoop | None:
-        if self._runner is not run_interactive_turn:
-            return None
         try:
             running = asyncio.get_running_loop()
         except RuntimeError:
@@ -742,8 +818,6 @@ class WebSession:
         loop = self._resolve_async_loop()
         if loop is not None:
             turn.loop = loop
-            turn.async_abort = asyncio.Event()
-            turn.async_steering = asyncio.Queue()
             try:
                 current_loop = asyncio.get_running_loop()
             except RuntimeError:
@@ -758,9 +832,16 @@ class WebSession:
                 loop.call_soon_threadsafe(_create_task)
             return
 
+        def _thread_runner() -> None:
+            async def _run() -> None:
+                turn.loop = asyncio.get_running_loop()
+                turn.task = asyncio.current_task()
+                await self._run_turn_async(turn, observer)
+
+            asyncio.run(_run())
+
         thread = threading.Thread(
-            target=self._run_turn,
-            args=(turn, observer),
+            target=_thread_runner,
             name=f"quartz-web-{turn.id}",
             daemon=True,
         )
@@ -826,36 +907,29 @@ class WebSession:
             with self._lock:
                 if self._turn is turn:
                     self._turn = None
-                    self._turn_done.set()
+                    self._mark_turn_done()
                 self._last_active_at = time.monotonic()
-
-    def _run_turn(self, turn: _Turn, observer: WebObserver) -> None:
-        """The turn thread. Must always emit exactly one `turn_end`."""
-        outcome: TurnOutcome
-        try:
-            outcome = self._runner(
-                self.runtime,
-                observer,
-                abort_event=turn.abort,
-                steering_queue=turn.steering,
-            )
-        except BaseException as exc:
-            # `run_interactive_turn` already maps ordinary failures into an ERROR
-            # outcome. This catches what it does not: a KeyboardInterrupt, or a
-            # runner swapped in by a test.
-            outcome = TurnOutcome(TurnStatus.ERROR, error=exc)
-        self._finalize_turn(turn, outcome)
 
     async def _run_turn_async(self, turn: _Turn, observer: WebObserver) -> None:
         """Native asyncio turn task. Must always emit exactly one `turn_end`."""
         outcome: TurnOutcome
         try:
-            outcome = await run_interactive_turn_async(
-                self.runtime,
-                observer,
-                abort_event=turn.async_abort or turn.abort,
-                steering_queue=turn.async_steering or turn.steering,
-            )
+            if inspect.iscoroutinefunction(self._runner):
+                outcome = await self._runner(
+                    self.runtime,
+                    observer,
+                    abort_event=turn.abort_event,
+                    steering_queue=turn.steering_queue,
+                )
+            else:
+                res = await asyncio.to_thread(
+                    self._runner,
+                    self.runtime,
+                    observer,
+                    abort_event=turn.abort_event,
+                    steering_queue=turn.steering_queue,
+                )
+                outcome = await res if inspect.isawaitable(res) else res
         except asyncio.CancelledError:
             outcome = TurnOutcome(TurnStatus.ABORTED)
         except BaseException as exc:
@@ -898,43 +972,41 @@ class WebSession:
             turn = self._turn
         if turn is None:
             raise NoActiveTurnError("No turn is running.")
-        if turn.async_steering is not None and turn.loop is not None and not turn.loop.is_closed():
-            try:
-                current_loop = asyncio.get_running_loop()
-            except RuntimeError:
-                current_loop = None
-            if current_loop is turn.loop:
-                turn.async_steering.put_nowait(text)
-            else:
-                with contextlib.suppress(RuntimeError):
-                    turn.loop.call_soon_threadsafe(turn.async_steering.put_nowait, text)
-        else:
-            turn.steering.put(text)
-
-    def _signal_turn_abort(self, turn: _Turn, *, cancel_task: bool = True) -> None:
-        turn.abort.set()
         loop = turn.loop
-        async_abort = turn.async_abort
-        task = turn.task
         if loop is not None and not loop.is_closed():
             try:
                 current_loop = asyncio.get_running_loop()
             except RuntimeError:
                 current_loop = None
             if current_loop is loop:
-                if async_abort is not None:
-                    async_abort.set()
+                turn.steering_queue.put_nowait(text)
+            else:
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(turn.steering_queue.put_nowait, text)
+        else:
+            turn.steering_queue.put_nowait(text)
+
+    def _signal_turn_abort(self, turn: _Turn, *, cancel_task: bool = True) -> None:
+        loop = turn.loop
+        task = turn.task
+        if loop is not None and not loop.is_closed():
+            try:
+                current_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                current_loop = None
+
+            def _cancel_on_loop() -> None:
+                turn.abort_event.set()
                 if cancel_task and task is not None and not task.done():
                     task.cancel()
-            else:
-                def _cancel_on_loop() -> None:
-                    if async_abort is not None:
-                        async_abort.set()
-                    if cancel_task and task is not None and not task.done():
-                        task.cancel()
 
+            if current_loop is loop:
+                _cancel_on_loop()
+            else:
                 with contextlib.suppress(RuntimeError):
                     loop.call_soon_threadsafe(_cancel_on_loop)
+        else:
+            turn.abort_event.set()
 
     def cancel(self) -> bool:
         """Abort the running turn the same way `Esc` does in the terminal."""
@@ -977,7 +1049,7 @@ class WebSession:
             if self._turn is turn:
                 # The thread/task is gone or wedged; either way nothing may steer it now.
                 self._turn = None
-                self._turn_done.set()
+                self._mark_turn_done()
 
     # -- commands ----------------------------------------------------------
 
@@ -999,25 +1071,33 @@ class WebSession:
             for command in COMMAND_REGISTRY.list_commands()
         ]
 
-    def run_command(self, name: str, arg: str = "") -> tuple[bool, CommandResult]:
-        """Run one slash command and return ``(ok, result)``.
+    def _record_command_activity(self, ok: bool, result: CommandResult) -> None:
+        if ok or result.kind != "error" or not (
+            result.message.startswith("Unknown command:")
+            or "needs the kernel, which the running turn is using." in result.message
+        ):
+            self.mark_active()
 
-        Commands that touch the kernel are refused while a turn is in flight instead
-        of queueing behind it: the terminal announces the queue, and a browser has
-        nowhere to show "waiting". `immediate` commands -- local state only -- run
-        either way, which is what makes `/settings` and `/jobs` useful mid-turn.
-        """
+    async def run_command_async(self, name: str, arg: str = "") -> tuple[bool, CommandResult]:
+        """Run one slash command asynchronously and return ``(ok, result)``."""
+        ok, result = await self.controller.run_command_async(
+            name,
+            arg,
+            transport="web",
+            turn_running=self.turn_running,
+        )
+        self._record_command_activity(ok, result)
+        return ok, result
+
+    def run_command(self, name: str, arg: str = "") -> tuple[bool, CommandResult]:
+        """Run one slash command synchronously and return ``(ok, result)``."""
         ok, result = self.controller.run_command(
             name,
             arg,
             transport="web",
             turn_running=self.turn_running,
         )
-        if ok or result.kind != "error" or not (
-            result.message.startswith("Unknown command:")
-            or "needs the kernel, which the running turn is using." in result.message
-        ):
-            self.mark_active()
+        self._record_command_activity(ok, result)
         return ok, result
 
     # -- state -------------------------------------------------------------

@@ -215,9 +215,9 @@ def _cmd_expand(rt: AgentRuntime, arg: str) -> CommandResult | None:
     "Summarize older messages while keeping the kernel alive",
     usage="[focus]",
 )
-def cmd_compact(rt: AgentRuntime, arg: str) -> CommandResult | None:
+async def cmd_compact(rt: AgentRuntime, arg: str) -> CommandResult | None:
     """Compact older conversation messages while preserving the live kernel."""
-    result = rt.compact(focus=arg or None)
+    result = await rt.compact(focus=arg or None)
     if not result.changed:
         return CommandResult.text("Nothing to compact yet.")
     return CommandResult(

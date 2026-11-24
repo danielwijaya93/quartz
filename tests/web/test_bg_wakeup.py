@@ -39,17 +39,18 @@ class _BgKernel:
             self._notify.clear()
             return out
 
-    def wait_until_event(self, stop: threading.Event, timeout: float = 0.25) -> bool:
-        deadline = time.monotonic() + timeout
-        while not stop.is_set():
+    async def wait_event(self, timeout: float | None = 0.25) -> bool:
+        import asyncio
+
+        deadline = time.monotonic() + (timeout or 0.25)
+        while True:
             with self._lock:
                 if self._events:
                     return True
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False
-            self._notify.wait(timeout=min(remaining, 0.05))
-        return False
+            await asyncio.sleep(min(remaining, 0.02))
 
     def interrupt(self) -> None: ...
 

@@ -368,9 +368,6 @@ def discover_models(
         raw_items = client.list_models()
     except Exception as exc:
         return fallback, str(exc)
-    finally:
-        if owned_client is not None:
-            owned_client.close()
 
     discovered: list[str] = []
     seen: set[str] = set()

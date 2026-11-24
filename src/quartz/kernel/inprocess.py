@@ -206,46 +206,6 @@ class InProcessKernel:
             fut.cancel()
             raise TimeoutError(f"Kernel operation timed out after {timeout}s") from exc
 
-    def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
-        if self._worker is None or self._loop is None or not self._loop.is_running():
-            self.start()
-        assert self._worker is not None
-        assert self._loop is not None
-
-        cell_id = uuid.uuid4().hex
-        self.dirty = True
-
-        async def _run() -> dict[str, Any]:
-            task = asyncio.current_task()
-            with self._task_lock:
-                self._active_task = task
-            try:
-                async with self._worker._exec_lock:
-                    return await self._worker._exec_cell_locked(cell_id, code)
-            finally:
-                with self._task_lock:
-                    if self._active_task is task:
-                        self._active_task = None
-
-        try:
-            resp = self._run_coro(_run(), timeout=timeout)
-        except TimeoutError:
-            self.interrupt()
-            return CellResult(
-                ok=False,
-                stdout="",
-                stderr=f"TimeoutError: cell exceeded {timeout}s",
-                result=None,
-            )
-        except concurrent.futures.CancelledError:
-            return CellResult(
-                ok=False,
-                stdout="",
-                stderr="KeyboardInterrupt: cell execution interrupted\n",
-                result=None,
-            )
-        return self._format_cell_result(resp)
-
     @staticmethod
     def _format_cell_result(resp: dict[str, Any]) -> CellResult:
         return CellResult(
@@ -257,7 +217,7 @@ class InProcessKernel:
             files=list(resp.get("files") or []),
         )
 
-    async def aexec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
+    async def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
         if self._worker is None or self._loop is None or not self._loop.is_running():
             await asyncio.to_thread(self.start)
         assert self._worker is not None
@@ -376,7 +336,7 @@ class InProcessKernel:
         for loop, fut in waiters:
             self._resolve_async_future(loop, fut, has_events)
 
-    async def await_event(self, timeout: float | None = None) -> bool:
+    async def wait_event(self, timeout: float | None = None) -> bool:
         loop = asyncio.get_running_loop()
         with self._events_cond:
             if self._events:
@@ -395,20 +355,6 @@ class InProcessKernel:
         finally:
             with self._events_cond, contextlib.suppress(ValueError):
                 self._event_waiters.remove(entry)
-
-    def wait_until_event(self, stop_event: threading.Event, timeout: float | None = 0.25) -> bool:
-        while not stop_event.is_set():
-            with self._events_cond:
-                if self._events:
-                    return True
-                if self._closed:
-                    return False
-                self._events_cond.wait(timeout=timeout)
-                if self._events:
-                    return True
-                if self._closed:
-                    return False
-        return False
 
     def drain_events(self) -> list[dict[str, Any]]:
         with self._events_cond:

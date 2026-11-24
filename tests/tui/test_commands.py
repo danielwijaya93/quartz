@@ -173,7 +173,7 @@ def test_real_runtime_cmd_compact(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         {"role": "assistant", "content": "ready"},
     ]
 
-    def _fake_compact_messages(*args, **kwargs) -> CompactionResult:
+    async def _fake_compact_messages(*args, **kwargs) -> CompactionResult:
         return CompactionResult(
             messages=compacted_msgs,
             summarized=2,

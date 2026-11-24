@@ -17,16 +17,17 @@ class _FakeStream:
     def __init__(self, events):
         self._events = events
 
-    def __iter__(self):
-        return iter(self._events)
+    async def __aiter__(self):
+        for ev in self._events:
+            yield ev
 
-    def close(self):
+    async def aclose(self):
         pass
 
-    def __enter__(self):
+    async def __aenter__(self):
         return self
 
-    def __exit__(self, *args):
+    async def __aexit__(self, *args):
         pass
 
 
@@ -35,7 +36,7 @@ class _FakeClient:
         self._first = first_events
         self.call_idx = 0
 
-    def stream(self, model, messages, tools=None, *, effort=None):
+    async def stream(self, model, messages, tools=None, *, effort=None):
         del model, messages, tools, effort
         self.call_idx += 1
         usage = Usage(input_tokens=10, output_tokens=5)
@@ -44,7 +45,7 @@ class _FakeClient:
         return _FakeStream([TextDelta(text="done"), UsageEvent(usage=usage)])
 
 
-def test_streaming_thinking_captured_and_callback_fired(tmp_path: Path) -> None:
+async def test_streaming_thinking_captured_and_callback_fired(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
@@ -57,7 +58,7 @@ def test_streaming_thinking_captured_and_callback_fired(tmp_path: Path) -> None:
             ]
         )
         usage = TurnUsage()
-        _, msgs, _ = agent_loop(
+        _, msgs, _ = await agent_loop(
             client,  # type: ignore[arg-type]
             "fake-model",
             "sys",
@@ -76,14 +77,14 @@ def test_streaming_thinking_captured_and_callback_fired(tmp_path: Path) -> None:
         kernel.close()
 
 
-def test_no_thinking_deltas_omits_reasoning_key(tmp_path: Path) -> None:
+async def test_no_thinking_deltas_omits_reasoning_key(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
         client = _FakeClient(
             [ToolCallDelta(index=0, id="tc1", name="ipython", arguments_delta='{"code": "1"}')],
         )
-        _, msgs, _ = agent_loop(
+        _, msgs, _ = await agent_loop(
             client,  # type: ignore[arg-type]
             "fake-model",
             "sys",
@@ -98,7 +99,7 @@ def test_no_thinking_deltas_omits_reasoning_key(tmp_path: Path) -> None:
         kernel.close()
 
 
-def test_empty_thinking_deltas_ignored(tmp_path: Path) -> None:
+async def test_empty_thinking_deltas_ignored(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
@@ -109,7 +110,7 @@ def test_empty_thinking_deltas_ignored(tmp_path: Path) -> None:
                 TextDelta(text="hello"),
             ]
         )
-        _, msgs, _ = agent_loop(
+        _, msgs, _ = await agent_loop(
             client,  # type: ignore[arg-type]
             "fake-model",
             "sys",
@@ -142,9 +143,9 @@ def test_strip_reasoning_helper() -> None:
     assert strip_reasoning(clean) is clean
 
 
-def test_compact_messages_strips_reasoning() -> None:
+async def test_compact_messages_strips_reasoning() -> None:
     class _FakeCompactClient:
-        def complete(self, model, messages, tools=None, *, effort=None):
+        async def complete(self, model, messages, tools=None, *, effort=None):
             del model, tools, effort
             assert all(
                 "reasoning" not in m for m in messages
@@ -160,7 +161,7 @@ def test_compact_messages_strips_reasoning() -> None:
         {"role": "assistant", "content": "a2", "reasoning": "thinking two"},
     ]
     # Force nothing-to-do path (tiny history, generous keep window): output must already be stripped.
-    result = compact_messages(
+    result = await compact_messages(
         _FakeCompactClient(),  # type: ignore[arg-type]
         "m",
         msgs,
