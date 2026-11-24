@@ -93,6 +93,8 @@ def test_build_bwrap_command_mounts_and_masks(tmp_path: Path) -> None:
     assert any(wrapped[i : i + 3] == ["--ro-bind", "/dev/null", auth_path] for i in range(len(wrapped) - 2))
 
     assert "--unshare-net" in wrapped
+    assert "--unshare-pid" in wrapped
+    assert "--new-session" in wrapped
     assert wrapped[-4:] == ["--", "python", "-u", "-m", "quartz.kernel.worker"][-4:]
 
 
@@ -183,4 +185,80 @@ async def test_kernel_client_bwrap_isolates_filesystem(tmp_path: Path) -> None:
         assert not res_gitcfg.ok
         assert git_cfg.read_text(encoding="utf-8") == "[core]\n"
     finally:
+        kernel.close()
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux") or shutil.which("bwrap") is None,
+    reason="Linux bwrap integration test requires bubblewrap",
+)
+async def test_kernel_client_bwrap_close_kills_stuck_worker_and_children(tmp_path: Path) -> None:
+    import asyncio
+    import contextlib
+    import fcntl
+    import time
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    lock_file = workspace / "worker.lock"
+    kernel = KernelClient(cwd=workspace, sandbox=True)
+    try:
+        kernel.start(timeout=15.0)
+    except Exception as exc:  # pragma: no cover - e.g. restricted userns in container
+        pytest.skip(f"bwrap cannot start in this environment: {exc}")
+
+    # Spawn a subprocess holding an flock while the worker itself blocks in a
+    # synchronous loop so it cannot process a graceful shutdown message.
+    child_code = (
+        f"import fcntl, time; "
+        f"f = open({str(lock_file)!r}, 'w'); "
+        f"fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB); "
+        f"print('locked', flush=True); "
+        f"time.sleep(30)"
+    )
+    stuck_task = asyncio.create_task(
+        kernel.exec_cell(
+            f"import subprocess, sys, time\n"
+            f"_child = subprocess.Popen([sys.executable, '-c', {child_code!r}], stdout=subprocess.PIPE, text=True)\n"
+            f"assert _child.stdout.readline().strip() == 'locked'\n"
+            f"while True:\n"
+            f"    time.sleep(0.05)"
+        )
+    )
+    try:
+        deadline = time.monotonic() + 5.0
+        while not lock_file.exists() and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        assert lock_file.exists(), "child process did not create lock file"
+
+        # Wait until the child actually acquires the flock.
+        held = False
+        with lock_file.open("r+") as fh:
+            while time.monotonic() < deadline:
+                try:
+                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(fh, fcntl.LOCK_UN)
+                    await asyncio.sleep(0.05)
+                except BlockingIOError:
+                    held = True
+                    break
+        assert held, "child process never acquired flock"
+
+        kernel.close()
+
+        release_deadline = time.monotonic() + 3.0
+        released = False
+        with lock_file.open("r+") as fh:
+            while time.monotonic() < release_deadline:
+                try:
+                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    released = True
+                    break
+                except BlockingIOError:
+                    await asyncio.sleep(0.05)
+        assert released, "worker or child survived kernel.close() (flock still held)"
+    finally:
+        stuck_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await stuck_task
         kernel.close()

@@ -874,6 +874,9 @@ class KernelClient:
         if proc.poll() is None:
             try:
                 self._send_shutdown(proc)
+                if proc.stdin is not None and not proc.stdin.closed:
+                    with contextlib.suppress(OSError):
+                        proc.stdin.close()
                 proc.wait(timeout=1.0)
             except Exception:
                 logger.debug("Graceful kernel shutdown failed", exc_info=True)
