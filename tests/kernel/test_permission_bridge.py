@@ -10,9 +10,13 @@ from pathlib import Path
 import pytest
 
 from quartz.kernel.bridge import (
+    BRIDGED_TOOLS,
     PermissionPolicy,
     PermissionRequest,
+    classify_bridge_scope,
+    ensure_shim_dir,
     extract_git_subcommand,
+    is_quartz_local_only,
     is_remote_git_command,
     validate_bridge_cwd,
 )
@@ -263,3 +267,150 @@ def test_bridge_sets_waiting_env_while_inflight(tmp_path: Path) -> None:
         assert "DURING 1 AFTER None" in res.stdout
     finally:
         kc.close()
+
+
+def test_ensure_shim_dir_creates_executable_quartz_shim(tmp_path: Path) -> None:
+    import os
+
+    shim_dir = ensure_shim_dir(tmp_path / "shims")
+    assert set(BRIDGED_TOOLS) == {"git", "gh", "quartz"}
+    for tool in ("git", "gh", "quartz"):
+        shim = shim_dir / tool
+        assert shim.is_file()
+        assert os.access(shim, os.X_OK)
+
+
+def test_classify_bridge_scope_and_is_quartz_local_only() -> None:
+    assert classify_bridge_scope("git", ["push"]) == "git_remote"
+    assert classify_bridge_scope("gh", ["pr", "list"]) == "gh"
+    assert classify_bridge_scope("quartz", ["-p", "hi"]) == "quartz_worker"
+
+    assert is_quartz_local_only(["--help"]) is True
+    assert is_quartz_local_only(["-h"]) is True
+    assert is_quartz_local_only(["--version"]) is True
+    assert is_quartz_local_only(["-V"]) is True
+    assert is_quartz_local_only(["-p", "hi"]) is False
+    assert is_quartz_local_only(["--prompt", "hi"]) is False
+    assert is_quartz_local_only(["--help", "-p", "hi"]) is False
+    assert is_quartz_local_only([]) is False
+
+
+def test_exec_bridge_sync_quartz_permissions_and_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[PermissionRequest] = []
+    decisions = iter(["reject", "allow_once", "allow_session"])
+
+    def handler(req: PermissionRequest):
+        seen.append(req)
+        return next(decisions)
+
+    kc = KernelClient(cwd=tmp_path, sandbox=False, host_bridge=True, permission_handler=handler)
+    monkeypatch.setattr("quartz.kernel.client.find_real_binary", lambda _tool: None)
+
+    spawned_cmds: list[list[str]] = []
+
+    class _FakeProc:
+        def __init__(self, cmd: list[str], **_kwargs: object) -> None:
+            spawned_cmds.append(cmd)
+            self.returncode = 0
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            return ("worker-ok\n", "")
+
+    monkeypatch.setattr("quartz.kernel.client.subprocess.Popen", _FakeProc)
+
+    # 1. reject -> denied, does not spawn
+    r1 = kc._exec_bridge_sync({"tool": "quartz", "argv": ["-p", "one"], "cwd": str(tmp_path)})
+    assert r1["exit_code"] == 126
+    assert "rejected" in r1["stderr"].lower()
+    assert len(seen) == 1
+    assert seen[0].scope == "quartz_worker"
+    assert len(spawned_cmds) == 0
+
+    # 2. allow_once -> spawns [sys.executable, "-m", "quartz", ...]
+    r2 = kc._exec_bridge_sync({"tool": "quartz", "argv": ["-p", "two"], "cwd": str(tmp_path)})
+    assert r2["exit_code"] == 0
+    assert r2["stdout"] == "worker-ok\n"
+    assert len(seen) == 2
+    assert spawned_cmds[-1] == [sys.executable, "-m", "quartz", "-p", "two"]
+
+    # 3. allow_session -> prompts once, then subsequent call skips prompt
+    r3 = kc._exec_bridge_sync({"tool": "quartz", "argv": ["-p", "three"], "cwd": str(tmp_path)})
+    assert r3["exit_code"] == 0
+    assert len(seen) == 3
+
+    r4 = kc._exec_bridge_sync({"tool": "quartz", "argv": ["-p", "four"], "cwd": str(tmp_path)})
+    assert r4["exit_code"] == 0
+    assert len(seen) == 3
+    assert len(spawned_cmds) == 3
+
+
+def test_exec_bridge_sync_quartz_cancel_terminates_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    kc = KernelClient(
+        cwd=tmp_path,
+        sandbox=False,
+        host_bridge=True,
+        preapproved_scopes={"quartz_worker"},
+    )
+    monkeypatch.setattr("quartz.kernel.client.find_real_binary", lambda _tool: "/usr/bin/quartz")
+
+    cancel_ev = threading.Event()
+    terminated = False
+
+    class _SlowProc:
+        def __init__(self, cmd: list[str], **_kwargs: object) -> None:
+            self.returncode = -15
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            if not terminated:
+                cancel_ev.set()
+                raise subprocess.TimeoutExpired(cmd="quartz", timeout=timeout or 0.1)
+            return ("partial\n", "")
+
+        def terminate(self) -> None:
+            nonlocal terminated
+            terminated = True
+
+        def kill(self) -> None:
+            nonlocal terminated
+            terminated = True
+
+    monkeypatch.setattr("quartz.kernel.client.subprocess.Popen", _SlowProc)
+
+    res = kc._exec_bridge_sync(
+        {"tool": "quartz", "argv": ["-p", "slow"], "cwd": str(tmp_path)},
+        cancel_event=cancel_ev,
+    )
+    assert terminated is True
+    assert res["exit_code"] == 126
+    assert "cancelled" in res["stderr"].lower()
+
+
+def test_launch_worker_uses_quartz_shim_when_bridge_sock_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from quartz.kernel.worker import KernelWorker
+
+    captured: list[str] = []
+    worker = KernelWorker.__new__(KernelWorker)
+    worker.headless = False
+
+    def _fake_start_bash(cmd: str, timeout: float | None = None):
+        captured.append(cmd)
+        return "handle"
+
+    worker._start_bash = _fake_start_bash  # type: ignore[method-assign]
+
+    monkeypatch.setenv("QUARTZ_HOST_BRIDGE_SOCK", str(tmp_path / "bridge.sock"))
+    worker._launch_worker(str(tmp_path / "p.md"), str(tmp_path), "sess-bridge")
+    assert captured[-1].startswith("quartz -p ")
+    assert "-m quartz" not in captured[-1]
+
+    monkeypatch.delenv("QUARTZ_HOST_BRIDGE_SOCK", raising=False)
+    worker._launch_worker(str(tmp_path / "p.md"), str(tmp_path), "sess-local")
+    assert "-m quartz -p " in captured[-1]
