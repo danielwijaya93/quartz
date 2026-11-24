@@ -26,6 +26,9 @@ jobs:
       - name: Lint with ruff
         run: uv run ruff check src tests
 
+      - name: Check symbol index is up to date
+        run: uv run python scripts/gen_index.py --check
+
       - name: Typecheck with pyright
         run: uv run pyright
 
