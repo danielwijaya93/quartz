@@ -595,7 +595,12 @@ def _start_stdin_reader(
             if not line:
                 with contextlib.suppress(RuntimeError):
                     loop.call_soon_threadsafe(queue.put_nowait, None)
-                break
+                # If a synchronous cell is blocking the event loop, _main() will
+                # never read None from the queue; force-exit after a short grace.
+                time.sleep(0.5)
+                with contextlib.suppress(OSError):
+                    os.killpg(0, signal.SIGKILL)
+                os._exit(0)
             line = line.strip()
             if not line:
                 continue
