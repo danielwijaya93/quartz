@@ -485,3 +485,17 @@ async def test_launch_worker_uses_bash_tracking(tmp_path: Path) -> None:
         assert "session_id" in (missing.stderr or missing.stdout)
     finally:
         kernel.close()
+
+
+async def test_bash_result_returncode_and_handle_exit_code() -> None:
+    from quartz.kernel.bash_jobs import BashHandle, BashResult
+
+    r = BashResult(exit_code=3, output="err", duration=0.1)
+    assert r.returncode == 3
+
+    handle = BashHandle("sleep 0.2", timeout=5.0, started_cell_id=None, on_done_callback=lambda _h: None)
+    with pytest.raises(RuntimeError, match="await"):
+        _ = handle.exit_code
+    res = await handle
+    assert res.exit_code == 0
+    assert handle.exit_code == 0

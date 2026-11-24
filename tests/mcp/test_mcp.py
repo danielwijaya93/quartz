@@ -324,3 +324,34 @@ def test_search_tools_uses_cache_without_connecting(tmp_path: Path, monkeypatch)
     assert len(hits) == 1
     assert hits[0]["server"] == "cached_srv"
     assert hits[0]["name"] == "fetch_invoice"
+
+    # limit= slices results instead of raising TypeError
+    limited = asyncio.run(mgr.search_tools("", limit=1))
+    assert len(limited) == 1
+
+
+def test_mcp_manager_list_tools_refresh_and_proxy_dict_arg(tmp_path: Path) -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from quartz.mcp.client import _MCPToolProxy
+
+    class _ListSession(_FakeSession):
+        async def list_tools(self):
+            return SimpleNamespace(tools=[SimpleNamespace(name="t1", description="d", inputSchema={})])
+
+    mgr = _manager_with(_ListSession(), tmp_path)
+    listed = asyncio.run(mgr.list_tools("s", refresh=True))
+    assert len(listed) == 1 and listed[0]["name"] == "t1"
+
+    seen: list[dict] = []
+
+    async def _fake_call(server: str, tool: str, arguments: dict | None = None, **_kw):
+        seen.append(dict(arguments or {}))
+        return "ok"
+
+    mgr.call_tool = _fake_call  # type: ignore[method-assign]
+    proxy = _MCPToolProxy(mgr, "s", "t1")
+    assert asyncio.run(proxy({"a": 1})) == "ok"
+    assert asyncio.run(proxy({"a": 1}, b=2)) == "ok"
+    assert seen == [{"a": 1}, {"a": 1, "b": 2}]
