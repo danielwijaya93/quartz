@@ -536,7 +536,8 @@ class KernelWorker:
         prompt_path = _shlex.quote(str(prompt_file))
         cwd_path = _shlex.quote(str(cwd))
         sid = _shlex.quote(str(session_id))
-        command = f"uv run quartz -p \"$(cat {prompt_path})\" -r {sid} --fork --cwd {cwd_path}"
+        py_exe = _shlex.quote(sys.executable)
+        command = f"{py_exe} -m quartz -p \"$(cat {prompt_path})\" -r {sid} --fork --cwd {cwd_path}"
         return self._start_bash(command, timeout)
 
     def _send(self, payload: dict[str, Any]) -> None:

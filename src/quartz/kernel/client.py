@@ -645,14 +645,28 @@ class KernelClient:
         with self._events_cond:
             return bool(self._events)
 
-    def wait_until_event(self, stop_event: threading.Event, timeout: float = 0.25) -> bool:
-        """Block until a kernel event arrives or `stop_event` is set. Returns True if events are pending."""
+    def wake_event_waiters(self) -> None:
+        """Wake any thread blocked inside :meth:`wait_until_event` or :meth:`wait_for_events`."""
+        with self._events_cond:
+            self._events_cond.notify_all()
+
+    def wait_until_event(self, stop_event: threading.Event, timeout: float | None = 0.25) -> bool:
+        """Block until a kernel event arrives or `stop_event` is set. Returns True if events are pending.
+
+        Callers that invoke :meth:`wake_event_waiters` alongside ``stop_event.set()``
+        may pass ``timeout=None`` for zero-polling blocking waits.
+        """
         while not stop_event.is_set():
             with self._events_cond:
-                if not self._events:
-                    self._events_cond.wait(timeout=timeout)
                 if self._events:
                     return True
+                if self._worker_exited:
+                    return False
+                self._events_cond.wait(timeout=timeout)
+                if self._events:
+                    return True
+                if self._worker_exited:
+                    return False
         return False
 
     def wait_for_events(self, timeout: float | None = None) -> list[dict[str, Any]]:
@@ -698,6 +712,8 @@ class KernelClient:
         self._running_bash_count = 0
         self._running_bash_jobs.clear()
         self.dirty = False
+        self._worker_exited = True
+        self.wake_event_waiters()
         if proc is None:
             return
         pid = proc.pid

@@ -3,54 +3,149 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import os
 import signal
 import sys
+import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from rich.markup import escape
-from rich.text import Text
+if TYPE_CHECKING:
+    from quartz.bootstrap import BootstrapOptions
+    from quartz.core.runtime import AgentRuntime
 
-from quartz.bootstrap import BootstrapOptions, build_runtime
-from quartz.cli.subcommands import _handle_auth_cli, _handle_mcp_cli
-from quartz.core.images import (
-    ImageAttachment,
-    build_user_content,
-    extract_inline_image_mentions,
-    load_image_file,
-)
-from quartz.core.loop import drain_bash_events
-from quartz.core.runtime import AgentRuntime
-from quartz.core.turn import TurnStatus, run_interactive_turn, run_turn
-from quartz.errors import CredentialError, EndpointConfigError, SessionNotFoundError
-from quartz.kernel.sandbox import SandboxUnavailableError
-from quartz.providers.registry import PROVIDERS, resolve_context_tokens
-from quartz.providers.selection import build_provider
-from quartz.settings import load_settings, project_trust_status, trust_project
-from quartz.tui.render import (
-    _active_printer,
-    _format_turn_footer,
-    _format_turn_timing,
-    _render_bash_notice,
-    _short_path,
-    console,
-)
-from quartz.tui.turn_view import make_turn_view
+_LAZY_ATTRS: dict[str, tuple[str, str]] = {
+    "BootstrapOptions": ("quartz.bootstrap", "BootstrapOptions"),
+    "build_runtime": ("quartz.bootstrap", "build_runtime"),
+    "_handle_auth_cli": ("quartz.cli.subcommands", "_handle_auth_cli"),
+    "_handle_mcp_cli": ("quartz.cli.subcommands", "_handle_mcp_cli"),
+    "PROVIDERS": ("quartz.providers.registry", "PROVIDERS"),
+    "resolve_context_tokens": ("quartz.providers.registry", "resolve_context_tokens"),
+    "build_provider": ("quartz.providers.selection", "build_provider"),
+    "load_settings": ("quartz.settings", "load_settings"),
+    "project_trust_status": ("quartz.settings", "project_trust_status"),
+    "trust_project": ("quartz.settings", "trust_project"),
+    "_active_printer": ("quartz.tui.render", "_active_printer"),
+    "_format_turn_footer": ("quartz.tui.render", "_format_turn_footer"),
+    "_format_turn_timing": ("quartz.tui.render", "_format_turn_timing"),
+    "_render_bash_notice": ("quartz.tui.render", "_render_bash_notice"),
+    "_short_path": ("quartz.tui.render", "_short_path"),
+    "console": ("quartz.tui.render", "console"),
+    "make_turn_view": ("quartz.tui.turn_view", "make_turn_view"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    target = _LAZY_ATTRS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    mod_name, attr_name = target
+    value = getattr(importlib.import_module(mod_name), attr_name)
+    globals()[name] = value
+    return value
+
+
+def _get_attr(name: str) -> Any:
+    """Resolve an attribute respecting monkeypatches in ``globals()``."""
+    if name in globals():
+        return globals()[name]
+    return __getattr__(name)
+
+
+def _print_error(message: str) -> None:
+    """Print an error message, avoiding rich/TUI imports in headless mode unless loaded."""
+    if "console" in globals():
+        from rich.markup import escape
+
+        globals()["console"].print(f"[red]Error: {escape(message)}[/red]")
+        return
+    if sys.stdout.isatty():
+        from rich.markup import escape
+
+        _get_attr("console").print(f"[red]Error: {escape(message)}[/red]")
+        return
+    sys.stderr.write(f"Error: {message}\n")
+    sys.stderr.flush()
+
+
+class _HeadlessTurnView:
+    """Zero-rich plain stdout view for `quartz -p` (headless non-verbose) runs."""
+
+    def __init__(self, rt: AgentRuntime) -> None:
+        self._rt = rt
+        self.streamed_any: list[bool] = [False]
+        self.pending_cells: dict[str, tuple[str, float]] = {}
+        self.turn_reasoning: list[str] = []
+
+    def on_status(self, label: str | None) -> None:
+        return None
+
+    def on_thinking_delta(self, text: str) -> None:
+        self.turn_reasoning.append(text)
+
+    def on_text_delta(self, text: str) -> None:
+        self.streamed_any[0] = True
+        sys.stdout.write(text)
+        sys.stdout.flush()
+
+    def on_tool_call(self, tool_call_id: str, code: str) -> None:
+        if self.streamed_any[0]:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            self.streamed_any[0] = False
+        self.pending_cells[tool_call_id] = (code, time.monotonic())
+
+    def on_tool_result(self, tool_call_id: str, cell: Any) -> None:
+        code, started = self.pending_cells.pop(tool_call_id, ("", time.monotonic()))
+        duration = time.monotonic() - started
+        self._rt.cell_history.append((code, cell, duration))
+
+    def on_compaction(self, result: Any) -> None:
+        return None
+
+    def on_bash_notice(self, notice: str) -> None:
+        sys.stdout.write(notice.rstrip() + "\n")
+        sys.stdout.flush()
+
+    def on_steering(self, text: str) -> None:
+        return None
+
+    def reset(self) -> None:
+        return None
+
+    def finish(self) -> None:
+        if self.streamed_any[0]:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+
+    def show_final(self, answer: str) -> None:
+        sys.stdout.write(answer.rstrip() + "\n")
+        sys.stdout.flush()
 
 
 def _run_turn(rt: AgentRuntime) -> tuple[str, list[dict[str, Any]], int]:
     """Run one turn, rendered by the terminal view (`core.turn.run_turn` + `TuiTurnView`)."""
-    return run_turn(rt, make_turn_view(rt))
+    from quartz.core.turn import run_turn
+
+    return run_turn(rt, _get_attr("make_turn_view")(rt))
 
 
 def _emit_bash_notice(rt: AgentRuntime, notice: str) -> None:
     """Render a background bash notice and append it to the conversation."""
-    _render_bash_notice(notice)
+    _get_attr("_render_bash_notice")(notice)
     rt.messages.append({"role": "user", "content": notice})
 
 
 def _run_headless(rt: AgentRuntime, prompt: str, image_args: list[str]) -> None:
+    from quartz.core.images import (
+        ImageAttachment,
+        build_user_content,
+        extract_inline_image_mentions,
+        load_image_file,
+    )
+    from quartz.core.turn import run_turn
+
     cli_images: list[ImageAttachment] = []
     for raw_img in image_args:
         img_path = Path(raw_img).expanduser()
@@ -59,15 +154,18 @@ def _run_headless(rt: AgentRuntime, prompt: str, image_args: list[str]) -> None:
         try:
             cli_images.append(load_image_file(img_path))
         except (FileNotFoundError, ValueError) as exc:
-            console.print(f"[red]Error: {escape(str(exc))}[/red]")
+            _print_error(str(exc))
             return
     try:
         cli_images.extend(extract_inline_image_mentions(prompt, rt.cwd))
     except (OSError, ValueError) as exc:
-        console.print(f"[red]Error: {escape(str(exc))}[/red]")
+        _print_error(str(exc))
         return
     rt.messages.append({"role": "user", "content": build_user_content(prompt, cli_images)})
-    _, rt.messages, _ = _run_turn(rt)
+    if getattr(rt, "plain_output", True) and not getattr(rt, "verbose", False) and not getattr(rt, "show_details", False):
+        _, rt.messages, _ = run_turn(rt, _HeadlessTurnView(rt))  # type: ignore[arg-type]
+    else:
+        _, rt.messages, _ = _run_turn(rt)
     rt.persist()
     # Nothing to wait for afterwards: a `-p` kernel runs `bash()` inline, so by the
     # time the turn returns, every command it started has already finished and its
@@ -86,6 +184,20 @@ def _run_interactive(rt: AgentRuntime, resumed: bool) -> None:
             show_details=getattr(rt, "show_details", False),
         ).run()
         return
+
+    from rich.markup import escape
+    from rich.text import Text
+
+    from quartz.core.images import build_user_content, extract_inline_image_mentions
+    from quartz.core.loop import drain_bash_events
+    from quartz.core.turn import TurnStatus, run_interactive_turn
+
+    console = _get_attr("console")
+    _active_printer = _get_attr("_active_printer")
+    _format_turn_footer = _get_attr("_format_turn_footer")
+    _format_turn_timing = _get_attr("_format_turn_timing")
+    _render_bash_notice = _get_attr("_render_bash_notice")
+    make_turn_view = _get_attr("make_turn_view")
 
     set_perm = getattr(rt.kernel, "set_permission_handler", None)
     if callable(set_perm) and sys.stdin.isatty():
@@ -176,6 +288,7 @@ def _bootstrap_options(args: argparse.Namespace) -> BootstrapOptions:
     `plain_output` folds `--prompt` together with TTY detection, which a server has
     no use for.
     """
+    BootstrapOptions = _get_attr("BootstrapOptions")
     return BootstrapOptions(
         cwd=args.cwd,
         provider=args.provider,
@@ -203,7 +316,7 @@ def _maybe_prompt_project_trust(args: argparse.Namespace) -> None:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return
     cwd = args.cwd.expanduser().resolve()
-    status = project_trust_status(cwd)
+    status = _get_attr("project_trust_status")(cwd)
     if not status["needsTrust"]:
         return
 
@@ -211,14 +324,14 @@ def _maybe_prompt_project_trust(args: argparse.Namespace) -> None:
 
     found = ", ".join(status["files"])
     choice = _pick_option(
-        f"Trust {_short_path(cwd)}? Found {found}",
+        f"Trust {_get_attr('_short_path')(cwd)}? Found {found}",
         [
             ("trust", "Yes, trust this folder (remember and load .quartz/ config)"),
             ("skip", "No, keep untrusted for now (skip .quartz/ config)"),
         ],
     )
     if choice == "trust":
-        trust_project(cwd)
+        _get_attr("trust_project")(cwd)
 
 
 def _build_runtime(args: argparse.Namespace) -> tuple[AgentRuntime, bool]:
@@ -227,13 +340,16 @@ def _build_runtime(args: argparse.Namespace) -> tuple[AgentRuntime, bool]:
     `build_runtime` raises instead of exiting so a server can survive a bad request;
     the terminal keeps its old contract by reporting and exiting here.
     """
+    from quartz.errors import CredentialError, EndpointConfigError, SessionNotFoundError
+    from quartz.kernel.sandbox import SandboxUnavailableError
+
     try:
-        return build_runtime(_bootstrap_options(args))
+        return _get_attr("build_runtime")(_bootstrap_options(args))
     except SessionNotFoundError as exc:
-        console.print(f"[red]Error: No previous session found for {escape(_short_path(exc.cwd))}.[/red]")
+        _print_error(f"No previous session found for {_get_attr('_short_path')(exc.cwd)}.")
         sys.exit(1)
     except (CredentialError, EndpointConfigError, FileNotFoundError, SandboxUnavailableError) as exc:
-        console.print(f"[red]Error: {escape(str(exc))}[/red]")
+        _print_error(str(exc))
         sys.exit(1)
 
 
@@ -260,10 +376,10 @@ def main() -> None:
     _load_env_files()
 
     if len(sys.argv) > 1 and sys.argv[1] == "mcp":
-        _handle_mcp_cli(sys.argv[2:])
+        _get_attr("_handle_mcp_cli")(sys.argv[2:])
         return
     if len(sys.argv) > 1 and sys.argv[1] == "auth":
-        _handle_auth_cli(sys.argv[2:])
+        _get_attr("_handle_auth_cli")(sys.argv[2:])
         return
     if len(sys.argv) > 1 and sys.argv[1] == "prune":
         from quartz.cli.subcommands import _handle_prune_cli
@@ -288,6 +404,7 @@ def main() -> None:
 
     from quartz import __version__
 
+    providers = _get_attr("PROVIDERS")
     parser = argparse.ArgumentParser(description="quartz — minimal coding agent with a persistent Python REPL.")
     parser.add_argument("-V", "--version", action="version", version=f"quartz {__version__}")
     parser.add_argument("-p", "--prompt", help="Run a single prompt in headless mode and exit.")
@@ -314,7 +431,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--provider",
-        choices=["auto", *PROVIDERS.keys()],
+        choices=["auto", *providers.keys()],
         default=os.getenv("PROVIDER", "auto"),
         help="LLM provider backend (default: auto).",
     )
@@ -377,15 +494,15 @@ def main() -> None:
     if args.acp:
         from quartz.cli.acp import ACPServer
 
-        _settings = load_settings()
+        _settings = _get_attr("load_settings")()
         compact_reserve_tokens = _settings.compact_reserve_tokens
         keep_recent_tokens = _settings.keep_recent_tokens
 
         def _provider_with_resolved_context():
-            client, pname, model_name, effort_name = build_provider(
+            client, pname, model_name, effort_name = _get_attr("build_provider")(
                 provider=args.provider, model_override=args.model, effort_override=args.effort
             )
-            resolved = resolve_context_tokens(pname, model_name, client)
+            resolved = _get_attr("resolve_context_tokens")(pname, model_name, client)
             return client, pname, model_name, effort_name, resolved
 
         server = ACPServer(

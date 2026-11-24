@@ -11,15 +11,15 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from cryptography.hazmat.primitives import serialization
-from py_vapid import Vapid
-from pywebpush import WebPushException, webpush
-
 __all__ = [
     "PushStore",
     "default_push_path",
     "format_push_payload",
 ]
+
+# Resolved lazily on first actual push send; kept at module scope so tests can
+# `patch("quartz.web.push.webpush", ...)` without importing pywebpush up front.
+webpush: Any = None
 
 
 def default_push_path() -> Path:
@@ -30,7 +30,9 @@ def default_push_path() -> Path:
     return Path.home() / ".quartz" / "web" / "push.json"
 
 
-def _public_key_b64(vapid: Vapid) -> str:
+def _public_key_b64(vapid: Any) -> str:
+    from cryptography.hazmat.primitives import serialization
+
     raw = vapid.public_key.public_bytes(
         encoding=serialization.Encoding.X962,
         format=serialization.PublicFormat.UncompressedPoint,
@@ -39,6 +41,8 @@ def _public_key_b64(vapid: Vapid) -> str:
 
 
 def _generate_vapid() -> tuple[str, str]:
+    from py_vapid import Vapid
+
     vapid = Vapid()
     vapid.generate_keys()
     private_pem = vapid.private_pem().decode("utf-8")
@@ -141,13 +145,23 @@ class PushStore:
         pub = data.get("vapid_public_key")
         valid_keys = False
         if isinstance(priv, str) and priv.strip() and isinstance(pub, str) and pub.strip():
-            try:
-                vapid = Vapid.from_pem(priv.encode("utf-8"))
+            pub_clean = pub.strip()
+            # Fast path: trust an already-persisted PEM + 87-char uncompressed P-256
+            # public key without importing py_vapid/cryptography on server boot.
+            if "BEGIN" in priv and "PRIVATE KEY" in priv and len(pub_clean) == 87:
                 self._private_pem = priv
-                self._public_key = _public_key_b64(vapid)
+                self._public_key = pub_clean
                 valid_keys = True
-            except Exception:  # noqa: BLE001
-                valid_keys = False
+            else:
+                try:
+                    from py_vapid import Vapid
+
+                    vapid = Vapid.from_pem(priv.encode("utf-8"))
+                    self._private_pem = priv
+                    self._public_key = _public_key_b64(vapid)
+                    valid_keys = True
+                except Exception:  # noqa: BLE001
+                    valid_keys = False
 
         if not valid_keys:
             self._private_pem, self._public_key = _generate_vapid()
@@ -237,13 +251,22 @@ class PushStore:
         if not targets:
             return 0
 
+        from py_vapid import Vapid
+        from pywebpush import WebPushException
+
+        sender = webpush
+        if sender is None:
+            from pywebpush import webpush as _webpush
+
+            sender = _webpush
+
         data = json.dumps(payload)
         sent = 0
         expired: list[str] = []
         for sub in targets:
             try:
                 vapid = Vapid.from_pem(priv_pem.encode("utf-8"))
-                webpush(
+                sender(
                     subscription_info=sub,
                     data=data,
                     vapid_private_key=vapid,

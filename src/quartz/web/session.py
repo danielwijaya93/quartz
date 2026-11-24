@@ -158,6 +158,8 @@ class WebSession:
         self._sandbox_override: bool | None = None
         self._bg_stop: threading.Event | None = None
         self._bg_thread: threading.Thread | None = None
+        self._turn_done = threading.Event()
+        self._turn_done.set()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -588,22 +590,36 @@ class WebSession:
         thread, self._bg_thread = self._bg_thread, None
         if stop_event is not None:
             stop_event.set()
+        self._turn_done.set()
+        rt = self._runtime
+        if rt is not None:
+            wake = getattr(rt.kernel, "wake_event_waiters", None)
+            if callable(wake):
+                with contextlib.suppress(Exception):
+                    wake()
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=1.0)
 
     def _bg_watcher_loop(self, runtime: AgentRuntime, stop_event: threading.Event) -> None:
+        # Real KernelClient exposes wake_event_waiters(), allowing true zero-polling
+        # waits (timeout=None). Minimal test fakes fall back to a short timeout.
+        wait_timeout: float | None = (
+            None if callable(getattr(runtime.kernel, "wake_event_waiters", None)) else 0.25
+        )
         while not stop_event.is_set():
             if self._runtime is not runtime:
                 break
             if self.turn_running:
-                stop_event.wait(0.25)
+                self._turn_done.wait()
                 continue
             has_events = False
             try:
                 if runtime.kernel.has_pending_events():
                     has_events = True
                 else:
-                    has_events = bool(runtime.kernel.wait_until_event(stop_event, timeout=0.25))
+                    has_events = bool(
+                        runtime.kernel.wait_until_event(stop_event, timeout=wait_timeout)
+                    )
             except Exception:  # noqa: BLE001 - retired/broken kernel must not crash watcher
                 has_events = False
                 stop_event.wait(0.25)
@@ -629,6 +645,7 @@ class WebSession:
                 pass
             turn = _Turn(id=f"turn-{uuid.uuid4().hex[:12]}")
             self._turn = turn
+            self._turn_done.clear()
             self._streaming = ""
             self._status = None
             self._last_active_at = time.monotonic()
@@ -663,6 +680,7 @@ class WebSession:
                 raise TurnBusyError("A turn is already running.")
             turn = _Turn(id=f"turn-{uuid.uuid4().hex[:12]}")
             self._turn = turn
+            self._turn_done.clear()
             self._streaming = ""
             self._status = None
             runtime.messages.append(
@@ -725,6 +743,7 @@ class WebSession:
             with self._lock:
                 if self._turn is turn:
                     self._turn = None
+                    self._turn_done.set()
                 self._last_active_at = time.monotonic()
 
     def _settle_streamed_text(self, outcome: TurnOutcome) -> None:
@@ -801,6 +820,7 @@ class WebSession:
             if self._turn is turn:
                 # The thread is gone or wedged; either way nothing may steer it now.
                 self._turn = None
+                self._turn_done.set()
 
     # -- commands ----------------------------------------------------------
 
