@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import atexit
 import contextlib
 import contextvars
 import json
@@ -17,11 +16,10 @@ import threading
 import time
 import uuid
 from collections import deque
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from quartz.kernel.base import CellResult
+from quartz.kernel.base import BaseKernel, CellResult
 from quartz.kernel.bridge import (
     BRIDGED_TOOLS,
     PermissionHandler,
@@ -42,7 +40,22 @@ _HOST_IMAGE_SINK: contextvars.ContextVar[list[dict[str, str]] | None] = contextv
 )
 
 
-class KernelClient:
+def _abort_bridge_proc(proc: subprocess.Popen[str], exit_code: int, suffix: str) -> dict[str, Any]:
+    """Terminate (or kill) a host-bridge subprocess and return a standardized error result."""
+    proc.terminate()
+    try:
+        stdout, stderr = proc.communicate(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+    return {"exit_code": exit_code, "stdout": stdout or "", "stderr": (stderr or "") + suffix}
+
+
+def _bridge_err(code: int, msg: str) -> dict[str, Any]:
+    return {"exit_code": code, "stdout": "", "stderr": msg}
+
+
+class KernelClient(BaseKernel):
     """Manages a persistent `kernel_worker` subprocess over JSONL."""
 
     def __init__(
@@ -57,31 +70,17 @@ class KernelClient:
         preapproved_scopes: set[str] | None = None,
         shared_host_mcp: bool = False,
     ) -> None:
-        self.cwd = (cwd or Path.cwd()).resolve()
+        super().__init__(cwd)
         self._proc: subprocess.Popen[str] | None = None
         self._pending: dict[str, queue.Queue[dict[str, Any]]] = {}
         self._pending_async: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Future[dict[str, Any]]]] = {}
         self._pending_lock = threading.Lock()
         self._write_lock = threading.Lock()
-        self._events: list[dict[str, Any]] = []
-        self._event_waiters: list[tuple[asyncio.AbstractEventLoop, asyncio.Future[bool]]] = []
-        self._events_cond = threading.Condition()
         self._ready_event = threading.Event()
         self._worker_exited = False
         self._reader_thread: threading.Thread | None = None
         self._stderr_thread: threading.Thread | None = None
         self._stderr_tail: deque[str] = deque(maxlen=200)
-        self._running_bash_count: int = 0
-        self._running_bash_jobs: list[dict[str, Any]] = []
-        self._on_bg_count: Callable[[int], None] | None = None
-        self._atexit_registered = False
-        self.dirty = False
-        self._restart_notice: str | None = None
-        #: Runtime options pushed into the worker (see :meth:`configure`). Kept here
-        #: rather than only in the subprocess so a restarted kernel gets them again.
-        self._headless = False
-        self._background_check_every = 0.0
-        self._configured = False
         self._sandbox_config: SandboxConfig = sandbox_config or SandboxConfig(enabled=sandbox)
         self._host_mcp_override = host_mcp
         self._host_bridge_override = host_bridge
@@ -98,15 +97,17 @@ class KernelClient:
         self._host_thread: threading.Thread | None = None
         self._host_loop_lock = threading.Lock()
 
+    def _is_alive(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def _is_wait_closed(self) -> bool:
+        return self._worker_exited
+
     def _host_mcp_enabled(self) -> bool:
-        if self._host_mcp_override is not None:
-            return self._host_mcp_override
-        return self._sandbox_config.enabled
+        return self._sandbox_config.enabled if self._host_mcp_override is None else self._host_mcp_override
 
     def _host_bridge_enabled(self) -> bool:
-        if self._host_bridge_override is not None:
-            return self._host_bridge_override
-        return self._sandbox_config.enabled
+        return self._sandbox_config.enabled if self._host_bridge_override is None else self._host_bridge_override
 
     def enable_shared_host_mcp(self, enabled: bool = True) -> None:
         """Opt into the process-wide shared host MCP pool and event loop."""
@@ -163,9 +164,9 @@ class KernelClient:
             self._host_loop = loop_holder[0]
             return self._host_loop
 
-    def _send_host_response(self, payload: dict[str, Any]) -> None:
+    def _write_frame(self, payload: dict[str, Any], *, best_effort: bool = False) -> None:
         proc = self._proc
-        if proc is None or proc.stdin is None or proc.poll() is not None:
+        if proc is None or proc.stdin is None or (best_effort and proc.poll() is not None):
             return
         line = json.dumps(payload, ensure_ascii=False) + "\n"
         try:
@@ -173,6 +174,8 @@ class KernelClient:
                 proc.stdin.write(line)
                 proc.stdin.flush()
         except Exception:
+            if not best_effort:
+                raise
             logger.debug("Failed to write kernel host response", exc_info=True)
 
     async def _handle_host_request(self, msg: dict[str, Any]) -> None:
@@ -184,10 +187,7 @@ class KernelClient:
         token = _HOST_IMAGE_SINK.set(images)
         try:
             if method == "mcp.list_tools":
-                result = await mgr.list_tools(
-                    server=params.get("server"),
-                    refresh=bool(params.get("refresh", False)),
-                )
+                result = await mgr.list_tools(server=params.get("server"), refresh=bool(params.get("refresh", False)))
             elif method == "mcp.search_tools":
                 result = await mgr.search_tools(
                     query=str(params.get("query", "")),
@@ -217,26 +217,14 @@ class KernelClient:
             else:
                 raise ValueError(f"Unknown host RPC method: {method!r}")
 
-            self._send_host_response(
-                {
-                    "type": "host_response",
-                    "id": req_id,
-                    "ok": True,
-                    "result": result,
-                    "servers": mgr.list_servers(),
-                    "images": images,
-                }
+            self._write_frame(
+                {"type": "host_response", "id": req_id, "ok": True, "result": result, "servers": mgr.list_servers(), "images": images},
+                best_effort=True,
             )
         except Exception as exc:
-            self._send_host_response(
-                {
-                    "type": "host_response",
-                    "id": req_id,
-                    "ok": False,
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                    "servers": mgr.list_servers(),
-                }
+            self._write_frame(
+                {"type": "host_response", "id": req_id, "ok": False, "error": str(exc), "error_type": type(exc).__name__, "servers": mgr.list_servers()},
+                best_effort=True,
             )
         finally:
             _HOST_IMAGE_SINK.reset(token)
@@ -246,9 +234,9 @@ class KernelClient:
     ) -> dict[str, Any]:
         tool = str(params.get("tool", ""))
         if tool not in BRIDGED_TOOLS:
-            return {"exit_code": 126, "stdout": "", "stderr": f"Unsupported bridge tool: {tool!r}\n"}
+            return _bridge_err(126, f"Unsupported bridge tool: {tool!r}\n")
         if cancel_event is not None and cancel_event.is_set():
-            return {"exit_code": 126, "stdout": "", "stderr": "Host bridge request cancelled.\n"}
+            return _bridge_err(126, "Host bridge request cancelled.\n")
         raw_argv = params.get("argv")
         argv = [str(a) for a in raw_argv] if isinstance(raw_argv, list) else []
         target_cwd = validate_bridge_cwd(params.get("cwd"), self.cwd)
@@ -264,19 +252,15 @@ class KernelClient:
 
         with self._permission_lock:
             if cancel_event is not None and cancel_event.is_set():
-                return {"exit_code": 126, "stdout": "", "stderr": "Host bridge request cancelled.\n"}
+                return _bridge_err(126, "Host bridge request cancelled.\n")
             allowed = self._permission_policy.is_allowed(scope)
             if not allowed:
                 handler = self._permission_handler
                 if handler is None:
-                    return {
-                        "exit_code": 126,
-                        "stdout": "",
-                        "stderr": (
-                            f"Permission denied: '{req.command_display}' requires interactive "
-                            "user approval (none configured).\n"
-                        ),
-                    }
+                    return _bridge_err(
+                        126,
+                        f"Permission denied: '{req.command_display}' requires interactive user approval (none configured).\n",
+                    )
                 with self._permission_waiting_lock:
                     self._permission_waiting_count += 1
                 try:
@@ -285,17 +269,13 @@ class KernelClient:
                     with self._permission_waiting_lock:
                         self._permission_waiting_count -= 1
                 if cancel_event is not None and cancel_event.is_set():
-                    return {"exit_code": 126, "stdout": "", "stderr": "Host bridge request cancelled.\n"}
+                    return _bridge_err(126, "Host bridge request cancelled.\n")
                 allowed = self._permission_policy.record(scope, decision)
 
         if not allowed:
-            return {
-                "exit_code": 126,
-                "stdout": "",
-                "stderr": f"Permission rejected by user: '{req.command_display}'\n",
-            }
+            return _bridge_err(126, f"Permission rejected by user: '{req.command_display}'\n")
         if cancel_event is not None and cancel_event.is_set():
-            return {"exit_code": 126, "stdout": "", "stderr": "Host bridge request cancelled.\n"}
+            return _bridge_err(126, "Host bridge request cancelled.\n")
 
         real_bin = find_real_binary(tool)
         if real_bin:
@@ -303,71 +283,37 @@ class KernelClient:
         elif tool == "quartz":
             cmd = [sys.executable, "-m", "quartz", *argv]
         else:
-            return {"exit_code": 127, "stdout": "", "stderr": f"{tool}: command not found on host\n"}
+            return _bridge_err(127, f"{tool}: command not found on host\n")
 
         timeout_s = resolve_bridge_timeout(tool)
         proc = subprocess.Popen(
-            cmd,
-            cwd=str(target_cwd),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            cmd, cwd=str(target_cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace",
         )
         deadline = time.monotonic() + timeout_s
-        stdout = ""
-        stderr = ""
         while True:
             if cancel_event is not None and cancel_event.is_set():
-                proc.terminate()
-                try:
-                    stdout, stderr = proc.communicate(timeout=2.0)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    stdout, stderr = proc.communicate()
-                return {
-                    "exit_code": 126,
-                    "stdout": stdout or "",
-                    "stderr": (stderr or "") + "Host bridge request cancelled.\n",
-                }
+                return _abort_bridge_proc(proc, 126, "Host bridge request cancelled.\n")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                proc.terminate()
-                try:
-                    stdout, stderr = proc.communicate(timeout=2.0)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    stdout, stderr = proc.communicate()
-                return {
-                    "exit_code": 124,
-                    "stdout": stdout or "",
-                    "stderr": (stderr or "") + f"Host bridge command timed out after {int(timeout_s)}s.\n",
-                }
+                return _abort_bridge_proc(proc, 124, f"Host bridge command timed out after {int(timeout_s)}s.\n")
             try:
                 stdout, stderr = proc.communicate(timeout=min(0.1, remaining))
                 break
             except subprocess.TimeoutExpired:
                 continue
-
-        return {
-            "exit_code": proc.returncode if proc.returncode is not None else 1,
-            "stdout": stdout or "",
-            "stderr": stderr or "",
-        }
+        return {"exit_code": proc.returncode if proc.returncode is not None else 1, "stdout": stdout or "", "stderr": stderr or ""}
 
     def _dispatch_host_request(self, msg: dict[str, Any]) -> None:
-        loop = self._ensure_host_loop()
-        asyncio.run_coroutine_threadsafe(self._handle_host_request(msg), loop)
+        asyncio.run_coroutine_threadsafe(self._handle_host_request(msg), self._ensure_host_loop())
 
     def enable_sandbox(self, config: SandboxConfig | None = None) -> None:
         """Enable OS-level sandboxing for the kernel subprocess (must be called before start)."""
         self._sandbox_config = config or SandboxConfig(enabled=True)
 
     def start(self, timeout: float = 10.0) -> None:
-        if self._proc is not None and self._proc.poll() is None:
+        if self._is_alive():
             return
-
         # Detach any dead previous process BEFORE resetting readiness flags so its
         # dying `_read_loop` thread cannot clobber `_worker_exited` / `_ready_event`.
         self._proc = None
@@ -376,8 +322,8 @@ class KernelClient:
         self._running_bash_count = 0
         self._running_bash_jobs.clear()
         self._stderr_tail.clear()
+
         env = os.environ.copy()
-        # Ensure the package root (`src/`) is importable even if cwd differs
         pkg_root = str(Path(__file__).resolve().parent.parent.parent)
         existing_pp = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = f"{pkg_root}{os.pathsep}{existing_pp}" if existing_pp else pkg_root
@@ -386,70 +332,42 @@ class KernelClient:
         if self._sandbox_config.enabled:
             cmd = wrap_command(cmd, self.cwd, self._sandbox_config)
             env.update(sandbox_env_overrides())
-        if self._host_mcp_enabled():
-            env["QUARTZ_HOST_MCP"] = "1"
-        else:
-            env.pop("QUARTZ_HOST_MCP", None)
-        if self._host_bridge_enabled():
-            env["QUARTZ_HOST_BRIDGE"] = "1"
-        else:
-            env.pop("QUARTZ_HOST_BRIDGE", None)
+        for key, enabled in (("QUARTZ_HOST_MCP", self._host_mcp_enabled()), ("QUARTZ_HOST_BRIDGE", self._host_bridge_enabled())):
+            if enabled:
+                env[key] = "1"
+            else:
+                env.pop(key, None)
 
         proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            bufsize=1,
-            cwd=str(self.cwd),
-            env=env,
-            start_new_session=True,
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", bufsize=1, cwd=str(self.cwd), env=env, start_new_session=True,
         )
         self._proc = proc
         self._reader_thread = threading.Thread(target=self._read_loop, args=(proc,), daemon=True)
         self._reader_thread.start()
-        if self._proc.stderr is not None:
-            self._stderr_thread = threading.Thread(
-                target=self._read_stderr_loop,
-                args=(self._proc.stderr,),
-                daemon=True,
-            )
+        if proc.stderr is not None:
+            self._stderr_thread = threading.Thread(target=self._read_stderr_loop, args=(proc.stderr,), daemon=True)
             self._stderr_thread.start()
-        if not self._atexit_registered:
-            atexit.register(self.close)
-            self._atexit_registered = True
+        self._register_atexit()
 
         ready = self._ready_event.wait(timeout=timeout)
-        rc = self._proc.poll()
+        rc = proc.poll()
         if self._worker_exited or rc is not None:
             self.close()
-            stderr_out = "".join(self._stderr_tail)
-            raise RuntimeError(f"Python kernel exited during startup (exit code {rc}). {stderr_out}")
+            raise RuntimeError(f"Python kernel exited during startup (exit code {rc}). {''.join(self._stderr_tail)}")
         if not ready:
             self.close()
-            stderr_out = "".join(self._stderr_tail)
-            raise RuntimeError(f"Python kernel failed to start within {timeout}s. {stderr_out}")
+            raise RuntimeError(f"Python kernel failed to start within {timeout}s. {''.join(self._stderr_tail)}")
         if self._configured or self._host_mcp_enabled():
             self._push_configure()
 
     def configure(self, *, headless: bool | None = None, background_check_every: float | None = None) -> None:
-        """Push run options into the worker, now and after any later restart.
-
-        ``headless`` tells the worker to run ``bash()`` inline and refuse
-        ``launch_worker``; ``background_check_every`` is the period at which it
-        reports a still-running job (``0`` disables).
-        """
-        if headless is not None:
-            self._headless = bool(headless)
-        if background_check_every is not None:
-            self._background_check_every = max(0.0, float(background_check_every))
-        self._configured = True
+        """Push run options into the worker, now and after any later restart."""
+        self._apply_config_values(headless=headless, background_check_every=background_check_every)
         self._push_configure()
 
     def _push_configure(self) -> None:
-        if self._proc is None or self._proc.poll() is not None:
+        if not self._is_alive():
             return
         payload: dict[str, Any] = {
             "type": "configure",
@@ -461,8 +379,6 @@ class KernelClient:
         try:
             self._request(payload, timeout=5.0)
         except Exception:
-            # Configuration is best-effort: a worker that does not answer must not
-            # stop a session from starting. The defaults it keeps are the safe ones.
             logger.debug("Best-effort kernel configure failed", exc_info=True)
 
     def _read_stderr_loop(self, stderr_pipe: Any) -> None:
@@ -487,16 +403,8 @@ class KernelClient:
             if msg_type == "ready":
                 if self._proc is proc:
                     self._ready_event.set()
-            elif msg_type == "bg_count":
-                count = int(msg.get("count", 0))
-                self._running_bash_count = count
-                cb = self._on_bg_count
-                if cb is not None:
-                    with contextlib.suppress(Exception):
-                        cb(count)
-            elif msg_type == "bg_jobs":
-                jobs = msg.get("jobs")
-                self._running_bash_jobs = [dict(j) for j in jobs if isinstance(j, dict)] if isinstance(jobs, list) else []
+            elif self._handle_common_proto_message(msg):
+                continue
             elif msg_type == "host_request":
                 self._dispatch_host_request(msg)
             elif msg_type == "host_cancel":
@@ -506,14 +414,6 @@ class KernelClient:
                         cancel_ev = self._host_cancel_events.get(cancel_id)
                     if cancel_ev is not None:
                         cancel_ev.set()
-            elif msg_type == "event":
-                with self._events_cond:
-                    self._events.append(msg)
-                    self._events_cond.notify_all()
-                    waiters = list(self._event_waiters)
-                    self._event_waiters.clear()
-                for loop, fut in waiters:
-                    self._resolve_async_future(loop, fut, True)
             else:
                 req_id = msg.get("id")
                 if req_id:
@@ -523,28 +423,16 @@ class KernelClient:
                     if q is not None:
                         q.put(msg)
                     if async_waiter is not None:
-                        loop, fut = async_waiter
-                        self._resolve_async_future(loop, fut, msg)
+                        self._resolve_async_future(async_waiter[0], async_waiter[1], msg)
 
-        # Ignore EOF from a superseded worker so a dying reader thread can never
-        # clobber `_worker_exited` / `_ready_event` / pending requests of a restarted worker.
+        # Ignore EOF from a superseded worker so a dying reader thread can never clobber a restarted one.
         if self._proc is not proc:
             return
-        # Unblock any waiters if the worker exited unexpectedly
         self._worker_exited = True
-        self._running_bash_count = 0
+        self._update_bg_count(0)
         self._running_bash_jobs.clear()
-        cb = self._on_bg_count
-        if cb is not None:
-            with contextlib.suppress(Exception):
-                cb(0)
         self._ready_event.set()
-        with self._events_cond:
-            self._events_cond.notify_all()
-            waiters = list(self._event_waiters)
-            self._event_waiters.clear()
-        for loop, fut in waiters:
-            self._resolve_async_future(loop, fut, False)
+        self.wake_event_waiters(result=False)
         with self._host_cancel_lock:
             for cancel_ev in self._host_cancel_events.values():
                 cancel_ev.set()
@@ -556,120 +444,75 @@ class KernelClient:
         for loop, fut in async_waiters:
             self._resolve_async_future(loop, fut, err_msg)
 
-    def consume_restart_notice(self) -> str | None:
-        """Return (and clear) the notice describing an unexpected kernel exit + auto-restart."""
-        notice, self._restart_notice = self._restart_notice, None
-        return notice
-
     def _note_unexpected_exit(self) -> None:
-        proc = self._proc
-        code = proc.poll() if proc is not None else None
+        code = self._proc.poll() if self._proc is not None else None
         tail = "".join(self._stderr_tail).strip()
         notice = f"[kernel exited unexpectedly (code {code}); restarted with a fresh namespace]"
         if tail:
             notice += "\n" + "\n".join(tail.splitlines()[-20:])
         self._restart_notice = notice
 
+    def _is_waiting_permission(self) -> bool:
+        with self._permission_waiting_lock:
+            return self._permission_waiting_count > 0
+
     def _request(self, payload: dict[str, Any], timeout: float | None) -> dict[str, Any]:
-        if self._proc is None or self._proc.poll() is not None:
+        if not self._is_alive():
             if self._proc is not None:
                 self._note_unexpected_exit()
             self.start()
-        assert self._proc is not None and self._proc.stdin is not None
-
         req_id = uuid.uuid4().hex
         payload["id"] = req_id
         q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
         with self._pending_lock:
             self._pending[req_id] = q
-
         try:
-            line = json.dumps(payload, ensure_ascii=False) + "\n"
-            with self._write_lock:
-                self._proc.stdin.write(line)
-                self._proc.stdin.flush()
+            self._write_frame(payload)
             if timeout is None:
                 return q.get()
-            remaining = float(timeout)
-            poll_step = 0.25
-            last = time.monotonic()
+            remaining, last = float(timeout), time.monotonic()
             while True:
-                step = min(poll_step, max(0.01, remaining))
                 try:
-                    return q.get(timeout=step)
+                    return q.get(timeout=min(0.25, max(0.01, remaining)))
                 except queue.Empty:
                     now = time.monotonic()
-                    elapsed = now - last
+                    if not self._is_waiting_permission():
+                        remaining -= now - last
                     last = now
-                    with self._permission_waiting_lock:
-                        waiting_perm = self._permission_waiting_count > 0
-                    if not waiting_perm:
-                        remaining -= elapsed
                     if remaining <= 0:
                         if payload.get("type") == "exec":
                             self.interrupt()
-                            # Give the interrupted cell a moment to return its KeyboardInterrupt result
-                            try:
+                            with contextlib.suppress(queue.Empty):
                                 return q.get(timeout=3.0)
-                            except queue.Empty:
-                                pass
                         raise TimeoutError(f"Kernel request timed out after {timeout}s") from None
         finally:
             with self._pending_lock:
                 self._pending.pop(req_id, None)
 
-    @staticmethod
-    def _resolve_async_future(
-        loop: asyncio.AbstractEventLoop,
-        fut: asyncio.Future[Any],
-        value: Any,
-    ) -> None:
-        if loop.is_closed():
-            return
-
-        def _set() -> None:
-            if not fut.done():
-                fut.set_result(value)
-
-        with contextlib.suppress(RuntimeError):
-            loop.call_soon_threadsafe(_set)
-
     async def _request_async(self, payload: dict[str, Any], timeout: float | None) -> dict[str, Any]:
-        if self._proc is None or self._proc.poll() is not None:
+        if not self._is_alive():
             if self._proc is not None:
                 self._note_unexpected_exit()
             await asyncio.to_thread(self.start)
-        assert self._proc is not None and self._proc.stdin is not None
-
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[dict[str, Any]] = loop.create_future()
         req_id = uuid.uuid4().hex
         payload["id"] = req_id
         with self._pending_lock:
             self._pending_async[req_id] = (loop, fut)
-
         try:
-            line = json.dumps(payload, ensure_ascii=False) + "\n"
-            with self._write_lock:
-                self._proc.stdin.write(line)
-                self._proc.stdin.flush()
+            self._write_frame(payload)
             if timeout is None:
                 return await fut
-            remaining = float(timeout)
-            poll_step = 0.25
-            last = time.monotonic()
+            remaining, last = float(timeout), time.monotonic()
             while True:
-                step = min(poll_step, max(0.01, remaining))
                 try:
-                    return await asyncio.wait_for(asyncio.shield(fut), timeout=step)
+                    return await asyncio.wait_for(asyncio.shield(fut), timeout=min(0.25, max(0.01, remaining)))
                 except TimeoutError:
                     now = time.monotonic()
-                    elapsed = now - last
+                    if not self._is_waiting_permission():
+                        remaining -= now - last
                     last = now
-                    with self._permission_waiting_lock:
-                        waiting_perm = self._permission_waiting_count > 0
-                    if not waiting_perm:
-                        remaining -= elapsed
                     if remaining <= 0:
                         if payload.get("type") == "exec":
                             self.interrupt()
@@ -684,49 +527,27 @@ class KernelClient:
             with self._pending_lock:
                 self._pending_async.pop(req_id, None)
 
-    def _format_exec_response(self, resp: dict[str, Any]) -> CellResult:
-        notice = self.consume_restart_notice()
-        prefix = f"{notice}\n" if notice else ""
-        if resp.get("type") == "error":
-            return CellResult(
-                ok=False, stdout="", stderr=prefix + resp.get("error", "Unknown kernel error"), result=None
-            )
-        return CellResult(
-            ok=bool(resp.get("ok", False)),
-            stdout=resp.get("stdout", ""),
-            stderr=prefix + resp.get("stderr", ""),
-            result=resp.get("result"),
-            images=list(resp.get("images") or []),
-            files=list(resp.get("files") or []),
-        )
-
     async def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
         self.dirty = True
-        # A headless cell waits for the `bash()` jobs it started (see
-        # `KernelWorker._run_cell_jobs_inline`), so the client must not time it out
-        # first: the command's own `timeout=` is what bounds the wait there.
         if self._headless:
             timeout = None
         resp = await self._request_async({"type": "exec", "code": code}, timeout=timeout)
-        return self._format_exec_response(resp)
+        return self._format_exec_response(resp, include_notice=True)
 
     def list_helpers(self, timeout: float = 5.0) -> dict[str, Any]:
-        if self._proc is None or self._proc.poll() is not None:
+        if not self._is_alive():
             return {"helpers": [], "warnings": []}
         resp = self._request({"type": "list_helpers"}, timeout=timeout)
-        return {
-            "helpers": list(resp.get("helpers", [])),
-            "warnings": list(resp.get("warnings", [])),
-        }
+        return {"helpers": list(resp.get("helpers", [])), "warnings": list(resp.get("warnings", []))}
 
     def list_vars(self, timeout: float = 5.0) -> dict[str, str]:
-        if self._proc is None or self._proc.poll() is not None:
+        if not self._is_alive():
             return {}
         resp = self._request({"type": "list_vars"}, timeout=timeout)
         return resp.get("vars", {}) if isinstance(resp.get("vars"), dict) else {}
 
     def snapshot(self, snapshot_dir: Path, timeout: float = 30.0) -> dict[str, Any]:
-        if self._proc is None or self._proc.poll() is not None:
+        if not self._is_alive():
             return {"saved": [], "skipped": []}
         resp = self._request({"type": "snapshot", "dir": str(snapshot_dir)}, timeout=timeout)
         self.dirty = False
@@ -735,129 +556,50 @@ class KernelClient:
     def restore(
         self, snapshot_dir: Path, timeout: float = 30.0, root: Path | None = None
     ) -> dict[str, list[str]]:
-        """Restore a snapshot into this kernel.
-
-        ``root`` is the folder this kernel serves: the worker lands the restored
-        kernel there unless the snapshot's own directory is inside it (see
-        ``KernelWorker._restore_cwd``). Omitting it keeps the old behaviour, where
-        the snapshot's directory wins outright.
-        """
-        if self._proc is None or self._proc.poll() is not None:
+        if not self._is_alive():
             self.start()
         frame: dict[str, Any] = {"type": "restore", "dir": str(snapshot_dir)}
         if root is not None:
             frame["root"] = str(root)
         resp = self._request(frame, timeout=timeout)
-        return {
-            "restored": list(resp.get("restored", [])),
-            "skipped": list(resp.get("skipped", [])),
-        }
-
-    def set_bg_count_callback(self, callback: Callable[[int], None] | None) -> None:
-        """Register a listener notified whenever the worker's running bash job count changes."""
-        self._on_bg_count = callback
+        return {"restored": list(resp.get("restored", [])), "skipped": list(resp.get("skipped", []))}
 
     def running_bash_count(self, timeout: float = 5.0) -> int:
         del timeout
-        if self._proc is None or self._proc.poll() is not None:
-            return 0
-        return self._running_bash_count
+        return self._running_bash_count if self._is_alive() else 0
 
     def running_bash_jobs(self) -> list[dict[str, Any]]:
-        """Return snapshots of currently running bash() jobs (pid, command, elapsed_s).
-
-        Elapsed is recomputed at call time from the worker-stamped
-        ``started_at`` wall-clock so the value ticks live; the pushed
-        ``elapsed_s`` is frozen at start/done and is only a fallback.
-        Floored at 0 to absorb wall-clock jumps (NTP, manual changes).
-        """
-        if self._proc is None or self._proc.poll() is not None:
-            return []
-        now = time.time()
-        out: list[dict[str, Any]] = []
-        for job in self._running_bash_jobs:
-            fresh = dict(job)
-            started_at = job.get("started_at")
-            if isinstance(started_at, (int, float)) and not isinstance(started_at, bool):
-                fresh["elapsed_s"] = max(0.0, now - float(started_at))
-            out.append(fresh)
-        return out
+        """Return snapshots of currently running bash() jobs with live elapsed_s."""
+        return self._live_bash_jobs() if self._is_alive() else []
 
     def bash_tail(self, pid: int, lines: int = 50, timeout: float = 5.0) -> str | None:
-        """Return the last *lines* of output for background job *pid*, or None if unavailable."""
-        if self._proc is None or self._proc.poll() is not None:
+        if not self._is_alive():
             return None
         resp = self._request({"type": "bash_tail", "pid": pid, "lines": lines}, timeout=timeout)
-        if not resp.get("found"):
-            return None
-        return str(resp.get("tail", ""))
+        return str(resp.get("tail", "")) if resp.get("found") else None
 
     def kill_bash(self, pid: int, timeout: float = 5.0) -> bool:
-        """Terminate a running background bash job by *pid*."""
-        if self._proc is None or self._proc.poll() is not None:
+        if not self._is_alive():
             return False
         resp = self._request({"type": "kill_bash", "pid": pid}, timeout=timeout)
         return bool(resp.get("killed"))
 
-    def has_pending_events(self) -> bool:
-        with self._events_cond:
-            return bool(self._events)
-
-    def wake_event_waiters(self) -> None:
-        """Wake any thread or coroutine blocked waiting on kernel events."""
-        with self._events_cond:
-            self._events_cond.notify_all()
-            waiters = list(self._event_waiters)
-            self._event_waiters.clear()
-            has_events = bool(self._events)
-        for loop, fut in waiters:
-            self._resolve_async_future(loop, fut, has_events)
-
-    async def wait_event(self, timeout: float | None = None) -> bool:
-        """Asynchronously wait until a kernel event is pending (zero polling)."""
-        loop = asyncio.get_running_loop()
-        with self._events_cond:
-            if self._events:
-                return True
-            if self._worker_exited:
-                return False
-            fut: asyncio.Future[bool] = loop.create_future()
-            entry = (loop, fut)
-            self._event_waiters.append(entry)
-        try:
-            if timeout is None:
-                return await fut
-            return await asyncio.wait_for(fut, timeout=timeout)
-        except TimeoutError:
-            return False
-        finally:
-            with self._events_cond, contextlib.suppress(ValueError):
-                self._event_waiters.remove(entry)
-
     def wait_for_events(self, timeout: float | None = None) -> list[dict[str, Any]]:
         with self._events_cond:
-            if not self._events and not self._worker_exited and self._proc is not None and self._proc.poll() is None:
+            if not self._events and not self._worker_exited and self._is_alive():
                 self._events_cond.wait(timeout=timeout)
             events = list(self._events)
             self._events.clear()
         return events
 
-    def drain_events(self) -> list[dict[str, Any]]:
-        with self._events_cond:
-            events = list(self._events)
-            self._events.clear()
-        return events
-
     def interrupt(self) -> None:
-        if self._proc is not None and self._proc.poll() is None:
+        if self._is_alive():
+            assert self._proc is not None
             with contextlib.suppress(ProcessLookupError):
                 self._proc.send_signal(signal.SIGINT)
 
     def _send_shutdown(self, proc: subprocess.Popen[str]) -> None:
-        """Write the shutdown message under the write lock so it never interleaves with a request."""
-        if proc.stdin is None:
-            return
-        if not self._write_lock.acquire(timeout=2.0):
+        if proc.stdin is None or not self._write_lock.acquire(timeout=2.0):
             return
         try:
             proc.stdin.write(json.dumps({"type": "shutdown"}) + "\n")
@@ -867,9 +609,7 @@ class KernelClient:
             self._write_lock.release()
 
     def close(self) -> None:
-        if self._atexit_registered:
-            atexit.unregister(self.close)
-            self._atexit_registered = False
+        self._unregister_atexit()
         proc = self._proc
         self._proc = None
         self._running_bash_count = 0
@@ -879,7 +619,6 @@ class KernelClient:
         self.wake_event_waiters()
         if proc is None:
             return
-        pid = proc.pid
         if proc.poll() is None:
             try:
                 self._send_shutdown(proc)
@@ -891,11 +630,11 @@ class KernelClient:
                 logger.debug("Graceful kernel shutdown failed", exc_info=True)
         if proc.poll() is None:
             try:
-                os.killpg(pid, signal.SIGTERM)
+                os.killpg(proc.pid, signal.SIGTERM)
                 proc.wait(timeout=1.0)
             except Exception:
                 with contextlib.suppress(ProcessLookupError):
-                    os.killpg(pid, signal.SIGKILL)
+                    os.killpg(proc.pid, signal.SIGKILL)
                 with contextlib.suppress(OSError):
                     proc.kill()
                 with contextlib.suppress(OSError, subprocess.SubprocessError):
@@ -906,17 +645,10 @@ class KernelClient:
         if not self._shared_host_mcp:
             if self._host_mcp is not None and self._host_loop is not None and self._host_loop.is_running():
                 with contextlib.suppress(Exception):
-                    fut = asyncio.run_coroutine_threadsafe(self._host_mcp.close(), self._host_loop)
-                    fut.result(timeout=2.0)
+                    asyncio.run_coroutine_threadsafe(self._host_mcp.close(), self._host_loop).result(timeout=2.0)
             if self._host_loop is not None and self._host_loop.is_running():
                 self._host_loop.call_soon_threadsafe(self._host_loop.stop)
                 if self._host_thread is not None:
                     self._host_thread.join(timeout=1.0)
-                self._host_loop = None
-                self._host_thread = None
+                self._host_loop = self._host_thread = None
         self._host_mcp = None
-
-    def restart(self) -> None:
-        self.close()
-        self.drain_events()
-        self.start()
