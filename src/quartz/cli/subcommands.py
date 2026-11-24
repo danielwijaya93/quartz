@@ -101,13 +101,10 @@ def _handle_mcp_cli(argv: list[str]) -> None:
     rm_p = sub.add_parser("remove", help="Remove an MCP server")
     rm_p.add_argument("name", help="Server name to remove")
 
-    en_p = sub.add_parser("enable", help="Enable one or more MCP servers")
-    en_p.add_argument("names", nargs="*", help="Server name(s) to enable")
-    en_p.add_argument("--all", action="store_true", help="Enable all configured servers")
-
-    dis_p = sub.add_parser("disable", help="Disable one or more MCP servers")
-    dis_p.add_argument("names", nargs="*", help="Server name(s) to disable")
-    dis_p.add_argument("--all", action="store_true", help="Disable all configured servers")
+    for verb in ("enable", "disable"):
+        p = sub.add_parser(verb, help=f"{verb.capitalize()} one or more MCP servers")
+        p.add_argument("names", nargs="*", help=f"Server name(s) to {verb}")
+        p.add_argument("--all", action="store_true", help=f"{verb.capitalize()} all configured servers")
 
     args = parser.parse_args(argv)
     cfg_path = default_mcp_config_path()
