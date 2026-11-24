@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import secrets
 import threading
 import time
-from typing import Any
+from typing import Any, cast
 
 import httpx2
 
@@ -21,6 +22,8 @@ from quartz.auth.google import (
 from quartz.errors import ProviderError, parse_retry_after, provider_error
 from quartz.media import parse_data_url
 from quartz.providers.base import (
+    AsyncSSEStreamHandle,
+    AsyncStreamHandle,
     CompletionResult,
     ProviderCapabilities,
     SSEStreamHandle,
@@ -32,8 +35,10 @@ from quartz.providers.base import (
     Usage,
     UsageEvent,
     collect_completion,
+    collect_completion_async,
 )
 from quartz.providers.config import resolve_cloudcode_endpoint, resolve_http_timeout
+from quartz.providers.http_pool import get_shared_async_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -759,9 +764,18 @@ def parse_sse_payload(payload: dict[str, Any], tc_counter: list[int]) -> list[St
 class GoogleAntigravityProvider:
     """LLMProvider backed by Google Antigravity OAuth subscription."""
 
-    def __init__(self, *, http_client: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        http_client: Any | None = None,
+        async_http_client: Any | None = None,
+        shared_http: bool = False,
+    ) -> None:
         self._http: Any = http_client
         self._owns_http = http_client is None
+        self._async_client: Any = async_http_client
+        self._shared_http = shared_http
+        self._owns_async_http = async_http_client is None and not shared_http
         self.capabilities = ProviderCapabilities(
             reasoning_effort=True,
             stream_options=False,
@@ -773,6 +787,16 @@ class GoogleAntigravityProvider:
             self._http = httpx2.Client(timeout=resolve_http_timeout())
             self._owns_http = True
         return self._http
+
+    def _get_async_http(self) -> Any:
+        if self._shared_http:
+            client = get_shared_async_http_client()
+            self._async_client = client
+            return client
+        if self._async_client is None or getattr(self._async_client, "is_closed", False):
+            self._async_client = httpx2.AsyncClient(timeout=resolve_http_timeout())
+            self._owns_async_http = True
+        return self._async_client
 
     def stream(
         self,
@@ -848,6 +872,82 @@ class GoogleAntigravityProvider:
             self.stream(model, messages, tools=tools, effort=effort)
         )
 
+    async def astream(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        effort: str | None = None,
+    ) -> AsyncStreamHandle:
+        endpoint = resolve_cloudcode_endpoint()
+        url = f"{endpoint}/v1internal:streamGenerateContent?alt=sse"
+        creds = await asyncio.to_thread(get_valid_google_credentials)
+        body = build_cloudcode_request(
+            model, creds.project_id, messages, tools, effort=effort
+        )
+        refreshed = False
+        client = self._get_async_http()
+
+        while True:
+            headers = {
+                "Authorization": f"Bearer {creds.access}",
+                "User-Agent": antigravity_user_agent(),
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            }
+            ctx = client.stream("POST", url, json=body, headers=headers)
+            resp = await ctx.__aenter__()
+            exited = False
+            try:
+                if resp.status_code == 401 and not refreshed:
+                    try:
+                        await resp.aread()
+                    finally:
+                        exited = True
+                        await ctx.__aexit__(None, None, None)
+                    creds = await asyncio.to_thread(refresh_google_credentials, creds)
+                    refreshed = True
+                    continue
+
+                if resp.status_code >= 400:
+                    try:
+                        err_bytes = await resp.aread()
+                        err_text = err_bytes.decode("utf-8", errors="replace")
+                    finally:
+                        exited = True
+                        await ctx.__aexit__(None, None, None)
+                    raise provider_error(
+                        "google",
+                        resp.status_code,
+                        err_text,
+                        context=f"Cloud Code Assist request failed on {endpoint}",
+                        retry_after=parse_retry_after(getattr(resp, "headers", None)),
+                    )
+            except BaseException:
+                if not exited:
+                    await ctx.__aexit__(None, None, None)
+                raise
+            tc_counter: list[int] = [0]
+            return AsyncSSEStreamHandle(
+                ctx,
+                resp,
+                provider="google",
+                parse=lambda payload, c=tc_counter: parse_sse_payload(payload, c),
+            )
+
+    async def acomplete(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        effort: str | None = None,
+    ) -> CompletionResult:
+        return await collect_completion_async(
+            await self.astream(model, messages, tools=tools, effort=effort)
+        )
+
     def list_models(self) -> list[str]:
         return discover_antigravity_models()
 
@@ -858,3 +958,11 @@ class GoogleAntigravityProvider:
             close_fn = getattr(http, "close", None)
             if callable(close_fn):
                 close_fn()
+
+    async def aclose(self) -> None:
+        client = self._async_client
+        self._async_client = None
+        if client is not None and self._owns_async_http:
+            aclose_fn = getattr(client, "aclose", None)
+            if callable(aclose_fn):
+                await cast(Any, aclose_fn)()

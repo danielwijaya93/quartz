@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, cast
 
 import httpx2
 
 from quartz.errors import parse_retry_after, provider_error
 from quartz.providers.base import (
+    AsyncSSEStreamHandle,
+    AsyncStreamHandle,
     CompletionResult,
     ProviderCapabilities,
     SSEStreamHandle,
@@ -23,6 +25,7 @@ from quartz.providers.base import (
     UsageEvent,
 )
 from quartz.providers.config import resolve_http_timeout
+from quartz.providers.http_pool import get_shared_async_http_client
 
 
 @dataclasses.dataclass
@@ -195,8 +198,32 @@ def _openai_events(payload: dict[str, Any]) -> Iterator[StreamEvent]:
         )
 
 
+def _parse_completion_payload(payload: dict[str, Any]) -> CompletionResult:
+    """Parse a non-streaming OpenAI chat-completions JSON response."""
+    usage = _parse_usage(payload.get("usage")) or Usage()
+    raw_choices = payload.get("choices") or []
+    text = ""
+    tool_calls: list[ToolCall] = []
+    if raw_choices:
+        raw_msg = raw_choices[0].get("message") or {}
+        text = str(raw_msg.get("content") or "")
+        for tc in raw_msg.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            sig = tc.get("thought_signature")
+            meta = {"thought_signature": str(sig)} if sig else {}
+            tool_calls.append(
+                ToolCall(
+                    id=str(tc.get("id") or ""),
+                    name=str(fn.get("name") or ""),
+                    arguments=str(fn.get("arguments") or ""),
+                    meta=meta,
+                )
+            )
+    return CompletionResult(text=text, tool_calls=tool_calls, usage=usage)
+
+
 class OpenAIProvider:
-    """OpenAI-compatible LLMProvider backed by a persistent httpx2.Client."""
+    """OpenAI-compatible LLMProvider backed by persistent httpx2 sync/async clients."""
 
     def __init__(
         self,
@@ -206,12 +233,28 @@ class OpenAIProvider:
         timeout: httpx2.Timeout | float | None = None,
         capabilities: ProviderCapabilities | None = None,
         http_client: httpx2.Client | None = None,
+        async_http_client: httpx2.AsyncClient | None = None,
+        shared_http: bool = False,
     ) -> None:
         self.api_key = api_key
         self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
+        self._timeout = timeout or resolve_http_timeout()
         self._owns_http = http_client is None
-        self._http = http_client if http_client is not None else httpx2.Client(timeout=timeout or resolve_http_timeout())
+        self._http = http_client if http_client is not None else httpx2.Client(timeout=self._timeout)
+        self._shared_http = shared_http
+        self._async_client: httpx2.AsyncClient | None = async_http_client
+        self._owns_async_http = async_http_client is None and not shared_http
         self.capabilities = capabilities or ProviderCapabilities()
+
+    def _get_async_http(self) -> httpx2.AsyncClient:
+        if self._shared_http:
+            client = get_shared_async_http_client(self._timeout)
+            self._async_client = client
+            return client
+        if self._async_client is None or getattr(self._async_client, "is_closed", False):
+            self._async_client = httpx2.AsyncClient(timeout=self._timeout)
+            self._owns_async_http = True
+        return self._async_client
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -323,27 +366,83 @@ class OpenAIProvider:
             )
 
         assert resp is not None
-        payload = resp.json()
-        usage = _parse_usage(payload.get("usage")) or Usage()
-        raw_choices = payload.get("choices") or []
-        text = ""
-        tool_calls: list[ToolCall] = []
-        if raw_choices:
-            raw_msg = raw_choices[0].get("message") or {}
-            text = str(raw_msg.get("content") or "")
-            for tc in raw_msg.get("tool_calls") or []:
-                fn = tc.get("function") or {}
-                sig = tc.get("thought_signature")
-                meta = {"thought_signature": str(sig)} if sig else {}
-                tool_calls.append(
-                    ToolCall(
-                        id=str(tc.get("id") or ""),
-                        name=str(fn.get("name") or ""),
-                        arguments=str(fn.get("arguments") or ""),
-                        meta=meta,
-                    )
+        return _parse_completion_payload(resp.json())
+
+    async def astream(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        effort: str | None = None,
+    ) -> AsyncStreamHandle:
+        url = f"{self.base_url}/chat/completions"
+        headers = self._headers()
+        client = self._get_async_http()
+        for _ in range(3):
+            body = self._build_body(
+                model=model,
+                messages=messages,
+                tools=tools,
+                stream=True,
+                effort=effort,
+            )
+            ctx = client.stream("POST", url, json=body, headers=headers)
+            resp = await ctx.__aenter__()
+            if resp.status_code < 400:
+                return AsyncSSEStreamHandle(
+                    ctx, resp, provider=self.base_url, parse=_openai_events
                 )
-        return CompletionResult(text=text, tool_calls=tool_calls, usage=usage)
+            try:
+                err_bytes = await resp.aread()
+                err_text = err_bytes.decode("utf-8", errors="replace")
+            finally:
+                await ctx.__aexit__(None, None, None)
+            if self._maybe_downgrade_capabilities(resp.status_code, err_text, body):
+                continue
+            raise provider_error(
+                self.base_url,
+                resp.status_code,
+                err_text,
+                retry_after=parse_retry_after(getattr(resp, "headers", None)),
+            )
+        raise AssertionError("unreachable")
+
+    async def acomplete(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        effort: str | None = None,
+    ) -> CompletionResult:
+        url = f"{self.base_url}/chat/completions"
+        headers = self._headers()
+        client = self._get_async_http()
+        resp = None
+        for _ in range(3):
+            body = self._build_body(
+                model=model,
+                messages=messages,
+                tools=tools,
+                stream=False,
+                effort=effort,
+            )
+            resp = await client.post(url, json=body, headers=headers)
+            if resp.status_code < 400:
+                break
+            err_text = resp.text
+            if self._maybe_downgrade_capabilities(resp.status_code, err_text, body):
+                continue
+            raise provider_error(
+                self.base_url,
+                resp.status_code,
+                err_text,
+                retry_after=parse_retry_after(getattr(resp, "headers", None)),
+            )
+
+        assert resp is not None
+        return _parse_completion_payload(resp.json())
 
     def _fetch_raw_models(self) -> list[Any]:
         url = f"{self.base_url}/models"
@@ -374,3 +473,11 @@ class OpenAIProvider:
     def close(self) -> None:
         if self._owns_http:
             self._http.close()
+
+    async def aclose(self) -> None:
+        client = self._async_client
+        self._async_client = None
+        if client is not None and self._owns_async_http:
+            aclose_fn = getattr(client, "aclose", None)
+            if callable(aclose_fn):
+                await cast(Any, aclose_fn)()
