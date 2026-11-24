@@ -13,8 +13,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
 
+from quartz import __version__
 from quartz.bootstrap import BootstrapOptions, build_runtime
 from quartz.core.compact import DEFAULT_KEEP_RECENT_TOKENS
+from quartz.core.controller import SessionController
 from quartz.core.images import content_to_text
 from quartz.core.loop import TurnUsage, agent_loop
 from quartz.core.runtime import AgentRuntime
@@ -33,7 +35,10 @@ class _ActiveSession:
     runtime: AgentRuntime
     system_prompt_base: str
     prompt_lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
-    abort_event: threading.Event = dataclasses.field(default_factory=threading.Event)
+    controller: SessionController = dataclasses.field(init=False)
+
+    def __post_init__(self) -> None:
+        self.controller = SessionController(self.runtime)
 
     @property
     def session(self) -> Session:
@@ -304,7 +309,7 @@ class ACPServer:
         del params
         return {
             "protocolVersion": PROTOCOL_VERSION,
-            "agentInfo": {"name": "quartz", "version": "0.1.0"},
+            "agentInfo": {"name": "quartz", "version": __version__},
             "agentCapabilities": {
                 "loadSession": True,
                 "sessionCapabilities": {
@@ -321,8 +326,8 @@ class ACPServer:
 
     @staticmethod
     def _abort_session(state: _ActiveSession) -> None:
-        state.abort_event.set()
-        state.kernel.interrupt()
+        if state.controller.cancel():
+            state.kernel.interrupt()
 
     def _retire_session(self, state: _ActiveSession, wait: float = 5.0) -> None:
         """Abort any in-flight prompt, wait for it to release the session, then close its kernel."""
@@ -449,16 +454,13 @@ class ACPServer:
             raise KeyError(f"Unknown sessionId: {session_id}")
 
         with state.prompt_lock:
-            state.abort_event.clear()
             prompt_content = _extract_prompt_content(params.get("prompt"))
             state.runtime.messages.append({"role": "user", "content": prompt_content})
 
             observer = _AcpObserver(self, session_id, runtime=state.runtime)
-            outcome = self._runner(
-                state.runtime,
+            outcome = state.controller.run_turn_sync(
                 observer,
-                abort_event=state.abort_event,
-                loop_fn=agent_loop,
+                runner=lambda rt, view, **kw: self._runner(rt, view, loop_fn=agent_loop, **kw),
             )
 
             if outcome.status == TurnStatus.ERROR and outcome.error is not None:

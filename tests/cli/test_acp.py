@@ -538,11 +538,21 @@ def test_acp_retire_session_aborts_and_waits_before_closing(tmp_path: Path, monk
     real_close = state.kernel.close
     state.kernel.close = lambda: (events.append("close"), real_close())  # type: ignore[method-assign]
 
+    from quartz.core.turn import TurnOutcome, TurnStatus, TurnView
+
+    aborted = threading.Event()
+
     def worker() -> None:
         with state.prompt_lock:
-            state.abort_event.wait(timeout=5)
-            time.sleep(0.2)
-            events.append("prompt-done")
+            def wait_runner(rt, view, *, abort_event=None, steering_queue=None):
+                del rt, view, steering_queue
+                if abort_event is not None and abort_event.wait(timeout=5):
+                    aborted.set()
+                time.sleep(0.2)
+                events.append("prompt-done")
+                return TurnOutcome(status=TurnStatus.ABORTED)
+
+            state.controller.run_turn_sync(TurnView(), runner=wait_runner)
 
     t = threading.Thread(target=worker)
     t.start()
@@ -550,7 +560,7 @@ def test_acp_retire_session_aborts_and_waits_before_closing(tmp_path: Path, monk
     server._retire_session(state)
     t.join()
     assert events == ["prompt-done", "close"]
-    assert state.abort_event.is_set()
+    assert aborted.is_set()
     server._sessions.clear()
 
 
