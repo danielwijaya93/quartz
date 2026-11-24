@@ -154,6 +154,7 @@ async def _dispatch(
                     }
                 )
                 return
+            session.bind_loop(asyncio.get_running_loop())
             session.start_turn(text, images)
 
         elif isinstance(frame, SteerFrame):
