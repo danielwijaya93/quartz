@@ -402,12 +402,13 @@ class WebSession:
             with contextlib.suppress(Exception):
                 cb(self, frame)
 
-    def _retire(self) -> None:
+    def _retire(self, *, notify_closed: bool = True) -> None:
         """Abort and drain the turn in flight, then close the current kernel."""
         self._stop_bg_watcher()
         self._reject_pending_permission()
         self._abort_and_join()
-        self._notify_event({"type": "_closed"})
+        if notify_closed:
+            self._notify_event({"type": "_closed"})
         runtime, self._runtime = self._runtime, None
         if runtime is None:
             return
@@ -454,7 +455,8 @@ class WebSession:
             if rt.messages and getattr(rt.kernel, "dirty", False):
                 with contextlib.suppress(Exception):
                     rt.active_session.save_kernel(rt.kernel)
-        self._retire()
+        # Hibernation only frees kernel memory; keep done/error items visible in Active Sessions.
+        self._retire(notify_closed=False)
         return True
 
     def close(self) -> None:

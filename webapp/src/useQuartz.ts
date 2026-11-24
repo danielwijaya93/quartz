@@ -119,7 +119,12 @@ export function useQuartz(
   }, []);
 
   const newSession = React.useCallback((cwd?: string) => {
-    setState((prev) => ({ ...initialState, session: prev.session }));
+    setState((prev) => ({
+      ...initialState,
+      session: prev.session,
+      ...(prev.activeSessions !== undefined ? { activeSessions: prev.activeSessions } : {}),
+      ...(prev.idlePrompts !== undefined ? { idlePrompts: prev.idlePrompts } : {}),
+    }));
     connectionRef.current?.sendNewSession(cwd);
   }, []);
 

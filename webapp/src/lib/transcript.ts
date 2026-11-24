@@ -672,7 +672,15 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
       // rest -- the sidebar switching sessions is what makes that reachable.
       const switched =
         state.session.sessionId !== "" && state.session.sessionId !== message.sessionId;
-      const base = switched ? { ...initialState, session: state.session } : state;
+      const base = switched
+        ? {
+            ...initialState,
+            session: state.session,
+            ...(state.activeSessions !== undefined
+              ? { activeSessions: state.activeSessions }
+              : {}),
+          }
+        : state;
       const merged = withLiveText(mergeHistory(base, message.messages, message.cellFiles), message.streamingText);
       return {
         ...merged,

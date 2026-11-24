@@ -1396,23 +1396,32 @@ describe("a reconnect in the middle of a turn", () => {
   });
 
   it("tracks active_sessions_state across session switches", () => {
-    const withActiveSessions = reduce(initialState, {
+    const onFirstSession = reduce(initialState, {
+      type: "session_state",
+      sessionId: "s-bg",
+      cwd: "/repo",
+      model: "m",
+      effort: "e",
+      turnRunning: true,
+      commands: [],
+      messages: [],
+    });
+    const withActiveSessions = reduce(onFirstSession, {
       type: "active_sessions_state",
       items: [
         {
           sessionId: "s-bg",
           cwd: "/repo",
           title: "Background work",
-          kind: "permission",
+          kind: "working",
           updatedAt: "2026-01-01T00:00:00Z",
-          preview: "bash: ls",
         },
       ],
     });
     expect(withActiveSessions.activeSessions).toHaveLength(1);
-    expect(withActiveSessions.activeSessions?.[0]?.kind).toBe("permission");
+    expect(withActiveSessions.activeSessions?.[0]?.kind).toBe("working");
 
-    // Switching sessions via session_state must not wipe global activeSessions.
+    // Switching from s-bg to s-other must not wipe global activeSessions.
     const afterSwitch = reduce(withActiveSessions, {
       type: "session_state",
       sessionId: "s-other",
@@ -1423,7 +1432,9 @@ describe("a reconnect in the middle of a turn", () => {
       commands: [],
       messages: [],
     });
+    expect(afterSwitch.session.sessionId).toBe("s-other");
     expect(afterSwitch.activeSessions).toHaveLength(1);
+    expect(afterSwitch.activeSessions?.[0]?.sessionId).toBe("s-bg");
 
     const cleared = reduce(afterSwitch, {
       type: "active_sessions_state",

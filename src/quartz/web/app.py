@@ -1042,6 +1042,7 @@ async def _dispatch(
             _switch_connection(conn, session, push, app)
             await asyncio.to_thread(_remember_workspace, sidebar, session)
             push(session.snapshot())
+            push({"type": "active_sessions_state", "items": manager.active_sessions_items()})
 
         elif kind == "load_session":
             session_id = str(message.get("sessionId") or "").strip()
@@ -1053,6 +1054,7 @@ async def _dispatch(
             snapshot = session.snapshot()
             push(snapshot)
             _replay_live_turn(session, snapshot, push)
+            push({"type": "active_sessions_state", "items": manager.active_sessions_items()})
 
         elif kind == "trust_project":
             session = await _ensure_conn_session(manager, conn, push, app)
