@@ -33,16 +33,17 @@ class _ScriptedStream:
     def __init__(self, events: list[Any]) -> None:
         self._events = events
 
-    def __iter__(self):
-        return iter(self._events)
+    async def __aiter__(self):
+        for ev in self._events:
+            yield ev
 
-    def close(self) -> None:
+    async def aclose(self) -> None:
         pass
 
-    def __enter__(self):
+    async def __aenter__(self):
         return self
 
-    def __exit__(self, *args: object) -> None:
+    async def __aexit__(self, *args: object) -> None:
         pass
 
 
@@ -52,7 +53,7 @@ class _ScriptedClient:
     def __init__(self) -> None:
         self.call_count = 0
 
-    def stream(self, model, messages, tools=None, *, effort=None):
+    async def stream(self, model, messages, tools=None, *, effort=None):
         del model, messages, tools, effort
         self.call_count += 1
         usage = Usage(input_tokens=120, output_tokens=30)
@@ -76,7 +77,7 @@ class _StubKernel:
     def drain_events(self) -> list[dict[str, Any]]:
         return []
 
-    def exec_cell(self, code: str) -> CellResult:
+    async def exec_cell(self, code: str) -> CellResult:
         self.executed.append(code)
         return CellResult(ok=True, stdout="", stderr="", result="42")
 
@@ -84,10 +85,10 @@ class _StubKernel:
         pass
 
 
-def _run_scripted_turn(**loop_kwargs: Any) -> tuple[str, list[dict[str, Any]], int, TurnUsage]:
+async def _run_scripted_turn(**loop_kwargs: Any) -> tuple[str, list[dict[str, Any]], int, TurnUsage]:
     kernel = _StubKernel()
     usage = TurnUsage()
-    answer, messages, tokens = agent_loop(
+    answer, messages, tokens = await agent_loop(
         _ScriptedClient(),  # type: ignore[arg-type]
         "fake-model",
         "sys",
@@ -105,9 +106,9 @@ def test_agent_loop_defaults_to_the_shared_no_op_observer() -> None:
     assert isinstance(param.default, TurnObserver)
 
 
-def test_default_observer_is_a_no_op_and_the_turn_is_unchanged() -> None:
-    answer_default, messages_default, tokens_default, usage_default = _run_scripted_turn()
-    answer_bare, messages_bare, tokens_bare, usage_bare = _run_scripted_turn(observer=TurnObserver())
+async def test_default_observer_is_a_no_op_and_the_turn_is_unchanged() -> None:
+    answer_default, messages_default, tokens_default, usage_default = await _run_scripted_turn()
+    answer_bare, messages_bare, tokens_bare, usage_bare = await _run_scripted_turn(observer=TurnObserver())
 
     assert (answer_bare, messages_bare, tokens_bare) == (answer_default, messages_default, tokens_default)
     assert usage_bare.to_dict() == usage_default.to_dict()
@@ -160,9 +161,9 @@ class _TextOnlyObserver(TurnObserver):
         self.deltas.append(text)
 
 
-def test_subclass_overriding_only_text_delta_receives_deltas_and_ignores_the_rest() -> None:
+async def test_subclass_overriding_only_text_delta_receives_deltas_and_ignores_the_rest() -> None:
     observer = _TextOnlyObserver()
-    answer, _, _, _ = _run_scripted_turn(observer=observer)
+    answer, _, _, _ = await _run_scripted_turn(observer=observer)
 
     assert observer.deltas == ["Checking...", "The answer is 42."]
     assert answer == "The answer is 42."
@@ -182,9 +183,9 @@ def test_subclass_overriding_only_text_delta_receives_deltas_and_ignores_the_res
     assert observer.on_steering("go left") is None
 
 
-def test_events_arrive_in_the_order_the_old_callbacks_did() -> None:
+async def test_events_arrive_in_the_order_the_old_callbacks_did() -> None:
     observer = RecordingObserver()
-    _run_scripted_turn(observer=observer)
+    await _run_scripted_turn(observer=observer)
 
     rendered = [name for name, _ in observer.log if name in {"text", "tool_call", "tool_result"}]
     assert rendered == ["text", "tool_call", "tool_result", "text"]
@@ -215,14 +216,14 @@ def _loop_ast() -> ast.Module:
     return ast.parse(Path(path).read_text(encoding="utf-8"))
 
 
-def _function(tree: ast.Module, name: str) -> ast.FunctionDef:
+def _function(tree: ast.Module, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == name:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
             return node
     raise AssertionError(f"{name} not found in core/loop.py")
 
 
-def _params(node: ast.FunctionDef) -> list[ast.arg]:
+def _params(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.arg]:
     return [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
 
 

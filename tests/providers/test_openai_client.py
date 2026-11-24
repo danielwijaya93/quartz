@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import http.server
 import json
 import threading
+from collections.abc import AsyncIterator
 from typing import Any
 
+import httpx2
 import pytest
 
 from quartz.errors import ContextOverflowError, ProviderError
@@ -31,21 +34,22 @@ class _FakeStreamResp:
         self.enter_count = 0
         self.exit_count = 0
 
-    def __enter__(self) -> _FakeStreamResp:
+    async def __aenter__(self) -> _FakeStreamResp:
         self.enter_count += 1
         return self
 
-    def __exit__(self, *args: Any) -> bool:
+    async def __aexit__(self, *args: Any) -> bool:
         self.exit_count += 1
         return False
 
-    def read(self) -> bytes:
+    async def aread(self) -> bytes:
         if self._read_error is not None:
             raise self._read_error
         return self._body
 
-    def iter_lines(self) -> Any:
-        return iter(self._lines)
+    async def aiter_lines(self) -> AsyncIterator[str]:
+        for line in self._lines:
+            yield line
 
 
 class _FakePostResp:
@@ -58,7 +62,21 @@ class _FakePostResp:
         return self._payload
 
 
-def test_sse_streaming_text_fragmented_tool_calls_usage_and_done(monkeypatch: Any) -> None:
+class _FakeAsyncHttp:
+    def __init__(self, stream_resp: _FakeStreamResp | None = None, post_resp: _FakePostResp | None = None) -> None:
+        self._stream_resp = stream_resp
+        self._post_resp = post_resp
+
+    def stream(self, *args: Any, **kwargs: Any) -> _FakeStreamResp:
+        assert self._stream_resp is not None
+        return self._stream_resp
+
+    async def post(self, *args: Any, **kwargs: Any) -> _FakePostResp:
+        assert self._post_resp is not None
+        return self._post_resp
+
+
+async def test_sse_streaming_text_fragmented_tool_calls_usage_and_done() -> None:
     lines = [
         'data: {"choices": [{"delta": {"content": "Hello "}}]}',
         "",
@@ -77,14 +95,17 @@ def test_sse_streaming_text_fragmented_tool_calls_usage_and_done(monkeypatch: An
     ]
     fake_resp = _FakeStreamResp(200, lines=lines)
 
-    client = OpenAIProvider(api_key="sk-test", base_url="https://example.test/v1")
-    monkeypatch.setattr(client._http, "stream", lambda *a, **kw: fake_resp)
+    client = OpenAIProvider(
+        api_key="sk-test",
+        base_url="https://example.test/v1",
+        async_http_client=_FakeAsyncHttp(stream_resp=fake_resp),  # type: ignore[arg-type]
+    )
 
-    stream = client.stream(
+    stream = await client.stream(
         model="gpt-4.1",
         messages=[{"role": "user", "content": "hi"}],
     )
-    events = list(stream)
+    events = [ev async for ev in stream]
 
     assert len(events) == 5
     assert events[0] == TextDelta(text="Hello ")
@@ -101,13 +122,13 @@ def test_sse_streaming_text_fragmented_tool_calls_usage_and_done(monkeypatch: An
     assert events[4].usage.cached_tokens == 40
     assert fake_resp.exit_count == 1
 
-    # Calling close() again is idempotent and does not double-exit ctx.
-    stream.close()
+    # Calling aclose() again is idempotent and does not double-exit ctx.
+    await stream.aclose()
     assert fake_resp.exit_count == 1
 
 
-def test_sse_close_mid_stream_interrupts_live_blocking_http_server() -> None:
-    first_chunk_received = threading.Event()
+async def test_sse_close_mid_stream_interrupts_live_blocking_http_server() -> None:
+    first_chunk_received = asyncio.Event()
     release_server = threading.Event()
 
     class _BlockingSSEHandler(http.server.BaseHTTPRequestHandler):
@@ -136,42 +157,43 @@ def test_sse_close_mid_stream_interrupts_live_blocking_http_server() -> None:
         timeout=5.0,
     )
     try:
-        stream = client.stream(
+        stream = await client.stream(
             model="gpt-4.1",
             messages=[{"role": "user", "content": "hi"}],
         )
 
-        def _abort_soon() -> None:
-            assert first_chunk_received.wait(timeout=3.0)
-            stream.close()
+        async def _abort_soon() -> None:
+            await asyncio.wait_for(first_chunk_received.wait(), timeout=3.0)
+            await stream.aclose()
 
-        abort_thread = threading.Thread(target=_abort_soon, daemon=True)
-        abort_thread.start()
+        abort_task = asyncio.create_task(_abort_soon())
 
         received: list[str] = []
         with contextlib.suppress(Exception):
             # Closing the underlying socket mid-read may raise a transport error or end cleanly.
-            for event in stream:
+            async for event in stream:
                 if isinstance(event, TextDelta):
                     received.append(event.text)
                     first_chunk_received.set()
-        abort_thread.join(timeout=2.0)
+        await abort_task
         assert received == ["first"]
     finally:
         release_server.set()
-        client.close()
+        await client.aclose()
         server.shutdown()
         server.server_close()
 
 
-def test_http_400_bad_request_vs_context_overflow(monkeypatch: Any) -> None:
-    client = OpenAIProvider(api_key="sk-test", base_url="https://example.test/v1")
-
+async def test_http_400_bad_request_vs_context_overflow() -> None:
     # 400 non-overflow -> ProviderError (streaming)
     bad_resp = _FakeStreamResp(400, body=b'{"error": {"message": "invalid parameter"}}')
-    monkeypatch.setattr(client._http, "stream", lambda *a, **kw: bad_resp)
+    client = OpenAIProvider(
+        api_key="sk-test",
+        base_url="https://example.test/v1",
+        async_http_client=_FakeAsyncHttp(stream_resp=bad_resp),  # type: ignore[arg-type]
+    )
     with pytest.raises(ProviderError) as exc_bad:
-        client.stream(
+        await client.stream(
             model="gpt-4.1",
             messages=[{"role": "user", "content": "hi"}],
         )
@@ -184,9 +206,9 @@ def test_http_400_bad_request_vs_context_overflow(monkeypatch: Any) -> None:
         400,
         body=b'{"error": {"message": "This model\'s maximum context length is 128000 tokens"}}',
     )
-    monkeypatch.setattr(client._http, "stream", lambda *a, **kw: ovf_400)
+    client._async_client = _FakeAsyncHttp(stream_resp=ovf_400)  # type: ignore[assignment]
     with pytest.raises(ContextOverflowError) as exc_ovf:
-        client.stream(
+        await client.stream(
             model="gpt-4.1",
             messages=[{"role": "user", "content": "hi"}],
         )
@@ -194,26 +216,25 @@ def test_http_400_bad_request_vs_context_overflow(monkeypatch: Any) -> None:
     assert ovf_400.exit_count == 1
 
     # 413 context overflow -> ContextOverflowError (non-streaming)
-    monkeypatch.setattr(
-        client._http,
-        "post",
-        lambda *a, **kw: _FakePostResp(413, text="prompt is too long"),
-    )
+    client._async_client = _FakeAsyncHttp(post_resp=_FakePostResp(413, text="prompt is too long"))  # type: ignore[assignment]
     with pytest.raises(ContextOverflowError) as exc_413:
-        client.complete(
+        await client.complete(
             model="gpt-4.1",
             messages=[{"role": "user", "content": "hi"}],
         )
     assert exc_413.value.status_code == 413
 
 
-def test_stream_cleanup_when_read_raises_on_error_status(monkeypatch: Any) -> None:
-    client = OpenAIProvider(api_key="sk-test", base_url="https://example.test/v1")
+async def test_stream_cleanup_when_read_raises_on_error_status() -> None:
     broken_resp = _FakeStreamResp(500, read_error=OSError("socket reset"))
-    monkeypatch.setattr(client._http, "stream", lambda *a, **kw: broken_resp)
+    client = OpenAIProvider(
+        api_key="sk-test",
+        base_url="https://example.test/v1",
+        async_http_client=_FakeAsyncHttp(stream_resp=broken_resp),  # type: ignore[arg-type]
+    )
 
     with pytest.raises(OSError, match="socket reset"):
-        client.stream(
+        await client.stream(
             model="gpt-4.1",
             messages=[{"role": "user", "content": "hi"}],
         )
@@ -221,8 +242,7 @@ def test_stream_cleanup_when_read_raises_on_error_status(monkeypatch: Any) -> No
     assert broken_resp.exit_count == 1
 
 
-def test_non_streaming_response_parsing(monkeypatch: Any) -> None:
-    client = OpenAIProvider(api_key="sk-test", base_url="https://example.test/v1")
+async def test_non_streaming_response_parsing() -> None:
     payload = {
         "choices": [
             {
@@ -247,9 +267,13 @@ def test_non_streaming_response_parsing(monkeypatch: Any) -> None:
             "prompt_tokens_details": {"cached_tokens": 20},
         },
     }
-    monkeypatch.setattr(client._http, "post", lambda *a, **kw: _FakePostResp(200, payload=payload))
+    client = OpenAIProvider(
+        api_key="sk-test",
+        base_url="https://example.test/v1",
+        async_http_client=_FakeAsyncHttp(post_resp=_FakePostResp(200, payload=payload)),  # type: ignore[arg-type]
+    )
 
-    resp = client.complete(
+    resp = await client.complete(
         model="gpt-4.1",
         messages=[{"role": "user", "content": "hi"}],
     )
@@ -264,15 +288,24 @@ def test_non_streaming_response_parsing(monkeypatch: Any) -> None:
 
 
 def test_models_list(monkeypatch: Any) -> None:
+    class _FakeSyncClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> _FakeSyncClient:
+            return self
+
+        def __exit__(self, *args: Any) -> bool:
+            return False
+
+        def get(self, *args: Any, **kwargs: Any) -> _FakePostResp:
+            return _FakePostResp(
+                200,
+                payload={"data": [{"id": "gpt-4.1"}, {"id": "o4-mini"}, {"invalid": "skip"}]},
+            )
+
+    monkeypatch.setattr(httpx2, "Client", _FakeSyncClient)
     client = OpenAIProvider(api_key="sk-test", base_url="https://example.test/v1")
-    monkeypatch.setattr(
-        client._http,
-        "get",
-        lambda *a, **kw: _FakePostResp(
-            200,
-            payload={"data": [{"id": "gpt-4.1"}, {"id": "o4-mini"}, {"invalid": "skip"}]},
-        ),
-    )
 
     models = client.list_models()
     assert models == ["gpt-4.1", "o4-mini"]

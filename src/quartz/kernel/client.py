@@ -645,14 +645,27 @@ class KernelClient:
                 self._proc.stdin.flush()
             if timeout is None:
                 return await fut
-            try:
-                return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
-            except TimeoutError:
-                if payload.get("type") == "exec":
-                    self.interrupt()
-                    with contextlib.suppress(TimeoutError):
-                        return await asyncio.wait_for(asyncio.shield(fut), timeout=3.0)
-                raise TimeoutError(f"Kernel request timed out after {timeout}s") from None
+            remaining = float(timeout)
+            poll_step = 0.25
+            last = time.monotonic()
+            while True:
+                step = min(poll_step, max(0.01, remaining))
+                try:
+                    return await asyncio.wait_for(asyncio.shield(fut), timeout=step)
+                except TimeoutError:
+                    now = time.monotonic()
+                    elapsed = now - last
+                    last = now
+                    with self._permission_waiting_lock:
+                        waiting_perm = self._permission_waiting_count > 0
+                    if not waiting_perm:
+                        remaining -= elapsed
+                    if remaining <= 0:
+                        if payload.get("type") == "exec":
+                            self.interrupt()
+                            with contextlib.suppress(TimeoutError):
+                                return await asyncio.wait_for(asyncio.shield(fut), timeout=3.0)
+                        raise TimeoutError(f"Kernel request timed out after {timeout}s") from None
         except asyncio.CancelledError:
             if payload.get("type") == "exec":
                 self.interrupt()

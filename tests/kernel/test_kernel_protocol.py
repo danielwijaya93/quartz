@@ -32,7 +32,7 @@ def test_fake_kernel_conforms_to_protocols(tmp_path: Path) -> None:
     assert isinstance(fake, Kernel)
 
 
-def test_fake_kernel_lifecycle(tmp_path: Path) -> None:
+async def test_fake_kernel_lifecycle(tmp_path: Path) -> None:
     fake = FakeKernel(cwd=tmp_path)
     assert fake.started is False
     fake.start()
@@ -42,7 +42,7 @@ def test_fake_kernel_lifecycle(tmp_path: Path) -> None:
     assert fake.configured["headless"] is True
     assert fake.configured["background_check_every"] == 10.0
 
-    res = fake.exec_cell("x = 1")
+    res = await fake.exec_cell("x = 1")
     assert res.ok is True
     assert len(fake.cells) == 1
 

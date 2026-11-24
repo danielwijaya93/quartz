@@ -175,24 +175,25 @@ def test_saved_model_config_overrides_env_defaults(tmp_path: Path, monkeypatch) 
 
 
 class _FakeResp:
-    """Minimal httpx2 streaming response stand-in."""
+    """Minimal httpx2 async streaming response stand-in."""
 
     def __init__(self, status_code: int, lines: list[str] | None = None, body: bytes = b"") -> None:
         self.status_code = status_code
         self._lines = lines or []
         self._body = body
 
-    def __enter__(self) -> _FakeResp:
+    async def __aenter__(self) -> _FakeResp:
         return self
 
-    def __exit__(self, *args: Any) -> bool:
+    async def __aexit__(self, *args: Any) -> bool:
         return False
 
-    def read(self) -> bytes:
+    async def aread(self) -> bytes:
         return self._body
 
-    def iter_lines(self) -> Any:
-        return iter(self._lines)
+    async def aiter_lines(self) -> Any:
+        for line in self._lines:
+            yield line
 
 
 _SSE_WITH_TOOL = (
@@ -216,11 +217,14 @@ def _fake_google_http(monkeypatch: Any, responses: list[_FakeResp]) -> list[tupl
             calls.append((url, headers["Authorization"]))
             return responses[len(calls) - 1]
 
-    monkeypatch.setattr("quartz.providers.google.httpx2.Client", _FakeClient)
+        async def aclose(self) -> None:
+            pass
+
+    monkeypatch.setattr("quartz.providers.google.httpx2.AsyncClient", _FakeClient)
     return calls
 
 
-def test_google_provider_refreshes_once_and_stays_on_one_host(
+async def test_google_provider_refreshes_once_and_stays_on_one_host(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "auth.json"))
@@ -242,7 +246,7 @@ def test_google_provider_refreshes_once_and_stays_on_one_host(
     )
 
     client = GoogleAntigravityProvider()
-    resp = client.complete(
+    resp = await client.complete(
         model="gemini-3.8-flash-medium",
         messages=[{"role": "user", "content": "hi"}],
     )
@@ -258,7 +262,7 @@ def test_google_provider_refreshes_once_and_stays_on_one_host(
     assert resp.tool_calls[0].name == "ipython"
 
 
-def test_google_provider_does_not_fall_back_to_another_host(
+async def test_google_provider_does_not_fall_back_to_another_host(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "auth.json"))
@@ -271,7 +275,7 @@ def test_google_provider_does_not_fall_back_to_another_host(
 
     client = GoogleAntigravityProvider()
     with pytest.raises(ProviderError) as excinfo:
-        client.complete(
+        await client.complete(
             model="gemini-3.8-flash-medium",
             messages=[{"role": "user", "content": "hi"}],
         )
@@ -348,56 +352,54 @@ def test_authorization_url_honours_an_env_override(monkeypatch: Any) -> None:
     assert parse_qs(urlparse(url).query)["client_id"] == ["custom-id"]
 
 
-def test_google_stream_is_closeable_from_another_thread(
+async def test_google_stream_is_closeable_from_another_task(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
+    import asyncio
     import inspect
-    import threading
 
     monkeypatch.setenv("QUARTZ_AUTH_FILE", str(tmp_path / "auth.json"))
     save_google_credentials(
         GoogleCredentials("tok", "ref", int(time.time() * 1000) + 600_000, "proj-1")
     )
 
-    first_yielded = threading.Event()
-    closed_event = threading.Event()
+    first_yielded = asyncio.Event()
+    closed_event = asyncio.Event()
     exit_calls = 0
 
     class _BlockingFakeResp(_FakeResp):
-        def __exit__(self, *args: Any) -> bool:
+        async def __aexit__(self, *args: Any) -> bool:
             nonlocal exit_calls
             exit_calls += 1
             closed_event.set()
             return False
 
-        def iter_lines(self) -> Any:
+        async def aiter_lines(self) -> Any:
             yield 'data: {"response": {"candidates": [{"content": {"parts": [{"text": "one"}]}}]}}'
             yield ""
             first_yielded.set()
-            closed_event.wait(timeout=2.0)
+            await asyncio.wait_for(closed_event.wait(), timeout=2.0)
             yield 'data: {"response": {"candidates": [{"content": {"parts": [{"text": "two"}]}}]}}'
             yield ""
 
     _fake_google_http(monkeypatch, [_BlockingFakeResp(200)])
 
     client = GoogleAntigravityProvider()
-    stream = client.stream(
+    stream = await client.stream(
         model="gemini-3.8-flash-medium",
         messages=[{"role": "user", "content": "hi"}],
     )
-    assert not inspect.isgenerator(stream)
-    assert callable(getattr(stream, "close", None))
+    assert not inspect.isasyncgen(stream)
+    assert callable(getattr(stream, "aclose", None))
 
-    def _close_after_first() -> None:
-        assert first_yielded.wait(timeout=2.0)
-        stream.close()
+    async def _close_after_first() -> None:
+        await asyncio.wait_for(first_yielded.wait(), timeout=2.0)
+        await stream.aclose()
 
-    t = threading.Thread(target=_close_after_first, daemon=True)
-    t.start()
-
-    events = list(stream)
-    t.join(timeout=2.0)
+    closer = asyncio.create_task(_close_after_first())
+    events = [e async for e in stream]
+    await closer
     assert [e.text for e in events if isinstance(e, TextDelta)] == ["one"]
-    # Thread-safe & idempotent: __exit__ called at most once even if close() is called again.
-    stream.close()
+    # Idempotent: __aexit__ called at most once even if aclose() is called again.
+    await stream.aclose()
     assert exit_calls == 1

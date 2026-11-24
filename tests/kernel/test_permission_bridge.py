@@ -79,16 +79,16 @@ def _init_git_repo_with_bare_remote(tmp_path: Path) -> tuple[Path, Path]:
     return repo, remote
 
 
-def test_kernel_bridge_headless_auto_rejects_remote_git(tmp_path: Path) -> None:
+async def test_kernel_bridge_headless_auto_rejects_remote_git(tmp_path: Path) -> None:
     repo, _remote = _init_git_repo_with_bare_remote(tmp_path)
     kc = KernelClient(cwd=repo, sandbox=False, host_bridge=True)
     kc.start(timeout=10.0)
     try:
-        r_local = kc.exec_cell("res = await bash('git status --short')\nprint('CODE', res.exit_code)")
+        r_local = await kc.exec_cell("res = await bash('git status --short')\nprint('CODE', res.exit_code)")
         assert r_local.ok, r_local.stderr
         assert "CODE 0" in r_local.stdout
 
-        r_push = kc.exec_cell("res = await bash('git push -u origin HEAD')\nprint('CODE', res.exit_code, res.output)")
+        r_push = await kc.exec_cell("res = await bash('git push -u origin HEAD')\nprint('CODE', res.exit_code, res.output)")
         assert r_push.ok, r_push.stderr
         assert "CODE 126" in r_push.stdout
         assert "Permission denied" in r_push.stdout
@@ -96,7 +96,7 @@ def test_kernel_bridge_headless_auto_rejects_remote_git(tmp_path: Path) -> None:
         kc.close()
 
 
-def test_kernel_bridge_allow_once_allow_session_and_reject(tmp_path: Path) -> None:
+async def test_kernel_bridge_allow_once_allow_session_and_reject(tmp_path: Path) -> None:
     repo, _remote = _init_git_repo_with_bare_remote(tmp_path)
     seen: list[PermissionRequest] = []
     decisions = iter(["reject", "allow_once", "allow_session"])
@@ -108,22 +108,22 @@ def test_kernel_bridge_allow_once_allow_session_and_reject(tmp_path: Path) -> No
     kc = KernelClient(cwd=repo, sandbox=False, host_bridge=True, permission_handler=handler)
     kc.start(timeout=10.0)
     try:
-        r1 = kc.exec_cell("res = await bash('git push -u origin HEAD')\nprint('R1', res.exit_code, res.output)")
+        r1 = await kc.exec_cell("res = await bash('git push -u origin HEAD')\nprint('R1', res.exit_code, res.output)")
         assert r1.ok, r1.stderr
         assert "R1 126" in r1.stdout
         assert len(seen) == 1
 
-        r2 = kc.exec_cell("res = await bash('git push -u origin HEAD')\nprint('R2', res.exit_code)")
+        r2 = await kc.exec_cell("res = await bash('git push -u origin HEAD')\nprint('R2', res.exit_code)")
         assert r2.ok, r2.stderr
         assert "R2 0" in r2.stdout
         assert len(seen) == 2
 
-        r3 = kc.exec_cell("res = await bash('git fetch origin')\nprint('R3', res.exit_code)")
+        r3 = await kc.exec_cell("res = await bash('git fetch origin')\nprint('R3', res.exit_code)")
         assert r3.ok, r3.stderr
         assert "R3 0" in r3.stdout
         assert len(seen) == 3
 
-        r4 = kc.exec_cell("res = await bash('git fetch origin')\nprint('R4', res.exit_code)")
+        r4 = await kc.exec_cell("res = await bash('git fetch origin')\nprint('R4', res.exit_code)")
         assert r4.ok, r4.stderr
         assert "R4 0" in r4.stdout
         assert len(seen) == 3
@@ -135,7 +135,7 @@ def test_kernel_bridge_allow_once_allow_session_and_reject(tmp_path: Path) -> No
     not sys.platform.startswith("linux") or shutil.which("bwrap") is None,
     reason="Linux bwrap integration test requires bubblewrap",
 )
-def test_sandboxed_kernel_bridge_routes_remote_git_to_host(tmp_path: Path) -> None:
+async def test_sandboxed_kernel_bridge_routes_remote_git_to_host(tmp_path: Path) -> None:
     repo, _remote = _init_git_repo_with_bare_remote(tmp_path)
     seen: list[PermissionRequest] = []
 
@@ -150,12 +150,12 @@ def test_sandboxed_kernel_bridge_routes_remote_git_to_host(tmp_path: Path) -> No
         pytest.skip(f"bwrap cannot start in this environment: {exc}")
 
     try:
-        r_local = kc.exec_cell("res = await bash('git status --short')\nprint('LOCAL', res.exit_code)")
+        r_local = await kc.exec_cell("res = await bash('git status --short')\nprint('LOCAL', res.exit_code)")
         assert r_local.ok, r_local.stderr
         assert "LOCAL 0" in r_local.stdout
         assert len(seen) == 0
 
-        r_push = kc.exec_cell("res = await bash('git push -u origin HEAD')\nprint('PUSH', res.exit_code)")
+        r_push = await kc.exec_cell("res = await bash('git push -u origin HEAD')\nprint('PUSH', res.exit_code)")
         assert r_push.ok, r_push.stderr
         assert "PUSH 0" in r_push.stdout
         assert len(seen) == 1
@@ -165,7 +165,7 @@ def test_sandboxed_kernel_bridge_routes_remote_git_to_host(tmp_path: Path) -> No
         kc.close()
 
 
-def test_exec_cell_does_not_timeout_while_waiting_for_permission(tmp_path: Path) -> None:
+async def test_exec_cell_does_not_timeout_while_waiting_for_permission(tmp_path: Path) -> None:
     import time
 
     repo, _remote = _init_git_repo_with_bare_remote(tmp_path)
@@ -177,7 +177,7 @@ def test_exec_cell_does_not_timeout_while_waiting_for_permission(tmp_path: Path)
     kc = KernelClient(cwd=repo, sandbox=False, host_bridge=True, permission_handler=slow_handler)
     kc.start(timeout=15.0)
     try:
-        res = kc.exec_cell(
+        res = await kc.exec_cell(
             "r = await bash('git push -u origin HEAD')\nprint('DONE', r.exit_code)",
             timeout=0.3,
         )
@@ -187,7 +187,7 @@ def test_exec_cell_does_not_timeout_while_waiting_for_permission(tmp_path: Path)
         kc.close()
 
 
-def test_killed_bridge_command_cancels_permission_and_unblocks_retry(tmp_path: Path) -> None:
+async def test_killed_bridge_command_cancels_permission_and_unblocks_retry(tmp_path: Path) -> None:
     import threading
 
     repo, _remote = _init_git_repo_with_bare_remote(tmp_path)
@@ -206,7 +206,7 @@ def test_killed_bridge_command_cancels_permission_and_unblocks_retry(tmp_path: P
     kc = KernelClient(cwd=repo, sandbox=False, host_bridge=True, permission_handler=handler)
     kc.start(timeout=15.0)
     try:
-        r1 = kc.exec_cell(
+        r1 = await kc.exec_cell(
             "import subprocess\n"
             "try:\n"
             "    subprocess.run(['git', 'push', '-u', 'origin', 'HEAD'], timeout=0.25, capture_output=True)\n"
@@ -218,7 +218,7 @@ def test_killed_bridge_command_cancels_permission_and_unblocks_retry(tmp_path: P
         assert "TIMED_OUT" in r1.stdout
         assert first_cancelled.wait(timeout=3.0), "first bridge request was not cancelled on shim disconnect"
 
-        r2 = kc.exec_cell(
+        r2 = await kc.exec_cell(
             "r = await bash('git push -u origin HEAD')\nprint('RETRY', r.exit_code)",
             timeout=10.0,
         )
@@ -229,7 +229,7 @@ def test_killed_bridge_command_cancels_permission_and_unblocks_retry(tmp_path: P
         kc.close()
 
 
-def test_bridge_sets_waiting_env_while_inflight(tmp_path: Path) -> None:
+async def test_bridge_sets_waiting_env_while_inflight(tmp_path: Path) -> None:
     import threading
 
     repo, _remote = _init_git_repo_with_bare_remote(tmp_path)
@@ -252,7 +252,7 @@ def test_bridge_sets_waiting_env_while_inflight(tmp_path: Path) -> None:
 
         t = threading.Thread(target=_release_after_check, daemon=True)
         t.start()
-        res = kc.exec_cell(
+        res = await kc.exec_cell(
             "import os, subprocess, time\n"
             "p = subprocess.Popen(['git', 'push', '-u', 'origin', 'HEAD'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n"
             "time.sleep(0.1)\n"

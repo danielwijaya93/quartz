@@ -47,7 +47,7 @@ def _setup_demo_mcp(tmp_path: Path) -> Path:
     return cfg_path
 
 
-def test_mcp_in_kernel_and_prompt(tmp_path: Path, monkeypatch) -> None:
+async def test_mcp_in_kernel_and_prompt(tmp_path: Path, monkeypatch) -> None:
     cfg_path = _setup_demo_mcp(tmp_path)
     monkeypatch.setenv("MCP_CONFIG", str(cfg_path))
 
@@ -62,19 +62,19 @@ def test_mcp_in_kernel_and_prompt(tmp_path: Path, monkeypatch) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        r1 = kernel.exec_cell("mcp.list_servers()")
+        r1 = await kernel.exec_cell("mcp.list_servers()")
         assert r1.ok
         assert r1.result == "['demo']"
 
-        r2 = kernel.exec_cell("tools = await mcp.search_tools('add')\n[t['name'] for t in tools]")
+        r2 = await kernel.exec_cell("tools = await mcp.search_tools('add')\n[t['name'] for t in tools]")
         assert r2.ok
         assert r2.result == "['add']"
 
-        r3 = kernel.exec_cell("await mcp.call_tool('demo', 'add', {'a': 19, 'b': 23})")
+        r3 = await kernel.exec_cell("await mcp.call_tool('demo', 'add', {'a': 19, 'b': 23})")
         assert r3.ok
         assert r3.result == "'42'" or r3.result == "42"
 
-        r4 = kernel.exec_cell("await mcp.call_tool('demo', 'greet', {'name': 'world'})")
+        r4 = await kernel.exec_cell("await mcp.call_tool('demo', 'greet', {'name': 'world'})")
         assert r4.ok
         assert "hello, world" in (r4.result or "")
     finally:
