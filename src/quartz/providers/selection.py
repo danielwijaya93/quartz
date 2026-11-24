@@ -122,7 +122,10 @@ def build_provider(
             raise CredentialError(
                 "Not logged in to Google. Run `/login google` or `quartz auth login google` first."
             )
-        return GoogleAntigravityProvider(http_client=http_client), chosen_provider, model, effort
+        return GoogleAntigravityProvider(
+            http_client=http_client,
+            shared_http=shared_http,
+        ), chosen_provider, model, effort
 
     api_key, base_url, _ = resolve_provider_credentials(chosen_provider)
     if not api_key:
@@ -132,5 +135,10 @@ def build_provider(
         )
     from quartz.providers.openai import OpenAIProvider
 
-    client = OpenAIProvider(api_key=api_key, base_url=base_url, http_client=http_client)
+    client = OpenAIProvider(
+        api_key=api_key,
+        base_url=base_url,
+        http_client=http_client,
+        shared_http=shared_http,
+    )
     return client, chosen_provider, model, effort

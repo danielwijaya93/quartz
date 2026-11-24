@@ -64,6 +64,7 @@ class InProcessKernel:
         self._active_task: asyncio.Task[Any] | None = None
         self._task_lock = threading.Lock()
         self._events: list[dict[str, Any]] = []
+        self._event_waiters: list[tuple[asyncio.AbstractEventLoop, asyncio.Future[bool]]] = []
         self._events_cond = threading.Condition()
         self._closed = False
         self._running_bash_count = 0
@@ -75,12 +76,32 @@ class InProcessKernel:
         self._restart_notice: str | None = None
         self._atexit_registered = False
 
+    @staticmethod
+    def _resolve_async_future(
+        loop: asyncio.AbstractEventLoop,
+        fut: asyncio.Future[Any],
+        value: Any,
+    ) -> None:
+        if loop.is_closed():
+            return
+
+        def _set() -> None:
+            if not fut.done():
+                fut.set_result(value)
+
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(_set)
+
     def _on_proto_message(self, msg: dict[str, Any]) -> None:
         mtype = msg.get("type")
         if mtype == "event":
             with self._events_cond:
                 self._events.append(msg)
                 self._events_cond.notify_all()
+                waiters = list(self._event_waiters)
+                self._event_waiters.clear()
+            for loop, fut in waiters:
+                self._resolve_async_future(loop, fut, True)
         elif mtype == "bg_count":
             count = int(msg.get("count", 0))
             self._running_bash_count = count
@@ -223,6 +244,10 @@ class InProcessKernel:
                 stderr="KeyboardInterrupt: cell execution interrupted\n",
                 result=None,
             )
+        return self._format_cell_result(resp)
+
+    @staticmethod
+    def _format_cell_result(resp: dict[str, Any]) -> CellResult:
         return CellResult(
             ok=bool(resp.get("ok", False)),
             stdout=str(resp.get("stdout", "")),
@@ -231,6 +256,55 @@ class InProcessKernel:
             images=list(resp.get("images") or []),
             files=list(resp.get("files") or []),
         )
+
+    async def aexec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
+        if self._worker is None or self._loop is None or not self._loop.is_running():
+            await asyncio.to_thread(self.start)
+        assert self._worker is not None
+        assert self._loop is not None
+
+        cell_id = uuid.uuid4().hex
+        self.dirty = True
+
+        async def _run() -> dict[str, Any]:
+            task = asyncio.current_task()
+            with self._task_lock:
+                self._active_task = task
+            try:
+                async with self._worker._exec_lock:
+                    return await self._worker._exec_cell_locked(cell_id, code)
+            finally:
+                with self._task_lock:
+                    if self._active_task is task:
+                        self._active_task = None
+
+        cfut = asyncio.run_coroutine_threadsafe(_run(), self._loop)
+        afut = asyncio.wrap_future(cfut)
+        try:
+            if timeout is None:
+                resp = await afut
+            else:
+                resp = await asyncio.wait_for(asyncio.shield(afut), timeout=timeout)
+        except TimeoutError:
+            self.interrupt()
+            return CellResult(
+                ok=False,
+                stdout="",
+                stderr=f"TimeoutError: cell exceeded {timeout}s",
+                result=None,
+            )
+        except asyncio.CancelledError:
+            self.interrupt()
+            cfut.cancel()
+            raise
+        except concurrent.futures.CancelledError:
+            return CellResult(
+                ok=False,
+                stdout="",
+                stderr="KeyboardInterrupt: cell execution interrupted\n",
+                result=None,
+            )
+        return self._format_cell_result(resp)
 
     def interrupt(self) -> None:
         loop = self._loop
@@ -296,6 +370,31 @@ class InProcessKernel:
     def wake_event_waiters(self) -> None:
         with self._events_cond:
             self._events_cond.notify_all()
+            waiters = list(self._event_waiters)
+            self._event_waiters.clear()
+            has_events = bool(self._events)
+        for loop, fut in waiters:
+            self._resolve_async_future(loop, fut, has_events)
+
+    async def await_event(self, timeout: float | None = None) -> bool:
+        loop = asyncio.get_running_loop()
+        with self._events_cond:
+            if self._events:
+                return True
+            if self._closed:
+                return False
+            fut: asyncio.Future[bool] = loop.create_future()
+            entry = (loop, fut)
+            self._event_waiters.append(entry)
+        try:
+            if timeout is None:
+                return await fut
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except TimeoutError:
+            return False
+        finally:
+            with self._events_cond, contextlib.suppress(ValueError):
+                self._event_waiters.remove(entry)
 
     def wait_until_event(self, stop_event: threading.Event, timeout: float | None = 0.25) -> bool:
         while not stop_event.is_set():

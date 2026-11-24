@@ -11,15 +11,17 @@ reported outcome, never a silent no-op.
 
 from __future__ import annotations
 
+import asyncio
 import enum
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from quartz.providers.base import LLMProvider
+    from quartz.providers.base import AsyncLLMProvider, LLMProvider
 
 from quartz.core.images import content_to_text
 from quartz.kernel.base import KernelIntrospector
+from quartz.providers.base import acomplete_provider
 
 COMPACT_SYSTEM_PROMPT = (
     "You are summarizing an earlier portion of a coding agent's conversation. "
@@ -261,22 +263,42 @@ def format_python_state_notice(
     return "\n".join(parts)
 
 
+def _build_summary_messages(
+    older: list[dict[str, Any]],
+    focus: str | None,
+) -> list[dict[str, Any]]:
+    user_prompt = "Summarize this conversation history:\n\n" + _serialize_for_summary(older)
+    if focus:
+        user_prompt += f"\n\nFocus especially on: {focus}"
+    return [
+        {"role": "system", "content": COMPACT_SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
 def _summarize(
     client: LLMProvider,
     model: str,
     older: list[dict[str, Any]],
     focus: str | None,
 ) -> str:
-    user_prompt = "Summarize this conversation history:\n\n" + _serialize_for_summary(older)
-    if focus:
-        user_prompt += f"\n\nFocus especially on: {focus}"
-
     result = client.complete(
         model=model,
-        messages=[
-            {"role": "system", "content": COMPACT_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
+        messages=_build_summary_messages(older, focus),
+    )
+    return result.text.strip()
+
+
+async def _summarize_async(
+    client: LLMProvider | AsyncLLMProvider,
+    model: str,
+    older: list[dict[str, Any]],
+    focus: str | None,
+) -> str:
+    result = await acomplete_provider(
+        client,
+        model=model,
+        messages=_build_summary_messages(older, focus),
     )
     return result.text.strip()
 
@@ -333,6 +355,79 @@ def compact_messages(
     vars_info = kernel.list_vars()
     try:
         helpers_data = kernel.list_helpers()
+        custom_helpers = [
+            h["name"]
+            for h in helpers_data.get("helpers", [])
+            if h.get("source") in ("global", "project")
+        ]
+    except Exception:
+        custom_helpers = []
+    state_notice = format_python_state_notice(vars_info, helper_names=custom_helpers)
+
+    compacted_header = {
+        "role": "user",
+        "content": f"[compaction-summary]\n\n{summary_text}\n\n{state_notice}",
+    }
+    new_messages = [compacted_header, *recent]
+    return CompactionResult(
+        messages=new_messages,
+        summarized=len(older),
+        kept=len(recent),
+        cleared=cleared,
+        reason=CompactionReason.SUMMARIZED,
+        estimated_tokens_before=tokens_before,
+        estimated_tokens_after=estimate_context_tokens(new_messages),
+    )
+
+
+async def compact_messages_async(
+    client: LLMProvider | AsyncLLMProvider,
+    model: str,
+    messages: list[dict[str, Any]],
+    kernel: KernelIntrospector,
+    *,
+    budget_tokens: int | None = None,
+    keep_recent_tokens: int = DEFAULT_KEEP_RECENT_TOKENS,
+    focus: str | None = None,
+) -> CompactionResult:
+    """Async variant of :func:`compact_messages` using ``acomplete_provider``."""
+    messages = strip_reasoning(messages)
+    tokens_before = estimate_context_tokens(messages)
+    cleared_messages, cleared = clear_old_tool_results(
+        messages, keep_recent_tokens=keep_recent_tokens
+    )
+    tokens_after_clearing = estimate_context_tokens(cleared_messages)
+
+    def _cleared_only() -> CompactionResult:
+        reason = (
+            CompactionReason.CLEARED_TOOL_RESULTS
+            if cleared
+            else CompactionReason.NOTHING_TO_DO
+        )
+        return CompactionResult(
+            messages=cleared_messages,
+            summarized=0,
+            kept=len(cleared_messages),
+            cleared=cleared,
+            reason=reason,
+            estimated_tokens_before=tokens_before,
+            estimated_tokens_after=tokens_after_clearing,
+        )
+
+    if budget_tokens is not None and tokens_after_clearing <= budget_tokens:
+        return _cleared_only()
+
+    split_index = _find_safe_split_index(cleared_messages, keep_recent_tokens)
+    if split_index <= 0:
+        return _cleared_only()
+
+    older = cleared_messages[:split_index]
+    recent = cleared_messages[split_index:]
+    summary_text = await _summarize_async(client, model, older, focus)
+
+    vars_info = await asyncio.to_thread(kernel.list_vars)
+    try:
+        helpers_data = await asyncio.to_thread(kernel.list_helpers)
         custom_helpers = [
             h["name"]
             for h in helpers_data.get("helpers", [])
