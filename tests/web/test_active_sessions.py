@@ -267,3 +267,74 @@ def test_websocket_connect_sends_empty_active_sessions_state(tmp_path: Path) -> 
         f.get("type") == "active_sessions_state" and f.get("items") == []
         for f in frames
     )
+
+
+def test_new_and_load_session_push_active_sessions_state(tmp_path: Path) -> None:
+    """Switching via new_session or load_session resyncs active_sessions_state."""
+    release = threading.Event()
+
+    def runner(rt: Any, observer: Any, **_kw: Any) -> TurnOutcome:
+        release.wait(timeout=2.0)
+        return TurnOutcome(TurnStatus.OK)
+
+    app = create_app(build=_build_factory(tmp_path), cwd=tmp_path, runner=runner)
+    client = TestClient(app)
+    manager: SessionManager = app.state.manager
+
+    s_work = manager.create_session(tmp_path)
+    sid_work = s_work.runtime.active_session.id
+    s_other = manager.create_session(tmp_path)
+    sid_other = s_other.runtime.active_session.id
+
+    s_work.start_turn("Long running task", [])
+    try:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "hello", "clientVersion": 1, "sessionId": sid_other})
+            _ = ws.receive_json()  # session_state
+            _ = ws.receive_json()  # active_sessions_state
+
+            ws.send_json({"type": "new_session"})
+            f1 = ws.receive_json()
+            f2 = ws.receive_json()
+            assert f1["type"] == "session_state"
+            assert f2["type"] == "active_sessions_state"
+            assert [i["sessionId"] for i in f2["items"]] == [sid_work]
+
+            ws.send_json({"type": "load_session", "sessionId": sid_other})
+            f3 = ws.receive_json()
+            f4 = ws.receive_json()
+            assert f3["type"] == "session_state"
+            assert f4["type"] == "active_sessions_state"
+            assert [i["sessionId"] for i in f4["items"]] == [sid_work]
+    finally:
+        release.set()
+        _wait_turn(s_work)
+
+
+def test_hibernating_done_session_keeps_it_in_active_sessions(tmp_path: Path) -> None:
+    """LRU hibernation frees kernel memory without erasing done items from Active Sessions."""
+    def runner(rt: Any, observer: Any, **_kw: Any) -> TurnOutcome:
+        return TurnOutcome(TurnStatus.OK)
+
+    manager = SessionManager(
+        _build_factory(tmp_path),
+        cwd=tmp_path,
+        runner=runner,
+        max_live_sessions=1,
+    )
+    try:
+        s1 = manager.create_session(tmp_path)
+        sid1 = s1.runtime.active_session.id
+        s1.start_turn("Finished task", [])
+        _wait_turn(s1)
+        assert [i["sessionId"] for i in manager.active_sessions_items()] == [sid1]
+
+        # Creating a second session hibernates s1 (LRU cap = 1), but s1 stays in Active Sessions.
+        manager.create_session(tmp_path)
+        assert manager.get_session(sid1) is None
+        items = manager.active_sessions_items()
+        assert len(items) == 1
+        assert items[0]["sessionId"] == sid1
+        assert items[0]["kind"] == "done"
+    finally:
+        manager.close_all()
