@@ -18,16 +18,22 @@ def create_router(ctx: AppContext) -> APIRouter:
     @router.get("/api/fs/list")
     async def fs_list(path: str | None = None) -> JSONResponse:
         """Directories inside `path`. A bad path is `error` in the body, not a 500."""
-        listing = await asyncio.to_thread(list_directories, path, ctx.cwd)
+        try:
+            listing = await asyncio.to_thread(list_directories, path, ctx.cwd)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse(listing.to_dict())
 
     @router.post("/api/fs/mkdir")
     async def fs_mkdir(request: Request) -> JSONResponse:
         """Create one folder inside `path`. The only mutation the picker has."""
         body = await json_body(request)
-        listing = await asyncio.to_thread(
-            create_directory, body.get("path"), body.get("name"), ctx.cwd
-        )
+        try:
+            listing = await asyncio.to_thread(
+                create_directory, body.get("path"), body.get("name"), ctx.cwd
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse(listing.to_dict())
 
     @router.get("/api/workspace/files")

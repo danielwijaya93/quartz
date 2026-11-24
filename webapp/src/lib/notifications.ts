@@ -1,3 +1,4 @@
+import { authFetch } from "./authToken";
 import { apiUrl, isNativeCapacitor } from "./serverUrl";
 import { requestNativePermission, showNativeNotification } from "./nativeNotifications";
 import type { ServerMessage } from "../protocol";
@@ -173,7 +174,7 @@ export async function subscribeToWebPush(): Promise<string | null> {
     const reg = await awaitServiceWorkerReady();
     if (!reg || !reg.pushManager) return null;
 
-    const keyRes = await fetch(apiUrl("/api/push/vapid-key"));
+    const keyRes = await authFetch(apiUrl("/api/push/vapid-key"));
     if (!keyRes.ok) return null;
     const keyData = (await keyRes.json()) as { publicKey?: string };
     const publicKey = keyData.publicKey;
@@ -188,7 +189,7 @@ export async function subscribeToWebPush(): Promise<string | null> {
     }
 
     const subJson = sub.toJSON();
-    const res = await fetch(apiUrl("/api/push/subscribe"), {
+    const res = await authFetch(apiUrl("/api/push/subscribe"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(subJson),
@@ -214,7 +215,7 @@ export async function unsubscribeFromWebPush(): Promise<void> {
     if (!reg || !reg.pushManager) return;
     const sub = await reg.pushManager.getSubscription();
     if (!sub) return;
-    await fetch(apiUrl("/api/push/unsubscribe"), {
+    await authFetch(apiUrl("/api/push/unsubscribe"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ endpoint: sub.endpoint }),
@@ -227,7 +228,7 @@ export async function unsubscribeFromWebPush(): Promise<void> {
 
 export async function sendWebPushTest(endpoint?: string | null): Promise<boolean> {
   try {
-    const res = await fetch(apiUrl("/api/push/test"), {
+    const res = await authFetch(apiUrl("/api/push/test"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(endpoint ? { endpoint } : {}),

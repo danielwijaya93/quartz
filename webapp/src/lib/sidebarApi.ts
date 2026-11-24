@@ -12,6 +12,7 @@
  */
 
 import { parseListing, type DirectoryListing } from "./folderPicker";
+import { authFetch } from "./authToken";
 import { apiUrl } from "./serverUrl";
 import { parseSidebarPayload, type SidebarPayload } from "./sidebar";
 
@@ -41,7 +42,7 @@ async function readError(response: Response): Promise<string> {
 async function requestJson(url: string, init?: RequestInit): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetch(apiUrl(url), init);
+    response = await authFetch(apiUrl(url), init);
   } catch (cause) {
     // `fetch` rejects only on a transport failure: the server is down, or the
     // browser is offline. Both are retryable and both need a sentence a person can

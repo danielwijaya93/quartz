@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect
+from pydantic import ValidationError
 
+from quartz.web.auth import WS_AUTH_CLOSE_CODE, extract_ws_token, verify_token
 from quartz.web.context import (
     MAX_FRAME_BYTES,
     AlreadyReported,
@@ -19,7 +21,23 @@ from quartz.web.context import (
     command_payload,
     is_allowed_origin,
     remember_workspace,
-    system_prompt_append,
+)
+from quartz.web.schemas import (
+    CLIENT_FRAME_TYPES,
+    ActiveSessionDismissFrame,
+    ActiveSessionsClearReadFrame,
+    CancelFrame,
+    CommandFrame,
+    HelloFrame,
+    IdleSessionResponseFrame,
+    LoadSessionFrame,
+    NewSessionFrame,
+    PermissionResponseFrame,
+    PromptFrame,
+    SetSandboxFrame,
+    SteerFrame,
+    TrustProjectFrame,
+    parse_client_frame,
 )
 from quartz.web.session import SessionManager, TurnBusyError, WebSession, resolve_cwd
 from quartz.web.sidebar import SidebarStore
@@ -77,10 +95,19 @@ async def _dispatch(
 ) -> None:
     """Route one client frame. Every failure becomes an `error` frame, never a 500."""
     kind = message.get("type")
+    if not isinstance(kind, str) or kind not in CLIENT_FRAME_TYPES:
+        push({"type": "error", "message": f"Unknown frame type: {kind}", "fatal": False})
+        return
     try:
-        if kind == "hello":
-            manager.set_system_prompt_append(system_prompt_append(message))
-            requested_id = message.get("sessionId")
+        frame = parse_client_frame(message)
+    except ValidationError as exc:
+        push({"type": "error", "message": f"Invalid frame: {exc}", "fatal": False})
+        return
+
+    try:
+        if isinstance(frame, HelloFrame):
+            manager.set_system_prompt_append(frame.system_prompt_append or "")
+            requested_id = frame.session_id
             session: WebSession | None = None
             if isinstance(requested_id, str) and requested_id.strip():
                 with contextlib.suppress(Exception):
@@ -93,7 +120,7 @@ async def _dispatch(
                     conn,
                     push,
                     app,
-                    resolve_cwd(message.get("cwd"), manager.cwd),
+                    resolve_cwd(frame.cwd, manager.cwd),
                 )
             else:
                 _switch_connection(conn, session, push, app)
@@ -108,9 +135,10 @@ async def _dispatch(
             active_sessions = manager.active_sessions_items()
             push({"type": "active_sessions_state", "items": active_sessions})
 
-        elif kind == "prompt":
-            text = str(message.get("text") or "").strip()
-            images = attachments_from_raw(message.get("images"))
+        elif isinstance(frame, PromptFrame):
+            text = frame.text.strip()
+            raw_images = [img.model_dump(by_alias=True) for img in (frame.images or [])]
+            images = attachments_from_raw(raw_images)
             if not text and not images:
                 push({"type": "error", "message": "Empty prompt.", "fatal": False})
                 return
@@ -128,21 +156,21 @@ async def _dispatch(
                 return
             session.start_turn(text, images)
 
-        elif kind == "steer":
-            text = str(message.get("text") or "").strip()
+        elif isinstance(frame, SteerFrame):
+            text = frame.text.strip()
             if not text:
                 return
             session = await _ensure_conn_session(manager, conn, push, app)
             session.steer(text)
 
-        elif kind == "cancel":
+        elif isinstance(frame, CancelFrame):
             session = await _ensure_conn_session(manager, conn, push, app)
             session.cancel()
 
-        elif kind == "command":
+        elif isinstance(frame, CommandFrame):
             session = await _ensure_conn_session(manager, conn, push, app)
-            name = str(message.get("name") or "")
-            arg = str(message.get("arg") or "")
+            name = frame.name
+            arg = frame.arg or ""
             before_id = session.runtime.active_session.id
             before_model = session.runtime.model
             before_effort = session.runtime.effort
@@ -162,10 +190,10 @@ async def _dispatch(
             ):
                 push(session.snapshot())
 
-        elif kind == "new_session":
+        elif isinstance(frame, NewSessionFrame):
             # A folder picked in the browser. `None` means "the server's directory",
             # and an unusable value falls back to it rather than failing the frame.
-            target = message.get("cwd")
+            target = frame.cwd
             resolved_cwd = None if target is None else resolve_cwd(target, manager.cwd)
             session = await asyncio.to_thread(manager.create_session, resolved_cwd)
             _switch_connection(conn, session, push, app)
@@ -173,8 +201,8 @@ async def _dispatch(
             push(session.snapshot())
             push({"type": "active_sessions_state", "items": manager.active_sessions_items()})
 
-        elif kind == "load_session":
-            session_id = str(message.get("sessionId") or "").strip()
+        elif isinstance(frame, LoadSessionFrame):
+            session_id = frame.session_id.strip()
             if not session_id:
                 push({"type": "error", "message": "Missing sessionId.", "fatal": False})
                 return
@@ -185,55 +213,42 @@ async def _dispatch(
             _replay_live_turn(session, snapshot, push)
             push({"type": "active_sessions_state", "items": manager.active_sessions_items()})
 
-        elif kind == "trust_project":
+        elif isinstance(frame, TrustProjectFrame):
             session = await _ensure_conn_session(manager, conn, push, app)
             await asyncio.to_thread(session.trust_current_project)
             push(session.snapshot())
 
-        elif kind == "set_sandbox":
+        elif isinstance(frame, SetSandboxFrame):
             session = await _ensure_conn_session(manager, conn, push, app)
-            enabled = message.get("enabled")
-            if not isinstance(enabled, bool):
-                push(
-                    {
-                        "type": "error",
-                        "message": "Missing boolean 'enabled' for set_sandbox.",
-                        "fatal": False,
-                    }
-                )
-                return
-            await asyncio.to_thread(session.set_sandbox, enabled)
+            await asyncio.to_thread(session.set_sandbox, frame.enabled)
             session.emit(session.snapshot())
 
-        elif kind == "permission_response":
+        elif isinstance(frame, PermissionResponseFrame):
             session = await _ensure_conn_session(manager, conn, push, app)
-            request_id = str(message.get("requestId") or "").strip()
-            decision = str(message.get("decision") or "reject").strip()
+            request_id = frame.request_id.strip()
+            decision = frame.decision.strip()
             if not request_id:
                 push({"type": "error", "message": "Missing requestId.", "fatal": False})
                 return
             await asyncio.to_thread(session.resolve_permission, request_id, decision)
 
-        elif kind == "idle_session_response":
-            session_id = str(message.get("sessionId") or "").strip()
-            action = str(message.get("action") or "").strip()
+        elif isinstance(frame, IdleSessionResponseFrame):
+            session_id = frame.session_id.strip()
+            action = frame.action.strip()
             if not session_id:
                 push({"type": "error", "message": "Missing sessionId.", "fatal": False})
                 return
             await asyncio.to_thread(manager.resolve_idle_prompt, session_id, action)
 
-        elif kind == "active_session_dismiss":
-            session_id = str(message.get("sessionId") or "").strip()
+        elif isinstance(frame, ActiveSessionDismissFrame):
+            session_id = frame.session_id.strip()
             if not session_id:
                 push({"type": "error", "message": "Missing sessionId.", "fatal": False})
                 return
             await asyncio.to_thread(manager.dismiss_active_session, session_id)
 
-        elif kind == "active_sessions_clear_read":
+        elif isinstance(frame, ActiveSessionsClearReadFrame):
             await asyncio.to_thread(manager.clear_read_active_sessions)
-
-        else:
-            push({"type": "error", "message": f"Unknown frame type: {kind}", "fatal": False})
 
     except WebSocketDisconnect:
         raise
@@ -278,6 +293,11 @@ def create_router(ctx: AppContext) -> APIRouter:
         ):
             await socket.close(code=1008)
             return
+        if ctx.auth_token is not None:
+            candidate = extract_ws_token(socket)
+            if not verify_token(candidate, ctx.auth_token):
+                await socket.close(code=WS_AUTH_CLOSE_CODE, reason="Unauthorized")
+                return
         await socket.accept()
         outbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         loop = asyncio.get_running_loop()

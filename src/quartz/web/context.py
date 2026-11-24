@@ -51,6 +51,7 @@ class AppContext:
     file_registry: AttachedFileRegistry
     static_dir: Path | None
     dev: bool
+    auth_token: str | None = None
 
     @property
     def cwd(self) -> Path:

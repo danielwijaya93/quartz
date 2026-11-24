@@ -8,6 +8,7 @@ import {
   FileText,
   Smartphone,
 } from "lucide-react";
+import { withAuthToken } from "@/lib/authToken";
 import { apiUrl, isNativeCapacitor } from "@/lib/serverUrl";
 import type { FileAttachment } from "@/protocol";
 
@@ -73,10 +74,10 @@ export function FileAttachments({
       className={compact ? "flex flex-wrap gap-2" : "mt-2 flex flex-wrap gap-2"}
     >
       {files.map((file) => {
-        const downloadHref = apiUrl(file.url);
+        const downloadHref = withAuthToken(apiUrl(file.url));
         const isImage = file.mimeType.startsWith("image/");
-        const inlineHref = apiUrl(
-          file.url.includes("?") ? `${file.url}&inline=1` : `${file.url}?inline=1`,
+        const inlineHref = withAuthToken(
+          apiUrl(file.url.includes("?") ? `${file.url}&inline=1` : `${file.url}?inline=1`),
         );
         const sizeLabel = formatBytes(file.size);
 

@@ -14,6 +14,9 @@ import { ModelPickerDialog } from "./components/ModelPickerDialog";
 import { SettingsView } from "./components/SettingsView";
 import { McpView } from "./components/McpView";
 import { JobsTray } from "./components/JobsTray";
+import { AuthGate } from "./components/AuthGate";
+import { authFetch } from "./lib/authToken";
+import { apiUrl } from "./lib/serverUrl";
 import { useQuartz } from "./useQuartz";
 import { useCommandPalette } from "./lib/useCommandPalette";
 import { useOpenUISystemPrompt, useRichUiMode } from "./lib/useRichUi";
@@ -30,12 +33,62 @@ import type { ImageAttachment } from "./protocol";
 type PickerMode = "session" | "workspace";
 
 export function App(): React.ReactElement {
+  const [authState, setAuthState] = React.useState<"checking" | "required" | "ok">("checking");
+
+  const checkAuth = React.useCallback(async () => {
+    setAuthState("checking");
+    try {
+      const resp = await authFetch(apiUrl("/api/auth/status"), { credentials: "include" });
+      if (resp.status === 404 || !resp.ok) {
+        setAuthState("ok");
+        return;
+      }
+      const data = (await resp.json()) as { authEnabled?: unknown; authenticated?: unknown };
+      if (data.authEnabled === true && data.authenticated !== true) {
+        setAuthState("required");
+        return;
+      }
+      setAuthState("ok");
+    } catch {
+      // Older server / mock without /api/auth/status, or offline: fall through to WS.
+      setAuthState("ok");
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void checkAuth();
+    const onChangeServer = (): void => {
+      void checkAuth();
+    };
+    window.addEventListener("quartz:change-server", onChangeServer);
+    return () => window.removeEventListener("quartz:change-server", onChangeServer);
+  }, [checkAuth]);
+
+  if (authState === "checking") {
+    return (
+      <div className="flex min-h-dvh items-center justify-center bg-background text-xs text-muted">
+        Connecting…
+      </div>
+    );
+  }
+  if (authState === "required") {
+    return <AuthGate onAuthenticated={() => setAuthState("ok")} />;
+  }
+  return <AuthenticatedApp onAuthError={() => setAuthState("required")} />;
+}
+
+function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.ReactElement {
   // Rich UI is a preference with a consequence: it decides both how a reply is
   // drawn *and* whether the session is told to produce OpenUI Lang at all.
   const richUi = useRichUiMode();
   const systemPromptAppend = useOpenUISystemPrompt(richUi.mode);
   const notifications = useNotifications();
-  const quartz = useQuartz(undefined, systemPromptAppend, notifications.notifyFromFrame);
+  const quartz = useQuartz(
+    undefined,
+    systemPromptAppend,
+    notifications.notifyFromFrame,
+    onAuthError,
+  );
   const sidebar = useSidebar();
 
   const composerRef = React.useRef<HTMLTextAreaElement | null>(null);
