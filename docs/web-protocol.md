@@ -5,21 +5,16 @@ if reality disagrees, change the document first in its own commit.
 
 ## Why this exists
 
-`quartz` today has three transports over one core:
+`quartz` has three transports over one core:
 
 | Transport | Entry point | Core it drives |
 | --- | --- | --- |
 | TUI | `quartz` | `core/runtime.py` (`AgentRuntime`) + `core/turn.py` (`run_interactive_turn`) |
 | Headless | `quartz -p` | same |
-| ACP | `quartz --acp` | `core/loop.py` (`agent_loop`) directly |
+| Web | `quartz web` | same (`AgentRuntime` + `run_interactive_turn`) |
 
-`quartz web` is the **fourth** transport and the first one that is not a terminal.
-It is *not* an ACP client. ACP exists so one client can drive *many* agents;
-Quartz Web drives exactly one agent — Quartz — so translating through ACP would buy
-genericity we never use and would cost fidelity on every event.
-
-`quartz --acp` stays. It is the editor transport (Zed, etc.). Quartz Web is the
-browser transport. Both sit on the same core.
+`quartz web` is the browser transport over the same core as the terminal, speaking a
+dedicated JSON WebSocket protocol with full event fidelity.
 
 ## Command surface
 
@@ -80,10 +75,8 @@ Turn lifecycle:
 ### System prompt append
 
 `hello.systemPromptAppend` is a client-supplied string the server appends to the
-Quartz system prompt for this session. It is the web twin of the ACP vendor
-extension (`_meta.quartz.systemPrompt.append`) and exists for the same reason: a
-client that owns a rendering surface also owns the instructions that make the
-model produce output for it.
+Quartz system prompt for this session: a client that owns a rendering surface also
+owns the instructions that make the model produce output for it.
 
 Rules:
 
@@ -139,7 +132,7 @@ Rules:
 ## Event mapping — the whole point
 
 `core/events.py::TurnObserver` already defines every event a transport may render.
-The terminal renders all seven; ACP renders two. **Quartz Web renders all seven.**
+Both the terminal and **Quartz Web render all seven.**
 That parity is the deliverable; nothing here requires new core hooks.
 
 | `TurnObserver` hook | Wire message |
@@ -199,8 +192,7 @@ Rules:
 - Commands that mutate `AgentRuntime` state (`/settings`, `/compact`, `/reset`)
   mutate the *live* runtime, so the next web turn sees the change immediately.
 
-The advertised command list is sent in `session_state.commands` — the same
-information ACP v2 would carry in `availableCommands`. Each entry is
+The advertised command list is sent in `session_state.commands`. Each entry is
 `{name, description, usage, needsTerminal}`, with the name carrying no leading `/`.
 `needsTerminal` is derived from the registry, never maintained separately, so a
 client can badge (or hide) a command that cannot work in a browser without guessing:
@@ -317,7 +309,6 @@ Local single-user tool. Explicit non-goals: multi-user, auth, remote exposure.
 
 ## Out of scope for v1
 
-- ACP v2 upgrade (`configOptions`, `availableCommands`) — separate, later.
 - Multi-session in one browser tab (the sidebar switches sessions; it does not
   run two at once).
 - Live session status (running / needs input) in the sidebar.

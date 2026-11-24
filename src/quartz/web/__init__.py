@@ -1,9 +1,8 @@
 """The browser transport: a FastAPI server and one WebSocket over the core.
 
-`quartz web` is the fourth transport over the same core the terminal drives. It is
-deliberately *not* an ACP client: ACP exists so one client can drive many agents, and
-this drives exactly one. Translating through it would buy genericity nobody uses and
-cost fidelity on every event -- see `docs/web-protocol.md` for the full argument.
+`quartz web` is the browser transport over the same core the terminal drives,
+streaming all turn events directly over a dedicated JSON WebSocket protocol --
+see `docs/web-protocol.md` for the contract.
 
 Import note: nothing here may import `quartz.tui` or `quartz.cli`. The terminal must
 not become a dependency of the browser, and `cli/` is the composition root that

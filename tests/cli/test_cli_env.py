@@ -1,4 +1,4 @@
-"""Regression: `quartz auth` / `mcp` / `acp` must see ~/.quartz/.env.
+"""Regression: `quartz auth` / `mcp` / `web` must see ~/.quartz/.env.
 
 The subcommands are dispatched before the argument parser runs, so .env loading
 used to happen too late for `quartz auth login google` to see its credentials.

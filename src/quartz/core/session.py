@@ -452,7 +452,7 @@ class Session:
         limit: int | None = 50,
         sessions_dir: Path | None = None,
     ) -> tuple[list[dict[str, Any]], str | None]:
-        """List non-empty sessions, newest-first, as ACP ``SessionInfo`` dicts.
+        """List non-empty sessions, newest-first, as ``SessionInfo`` dicts.
 
         ``cwd`` filters to a single working directory (absolute path); when
         ``None`` all sessions are returned. ``cursor`` is the opaque token
@@ -463,7 +463,7 @@ class Session:
         control nobody would find. Returns ``(sessions, next_cursor)`` where
         ``next_cursor`` is ``None`` when no further page exists.
 
-        Each entry carries ``origin`` and ``cwdExists`` besides the ACP fields.
+        Each entry carries ``origin`` and ``cwdExists`` besides the core session fields.
         ``cwdExists`` is computed here, not in the browser: the sidebar dims a
         folder whose directory has been deleted (worktrees get removed), and a
         browser has no way to check a path on this machine.

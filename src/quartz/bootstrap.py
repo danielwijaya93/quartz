@@ -5,7 +5,7 @@
 `sys.exit(1)` when a resume target was missing. A server can do neither -- it has no
 command line, and it must not kill the process because one request named a session
 that no longer exists. So the *decisions* live here, expressed as a plain dataclass
-and typed exceptions; each transport (terminal, headless, web, ACP) decides how to
+and typed exceptions; each transport (terminal, headless, web) decides how to
 report them.
 
 Layer note: this module sits above `core/` (it composes the provider, the kernel and

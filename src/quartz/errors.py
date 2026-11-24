@@ -1,7 +1,7 @@
 """Typed errors shared by model providers so callers can react precisely.
 
 Every provider translates its own transport/status failures into these types.
-Callers (agent loop, CLI, ACP) branch on the type, never on message text.
+Callers (agent loop, CLI, web) branch on the type, never on message text.
 """
 
 from __future__ import annotations

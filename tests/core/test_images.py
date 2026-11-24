@@ -1,15 +1,13 @@
-"""Tests for multimodal image input, provider conversion, ACP, and compaction."""
+"""Tests for multimodal image input, provider conversion, and compaction."""
 
 from __future__ import annotations
 
 import base64
-import io
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from quartz.cli.acp import ACPServer, _extract_prompt_content
 from quartz.core.compact import _serialize_for_summary
 from quartz.core.images import (
     ImageAttachment,
@@ -133,25 +131,6 @@ def test_google_provider_converts_multimodal_user_message() -> None:
             ],
         }
     ]
-
-
-def test_acp_extract_prompt_content_and_capabilities() -> None:
-    b64 = base64.b64encode(_TINY_PNG).decode("ascii")
-    content = _extract_prompt_content(
-        [
-            {"type": "text", "text": "Look at this"},
-            {"type": "image", "data": b64, "mimeType": "image/png"},
-        ]
-    )
-    assert content == [
-        {"type": "text", "text": "Look at this"},
-        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
-    ]
-
-    out = io.StringIO()
-    server = ACPServer(lambda: (None, "openai", "m", "low"), in_stream=io.StringIO(""), out_stream=out)
-    init_res = server._handle_initialize({})
-    assert init_res["agentCapabilities"]["promptCapabilities"]["image"] is True
 
 
 def test_compact_serialize_strips_base64() -> None:

@@ -16,13 +16,11 @@ def _args(
     cwd: Path,
     *,
     prompt: str | None = None,
-    acp: bool = False,
     trust_project: bool = False,
 ) -> argparse.Namespace:
     return argparse.Namespace(
         cwd=cwd,
         prompt=prompt,
-        acp=acp,
         trust_project=trust_project,
     )
 
@@ -108,7 +106,6 @@ def test_skips_prompt_when_clean_or_headless_or_nontty(
     (dirty / ".quartz" / "helpers.py").write_text("x = 1\n", encoding="utf-8")
 
     _maybe_prompt_project_trust(_args(dirty, prompt="hi"))
-    _maybe_prompt_project_trust(_args(dirty, acp=True))
     _maybe_prompt_project_trust(_args(dirty, trust_project=True))
     _setup_tty(monkeypatch, is_tty=False)
     _maybe_prompt_project_trust(_args(dirty))
