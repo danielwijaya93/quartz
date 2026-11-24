@@ -305,46 +305,34 @@ class KernelWorker:
         self._send({"type": "bg_count", "count": len(jobs)})
         self._send({"type": "bg_jobs", "jobs": jobs})
 
+    def _should_emit_bash_event(self, handle: BashHandle) -> bool:
+        return not handle._awaited and (
+            handle._started_cell_id is None or handle._started_cell_id not in self._active_cell_ids
+        )
+
     def _on_bash_status(self, handle: BashHandle) -> None:
         """Report a still-running job that crossed the status-check period."""
-        if handle._awaited:
+        if not self._should_emit_bash_event(handle):
             return
-        if handle._started_cell_id is not None and handle._started_cell_id in self._active_cell_ids:
-            return
-        self._send(
-            {
-                "type": "event",
-                "event": "bash_status",
-                "pid": handle.pid,
-                "command": handle.command,
-                "elapsed_s": round(handle.elapsed_s, 1),
-                "tail": _truncate(handle.tail(STATUS_TAIL_LINES), 2000),
-            }
-        )
+        self._send({
+            "type": "event", "event": "bash_status", "pid": handle.pid,
+            "command": handle.command, "elapsed_s": round(handle.elapsed_s, 1),
+            "tail": _truncate(handle.tail(STATUS_TAIL_LINES), 2000),
+        })
 
     def _on_bash_done(self, handle: BashHandle) -> None:
         with contextlib.suppress(ValueError):
             self._handles.remove(handle)
         self._send_bg_count()
-        # Only emit a wake-up/notification if the command outlived its starting cell
-        # and was not directly awaited inside a cell.
-        if handle._awaited:
-            return
-        if handle._started_cell_id is not None and handle._started_cell_id in self._active_cell_ids:
+        if not self._should_emit_bash_event(handle):
             return
         assert handle._result is not None
-        self._send(
-            {
-                "type": "event",
-                "event": "bash_done",
-                "pid": handle.pid,
-                "command": handle.command,
-                "exit_code": handle._result.exit_code,
-                "duration": handle._result.duration,
-                "timed_out": handle._result.timed_out,
-                "tail": _truncate(handle.tail(30), 4000),
-            }
-        )
+        self._send({
+            "type": "event", "event": "bash_done", "pid": handle.pid,
+            "command": handle.command, "exit_code": handle._result.exit_code,
+            "duration": handle._result.duration, "timed_out": handle._result.timed_out,
+            "tail": _truncate(handle.tail(30), 4000),
+        })
 
     async def _run_cell_jobs_inline(self, cell_id: str, stdout_buf: io.StringIO) -> None:
         """Wait for the background jobs this cell started and fold their output in.
@@ -584,6 +572,55 @@ class KernelWorker:
             default_bindings=self._default_bindings,
             root=root,
         )
+
+    def _handle_control_msg(self, msg_type: str, req_id: str, msg: dict[str, Any]) -> None:
+        if msg_type == "configure":
+            self.configure(
+                headless=msg.get("headless"),
+                background_check_every=msg.get("background_check_every"),
+                mcp_servers=msg.get("mcp_servers"),
+            )
+            self._send({"type": "configure_result", "id": req_id})
+        elif msg_type == "list_helpers":
+            self._send({"type": "helpers_result", "id": req_id, **self.list_helpers()})
+        elif msg_type == "list_vars":
+            self._send({"type": "vars_result", "id": req_id, "vars": self.list_vars()})
+        elif msg_type == "running_bash":
+            self._send({"type": "running_bash_result", "id": req_id, "count": sum(1 for h in self._handles if h.running)})
+        elif msg_type == "bash_tail":
+            handle = next((h for h in self._handles if h.pid == msg.get("pid")), None)
+            if handle is None:
+                self._send({"type": "bash_tail_result", "id": req_id, "found": False, "tail": ""})
+            else:
+                lines = int(msg.get("lines", 50) or 50)
+                self._send({
+                    "type": "bash_tail_result", "id": req_id, "found": True,
+                    "tail": _truncate(handle.tail(lines), 4000), "running": handle.running,
+                })
+        elif msg_type == "kill_bash":
+            handle = next((h for h in self._handles if h.pid == msg.get("pid") and h.running), None)
+            if handle is None:
+                self._send({"type": "kill_bash_result", "id": req_id, "killed": False})
+            else:
+                try:
+                    handle.kill()
+                    self._send({"type": "kill_bash_result", "id": req_id, "killed": True})
+                except Exception as exc:
+                    self._send({"type": "kill_bash_result", "id": req_id, "killed": False, "error": str(exc)})
+        elif msg_type == "snapshot":
+            try:
+                self._send({"type": "snapshot_result", "id": req_id, "manifest": self.snapshot_vars(msg.get("dir", ""))})
+            except Exception as exc:
+                self._send({"type": "error", "id": req_id, "error": str(exc)})
+        elif msg_type == "restore":
+            try:
+                raw_root = msg.get("root")
+                result = self.restore_vars(msg.get("dir", ""), raw_root if isinstance(raw_root, str) else None)
+                self._send({"type": "restore_result", "id": req_id, **result})
+            except Exception as exc:
+                self._send({"type": "error", "id": req_id, "error": str(exc)})
+
+
 def _start_stdin_reader(
     worker: KernelWorker,
     loop: asyncio.AbstractEventLoop,
@@ -646,8 +683,6 @@ async def _main() -> None:
             frame = frame.f_back
         return False
 
-    loop = asyncio.get_running_loop()
-
     def _sigint_handler(_signum: int, frame: Any) -> None:
         if _in_cell_frame(frame):
             raise KeyboardInterrupt
@@ -683,64 +718,10 @@ async def _main() -> None:
             fut = worker._host_pending.get(req_id)
             if fut is not None and not fut.done():
                 fut.set_result(msg)
-        elif msg_type == "configure":
-            worker.configure(
-                headless=msg.get("headless"),
-                background_check_every=msg.get("background_check_every"),
-                mcp_servers=msg.get("mcp_servers"),
-            )
-            worker._send({"type": "configure_result", "id": req_id})
-        elif msg_type == "list_helpers":
-            worker._send({"type": "helpers_result", "id": req_id, **worker.list_helpers()})
-        elif msg_type == "list_vars":
-            worker._send({"type": "vars_result", "id": req_id, "vars": worker.list_vars()})
-        elif msg_type == "running_bash":
-            count = sum(1 for h in worker._handles if h.running)
-            worker._send({"type": "running_bash_result", "id": req_id, "count": count})
-        elif msg_type == "bash_tail":
-            target_pid = msg.get("pid")
-            lines = int(msg.get("lines", 50) or 50)
-            handle = next((h for h in worker._handles if h.pid == target_pid), None)
-            if handle is None:
-                worker._send({"type": "bash_tail_result", "id": req_id, "found": False, "tail": ""})
-            else:
-                worker._send(
-                    {
-                        "type": "bash_tail_result",
-                        "id": req_id,
-                        "found": True,
-                        "tail": _truncate(handle.tail(lines), 4000),
-                        "running": handle.running,
-                    }
-                )
-        elif msg_type == "kill_bash":
-            target_pid = msg.get("pid")
-            handle = next((h for h in worker._handles if h.pid == target_pid and h.running), None)
-            if handle is None:
-                worker._send({"type": "kill_bash_result", "id": req_id, "killed": False})
-            else:
-                try:
-                    handle.kill()
-                    worker._send({"type": "kill_bash_result", "id": req_id, "killed": True})
-                except Exception as exc:
-                    worker._send({"type": "kill_bash_result", "id": req_id, "killed": False, "error": str(exc)})
-        elif msg_type == "snapshot":
-            try:
-                manifest = worker.snapshot_vars(msg.get("dir", ""))
-                worker._send({"type": "snapshot_result", "id": req_id, "manifest": manifest})
-            except Exception as exc:
-                worker._send({"type": "error", "id": req_id, "error": str(exc)})
-        elif msg_type == "restore":
-            try:
-                raw_root = msg.get("root")
-                result = worker.restore_vars(
-                    msg.get("dir", ""), raw_root if isinstance(raw_root, str) else None
-                )
-                worker._send({"type": "restore_result", "id": req_id, **result})
-            except Exception as exc:
-                worker._send({"type": "error", "id": req_id, "error": str(exc)})
         elif msg_type == "shutdown":
             break
+        elif isinstance(msg_type, str):
+            worker._handle_control_msg(msg_type, req_id, msg)
 
     # Clean up any still-running background bash processes, bridge, and MCP sessions on shutdown
     if bridge_server is not None:

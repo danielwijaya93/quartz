@@ -1,19 +1,21 @@
-"""Static action classifier for ipython tool calls."""
+"""Static action classifier and intent summarizer for ipython tool calls."""
 
 from __future__ import annotations
 
 import ast
 import contextlib
 import logging
+import os
 import re
 import shlex
 import warnings
+from pathlib import Path
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
 _CATEGORY_ORDER = ("list_dir", "find", "read", "edit", "mcp", "run")
-
-_SINGLE_LABELS: dict[str, str] = {
+_SINGLE_LABELS = {
     "list_dir": "List directory and files",
     "find": "Find files",
     "read": "Read files",
@@ -21,8 +23,7 @@ _SINGLE_LABELS: dict[str, str] = {
     "mcp": "Calling MCP",
     "run": "Run program or script",
 }
-
-_SHORT_LABELS: dict[str, str] = {
+_SHORT_LABELS = {
     "list_dir": "List directory",
     "find": "Find files",
     "read": "Read files",
@@ -30,14 +31,21 @@ _SHORT_LABELS: dict[str, str] = {
     "mcp": "Calling MCP",
     "run": "Run script",
 }
-
-_FILE_VERBS: dict[str, str] = {
-    "find": "Find",
-    "read": "Read",
-    "edit": "Edit",
-}
-
+_FILE_VERBS = {"find": "Find", "read": "Read", "edit": "Edit"}
+_LIST_PROGS = frozenset({"ls", "exa", "eza", "tree", "dir"})
+_FIND_PROGS = frozenset({"rg", "grep", "ag", "ack", "find", "fd", "fdfind", "locate"})
+_READ_PROGS = frozenset({"cat", "head", "tail", "less", "more", "bat", "nl", "wc", "awk"})
+_EDIT_PROGS = frozenset({"touch", "mkdir", "rm", "rmdir", "mv", "cp", "chmod", "chown", "ln", "tee", "truncate"})
+_EDIT_CALLS = frozenset({
+    "write_text", "write_bytes", "writelines", "mkdir", "makedirs", "unlink",
+    "rmdir", "rename", "rmtree", "copy", "copy2", "copytree", "move",
+})
+_SEARCH_VALUE_FLAGS = frozenset({"-e", "-m", "-A", "-B", "-C", "-g", "--glob", "--max-count"})
 _BASH_CALL_RE = re.compile(r"\bbash\s*\(\s*([\"'])(.*?)\1", re.DOTALL)
+_SH_FALLBACK_RE = re.compile(r"\b(?:sh|bash)\s*\(\s*([\"'])(.*?)\1", re.DOTALL)
+_SEGMENT_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;|\||\n)\s*")
+_ENV_VAR_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_MAX_INTENT_LEN = 60
 
 
 def _attr_chain(node: ast.AST) -> list[str]:
@@ -52,64 +60,113 @@ def _attr_chain(node: ast.AST) -> list[str]:
     return parts
 
 
-def _classify_bash_command(cmd_str: str, found: set[str]) -> None:
-    """Classify shell commands inside a bash(...) call."""
-    cleaned = re.sub(r"\d*>&\d+", "", cmd_str)
-    cleaned = re.sub(r">+\s*/dev/null", "", cleaned)
-    if re.search(r"(?:^|[^<])>{1,2}\s*\S+", cleaned):
-        found.add("edit")
-
-    segments = re.split(r"\s*(?:&&|\|\||;|\||\n)\s*", cmd_str)
-    for seg in segments:
-        seg = seg.strip()
-        if not seg or seg.startswith("#"):
-            continue
-        try:
-            tokens = shlex.split(seg)
-        except ValueError:
-            tokens = seg.split()
-        idx = 0
-        while idx < len(tokens) and (
-            ("=" in tokens[idx] and not tokens[idx].startswith("-")) or tokens[idx] in ("sudo", "env")
-        ):
-            idx += 1
-        if idx >= len(tokens):
-            continue
-        prog = tokens[idx].rsplit("/", 1)[-1]
-        args = tokens[idx + 1 :]
-
-        if prog in ("ls", "exa", "eza", "tree", "dir"):
-            found.add("list_dir")
-        elif prog in ("rg", "grep", "ag", "ack", "find", "fd", "fdfind", "locate"):
-            found.add("find")
-        elif prog in ("cat", "head", "tail", "less", "more", "bat", "nl", "wc"):
-            found.add("read")
-        elif prog == "sed":
-            if any(a == "-i" or a.startswith("-i") for a in args):
-                found.add("edit")
-            else:
-                found.add("read")
-        elif prog == "awk":
-            found.add("read")
-        elif prog in ("touch", "mkdir", "rm", "rmdir", "mv", "cp", "chmod", "chown", "ln", "tee", "truncate"):
-            found.add("edit")
-        elif prog in ("echo", "printf"):
-            continue
-        else:
-            found.add("run")
-
-
 def _parse_ast(code: str) -> ast.Module:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=SyntaxWarning)
         return ast.parse(code, "<ipython>", "exec")
 
 
+def _strip_env_prefix(tokens: list[str], *, strict_ident: bool = True) -> list[str]:
+    """Drop leading ``VAR=value`` assignments and ``sudo``/``env`` tokens."""
+    idx = 0
+    while idx < len(tokens):
+        tok = tokens[idx]
+        if tok in ("sudo", "env"):
+            idx += 1
+            continue
+        if "=" in tok and not tok.startswith(("-", "=")):
+            head = tok.split("=", 1)[0]
+            if not strict_ident or (head and _ENV_VAR_RE.fullmatch(head)):
+                idx += 1
+                continue
+        break
+    return tokens[idx:]
+
+
+def _tokenize_segment(seg: str, *, strict_ident: bool = True) -> tuple[str, list[str]] | None:
+    seg = seg.strip()
+    if not seg or seg.startswith("#"):
+        return None
+    try:
+        tokens = shlex.split(seg)
+    except ValueError:
+        tokens = seg.split()
+    tokens = _strip_env_prefix(tokens, strict_ident=strict_ident)
+    if not tokens:
+        return None
+    return tokens[0].rsplit("/", 1)[-1], tokens[1:]
+
+
+def _classify_bash_command(cmd_str: str, found: set[str]) -> None:
+    """Classify shell commands inside a bash(...) call."""
+    cleaned = re.sub(r">+/dev/null|>+\s*/dev/null|\d*>&\d+", "", cmd_str)
+    if re.search(r"(?:^|[^<])>{1,2}\s*\S+", cleaned):
+        found.add("edit")
+
+    for seg in _SEGMENT_SPLIT_RE.split(cmd_str):
+        parsed = _tokenize_segment(seg, strict_ident=False)
+        if parsed is None:
+            continue
+        prog, args = parsed
+        if prog in _LIST_PROGS:
+            found.add("list_dir")
+        elif prog in _FIND_PROGS:
+            found.add("find")
+        elif prog in _READ_PROGS:
+            found.add("read")
+        elif prog == "sed":
+            found.add("edit" if any(a.startswith("-i") for a in args) else "read")
+        elif prog in _EDIT_PROGS:
+            found.add("edit")
+        elif prog not in ("echo", "printf"):
+            found.add("run")
+
+
+def _intent_const(node: ast.AST) -> str | None:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def _intent_const_int(node: ast.AST) -> int | None:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool) else None
+
+
+def _kw_str(node: ast.Call, name: str) -> str | None:
+    return next((_intent_const(kw.value) for kw in node.keywords if kw.arg == name), None)
+
+
+def _kw_int(node: ast.Call, name: str) -> int | None:
+    return next((_intent_const_int(kw.value) for kw in node.keywords if kw.arg == name), None)
+
+
+def _arg_str(node: ast.Call, pos: int, *kw_names: str) -> str | None:
+    if len(node.args) > pos:
+        val = _intent_const(node.args[pos])
+        if val is not None:
+            return val
+    for name in kw_names:
+        val = _kw_str(node, name)
+        if val is not None:
+            return val
+    return None
+
+
+def _arg_int(node: ast.Call, pos: int, kw_name: str) -> int | None:
+    if len(node.args) > pos:
+        val = _intent_const_int(node.args[pos])
+        if val is not None:
+            return val
+    val = _kw_int(node, kw_name)
+    if val is not None:
+        return val
+    raw = _kw_str(node, kw_name)
+    return int(raw) if raw and raw.lstrip("-").isdigit() else None
+
+
 def classify_cell_actions(code: str) -> list[str]:
     """Return ordered action category keys detected in an ipython cell."""
     found: set[str] = set()
     try:
-        tree = _parse_ast(code)
+        tree: ast.Module | None = _parse_ast(code)
     except SyntaxError:
         tree = None
 
@@ -120,57 +177,28 @@ def classify_cell_actions(code: str) -> list[str]:
             chain = _attr_chain(node.func)
             if not chain:
                 continue
-            root = chain[0]
-            name = chain[-1]
-
+            root, name = chain[0], chain[-1]
             if root == "mcp" or name == "call_mcp_tool":
                 found.add("mcp")
-                continue
-
-            if name == "bash":
-                if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-                    _classify_bash_command(node.args[0].value, found)
+            elif name == "bash":
+                cmd = _intent_const(node.args[0]) if node.args else None
+                if cmd is not None:
+                    _classify_bash_command(cmd, found)
                 else:
                     found.add("run")
-                continue
-
-            if name in ("listdir", "scandir", "iterdir", "walk") or chain == ["ls"]:
+            elif name in ("listdir", "scandir", "iterdir", "walk") or chain == ["ls"]:
                 found.add("list_dir")
             elif name in ("glob", "rglob", "iglob") or chain in (["find"], ["rg"]):
                 found.add("find")
             elif name == "open":
-                mode = "r"
-                if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str):
-                    mode = node.args[1].value
-                for kw in node.keywords:
-                    if kw.arg == "mode" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
-                        mode = kw.value.value
-                if any(ch in mode for ch in ("w", "a", "x", "+")):
-                    found.add("edit")
-                else:
-                    found.add("read")
+                mode = _arg_str(node, 1, "mode") or "r"
+                found.add("edit" if any(ch in mode for ch in ("w", "a", "x", "+")) else "read")
             elif name in ("read_text", "read_bytes", "readlines", "readline") or chain == ["read"]:
                 found.add("read")
-            elif name in (
-                "write_text",
-                "write_bytes",
-                "writelines",
-                "mkdir",
-                "makedirs",
-                "unlink",
-                "rmdir",
-                "rename",
-                "rmtree",
-                "copy",
-                "copy2",
-                "copytree",
-                "move",
-            ) or chain in (["edit"], ["write"]):
+            elif name in _EDIT_CALLS or chain in (["edit"], ["write"]):
                 found.add("edit")
             elif (
-                len(chain) >= 2
-                and chain[0] == "subprocess"
-                and name in ("run", "Popen", "check_output", "check_call", "call")
+                len(chain) >= 2 and root == "subprocess" and name in ("run", "Popen", "check_output", "check_call", "call")
             ) or chain == ["os", "system"]:
                 found.add("run")
     else:
@@ -182,23 +210,19 @@ def classify_cell_actions(code: str) -> list[str]:
     return [cat for cat in _CATEGORY_ORDER if cat in found]
 
 
+def _join_labels(items: list[str]) -> str:
+    return f"{items[0]} and {items[1]}" if len(items) == 2 else f"{', '.join(items[:-1])}, and {items[-1]}"
+
+
 def format_action_labels(categories: list[str]) -> str:
     """Format one or more action category keys into a human-readable label."""
     if not categories:
         return "Run Python"
     if len(categories) == 1:
         return _SINGLE_LABELS[categories[0]]
-
     if all(cat in _FILE_VERBS for cat in categories):
-        verbs = [_FILE_VERBS[cat] for cat in categories]
-        if len(verbs) == 2:
-            return f"{verbs[0]} and {verbs[1]} files"
-        return f"{', '.join(verbs[:-1])}, and {verbs[-1]} files"
-
-    parts = [_SHORT_LABELS[cat] for cat in categories]
-    if len(parts) == 2:
-        return f"{parts[0]} and {parts[1]}"
-    return f"{', '.join(parts[:-1])}, and {parts[-1]}"
+        return f"{_join_labels([_FILE_VERBS[cat] for cat in categories])} files"
+    return _join_labels([_SHORT_LABELS[cat] for cat in categories])
 
 
 def describe_cell_actions(code: str) -> str:
@@ -211,120 +235,45 @@ def describe_group_actions(codes: list[str]) -> str:
     combined: set[str] = set()
     for code in codes:
         combined.update(classify_cell_actions(code))
-    ordered = [cat for cat in _CATEGORY_ORDER if cat in combined]
-    return format_action_labels(ordered)
+    return format_action_labels([cat for cat in _CATEGORY_ORDER if cat in combined])
 
 
-# ---------------------------------------------------------------------------
-# Tool-intent summaries (describe_cell_intent)
-# ---------------------------------------------------------------------------
-# Short, human-readable "what is this cell doing" labels derived statically
-# from helper/sample-AST calls. Unlike describe_cell_actions (category
-# buckets), these name the actual target: "Read agent/ui.py (200-400)",
-# "Run pytest", 'Web search: "S&P 500 level"'. Defensive: never raises.
-
-_MAX_INTENT_LEN = 60
-_SH_FALLBACK_RE = re.compile(r"\b(?:sh|bash)\s*\(\s*([\"'])(.*?)\1", re.DOTALL)
+def _truncate_intent(text: str, limit: int = _MAX_INTENT_LEN) -> str:
+    return text[: limit - 1].rstrip() + "…" if len(text) > limit else text
 
 
 def _shorten_path(path: str) -> str:
     """Collapse the home directory to ``~``; defensive, never raises."""
     try:
-        import os
-        from pathlib import Path
-
         home = str(Path.home())
     except Exception:
         return path
     if path == home:
         return "~"
-    if path.startswith(home + os.sep):
-        return "~" + path[len(home):]
-    return path
+    return "~" + path[len(home) :] if path.startswith(home + os.sep) else path
 
 
 def _shorten_url(url: str) -> str:
     """Return host + path for a URL (dropping scheme/query), else the raw string."""
     text = url.strip()
-    if not text:
-        return text
-    with contextlib.suppress(ValueError):
-        from urllib.parse import urlparse
-
-        parsed = urlparse(text)
-        if parsed.netloc:
-            host = parsed.netloc.split("@")[-1]
-            path = parsed.path if parsed.path and parsed.path != "/" else ""
-            return f"{host}{path}" 
+    if text:
+        with contextlib.suppress(ValueError):
+            parsed = urlparse(text)
+            if parsed.netloc:
+                host = parsed.netloc.split("@")[-1]
+                path = parsed.path if parsed.path and parsed.path != "/" else ""
+                return f"{host}{path}"
     return text
 
 
-def _intent_const(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    return None
-
-
-def _intent_const_int(node: ast.AST) -> int | None:
-    if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
-        return node.value
-    return None
-
-
-def _kw_str(node: ast.Call, name: str) -> str | None:
-    for kw in node.keywords:
-        if kw.arg == name:
-            return _intent_const(kw.value)
-    return None
-
-
-def _kw_int(node: ast.Call, name: str) -> int | None:
-    for kw in node.keywords:
-        if kw.arg == name:
-            return _intent_const_int(kw.value)
-    return None
-
-
-def _strip_env_prefix(tokens: list[str]) -> list[str]:
-    """Drop leading ``VAR=value`` assignments and ``sudo``/``env`` tokens."""
-    idx = 0
-    while idx < len(tokens):
-        tok = tokens[idx]
-        if tok in ("sudo", "env"):
-            idx += 1
-            continue
-        if "=" in tok and not tok.startswith("-") and not tok.startswith("="):
-            head = tok.split("=", 1)[0]
-            if head and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", head):
-                idx += 1
-                continue
-        break
-    return tokens[idx:]
-
-
 def _is_prompt_indirection(prompt: str) -> bool:
-    """Return True when ``prompt`` is launcher plumbing, not a real prompt.
-
-    ``launch_worker`` builds ``quartz -p "$(cat <prompt_file>)"``: the prompt
-    token is a shell indirection (``$(cat ...)``, backticks, ``cat <file>``).
-    Such tokens carry zero information about the job, so they must never become
-    its label.
-    """
+    """Return True when ``prompt`` is launcher plumbing, not a real prompt."""
     text = prompt.strip()
-    if not text:
-        return True
-    return bool(text.startswith(("$(", "`", "$'", "$(cat", "`cat", "cat ")))
+    return not text or text.startswith(("$(", "`", "$'", "$(cat", "`cat", "cat "))
 
 
 def _describe_quartz_command(args: list[str]) -> str:
-    """Label a ``quartz`` invocation (e.g. forked workers launched by bash()).
-
-    ``uv run quartz -p "<prompt>" -r <sid> --fork --cwd <worktree>`` ->
-    ``Quartz: <prompt snippet> · <worktree basename>``. Launcher plumbing
-    (``-p "$(cat <prompt_file>)"``) is dropped instead: ``Quartz worker``
-    (plus the worktree basename). Bare ``quartz`` invocations fall back to
-    ``Run quartz``.
-    """
+    """Label a ``quartz`` invocation (e.g. forked workers launched by bash())."""
     prompt: str | None = None
     prompt_present = False
     cwd: str | None = None
@@ -332,65 +281,42 @@ def _describe_quartz_command(args: list[str]) -> str:
     while idx < len(args):
         tok = args[idx]
         if tok in ("-p", "--prompt") and idx + 1 < len(args):
-            prompt = args[idx + 1]
-            prompt_present = True
-            idx += 2
+            prompt, prompt_present, idx = args[idx + 1], True, idx + 2
             continue
         if tok.startswith("--prompt="):
-            prompt = tok.split("=", 1)[1]
-            prompt_present = True
+            prompt, prompt_present = tok.split("=", 1)[1], True
         elif tok.startswith("-p") and len(tok) > 2:
-            prompt = tok[2:]
-            prompt_present = True
+            prompt, prompt_present = tok[2:], True
         elif tok == "--cwd" and idx + 1 < len(args):
-            cwd = args[idx + 1]
-            idx += 2
+            cwd, idx = args[idx + 1], idx + 2
             continue
         elif tok.startswith("--cwd="):
             cwd = tok.split("=", 1)[1]
         idx += 1
 
-    base = ""
-    if cwd and cwd.strip() and cwd.strip() != ".":
-        base = cwd.rstrip("/").rsplit("/", 1)[-1]
-    parts: list[str] = []
+    base = cwd.rstrip("/").rsplit("/", 1)[-1] if cwd and cwd.strip() not in ("", ".") else ""
     if prompt_present:
-        if prompt is not None and prompt.strip() and not _is_prompt_indirection(prompt):
-            snippet = " ".join(prompt.split())
-            if len(snippet) > 30:
-                snippet = snippet[:29].rstrip() + "…"
-            parts.append(f"Quartz: {snippet}")
+        if prompt and prompt.strip() and not _is_prompt_indirection(prompt):
+            snippet = _truncate_intent(" ".join(prompt.split()), 30)
+            parts = [f"Quartz: {snippet}"]
         else:
-            parts.append("Quartz worker")
+            parts = ["Quartz worker"]
     else:
-        parts.append("Run quartz")
+        parts = ["Run quartz"]
     if base:
         parts.append(base)
-    result = " · ".join(parts)
-    if len(result) > _MAX_INTENT_LEN:
-        result = result[: _MAX_INTENT_LEN - 1].rstrip() + "…"
-    return result
+    return _truncate_intent(" · ".join(parts))
 
 
 def _describe_shell_command(cmd_str: str) -> str | None:
     """Map one shell command string to a short intent label (or None)."""
     if not cmd_str or not cmd_str.strip():
         return None
-    # First segment only: `&&`/`||`/`|`/`;`/newline chains are not the
-    # primary action, and the suffix is usually log noise.
-    segment = re.split(r"\s*(?:&&|\|\||;|\||\n)\s*", cmd_str.strip(), maxsplit=1)[0]
-    segment = segment.strip()
-    if not segment or segment.startswith("#"):
+    head = _SEGMENT_SPLIT_RE.split(cmd_str.strip(), maxsplit=1)[0]
+    parsed = _tokenize_segment(head, strict_ident=True)
+    if parsed is None:
         return None
-    try:
-        tokens = shlex.split(segment)
-    except ValueError:
-        tokens = segment.split()
-    tokens = _strip_env_prefix(tokens)
-    if not tokens:
-        return None
-    prog = tokens[0].rsplit("/", 1)[-1]
-    args = tokens[1:]
+    prog, args = parsed
 
     if prog == "uv" and args and args[0] == "run":
         rest = _strip_env_prefix(args[1:])
@@ -399,22 +325,16 @@ def _describe_shell_command(cmd_str: str) -> str | None:
         sub = rest[0].rsplit("/", 1)[-1]
         if sub == "pytest" or (sub == "python" and "-m" in rest and "pytest" in rest):
             return "Run pytest"
-        if sub == "quartz":
-            return _describe_quartz_command(rest[1:])
-        return f"Run {sub}"
+        return _describe_quartz_command(rest[1:]) if sub == "quartz" else f"Run {sub}"
     if prog == "quartz":
         return _describe_quartz_command(args)
-    if prog.startswith("python") and len(args) >= 2 and args[0] == "-m" and args[1] == "quartz":
+    if prog.startswith("python") and len(args) >= 2 and args[:2] == ["-m", "quartz"]:
         return _describe_quartz_command(args[2:])
-    if prog == "pytest":
-        return "Run pytest"
-    if prog == "python" and "-m" in args and "pytest" in args:
+    if prog == "pytest" or (prog == "python" and "-m" in args and "pytest" in args):
         return "Run pytest"
     if prog == "git":
         sub = next((a for a in args if not a.startswith("-")), None)
-        if sub:
-            return f"git {sub}"
-        return "git"
+        return f"git {sub}" if sub else "git"
     if prog == "gh":
         if len(args) >= 2 and args[0] == "pr" and not args[1].startswith("-"):
             return f"gh pr {args[1]}"
@@ -422,147 +342,75 @@ def _describe_shell_command(cmd_str: str) -> str | None:
         return f"gh {sub}" if sub else "gh"
     if prog in ("cat", "head", "tail"):
         files = [a for a in args if not a.startswith("-")]
-        if files:
-            return f"Read {_shorten_path(files[-1])}"
-        return f"Run {prog}"
+        return f"Read {_shorten_path(files[-1])}" if files else f"Run {prog}"
     if prog in ("grep", "rg"):
-        [a for a in args if not a.startswith("-")]
-        # Drop options that consume the next token (-e PAT, -m N, ...).
         skip_next = False
         cleaned: list[str] = []
         for a in args:
             if skip_next:
                 skip_next = False
-                continue
-            if a in ("-e", "-m", "-A", "-B", "-C", "-g", "--glob", "--max-count"):
+            elif a in _SEARCH_VALUE_FLAGS:
                 skip_next = True
-                continue
-            if a.startswith("-"):
-                continue
-            cleaned.append(a)
-        if cleaned:
-            pattern = cleaned[0]
-            if len(cleaned) > 1:
-                return f'Search "{pattern}" in {_shorten_path(cleaned[-1])}'
-            return f'Search "{pattern}"'
-        return f"Run {prog}"
-    if prog in ("ls", "exa", "eza", "tree", "dir"):
+            elif not a.startswith("-"):
+                cleaned.append(a)
+        if not cleaned:
+            return f"Run {prog}"
+        return f'Search "{cleaned[0]}" in {_shorten_path(cleaned[-1])}' if len(cleaned) > 1 else f'Search "{cleaned[0]}"'
+    if prog in _LIST_PROGS:
         paths = [a for a in args if not a.startswith("-")]
-        if paths:
-            return f"List {_shorten_path(paths[-1])}"
-        return "List"
-    if prog in ("echo", "printf"):
-        return None
-    return f"Run {prog}"
+        return f"List {_shorten_path(paths[-1])}" if paths else "List"
+    return None if prog in ("echo", "printf") else f"Run {prog}"
 
 
-def _describe_shell_wrapper(node: ast.Call) -> str | None:
-    """Describe a sh(...)/bash(...) call from its first positional arg, if a str constant."""
-    if not node.args:
-        return None
-    cmd = _intent_const(node.args[0])
-    if cmd is None:
-        return None
-    return _describe_shell_command(cmd)
+_PATH_HELPER_VERBS = {"edit": "Edit", "write": "Write", "view_image": "View", "attach_file": "Attach"}
 
 
 def _describe_call_intent(node: ast.Call) -> str | None:
     chain = _attr_chain(node.func)
     if not chain:
         return None
-    root = chain[0]
-    name = chain[-1]
+    root, name = chain[0], chain[-1]
 
-    # mcp.<server>.<tool>(...)
     if root == "mcp" and len(chain) >= 3:
         server, tool = chain[1], chain[2]
         lowered = tool.lower()
         if "search" in lowered:
-            query = _kw_str(node, "query")
-            if query is None and node.args:
-                query = _intent_const(node.args[0])
+            query = _kw_str(node, "query") or (_intent_const(node.args[0]) if node.args else None)
             if query:
-                query = " ".join(query.split())
-                if len(query) > 40:
-                    query = query[:40].rstrip() + "…"
-                return f"Web search: {query}"
+                q = " ".join(query.split())
+                return f"Web search: {q[:40].rstrip() + '…' if len(q) > 40 else q}"
             return f"Web search via {server}"
         if "fetch" in lowered:
-            url = _kw_str(node, "url") or _kw_str(node, "uri")
-            if url is None and node.args:
-                url = _intent_const(node.args[0])
-            if url:
-                return f"Fetch {_shorten_url(url)}"
-            return f"Fetch via {server}"
+            url = _kw_str(node, "url") or _kw_str(node, "uri") or (_intent_const(node.args[0]) if node.args else None)
+            return f"Fetch {_shorten_url(url)}" if url else f"Fetch via {server}"
         return f"MCP {server}.{tool}"
     if name == "call_mcp_tool":
         return "MCP call"
-
-    # Shell wrappers (helpers + kernel builtin).
     if name in ("sh", "bash"):
-        return _describe_shell_wrapper(node)
-
-    # Kernel helpers.
+        cmd = _intent_const(node.args[0]) if node.args else None
+        return _describe_shell_command(cmd) if cmd is not None else None
     if name == "read":
-        path = _intent_const(node.args[0]) if node.args else None
-        if path is None:
-            path = _kw_str(node, "path")
+        path = _arg_str(node, 0, "path")
         if path is None:
             return None
         short = _shorten_path(path)
-        start = _intent_const_int(node.args[1]) if len(node.args) > 1 else None
-        end = _intent_const_int(node.args[2]) if len(node.args) > 2 else None
-        if start is None:
-            start = _kw_int(node, "start")
-        if start is None:
-            kw_start = _kw_str(node, "start")
-            start = int(kw_start) if kw_start and kw_start.lstrip("-").isdigit() else None
-        if end is None:
-            end = _kw_int(node, "end")
-        if end is None:
-            kw_end = _kw_str(node, "end")
-            end = int(kw_end) if kw_end and kw_end.lstrip("-").isdigit() else None
+        start, end = _arg_int(node, 1, "start"), _arg_int(node, 2, "end")
         if start is not None and start != 1:
-            if end is not None:
-                return f"Read {short} ({start}-{end})"
-            return f"Read {short} (from {start})"
+            return f"Read {short} ({start}-{end})" if end is not None else f"Read {short} (from {start})"
         return f"Read {short}"
-    if name == "edit":
-        path = _intent_const(node.args[0]) if node.args else _kw_str(node, "path")
-        return f"Edit {_shorten_path(path)}" if path else None
-    if name == "write":
-        path = _intent_const(node.args[0]) if node.args else _kw_str(node, "path")
-        return f"Write {_shorten_path(path)}" if path else None
-    if name == "view_image":
-        path = _intent_const(node.args[0]) if node.args else _kw_str(node, "path")
-        return f"View {_shorten_path(path)}" if path else None
-    if name == "attach_file":
-        path = _intent_const(node.args[0]) if node.args else _kw_str(node, "path")
-        return f"Attach {_shorten_path(path)}" if path else None
+    if name in _PATH_HELPER_VERBS:
+        path = _arg_str(node, 0, "path")
+        return f"{_PATH_HELPER_VERBS[name]} {_shorten_path(path)}" if path else None
     if name == "ls":
-        path = _intent_const(node.args[0]) if node.args else _kw_str(node, "path")
-        if not path or path == ".":
-            return "List"
-        return f"List {_shorten_path(path)}"
-    if name == "find":
-        pattern = _intent_const(node.args[0]) if len(node.args) > 0 else _kw_str(node, "pattern")
-        path = _intent_const(node.args[1]) if len(node.args) > 1 else _kw_str(node, "path")
+        path = _arg_str(node, 0, "path")
+        return f"List {_shorten_path(path)}" if path and path != "." else "List"
+    if name in ("find", "rg"):
+        pattern, path = _arg_str(node, 0, "pattern"), _arg_str(node, 1, "path")
         if not pattern:
             return None
-        if path and path != ".":
-            return f"Find {pattern} in {_shorten_path(path)}"
-        return f"Find {pattern}"
-    if name == "rg":
-        pattern = _intent_const(node.args[0]) if len(node.args) > 0 else _kw_str(node, "pattern")
-        path = _intent_const(node.args[1]) if len(node.args) > 1 else _kw_str(node, "path")
-        if not pattern:
-            return None
-        if path and path != ".":
-            return f'Search "{pattern}" in {_shorten_path(path)}'
-        return f'Search "{pattern}"'
-    if name == "now":
-        return "Check date/time"
-    return None
+        prefix = f"Find {pattern}" if name == "find" else f'Search "{pattern}"'
+        return f"{prefix} in {_shorten_path(path)}" if path and path != "." else prefix
+    return "Check date/time" if name == "now" else None
 
 
 def _intents_from_source(code: str) -> list[str]:
@@ -570,15 +418,12 @@ def _intents_from_source(code: str) -> list[str]:
     try:
         tree = _parse_ast(code)
     except SyntaxError:
-        # Parser broke — at least rescue sh()/bash() string args via regex.
         found: list[str] = []
         for match in _SH_FALLBACK_RE.finditer(code):
-            try:
+            with contextlib.suppress(Exception):
                 label = _describe_shell_command(match.group(2))
-            except Exception:
-                label = None
-            if label and label not in found:
-                found.append(label)
+                if label and label not in found:
+                    found.append(label)
         return found
     except Exception:
         return []
@@ -593,26 +438,15 @@ def _intents_from_source(code: str) -> list[str]:
         except Exception:
             logger.debug("Call intent inspection failed", exc_info=True)
             continue
-        if label is None:
-            continue
         if label == "Check date/time":
-            # Only emitted when nothing else describes the cell.
             saw_now = True
-            continue
-        if label not in labels:
+        elif label and label not in labels:
             labels.append(label)
-    if not labels and saw_now:
-        return ["Check date/time"]
-    return labels
+    return labels if labels else (["Check date/time"] if saw_now else [])
 
 
 def describe_cell_intent(code: str) -> str:
-    """Return a short "what is this cell doing" label for one ipython cell.
-
-    Examples: "Read agent/ui.py (200-400)", "Run pytest",
-    "Web search: S&P 500 level", "Run Python" (no identifiable operation).
-    Defensive: never raises, always returns a non-empty string.
-    """
+    """Return a short "what is this cell doing" label for one ipython cell (never raises)."""
     try:
         labels = _intents_from_source(code or "")
     except Exception:
@@ -625,41 +459,18 @@ def describe_cell_intent(code: str) -> str:
         result = f"{labels[0]} · {labels[1]}"
     else:
         result = f"{labels[0]} · {labels[1]} · +{len(labels) - 2} more"
-    result = " ".join(str(result).split())
-    if len(result) > _MAX_INTENT_LEN:
-        result = result[: _MAX_INTENT_LEN - 1].rstrip() + "…"
-    return result or "Run Python"
+    return _truncate_intent(" ".join(str(result).split())) or "Run Python"
 
 
 def describe_job_label(command: str) -> str:
-    """Return a short label for a background shell command (pure, never raises).
-
-    Used for banner/progress visibility of `bash()` jobs. Falls back to the
-    first program token so identity is always visible, e.g. "Run pytest",
-    "git log", 'Search "foo" in agent/', "Run uv".
-    """
-    try:
+    """Return a short label for a background shell command (pure, never raises)."""
+    with contextlib.suppress(Exception):
         label = _describe_shell_command(command or "")
-    except Exception:
-        label = None
-    if label:
-        return label
-    try:
-        text = (command or "").strip()
-        if not text:
-            return "Background job"
-        segment = re.split(r"\s*(?:&&|\|\||;|\||\n)\s*", text, maxsplit=1)[0].strip()
-        try:
-            tokens = shlex.split(segment)
-        except ValueError:
-            tokens = segment.split()
-        tokens = _strip_env_prefix(tokens)
-        if not tokens:
-            return "Background job"
-        prog = tokens[0].rsplit("/", 1)[-1]
-    except Exception:
-        prog = "Background job"
-    result = f"Run {prog}" if prog else "Background job"
-    if len(result) > _MAX_INTENT_LEN:
-        result = result[: _MAX_INTENT_LEN - 1].rstrip() + "…"
-    return result or "Background job"
+        if label:
+            return label
+    with contextlib.suppress(Exception):
+        head = _SEGMENT_SPLIT_RE.split((command or "").strip(), maxsplit=1)[0]
+        parsed = _tokenize_segment(head, strict_ident=True)
+        if parsed is not None:
+            return _truncate_intent(f"Run {parsed[0]}")
+    return "Background job"
