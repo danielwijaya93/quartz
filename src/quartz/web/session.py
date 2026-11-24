@@ -1076,8 +1076,8 @@ class SessionManager:
         self._placeholder: WebSession | None = None
         self._system_prompt_append = ""
         self._global_sinks: set[Push] = set()
-        self._inbox: dict[str, dict[str, Any]] = {}
-        self._inbox_seq = 0
+        self._active_sessions: dict[str, dict[str, Any]] = {}
+        self._active_sessions_seq = 0
         self._idle_hours_override = idle_hours
         self._max_live_sessions_override = max_live_sessions
         self._check_interval_s = max(0.05, float(check_interval_s))
@@ -1223,10 +1223,10 @@ class SessionManager:
                 return cleaned if len(cleaned) <= 80 else f"{cleaned[:79]}…"
         return None
 
-    def inbox_items(self) -> list[dict[str, Any]]:
+    def active_sessions_items(self) -> list[dict[str, Any]]:
         """Return current active session items ordered: needs you, working, done (newest first)."""
         with self._lock:
-            by_id = dict(self._inbox)
+            by_id = dict(self._active_sessions)
             for ws in self._sessions.values():
                 if not ws.built or not ws.turn_running:
                     continue
@@ -1239,7 +1239,7 @@ class SessionManager:
                         "kind": "working",
                         "read": False,
                         "updatedAt": datetime.now(timezone.utc).isoformat(),
-                        "_seq": self._inbox_seq,
+                        "_seq": self._active_sessions_seq,
                     }
             items = list(by_id.values())
 
@@ -1269,32 +1269,32 @@ class SessionManager:
             for item in items
         ]
 
-    def dismiss_inbox_item(self, session_id: str) -> bool:
+    def dismiss_active_session(self, session_id: str) -> bool:
         """Dismiss a completed or errored active session item by session ID."""
         with self._lock:
-            existing = self._inbox.get(session_id)
+            existing = self._active_sessions.get(session_id)
             if existing is None or existing["kind"] in ("permission", "working"):
                 return False
-            self._inbox.pop(session_id, None)
-        self._broadcast_inbox()
+            self._active_sessions.pop(session_id, None)
+        self._broadcast_active_sessions()
         return True
 
-    def clear_read_inbox(self) -> int:
-        """Remove all read non-permission items from the inbox. Returns removed count."""
+    def clear_read_active_sessions(self) -> int:
+        """Remove all read non-permission items from active sessions. Returns removed count."""
         with self._lock:
             to_remove = [
                 sid
-                for sid, item in self._inbox.items()
+                for sid, item in self._active_sessions.items()
                 if item["kind"] != "permission" and item.get("read")
             ]
             for sid in to_remove:
-                self._inbox.pop(sid, None)
+                self._active_sessions.pop(sid, None)
         if to_remove:
-            self._broadcast_inbox()
+            self._broadcast_active_sessions()
         return len(to_remove)
 
-    def _broadcast_inbox(self) -> None:
-        self._broadcast({"type": "inbox_state", "items": self.inbox_items()})
+    def _broadcast_active_sessions(self) -> None:
+        self._broadcast({"type": "active_sessions_state", "items": self.active_sessions_items()})
 
     def _on_session_event(self, ws: WebSession, frame: Frame) -> None:
         if not ws.built:
@@ -1304,29 +1304,29 @@ class SessionManager:
         kind = frame.get("type")
         changed = False
         with self._lock:
-            existing = self._inbox.get(sid)
+            existing = self._active_sessions.get(sid)
             if kind == "_closed":
-                if sid in self._inbox:
-                    self._inbox.pop(sid, None)
+                if sid in self._active_sessions:
+                    self._active_sessions.pop(sid, None)
                     changed = True
             elif kind == "turn_start":
-                self._inbox_seq += 1
-                self._inbox[sid] = {
+                self._active_sessions_seq += 1
+                self._active_sessions[sid] = {
                     "sessionId": sid,
                     "cwd": cwd,
                     "title": self._session_title(ws),
                     "kind": "working",
                     "read": False,
                     "updatedAt": datetime.now(timezone.utc).isoformat(),
-                    "_seq": self._inbox_seq,
+                    "_seq": self._active_sessions_seq,
                 }
                 changed = True
             elif kind == "permission_request":
                 tool = str(frame.get("tool") or "").strip()
                 command = str(frame.get("command") or "").strip()
                 preview = f"{tool}: {command}" if tool and command else (command or tool or "Permission required")
-                self._inbox_seq += 1
-                self._inbox[sid] = {
+                self._active_sessions_seq += 1
+                self._active_sessions[sid] = {
                     "sessionId": sid,
                     "cwd": cwd,
                     "title": self._session_title(ws),
@@ -1334,24 +1334,24 @@ class SessionManager:
                     "read": False,
                     "updatedAt": datetime.now(timezone.utc).isoformat(),
                     "preview": preview if len(preview) <= 120 else f"{preview[:119]}…",
-                    "_seq": self._inbox_seq,
+                    "_seq": self._active_sessions_seq,
                 }
                 changed = True
             elif kind == "permission_resolved":
                 if existing is not None and existing["kind"] == "permission":
                     if ws.turn_running:
-                        self._inbox_seq += 1
-                        self._inbox[sid] = {
+                        self._active_sessions_seq += 1
+                        self._active_sessions[sid] = {
                             "sessionId": sid,
                             "cwd": cwd,
                             "title": self._session_title(ws),
                             "kind": "working",
                             "read": False,
                             "updatedAt": datetime.now(timezone.utc).isoformat(),
-                            "_seq": self._inbox_seq,
+                            "_seq": self._active_sessions_seq,
                         }
                     else:
-                        self._inbox.pop(sid, None)
+                        self._active_sessions.pop(sid, None)
                     changed = True
             elif kind == "turn_end":
                 status = frame.get("status")
@@ -1368,8 +1368,8 @@ class SessionManager:
                     item_kind = ""
                     preview = None
                 if item_kind:
-                    self._inbox_seq += 1
-                    self._inbox[sid] = {
+                    self._active_sessions_seq += 1
+                    self._active_sessions[sid] = {
                         "sessionId": sid,
                         "cwd": cwd,
                         "title": self._session_title(ws),
@@ -1377,14 +1377,14 @@ class SessionManager:
                         "read": False,
                         "updatedAt": datetime.now(timezone.utc).isoformat(),
                         "preview": preview,
-                        "_seq": self._inbox_seq,
+                        "_seq": self._active_sessions_seq,
                     }
                     changed = True
                 elif existing is not None and existing["kind"] == "working":
-                    self._inbox.pop(sid, None)
+                    self._active_sessions.pop(sid, None)
                     changed = True
         if changed:
-            self._broadcast_inbox()
+            self._broadcast_active_sessions()
         hook = self._push_hook
         if hook is not None:
             with contextlib.suppress(Exception):
@@ -1553,9 +1553,9 @@ class SessionManager:
         if action == "close":
             ws.close()
             with self._lock:
-                removed = self._inbox.pop(session_id, None) is not None
+                removed = self._active_sessions.pop(session_id, None) is not None
             if removed:
-                self._broadcast_inbox()
+                self._broadcast_active_sessions()
         self._broadcast(
             {
                 "type": "idle_session_resolved",

@@ -1395,9 +1395,9 @@ describe("a reconnect in the middle of a turn", () => {
     expect(switched.idlePrompts).toEqual([]);
   });
 
-  it("tracks inbox_state across session switches", () => {
-    const withInbox = reduce(initialState, {
-      type: "inbox_state",
+  it("tracks active_sessions_state across session switches", () => {
+    const withActiveSessions = reduce(initialState, {
+      type: "active_sessions_state",
       items: [
         {
           sessionId: "s-bg",
@@ -1409,11 +1409,11 @@ describe("a reconnect in the middle of a turn", () => {
         },
       ],
     });
-    expect(withInbox.inbox).toHaveLength(1);
-    expect(withInbox.inbox?.[0]?.kind).toBe("permission");
+    expect(withActiveSessions.activeSessions).toHaveLength(1);
+    expect(withActiveSessions.activeSessions?.[0]?.kind).toBe("permission");
 
-    // Switching sessions via session_state must not wipe global inbox.
-    const afterSwitch = reduce(withInbox, {
+    // Switching sessions via session_state must not wipe global activeSessions.
+    const afterSwitch = reduce(withActiveSessions, {
       type: "session_state",
       sessionId: "s-other",
       cwd: "/other",
@@ -1423,13 +1423,13 @@ describe("a reconnect in the middle of a turn", () => {
       commands: [],
       messages: [],
     });
-    expect(afterSwitch.inbox).toHaveLength(1);
+    expect(afterSwitch.activeSessions).toHaveLength(1);
 
     const cleared = reduce(afterSwitch, {
-      type: "inbox_state",
+      type: "active_sessions_state",
       items: [],
     });
-    expect(cleared.inbox).toEqual([]);
+    expect(cleared.activeSessions).toEqual([]);
   });
 });
 

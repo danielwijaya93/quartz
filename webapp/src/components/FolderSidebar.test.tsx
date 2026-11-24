@@ -532,7 +532,7 @@ describe("FolderSidebar's undo notice", () => {
       data: payload({
         sessions: [session({ sessionId: "s1", title: "Fix auth", cwd: "/work/api" })],
       }),
-      inbox: [],
+      activeSessions: [],
     });
     const activeRegion = screen.getByRole("region", { name: "Active Sessions" });
     expect(activeRegion).toBeInTheDocument();
@@ -556,7 +556,7 @@ describe("FolderSidebar's undo notice", () => {
         },
       }),
       onSelectSession,
-      inbox: [
+      activeSessions: [
         {
           sessionId: "s1",
           cwd: "/work/api",
@@ -599,7 +599,7 @@ describe("FolderSidebar's undo notice", () => {
 
   it("supports per-row dismiss for done/error (not permission/working) and Unread filter chip", async () => {
     const user = userEvent.setup();
-    const onDismissInboxItem = vi.fn();
+    const onDismissActiveSession = vi.fn();
     renderSidebar({
       data: payload({
         sessions: [
@@ -609,13 +609,13 @@ describe("FolderSidebar's undo notice", () => {
           session({ sessionId: "s4", title: "Running task", cwd: "/work/web" }),
         ],
       }),
-      onDismissInboxItem,
+      onDismissActiveSession,
       sessionActivity: {
         s2: { status: "done", unread: false },
         s3: { status: "error", unread: true },
         s4: { status: "running", unread: false },
       },
-      inbox: [
+      activeSessions: [
         {
           sessionId: "s1",
           cwd: "/work/api",
@@ -655,9 +655,9 @@ describe("FolderSidebar's undo notice", () => {
     expect(within(activeRegion).queryByRole("button", { name: "Dismiss Fix auth" })).not.toBeInTheDocument();
     expect(within(activeRegion).queryByRole("button", { name: "Dismiss Running task" })).not.toBeInTheDocument();
     await user.click(within(activeRegion).getByRole("button", { name: "Dismiss Unread task" }));
-    expect(onDismissInboxItem).toHaveBeenCalledWith("s3");
+    expect(onDismissActiveSession).toHaveBeenCalledWith("s3");
     await user.click(within(activeRegion).getByRole("button", { name: "Dismiss Write tests" }));
-    expect(onDismissInboxItem).toHaveBeenCalledWith("s2");
+    expect(onDismissActiveSession).toHaveBeenCalledWith("s2");
 
     // Unread filter chip filters workspace sessions to unread/attention ones.
     const unreadBtn = screen.getByRole("button", { name: /^Unread\s*\d*$/i });
@@ -691,7 +691,7 @@ describe("FolderSidebar collapse persistence", () => {
         session({ sessionId: "s2", title: "Regular task", cwd: "/work/web" }),
       ],
     });
-    const testInbox = [
+    const testActiveSessions = [
       {
         sessionId: "s2",
         cwd: "/work/web",
@@ -720,7 +720,7 @@ describe("FolderSidebar collapse persistence", () => {
         onHide={vi.fn(async () => true)}
         onRestore={vi.fn(async () => true)}
         onOpenArchive={vi.fn()}
-        inbox={testInbox}
+        activeSessions={testActiveSessions}
       />,
     );
 
@@ -755,7 +755,7 @@ describe("FolderSidebar collapse persistence", () => {
         onHide={vi.fn(async () => true)}
         onRestore={vi.fn(async () => true)}
         onOpenArchive={vi.fn()}
-        inbox={testInbox}
+        activeSessions={testActiveSessions}
       />,
     );
 

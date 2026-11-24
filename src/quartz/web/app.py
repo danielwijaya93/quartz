@@ -968,9 +968,8 @@ async def _dispatch(
             _replay_live_turn(session, snapshot, push)
             for idle_frame in manager.pending_idle_prompts():
                 push(idle_frame)
-            inbox_items = manager.inbox_items()
-            if inbox_items:
-                push({"type": "inbox_state", "items": inbox_items})
+            active_sessions = manager.active_sessions_items()
+            push({"type": "active_sessions_state", "items": active_sessions})
 
         elif kind == "prompt":
             text = str(message.get("text") or "").strip()
@@ -1084,15 +1083,15 @@ async def _dispatch(
                 return
             await asyncio.to_thread(manager.resolve_idle_prompt, session_id, action)
 
-        elif kind == "inbox_dismiss":
+        elif kind == "active_session_dismiss":
             session_id = str(message.get("sessionId") or "").strip()
             if not session_id:
                 push({"type": "error", "message": "Missing sessionId.", "fatal": False})
                 return
-            await asyncio.to_thread(manager.dismiss_inbox_item, session_id)
+            await asyncio.to_thread(manager.dismiss_active_session, session_id)
 
-        elif kind == "inbox_clear_read":
-            await asyncio.to_thread(manager.clear_read_inbox)
+        elif kind == "active_sessions_clear_read":
+            await asyncio.to_thread(manager.clear_read_active_sessions)
 
         else:
             push({"type": "error", "message": f"Unknown frame type: {kind}", "fatal": False})

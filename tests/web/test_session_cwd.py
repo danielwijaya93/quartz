@@ -146,6 +146,13 @@ def picker_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[TestCli
     return TestClient(app), build
 
 
+def _next_session_state(ws: Any) -> dict[str, Any]:
+    while True:
+        frame = ws.receive_json()
+        if frame.get("type") == "session_state":
+            return frame
+
+
 def test_new_session_frame_carries_a_directory(picker_app: tuple[TestClient, Recorder], tmp_path: Path) -> None:
     client, build = picker_app
     picked = tmp_path / "picked"
@@ -153,9 +160,9 @@ def test_new_session_frame_carries_a_directory(picker_app: tuple[TestClient, Rec
 
     with client.websocket_connect("/ws") as socket:
         socket.send_json({"type": "hello", "clientVersion": 1})
-        socket.receive_json()
+        _next_session_state(socket)
         socket.send_json({"type": "new_session", "cwd": str(picked)})
-        state = socket.receive_json()
+        state = _next_session_state(socket)
 
     assert state["type"] == "session_state"
     assert state["cwd"] == str(picked.resolve())
@@ -169,7 +176,7 @@ def test_hello_can_place_the_initial_session(picker_app: tuple[TestClient, Recor
 
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"type": "hello", "clientVersion": 1, "cwd": str(picked)})
-        state = ws.receive_json()
+        state = _next_session_state(ws)
 
     assert state["cwd"] == str(picked.resolve())
     assert build.calls == [(None, picked.resolve())]
@@ -182,7 +189,7 @@ def test_a_bad_hello_directory_is_forgiven_not_fatal(
 
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"type": "hello", "clientVersion": 1, "cwd": "not/a/path"})
-        state = ws.receive_json()
+        state = _next_session_state(ws)
 
     assert state["type"] == "session_state"
     assert state["cwd"] == str(tmp_path.resolve())
@@ -195,9 +202,9 @@ def test_a_bad_new_session_directory_is_forgiven_not_fatal(
 
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"type": "hello", "clientVersion": 1})
-        ws.receive_json()
+        _next_session_state(ws)
         ws.send_json({"type": "new_session", "cwd": str(tmp_path / "vanished")})
-        state = ws.receive_json()
+        state = _next_session_state(ws)
 
     assert state["type"] == "session_state"
     assert state["cwd"] == str(tmp_path.resolve())
@@ -215,9 +222,9 @@ def test_resuming_a_session_reports_the_folder_its_log_records(
 
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"type": "hello", "clientVersion": 1})
-        ws.receive_json()
+        _next_session_state(ws)
         ws.send_json({"type": "load_session", "sessionId": source.id})
-        state = ws.receive_json()
+        state = _next_session_state(ws)
 
     assert state["type"] == "session_state"
     assert state["cwd"] == str(project.resolve())
@@ -236,11 +243,11 @@ def test_a_repeated_hello_does_not_move_a_running_session(
 
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"type": "hello", "clientVersion": 1, "cwd": str(first)})
-        assert ws.receive_json()["cwd"] == str(first.resolve())
+        assert _next_session_state(ws)["cwd"] == str(first.resolve())
         ws.send_json(
             {"type": "hello", "clientVersion": 1, "cwd": str(second), "systemPromptAppend": "X"}
         )
-        state = ws.receive_json()
+        state = _next_session_state(ws)
 
     assert state["cwd"] == str(first.resolve())
     assert [cwd for _session_id, cwd in build.calls] == [first.resolve()]
@@ -256,9 +263,9 @@ def test_a_new_session_makes_its_folder_appear_in_the_sidebar(
 
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"type": "hello", "clientVersion": 1})
-        ws.receive_json()
+        _next_session_state(ws)
         ws.send_json({"type": "new_session", "cwd": str(picked)})
-        ws.receive_json()
+        _next_session_state(ws)
 
     body = client.get("/api/sessions").json()
     workspaces = [workspace["cwd"] for workspace in body["sidebar"]["workspaces"]]

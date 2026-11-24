@@ -123,8 +123,8 @@ export type ClientMessage =
   | { type: "set_sandbox"; enabled: boolean }
   | { type: "permission_response"; requestId: string; decision: PermissionDecision }
   | { type: "idle_session_response"; sessionId: string; action: "keep" | "close" }
-  | { type: "inbox_dismiss"; sessionId: string }
-  | { type: "inbox_clear_read" };
+  | { type: "active_session_dismiss"; sessionId: string }
+  | { type: "active_sessions_clear_read" };
 
 export interface ProjectTrustState {
   cwd: string;
@@ -217,17 +217,17 @@ export type ServerMessage =
       idleSeconds: number;
     }
   | { type: "idle_session_resolved"; sessionId: string; action: "keep" | "close" }
-  | { type: "inbox_state"; items: InboxItem[] }
+  | { type: "active_sessions_state"; items: ActiveSessionItem[] }
   | { type: "error"; message: string; fatal: boolean }
   | { type: "command_result"; name: string; ok: boolean; result: CommandResult };
 
-export type InboxItemKind = "working" | "permission" | "done" | "error";
+export type ActiveSessionKind = "working" | "permission" | "done" | "error";
 
-export interface InboxItem {
+export interface ActiveSessionItem {
   sessionId: string;
   cwd: string;
   title?: string;
-  kind: InboxItemKind;
+  kind: ActiveSessionKind;
   read?: boolean;
   updatedAt: string;
   preview?: string;
@@ -254,7 +254,7 @@ const SERVER_MESSAGE_TYPES: ReadonlySet<string> = new Set<ServerMessageType>([
   "permission_resolved",
   "idle_session_prompt",
   "idle_session_resolved",
-  "inbox_state",
+  "active_sessions_state",
   "error",
   "command_result",
 ]);

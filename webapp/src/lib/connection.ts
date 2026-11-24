@@ -393,12 +393,12 @@ export class Connection {
     return this.send({ type: "idle_session_response", sessionId, action });
   }
 
-  sendInboxDismiss(sessionId: string): boolean {
-    return this.send({ type: "inbox_dismiss", sessionId });
+  sendActiveSessionDismiss(sessionId: string): boolean {
+    return this.send({ type: "active_session_dismiss", sessionId });
   }
 
-  sendInboxClearRead(): boolean {
-    return this.send({ type: "inbox_clear_read" });
+  sendActiveSessionsClearRead(): boolean {
+    return this.send({ type: "active_sessions_clear_read" });
   }
 }
 
