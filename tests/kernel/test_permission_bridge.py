@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -131,11 +130,10 @@ async def test_kernel_bridge_allow_once_allow_session_and_reject(tmp_path: Path)
         kc.close()
 
 
-@pytest.mark.skipif(
-    not sys.platform.startswith("linux") or shutil.which("bwrap") is None,
-    reason="Linux bwrap integration test requires bubblewrap",
-)
 async def test_sandboxed_kernel_bridge_routes_remote_git_to_host(tmp_path: Path) -> None:
+    from _bwrap_helpers import require_bwrap
+
+    require_bwrap()
     repo, _remote = _init_git_repo_with_bare_remote(tmp_path)
     seen: list[PermissionRequest] = []
 
@@ -147,7 +145,9 @@ async def test_sandboxed_kernel_bridge_routes_remote_git_to_host(tmp_path: Path)
     try:
         kc.start(timeout=15.0)
     except Exception as exc:  # pragma: no cover
-        pytest.skip(f"bwrap cannot start in this environment: {exc}")
+        from _bwrap_helpers import bwrap_unavailable
+
+        bwrap_unavailable(f"bwrap cannot start in this environment: {exc}")
 
     try:
         r_local = await kc.exec_cell("res = await bash('git status --short')\nprint('LOCAL', res.exit_code)")

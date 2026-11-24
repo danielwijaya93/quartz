@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 
+from quartz.web.attachments import is_safe_inline_mime
 from quartz.web.context import AppContext, json_body
 from quartz.web.files import create_directory, list_directories, list_workspace_files
 
@@ -57,12 +58,14 @@ def create_router(ctx: AppContext) -> APIRouter:
         entry = await asyncio.to_thread(ctx.file_registry.get, file_id)
         if entry is None:
             return JSONResponse({"error": "File not found"}, status_code=404)
-        disposition = "inline" if inline else "attachment"
+        media_type = entry.get("mimeType") or "application/octet-stream"
+        disposition = "inline" if (inline and is_safe_inline_mime(media_type)) else "attachment"
         return FileResponse(
             path=entry["path"],
-            media_type=entry.get("mimeType") or "application/octet-stream",
+            media_type=media_type,
             filename=entry.get("name") or Path(entry["path"]).name,
             content_disposition_type=disposition,
+            headers={"X-Content-Type-Options": "nosniff"},
         )
 
     return router

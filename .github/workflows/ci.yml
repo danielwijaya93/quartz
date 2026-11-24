@@ -21,7 +21,9 @@ jobs:
           enable-cache: true
 
       - name: Install bubblewrap
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: Lint with ruff
         run: uv run ruff check src tests
@@ -33,7 +35,12 @@ jobs:
         run: uv run pyright
 
       - name: Run tests
+        env:
+          QUARTZ_REQUIRE_BWRAP_TESTS: "1"
         run: uv run pytest
+
+      - name: Run web smoke test
+        run: uv run python scripts/web_smoke.py
 
   webapp:
     name: Webapp

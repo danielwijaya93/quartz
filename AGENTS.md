@@ -13,6 +13,7 @@
 - **Real types, zero shortcuts**: Maintain 0 `pyright` (`standard`) and 0 `ruff` errors. Avoid `# type: ignore`, `# noqa`, `@ts-ignore`, or new `dict[str, Any]` boundaries unless narrowly justified.
 - **Explicit errors**: Never silently swallow `except Exception: pass`. Narrow expected cleanup with `contextlib.suppress(...)` or log best-effort failures at `logger.debug(..., exc_info=True)`.
 - **Fail closed on security**: Keep web token auth (`~/.quartz/web-token`), strict `/api/fs/*` path checks, fail-closed OS sandbox (`bwrap`/`sandbox-exec`), host-bridge approvals (`git`/`gh`/`quartz`), and JSON-first HMAC-signed snapshots intact.
+- **Design paths & Red-first tests**: For any new feature or non-trivial change, map **happy paths**, **unhappy paths**, and **edge/corner cases** first, ask the user for decisions on ambiguous behaviors (numbered list with recommended options), then write failing tests for those agreed paths before implementing (Red-Green-Refactor).
 - **Test behavior & comment why**: Test happy paths plus edge/error/cancellation paths. Write comments explaining *why* a non-obvious invariant exists, not *what* the code does.
 - **Fast navigation**: Check `docs/CODEBASE_MAP.md` and `docs/SYMBOL_INDEX.md` before broad searches so you can jump straight to the right file and line.
 
