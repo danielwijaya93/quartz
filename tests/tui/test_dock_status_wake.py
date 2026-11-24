@@ -73,7 +73,7 @@ async def _run_watcher(dock: InteractiveDock, turns: list[str], *, seconds: floa
     task = asyncio.create_task(dock._bg_watcher_loop())
     try:
         await asyncio.wait_for(stop_event.wait(), timeout=seconds)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         stop_event.set()
     await asyncio.wait_for(task, timeout=2.0)
     assert task.done(), "watcher loop did not stop"

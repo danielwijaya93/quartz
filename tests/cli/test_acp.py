@@ -563,7 +563,7 @@ def test_acp_retire_session_aborts_and_waits_before_closing(tmp_path: Path, monk
                         aborted.set()
                     except asyncio.CancelledError:
                         aborted.set()
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         pass
                 await asyncio.sleep(0.2)
                 events.append("prompt-done")
@@ -597,10 +597,10 @@ def test_acp_serve_aborts_active_prompts_on_eof(tmp_path: Path, monkeypatch) -> 
         import asyncio
 
         started.set()
-        try:
+        import contextlib
+
+        with contextlib.suppress(asyncio.CancelledError):
             await asyncio.wait_for(abort_event.wait(), timeout=5)
-        except asyncio.CancelledError:
-            pass
         saw_abort.set()
         raise acp_mod.TurnAborted()
 

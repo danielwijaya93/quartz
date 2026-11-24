@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import queue
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any

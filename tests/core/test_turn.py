@@ -84,7 +84,7 @@ def _script_loop(
     messages: list[dict[str, Any]] | None = None,
     raises: BaseException | None = None,
 ) -> None:
-    def _loop(*args: Any, **kwargs: Any) -> tuple[str, list[dict[str, Any]], int]:
+    async def _loop(*args: Any, **kwargs: Any) -> tuple[str, list[dict[str, Any]], int]:
         assert isinstance(kwargs["observer"], TurnView)  # the port doubles as the view
         if raises is not None:
             raise raises
@@ -93,7 +93,7 @@ def _script_loop(
     monkeypatch.setattr(turn, "agent_loop", _loop)
 
 
-def test_successful_turn_persists_once_and_advances_the_counters(
+async def test_successful_turn_persists_once_and_advances_the_counters(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     interrupts: list[str] = []
@@ -102,7 +102,7 @@ def test_successful_turn_persists_once_and_advances_the_counters(
     updated = [{"role": "assistant", "content": "answer"}]
     _script_loop(monkeypatch, messages=updated, tokens=7)
 
-    outcome = run_interactive_turn(rt, view)
+    outcome = await run_interactive_turn(rt, view)
 
     assert outcome.status is TurnStatus.OK
     assert (outcome.tokens, outcome.error) == (7, None)
@@ -113,7 +113,7 @@ def test_successful_turn_persists_once_and_advances_the_counters(
     assert interrupts == []
 
 
-def test_progress_cadence_is_read_fresh_for_every_turn(
+async def test_progress_cadence_is_read_fresh_for_every_turn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """/settings progress takes effect on the next turn, not only a new session.
@@ -125,7 +125,7 @@ def test_progress_cadence_is_read_fresh_for_every_turn(
     """
     seen: list[int] = []
 
-    def _loop(*args: Any, **kwargs: Any) -> tuple[str, list[dict[str, Any]], int]:
+    async def _loop(*args: Any, **kwargs: Any) -> tuple[str, list[dict[str, Any]], int]:
         seen.append(kwargs["progress_every"])
         return "answer", [], 1
 
@@ -133,24 +133,24 @@ def test_progress_cadence_is_read_fresh_for_every_turn(
     rt = _runtime(tmp_path, [])
     rt.progress_every = 3
 
-    run_interactive_turn(rt, _View())
+    await run_interactive_turn(rt, _View())
     rt.progress_every = 15  # the work phase begins mid-session
-    run_interactive_turn(rt, _View())
+    await run_interactive_turn(rt, _View())
 
     assert seen == [3, 15]
 
 
-def test_streamed_answer_is_not_rendered_twice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_streamed_answer_is_not_rendered_twice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rt = _runtime(tmp_path, [])
     view = _View(streamed=True)
     _script_loop(monkeypatch)
 
-    run_interactive_turn(rt, view)
+    await run_interactive_turn(rt, view)
 
     assert view.calls == ["reset", "finish"]
 
 
-def test_aborted_turn_interrupts_and_persists_before_reporting(
+async def test_aborted_turn_interrupts_and_persists_before_reporting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     interrupts: list[str] = []
@@ -158,7 +158,7 @@ def test_aborted_turn_interrupts_and_persists_before_reporting(
     view = _View()
     _script_loop(monkeypatch, raises=TurnAborted())
 
-    outcome = run_interactive_turn(rt, view)
+    outcome = await run_interactive_turn(rt, view)
 
     assert outcome.status is TurnStatus.ABORTED
     assert interrupts == ["interrupt"]
@@ -167,14 +167,14 @@ def test_aborted_turn_interrupts_and_persists_before_reporting(
     assert view.calls == ["reset", "finish"]
 
 
-def test_interrupted_turn_interrupts_without_persisting(
+async def test_interrupted_turn_interrupts_without_persisting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     interrupts: list[str] = []
     rt = _runtime(tmp_path, interrupts)
     _script_loop(monkeypatch, raises=KeyboardInterrupt())
 
-    outcome = run_interactive_turn(rt, _View())
+    outcome = await run_interactive_turn(rt, _View())
 
     assert outcome.status is TurnStatus.INTERRUPTED
     assert interrupts == ["interrupt"]
@@ -182,14 +182,14 @@ def test_interrupted_turn_interrupts_without_persisting(
     assert rt.turn_count == 0
 
 
-def test_failed_turn_persists_nothing_and_reports_the_error(
+async def test_failed_turn_persists_nothing_and_reports_the_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     interrupts: list[str] = []
     rt = _runtime(tmp_path, interrupts)
     _script_loop(monkeypatch, raises=ValueError("boom"))
 
-    outcome = run_interactive_turn(rt, _View())
+    outcome = await run_interactive_turn(rt, _View())
 
     assert outcome.status is TurnStatus.ERROR
     assert str(outcome.error) == "boom"
@@ -198,7 +198,7 @@ def test_failed_turn_persists_nothing_and_reports_the_error(
     assert interrupts == []
 
 
-def test_turn_records_cell_metadata_for_the_tool_calls_it_produced(
+async def test_turn_records_cell_metadata_for_the_tool_calls_it_produced(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rt = _runtime(tmp_path, [])
@@ -211,14 +211,14 @@ def test_turn_records_cell_metadata_for_the_tool_calls_it_produced(
         },
     ]
 
-    def _loop(*args: Any, **kwargs: Any) -> tuple[str, list[dict[str, Any]], int]:
+    async def _loop(*args: Any, **kwargs: Any) -> tuple[str, list[dict[str, Any]], int]:
         cell = SimpleNamespace(ok=True)
         rt.cell_history.append(("1 + 1", cell, 0.25))
         return "", messages, 3
 
     monkeypatch.setattr(turn, "agent_loop", _loop)
 
-    run_interactive_turn(rt, _View())
+    await run_interactive_turn(rt, _View())
 
     assert rt.active_session.cell_meta == {"tc_1": {"ok": True, "duration_s": 0.25}}
 
@@ -286,12 +286,12 @@ def test_snapshot_without_skips_is_silent(tmp_path: Path) -> None:
     assert caught == []
 
 
-def test_failed_turn_restores_in_memory_messages_on_error(
+async def test_failed_turn_restores_in_memory_messages_on_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rt = _runtime(tmp_path, [])
 
-    def _mutating_failing_loop(*args: Any, **kwargs: Any) -> tuple[str, list[dict[str, Any]], int]:
+    async def _mutating_failing_loop(*args: Any, **kwargs: Any) -> tuple[str, list[dict[str, Any]], int]:
         rt.messages.append(
             {
                 "role": "assistant",
@@ -302,7 +302,7 @@ def test_failed_turn_restores_in_memory_messages_on_error(
         raise RuntimeError("kernel boom")
 
     monkeypatch.setattr(turn, "agent_loop", _mutating_failing_loop)
-    outcome = run_interactive_turn(rt, _View())
+    outcome = await run_interactive_turn(rt, _View())
 
     assert outcome.status is TurnStatus.ERROR
     assert rt.messages == [{"role": "user", "content": "hi"}]
