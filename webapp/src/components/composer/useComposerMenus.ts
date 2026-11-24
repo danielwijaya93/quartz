@@ -1,4 +1,5 @@
 import * as React from "react";
+import { authFetch } from "@/lib/authToken";
 import { apiUrl } from "@/lib/serverUrl";
 import { isProseQuery } from "@/lib/commandText";
 import { detectAtMention, filterMentionFiles, insertAtMention } from "@/lib/fileMentions";
@@ -86,7 +87,7 @@ export function useComposerMenus({
     if (!atOpen || !cwd || filesByCwd[cwd] !== undefined) return;
     let cancelled = false;
     setFilesLoading(true);
-    void fetch(apiUrl(`/api/workspace/files?cwd=${encodeURIComponent(cwd)}`))
+    void authFetch(apiUrl(`/api/workspace/files?cwd=${encodeURIComponent(cwd)}`))
       .then((resp) => (resp.ok ? resp.json() : Promise.reject(new Error("failed"))))
       .then((data: { files?: unknown }) => {
         if (cancelled) return;

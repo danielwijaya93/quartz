@@ -23,6 +23,7 @@ from typing import Any
 
 from quartz.kernel.base import CellResult
 from quartz.kernel.bridge import (
+    BRIDGED_TOOLS,
     PermissionHandler,
     PermissionPolicy,
     PermissionRequest,
@@ -241,7 +242,7 @@ class KernelClient:
         self, params: dict[str, Any], *, cancel_event: threading.Event | None = None
     ) -> dict[str, Any]:
         tool = str(params.get("tool", ""))
-        if tool not in {"git", "gh"}:
+        if tool not in BRIDGED_TOOLS:
             return {"exit_code": 126, "stdout": "", "stderr": f"Unsupported bridge tool: {tool!r}\n"}
         if cancel_event is not None and cancel_event.is_set():
             return {"exit_code": 126, "stdout": "", "stderr": "Host bridge request cancelled.\n"}
@@ -294,22 +295,62 @@ class KernelClient:
             return {"exit_code": 126, "stdout": "", "stderr": "Host bridge request cancelled.\n"}
 
         real_bin = find_real_binary(tool)
-        if not real_bin:
+        if real_bin:
+            cmd = [real_bin, *argv]
+        elif tool == "quartz":
+            cmd = [sys.executable, "-m", "quartz", *argv]
+        else:
             return {"exit_code": 127, "stdout": "", "stderr": f"{tool}: command not found on host\n"}
 
-        proc = subprocess.run(
-            [real_bin, *argv],
+        timeout_s = 900.0 if tool == "quartz" else 290.0
+        proc = subprocess.Popen(
+            cmd,
             cwd=str(target_cwd),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=290.0,
         )
+        deadline = time.monotonic() + timeout_s
+        stdout = ""
+        stderr = ""
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                proc.terminate()
+                try:
+                    stdout, stderr = proc.communicate(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    stdout, stderr = proc.communicate()
+                return {
+                    "exit_code": 126,
+                    "stdout": stdout or "",
+                    "stderr": (stderr or "") + "Host bridge request cancelled.\n",
+                }
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                proc.terminate()
+                try:
+                    stdout, stderr = proc.communicate(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    stdout, stderr = proc.communicate()
+                return {
+                    "exit_code": 124,
+                    "stdout": stdout or "",
+                    "stderr": (stderr or "") + f"Host bridge command timed out after {int(timeout_s)}s.\n",
+                }
+            try:
+                stdout, stderr = proc.communicate(timeout=min(0.1, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+
         return {
-            "exit_code": proc.returncode,
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
+            "exit_code": proc.returncode if proc.returncode is not None else 1,
+            "stdout": stdout or "",
+            "stderr": stderr or "",
         }
 
     def _dispatch_host_request(self, msg: dict[str, Any]) -> None:

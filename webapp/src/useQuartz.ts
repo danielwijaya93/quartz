@@ -53,6 +53,7 @@ export function useQuartz(
   url?: string,
   systemPromptAppend = "",
   onServerMessage?: (message: ServerMessage) => void,
+  onAuthError?: () => void,
 ): QuartzApi {
   const [state, setState] = React.useState<TranscriptState>(initialState);
   const [status, setStatus] = React.useState<ConnectionStatus>("disconnected");
@@ -63,6 +64,8 @@ export function useQuartz(
   const appendRef = React.useRef(systemPromptAppend);
   const onMessageRef = React.useRef(onServerMessage);
   onMessageRef.current = onServerMessage;
+  const onAuthErrorRef = React.useRef(onAuthError);
+  onAuthErrorRef.current = onAuthError;
 
   React.useEffect(() => {
     const target = url ?? resolveSocketUrl(window.location);
@@ -75,12 +78,16 @@ export function useQuartz(
       onMessageRef.current?.(message);
     });
     const offStatus = connection.on("status", setStatus);
+    const offAuthError = connection.on("authError", () => {
+      onAuthErrorRef.current?.();
+    });
 
     connection.connect();
 
     return () => {
       offMessage();
       offStatus();
+      offAuthError();
       connection.close();
       connectionRef.current = null;
     };

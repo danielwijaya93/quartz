@@ -1,4 +1,4 @@
-"""Permission-based host bridge for remote git and gh commands inside the sandbox."""
+"""Permission-based host bridge for remote git, gh, and quartz commands inside the sandbox."""
 
 from __future__ import annotations
 
@@ -14,9 +14,13 @@ from typing import Literal
 
 PermissionDecision = Literal["allow_once", "allow_session", "reject"]
 
+BRIDGED_TOOLS: frozenset[str] = frozenset({"git", "gh", "quartz"})
+
 REMOTE_GIT_SUBCOMMANDS: frozenset[str] = frozenset(
     {"push", "pull", "fetch", "clone", "ls-remote"}
 )
+
+QUARTZ_LOCAL_ONLY_FLAGS: frozenset[str] = frozenset({"-h", "--help", "-V", "--version"})
 
 _GIT_FLAGS_WITH_VALUE: frozenset[str] = frozenset(
     {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--exec-path"}
@@ -80,12 +84,19 @@ def is_remote_git_command(argv: list[str] | tuple[str, ...]) -> bool:
     return sub in REMOTE_GIT_SUBCOMMANDS if sub is not None else False
 
 
+def is_quartz_local_only(argv: list[str] | tuple[str, ...]) -> bool:
+    """True when ``argv`` is a benign local-only quartz invocation (help/version)."""
+    return bool(argv) and all(arg in QUARTZ_LOCAL_ONLY_FLAGS for arg in argv)
+
+
 def classify_bridge_scope(tool: str, argv: list[str] | tuple[str, ...]) -> str:
     """Return the permission scope key for a host-bridged command."""
     if tool == "git":
         return "git_remote"
     if tool == "gh":
         return "gh"
+    if tool == "quartz":
+        return "quartz_worker"
     return f"tool:{tool}"
 
 
@@ -138,6 +149,7 @@ from pathlib import Path
 TOOL = {tool!r}
 SHIM_DIR = Path(__file__).resolve().parent
 REMOTE_GIT = {{"push", "pull", "fetch", "clone", "ls-remote"}}
+LOCAL_QUARTZ_FLAGS = {{"-h", "--help", "-V", "--version"}}
 FLAGS_WITH_VAL = {{"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--exec-path"}}
 
 
@@ -191,6 +203,8 @@ def main():
     sock_path = os.environ.get("QUARTZ_HOST_BRIDGE_SOCK", "")
     if TOOL == "git" and _git_subcommand(argv) not in REMOTE_GIT:
         return _run_local(TOOL, argv)
+    if TOOL == "quartz" and argv and all(a in LOCAL_QUARTZ_FLAGS for a in argv):
+        return _run_local(TOOL, argv)
     if not sock_path:
         return _run_local(TOOL, argv)
 
@@ -199,15 +213,15 @@ def main():
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.connect(sock_path)
             s.sendall(req.encode("utf-8"))
-            chunks = []
+            buf = bytearray()
             while True:
                 data = s.recv(65536)
                 if not data:
                     break
-                chunks.append(data)
+                buf.extend(data)
                 if b"\n" in data:
                     break
-        resp = json.loads(b"".join(chunks).decode("utf-8").splitlines()[0])
+        resp = json.loads(bytes(buf).split(b"\n", 1)[0].decode("utf-8"))
     except Exception as exc:
         sys.stderr.write(f"quartz host bridge error: {{exc}}\n")
         return 126
@@ -227,10 +241,10 @@ if __name__ == "__main__":
 
 
 def ensure_shim_dir(shim_dir: Path, *, python_executable: str | None = None) -> Path:
-    """Create executable ``git`` and ``gh`` shims in ``shim_dir`` and return it."""
+    """Create executable ``git``, ``gh``, and ``quartz`` shims in ``shim_dir`` and return it."""
     shim_dir.mkdir(parents=True, exist_ok=True)
     py = python_executable or sys.executable
-    for tool in ("git", "gh"):
+    for tool in sorted(BRIDGED_TOOLS):
         target = shim_dir / tool
         content = _SHIM_TEMPLATE.format(python=py, tool=tool)
         if not target.exists() or target.read_text(encoding="utf-8") != content:

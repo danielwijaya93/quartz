@@ -15,6 +15,7 @@
  * through by hand.
  */
 
+import http from "node:http";
 import { WebSocketServer } from "ws";
 import {
   COMMANDS,
@@ -32,7 +33,18 @@ const DELAY = FAST ? 1 : Number(process.env.MOCK_DELAY ?? 12);
 
 /* ------------------------------------------------------------------ server */
 
-const server = new WebSocketServer({ port: PORT, host: "127.0.0.1" });
+const httpServer = http.createServer((req, res) => {
+  if (req.method === "GET" && req.url?.split("?")[0] === "/api/auth/status") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ authEnabled: false, authenticated: true }));
+    return;
+  }
+  res.writeHead(404, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ error: "Not found" }));
+});
+httpServer.listen(PORT, "127.0.0.1");
+
+const server = new WebSocketServer({ server: httpServer });
 let sockets = 0;
 
 server.on("connection", (socket) => {

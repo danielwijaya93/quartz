@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from quartz.core.turn import run_interactive_turn
+from quartz.web.auth import extract_request_token, verify_token
 from quartz.web.context import (
     MAX_FRAME_BYTES,
     AppContext,
@@ -25,7 +26,7 @@ from quartz.web.context import (
     is_allowed_origin as _is_allowed_origin,
 )
 from quartz.web.push import PushStore, default_push_path, format_push_payload
-from quartz.web.routes import files, push, sessions, settings, ws
+from quartz.web.routes import auth, files, push, sessions, settings, ws
 from quartz.web.session import BuildRuntime, SessionManager, TurnRunner, WebSession
 from quartz.web.sidebar import SidebarStore, default_sidebar_path
 
@@ -86,6 +87,11 @@ def resolve_static_dir(explicit: Path | None = None) -> Path | None:
     return None
 
 
+_PUBLIC_API_PATHS = frozenset(
+    {"/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/logout"}
+)
+
+
 def create_app(
     *,
     build: BuildRuntime,
@@ -93,6 +99,7 @@ def create_app(
     static_dir: Path | None = None,
     dev: bool = False,
     runner: TurnRunner = run_interactive_turn,
+    auth_token: str | None = None,
 ) -> FastAPI:
     """Build the app around one `WebSession`."""
     manager = SessionManager(build, cwd=cwd, runner=runner)
@@ -156,6 +163,9 @@ def create_app(
                 store_ref = SidebarStore.load(default_sidebar_path())
             return store_ref
 
+    normalized_token = (
+        auth_token.strip() if isinstance(auth_token, str) and auth_token.strip() else None
+    )
     ctx = AppContext(
         manager=manager,
         sidebar=store,
@@ -163,6 +173,7 @@ def create_app(
         file_registry=manager.file_registry,
         static_dir=static_dir,
         dev=dev,
+        auth_token=normalized_token,
     )
     app.state.ctx = ctx
 
@@ -184,8 +195,21 @@ def create_app(
                     {"error": "Content-Type must be application/json"},
                     status_code=415,
                 )
+        if (
+            ctx.auth_token is not None
+            and request.method != "OPTIONS"
+            and request.url.path.startswith("/api/")
+            and request.url.path not in _PUBLIC_API_PATHS
+        ):
+            candidate = extract_request_token(
+                request,
+                allow_query=request.url.path.startswith("/api/files/"),
+            )
+            if not verify_token(candidate, ctx.auth_token):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
         return await call_next(request)
 
+    app.include_router(auth.create_router(ctx))
     app.include_router(push.create_router(ctx))
     app.include_router(settings.create_router(ctx))
     app.include_router(sessions.create_router(ctx))
@@ -197,7 +221,8 @@ def create_app(
         CORSMiddleware,
         allow_origins=allowed,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type"],
+        allow_headers=["Content-Type", "Authorization"],
+        allow_credentials=True,
         max_age=600,
     )
 

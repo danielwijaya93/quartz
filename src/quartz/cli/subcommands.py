@@ -453,6 +453,12 @@ def _handle_web_cli(argv: list[str]) -> None:
         action="store_true",
         help="Trust project-local .quartz/helpers.py and .quartz/mcp.json in --cwd.",
     )
+    parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        default=False,
+        help="Disable persistent web token authentication.",
+    )
     sb_group = parser.add_mutually_exclusive_group()
     sb_group.add_argument(
         "--sandbox",
@@ -484,13 +490,11 @@ def _handle_web_cli(argv: list[str]) -> None:
         _report_port_in_use(args.host, args.port)
         sys.exit(1)
 
-    # There is no auth by design (a local single-user tool), so a reachable bind
-    # address is a real exposure. Say so before starting rather than after.
-    if not _is_loopback(args.host):
+    if args.no_auth and not _is_loopback(args.host):
         console.print(
-            f"[bold yellow]Warning:[/bold yellow] binding {escape(args.host)} exposes Quartz "
-            "to your network, and the web transport has no authentication. "
-            "Use [cyan]--host 127.0.0.1[/cyan] unless you know what is in front of it."
+            f"[bold yellow]Warning:[/bold yellow] binding {escape(args.host)} with --no-auth exposes Quartz "
+            "to your network without authentication. "
+            "Use [cyan]--host 127.0.0.1[/cyan] or omit [cyan]--no-auth[/cyan]."
         )
 
     from quartz.bootstrap import BootstrapOptions, build_runtime
@@ -533,8 +537,18 @@ def _handle_web_cli(argv: list[str]) -> None:
         )
 
     from quartz.web.app import create_app
+    from quartz.web.auth import default_web_token_path, load_or_create_web_token
 
-    app = create_app(build=build, cwd=cwd, dev=args.dev)
+    auth_token: str | None = None
+    if not args.no_auth:
+        token_path = default_web_token_path()
+        auth_token = load_or_create_web_token(token_path)
+        console.print(f"[bold]Web auth token:[/bold] [cyan]{escape(auth_token)}[/cyan]")
+        console.print(f"Token file: [dim]{escape(str(token_path))}[/dim]")
+    else:
+        console.print("[yellow]Web auth disabled (--no-auth).[/yellow]")
+
+    app = create_app(build=build, cwd=cwd, dev=args.dev, auth_token=auth_token)
 
     if args.open:
         _open_browser_when_ready(args.host, args.port)
