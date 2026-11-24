@@ -20,7 +20,7 @@ from quartz.core.events import NO_OBSERVER, TurnObserver
 from quartz.core.images import prune_old_images
 from quartz.core.progress import ProgressCheckpointer, announced_to_user
 from quartz.core.session import repair_dangling_tool_calls
-from quartz.errors import ContextOverflowError
+from quartz.errors import AuthenticationError, ContextOverflowError, ProviderError, RateLimitError
 from quartz.kernel.base import CellExecutor, CellResult, Kernel
 from quartz.providers.base import (
     CompletionResult,
@@ -236,6 +236,57 @@ async def _wait_preempt(
         await asyncio.sleep(0.02)
 
 
+_TRANSIENT_HTTP_STATUSES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+_MAX_TRANSIENT_RETRIES = 3
+_RETRY_BASE_DELAY_S = 1.0
+_MAX_RETRY_AFTER_S = 30.0
+
+
+def _is_transient_provider_error(exc: BaseException) -> bool:
+    if isinstance(exc, RateLimitError):
+        return True
+    if isinstance(exc, (AuthenticationError, ContextOverflowError)):
+        return False
+    return isinstance(exc, ProviderError) and exc.status_code in _TRANSIENT_HTTP_STATUSES
+
+
+def _retry_delay_seconds(exc: ProviderError, attempt: int) -> float:
+    if isinstance(exc, RateLimitError) and exc.retry_after is not None and exc.retry_after >= 0:
+        return min(float(exc.retry_after), _MAX_RETRY_AFTER_S)
+    return min(_RETRY_BASE_DELAY_S * (2**attempt), _MAX_RETRY_AFTER_S)
+
+
+async def _sleep_interruptible(
+    delay: float,
+    abort_event: asyncio.Event | None,
+    steering_queue: asyncio.Queue[str] | None,
+) -> str | None:
+    """Sleep for `delay` seconds unless aborted or steered first."""
+    if abort_event is None and steering_queue is None:
+        await asyncio.sleep(delay)
+        return None
+    if abort_event is not None and abort_event.is_set():
+        return "abort"
+    if steering_queue is not None and not steering_queue.empty():
+        return "steer"
+    sleep_task = asyncio.create_task(asyncio.sleep(delay))
+    preempt_task = asyncio.create_task(_wait_preempt(abort_event, steering_queue))
+    try:
+        done, _ = await asyncio.wait(
+            {sleep_task, preempt_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if preempt_task in done:
+            return preempt_task.result()
+        return None
+    finally:
+        for task in (sleep_task, preempt_task):
+            if not task.done():
+                task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+
+
 async def _call_model(
     client: LLMProvider,
     model: str,
@@ -247,7 +298,58 @@ async def _call_model(
     abort_event: asyncio.Event | None = None,
     steering_queue: asyncio.Queue[str] | None = None,
 ) -> tuple[dict[str, Any], Usage | None]:
-    """Async provider call (streaming or non-streaming)."""
+    """Async provider call with bounded exponential backoff on transient 429/5xx errors."""
+    for attempt in range(_MAX_TRANSIENT_RETRIES + 1):
+        emitted = [False]
+        try:
+            return await _call_model_once(
+                client,
+                model,
+                full_messages,
+                stream=stream,
+                observer=observer,
+                effort=effort,
+                abort_event=abort_event,
+                steering_queue=steering_queue,
+                emitted=emitted,
+            )
+        except ProviderError as exc:
+            # Never retry once tokens, thinking, or tool calls have already been emitted,
+            # or once the retry budget is exhausted.
+            if emitted[0] or attempt >= _MAX_TRANSIENT_RETRIES or not _is_transient_provider_error(exc):
+                raise
+            delay = _retry_delay_seconds(exc, attempt)
+            status = exc.status_code
+            label = (
+                f"Rate limited; retrying in {delay:g}s..."
+                if status == 429
+                else f"Provider error ({status}); retrying in {delay:g}s..."
+            )
+            observer.on_status(label)
+            try:
+                reason = await _sleep_interruptible(delay, abort_event, steering_queue)
+            finally:
+                observer.on_status(None)
+            if reason == "abort":
+                raise TurnAborted() from None
+            if reason == "steer":
+                return {"role": "assistant", "content": None}, None
+    raise AssertionError("unreachable")
+
+
+async def _call_model_once(
+    client: LLMProvider,
+    model: str,
+    full_messages: list[dict[str, Any]],
+    *,
+    stream: bool,
+    observer: TurnObserver = NO_OBSERVER,
+    effort: str | None = None,
+    abort_event: asyncio.Event | None = None,
+    steering_queue: asyncio.Queue[str] | None = None,
+    emitted: list[bool] | None = None,
+) -> tuple[dict[str, Any], Usage | None]:
+    """Execute a single async provider call (streaming or non-streaming)."""
     if abort_event is not None and abort_event.is_set():
         raise TurnAborted()
 
@@ -343,16 +445,22 @@ async def _call_model(
                     usage = event.usage
                 elif isinstance(event, ThinkingDelta):
                     if event.text:
+                        if emitted is not None:
+                            emitted[0] = True
                         thinking_parts.append(event.text)
                         observer.on_thinking_delta(event.text)
                 elif isinstance(event, TextDelta):
                     if event.text:
+                        if emitted is not None:
+                            emitted[0] = True
                         if not status_cleared:
                             observer.on_status(None)
                             status_cleared = True
                         content_parts.append(event.text)
                         observer.on_text_delta(event.text)
                 elif isinstance(event, ToolCallDelta):
+                    if emitted is not None:
+                        emitted[0] = True
                     entry = tool_calls_acc.setdefault(
                         event.index,
                         {"id": "", "name": "", "arguments": "", "meta": {}},

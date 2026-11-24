@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import threading
@@ -10,10 +11,38 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-__all__ = ["AttachedFileRegistry", "default_attachments_path"]
+__all__ = [
+    "SAFE_INLINE_MIME_TYPES",
+    "AttachedFileRegistry",
+    "default_attachments_path",
+    "is_safe_inline_mime",
+]
+
+logger = logging.getLogger(__name__)
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
 _MAX_ENTRIES = 500
+
+# Only passive media/document formats may render inline; HTML/SVG/JS must always
+# download as attachments to prevent stored XSS under the Quartz origin.
+SAFE_INLINE_MIME_TYPES: frozenset[str] = frozenset(
+    {
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+        "image/gif",
+        "application/pdf",
+        "text/plain",
+    }
+)
+
+
+def is_safe_inline_mime(mime_type: str | None) -> bool:
+    """Return True only when `mime_type` is safe to serve with Content-Disposition: inline."""
+    if not mime_type:
+        return False
+    essence = mime_type.split(";", 1)[0].strip().lower()
+    return essence in SAFE_INLINE_MIME_TYPES
 
 
 def default_attachments_path() -> Path:
@@ -54,7 +83,7 @@ class AttachedFileRegistry:
             tmp.write_text(json.dumps(self._entries, ensure_ascii=False), encoding="utf-8")
             tmp.replace(self._path)
         except OSError:
-            pass
+            logger.debug("Failed to persist attached file registry at %s", self._path, exc_info=True)
 
     def register(self, file_meta: dict[str, Any]) -> dict[str, Any]:
         """Register one attached file and return its wire-safe descriptor."""

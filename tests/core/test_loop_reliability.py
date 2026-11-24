@@ -265,3 +265,297 @@ async def test_agent_loop_rolls_back_assistant_tool_call_on_exec_error() -> None
         await agent_loop(_Provider(), "test-model", "sys", messages, _FailingKernel(), stream=False)  # type: ignore[arg-type]
 
     assert messages == [{"role": "user", "content": "Run 1+1"}]
+
+
+class _IdleKernel:
+    def drain_events(self) -> list[dict]:
+        return []
+
+    def interrupt(self) -> None:
+        pass
+
+
+async def test_agent_loop_retries_transient_503_before_output_and_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import quartz.core.loop as loop_mod
+    from quartz.errors import ProviderError
+
+    sleeps: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", _fake_sleep)
+
+    attempts = 0
+
+    class _FlakyStreamProvider:
+        async def stream(self, **kwargs):
+            nonlocal attempts
+            del kwargs
+            attempts += 1
+            if attempts <= 2:
+                raise ProviderError("service unavailable", status_code=503)
+            return _FakeStream([TextDelta(text="recovered"), UsageEvent(Usage(input_tokens=10, output_tokens=5))])
+
+    obs = RecordingObserver()
+    messages: list[dict] = [{"role": "user", "content": "hello"}]
+    answer, _, _ = await agent_loop(
+        _FlakyStreamProvider(),  # type: ignore[arg-type]
+        "test-model",
+        "sys",
+        messages,
+        _IdleKernel(),  # type: ignore[arg-type]
+        observer=obs,
+    )
+
+    assert answer == "recovered"
+    assert attempts == 3
+    assert sleeps == [1.0, 2.0]
+    assert any(s and "retrying" in s.lower() for s in obs.statuses)
+
+
+async def test_agent_loop_retries_429_respects_capped_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import quartz.core.loop as loop_mod
+    from quartz.errors import RateLimitError
+
+    sleeps: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", _fake_sleep)
+
+    attempts = 0
+
+    class _RateLimitedProvider:
+        async def stream(self, **kwargs):
+            nonlocal attempts
+            del kwargs
+            attempts += 1
+            if attempts == 1:
+                raise RateLimitError("too many requests", status_code=429, retry_after=120.0)
+            if attempts == 2:
+                raise RateLimitError("too many requests", status_code=429, retry_after=2.5)
+            return _FakeStream([TextDelta(text="ok")])
+
+    messages: list[dict] = [{"role": "user", "content": "hello"}]
+    answer, _, _ = await agent_loop(
+        _RateLimitedProvider(),  # type: ignore[arg-type]
+        "test-model",
+        "sys",
+        messages,
+        _IdleKernel(),  # type: ignore[arg-type]
+    )
+
+    assert answer == "ok"
+    assert attempts == 3
+    assert sleeps == [30.0, 2.5]
+
+
+async def test_agent_loop_stops_after_max_transient_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import quartz.core.loop as loop_mod
+    from quartz.errors import ProviderError
+
+    sleeps: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", _fake_sleep)
+
+    attempts = 0
+
+    class _Always503Provider:
+        async def complete(self, **kwargs):
+            nonlocal attempts
+            del kwargs
+            attempts += 1
+            raise ProviderError("overloaded", status_code=503)
+
+    messages: list[dict] = [{"role": "user", "content": "hello"}]
+    with pytest.raises(ProviderError, match="overloaded"):
+        await agent_loop(
+            _Always503Provider(),  # type: ignore[arg-type]
+            "test-model",
+            "sys",
+            messages,
+            _IdleKernel(),  # type: ignore[arg-type]
+            stream=False,
+        )
+
+    assert attempts == 4  # 1 initial + 3 retries
+    assert sleeps == [1.0, 2.0, 4.0]
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        # Bad request, auth failure, forbidden, not found must fail immediately
+        pytest.param("400", id="http-400"),
+        pytest.param("401", id="http-401"),
+        pytest.param("403", id="http-403"),
+        pytest.param("404", id="http-404"),
+    ],
+)
+async def test_agent_loop_never_retries_non_retryable_errors(
+    exc: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import quartz.core.loop as loop_mod
+    from quartz.errors import AuthenticationError, ProviderError
+
+    sleeps: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", _fake_sleep)
+
+    code = int(exc)
+    err = (
+        AuthenticationError("auth failed", status_code=code)
+        if code in (401, 403)
+        else ProviderError("client error", status_code=code)
+    )
+    attempts = 0
+
+    class _FailProvider:
+        async def stream(self, **kwargs):
+            nonlocal attempts
+            del kwargs
+            attempts += 1
+            raise err
+
+    messages: list[dict] = [{"role": "user", "content": "hello"}]
+    with pytest.raises(ProviderError):
+        await agent_loop(
+            _FailProvider(),  # type: ignore[arg-type]
+            "test-model",
+            "sys",
+            messages,
+            _IdleKernel(),  # type: ignore[arg-type]
+        )
+
+    assert attempts == 1
+    assert sleeps == []
+
+
+async def test_agent_loop_never_retries_after_partial_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import quartz.core.loop as loop_mod
+    from quartz.errors import ProviderError
+
+    sleeps: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", _fake_sleep)
+
+    attempts = 0
+
+    class _PartialErrorStream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def __aiter__(self):
+            yield TextDelta(text="already sent ")
+            raise ProviderError("mid-stream drop", status_code=502)
+
+        async def aclose(self) -> None:
+            return None
+
+    class _Provider:
+        async def stream(self, **kwargs):
+            nonlocal attempts
+            del kwargs
+            attempts += 1
+            return _PartialErrorStream()
+
+    messages: list[dict] = [{"role": "user", "content": "hello"}]
+    with pytest.raises(ProviderError, match="mid-stream drop"):
+        await agent_loop(
+            _Provider(),  # type: ignore[arg-type]
+            "test-model",
+            "sys",
+            messages,
+            _IdleKernel(),  # type: ignore[arg-type]
+        )
+
+    assert attempts == 1
+    assert sleeps == []
+
+
+async def test_agent_loop_abort_cancels_retry_backoff_immediately() -> None:
+    from quartz.errors import RateLimitError
+
+    abort_event = asyncio.Event()
+    attempts = 0
+
+    class _RateLimitedOnce:
+        async def stream(self, **kwargs):
+            nonlocal attempts
+            del kwargs
+            attempts += 1
+            asyncio.get_running_loop().call_later(0.05, abort_event.set)
+            raise RateLimitError("slow down", status_code=429, retry_after=30.0)
+
+    messages: list[dict] = [{"role": "user", "content": "hello"}]
+    t0 = asyncio.get_running_loop().time()
+    with pytest.raises(TurnAborted):
+        await agent_loop(
+            _RateLimitedOnce(),  # type: ignore[arg-type]
+            "test-model",
+            "sys",
+            messages,
+            _IdleKernel(),  # type: ignore[arg-type]
+            abort_event=abort_event,
+        )
+    elapsed = asyncio.get_running_loop().time() - t0
+    assert attempts == 1
+    assert elapsed < 1.0
+
+
+async def test_agent_loop_steering_preempts_retry_backoff_immediately() -> None:
+    from quartz.errors import RateLimitError
+
+    sq: asyncio.Queue[str] = asyncio.Queue()
+    attempts = 0
+    seen_messages: list[list[dict]] = []
+
+    class _RateLimitedThenOk:
+        async def stream(self, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            seen_messages.append([dict(m) for m in kwargs["messages"]])
+            if attempts == 1:
+                asyncio.get_running_loop().call_later(0.05, sq.put_nowait, "change plan")
+                raise RateLimitError("slow down", status_code=429, retry_after=30.0)
+            return _FakeStream([TextDelta(text="steered answer")])
+
+    messages: list[dict] = [{"role": "user", "content": "hello"}]
+    t0 = asyncio.get_running_loop().time()
+    answer, _, _ = await agent_loop(
+        _RateLimitedThenOk(),  # type: ignore[arg-type]
+        "test-model",
+        "sys",
+        messages,
+        _IdleKernel(),  # type: ignore[arg-type]
+        steering_queue=sq,
+    )
+    elapsed = asyncio.get_running_loop().time() - t0
+    assert answer == "steered answer"
+    assert attempts == 2
+    assert elapsed < 1.0
+    assert any(m.get("content") == "change plan" for m in seen_messages[1])
+

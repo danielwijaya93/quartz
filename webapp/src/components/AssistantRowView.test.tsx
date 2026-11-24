@@ -8,7 +8,7 @@
  * Plus the form round-trip: a submit reaches `onPrompt`, and typing in a field
  * reaches `onFormState` so the value survives a re-render.
  */
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { AssistantRowView } from "./rows/AssistantRowView";
 import type { AssistantRow } from "@/lib/transcript";
@@ -38,6 +38,12 @@ function renderRow(options: {
 }
 
 describe("AssistantRowView", () => {
+  // Preload the React.lazy OpenUISurface chunk once before assertions run so
+  // cold Vite transforms under parallel worker load cannot trip waitFor timeouts.
+  beforeAll(async () => {
+    await import("./OpenUISurface");
+  }, 30_000);
+
   it("draws openui-lang as a surface when Rich UI is on", async () => {
     renderRow({ text: OPENUI_TURN_LANG, richUi: true });
 

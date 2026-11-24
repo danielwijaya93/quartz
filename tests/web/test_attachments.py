@@ -205,10 +205,11 @@ def test_web_app_serves_attached_file_and_replays_cell_files(
     assert "attachment" in resp.headers.get("content-disposition", "")
     assert "deck.pptx" in resp.headers.get("content-disposition", "")
 
-    # Inline mode
+    # Non-allowlisted MIME (pptx) must stay attachment even with ?inline=1
     resp_inline = client.get(f"{file_desc['url']}?inline=1")
     assert resp_inline.status_code == 200
-    assert "inline" in resp_inline.headers.get("content-disposition", "")
+    assert "attachment" in resp_inline.headers.get("content-disposition", "")
+    assert resp_inline.headers.get("x-content-type-options") == "nosniff"
 
     # Unknown id -> 404
     assert client.get("/api/files/nonexistent123").status_code == 404
@@ -218,3 +219,61 @@ def test_web_app_serves_attached_file_and_replays_cell_files(
         ws2.send_json({"type": "hello", "clientVersion": 1})
         replayed = ws2.receive_json()
         assert replayed["cellFiles"]["tc-1"][0]["id"] == file_desc["id"]
+
+
+def test_web_app_inline_mime_allowlist_and_nosniff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("QUARTZ_WEB_FILES", str(tmp_path / "web-files.json"))
+    registry = AttachedFileRegistry()
+    app = create_app(build=lambda _sid, _cwd=None: (None, False), cwd=tmp_path)  # type: ignore[arg-type]
+    client = TestClient(app)
+
+    cases = [
+        ("photo.png", "image/png", b"png-bytes", "inline"),
+        ("doc.pdf", "application/pdf", b"%PDF-1.4", "inline"),
+        ("notes.txt", "text/plain; charset=utf-8", b"hello", "inline"),
+        ("evil.html", "text/html", b"<script>alert(1)</script>", "attachment"),
+        ("evil.svg", "image/svg+xml", b"<svg onload=alert(1)/>", "attachment"),
+        ("script.js", "application/javascript", b"alert(1)", "attachment"),
+    ]
+    registered = []
+    for filename, mime, data, expected_disp in cases:
+        p = tmp_path / filename
+        p.write_bytes(data)
+        desc = registry.register({"path": str(p), "name": filename, "mime_type": mime, "size": len(data)})
+        registered.append((filename, mime, desc, expected_disp))
+
+    for filename, mime, desc, expected_disp in registered:
+        # Default download is always attachment with nosniff
+        r_dl = client.get(desc["url"])
+        assert r_dl.status_code == 200
+        assert "attachment" in r_dl.headers.get("content-disposition", "")
+        assert r_dl.headers.get("x-content-type-options") == "nosniff"
+
+        # Inline query only serves safe allowlisted MIME types inline
+        r_inline = client.get(f"{desc['url']}?inline=1")
+        assert r_inline.status_code == 200
+        assert expected_disp in r_inline.headers.get("content-disposition", ""), (filename, mime)
+        assert r_inline.headers.get("x-content-type-options") == "nosniff"
+
+
+def test_attachment_registry_logs_save_oserror_at_debug(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import logging
+
+    reg = AttachedFileRegistry(path=tmp_path / "web-files.json")
+    sample = tmp_path / "a.txt"
+    sample.write_text("hi", encoding="utf-8")
+
+    def _fail_write(*_args: Any, **_kwargs: Any) -> int:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_text", _fail_write)
+    with caplog.at_level(logging.DEBUG, logger="quartz.web.attachments"):
+        desc = reg.register({"path": str(sample), "name": "a.txt", "mime_type": "text/plain", "size": 2})
+
+    assert desc["id"]
+    assert any("Failed to persist attached file registry" in rec.message for rec in caplog.records)
+

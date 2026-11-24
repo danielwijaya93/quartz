@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -119,11 +117,10 @@ async def test_kernel_client_host_mcp_roundtrip(tmp_path: Path, monkeypatch: pyt
         kc.close()
 
 
-@pytest.mark.skipif(
-    not sys.platform.startswith("linux") or shutil.which("bwrap") is None,
-    reason="Linux bwrap integration test requires bubblewrap",
-)
 async def test_sandboxed_kernel_uses_host_mcp_proxy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from _bwrap_helpers import require_bwrap
+
+    require_bwrap()
     mcp_cfg = tmp_path / "mcp.json"
     mcp_cfg.write_text(
         json.dumps({"mcpServers": {"web": {"url": "https://example.com/mcp"}}}),
@@ -135,7 +132,9 @@ async def test_sandboxed_kernel_uses_host_mcp_proxy(tmp_path: Path, monkeypatch:
     try:
         kc.start(timeout=15.0)
     except Exception as exc:  # pragma: no cover
-        pytest.skip(f"bwrap cannot start in this environment: {exc}")
+        from _bwrap_helpers import bwrap_unavailable
+
+        bwrap_unavailable(f"bwrap cannot start in this environment: {exc}")
 
     try:
         res = await kc.exec_cell("print(type(mcp).__name__, mcp.list_servers())")

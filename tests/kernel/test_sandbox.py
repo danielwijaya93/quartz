@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
-import sys
 from pathlib import Path
 
 import pytest
@@ -141,11 +139,10 @@ def test_resolve_sandbox_enabled_precedence(monkeypatch: pytest.MonkeyPatch) -> 
     assert bootstrap._resolve_sandbox_enabled(True, True) is True
 
 
-@pytest.mark.skipif(
-    not sys.platform.startswith("linux") or shutil.which("bwrap") is None,
-    reason="Linux bwrap integration test requires bubblewrap",
-)
 async def test_kernel_client_bwrap_isolates_filesystem(tmp_path: Path) -> None:
+    from _bwrap_helpers import require_bwrap
+
+    require_bwrap()
     workspace = tmp_path / "workspace"
     (workspace / ".git").mkdir(parents=True)
     git_cfg = workspace / ".git" / "config"
@@ -159,7 +156,9 @@ async def test_kernel_client_bwrap_isolates_filesystem(tmp_path: Path) -> None:
     try:
         kernel.start(timeout=15.0)
     except Exception as exc:  # pragma: no cover - e.g. restricted userns in container
-        pytest.skip(f"bwrap cannot start in this environment: {exc}")
+        from _bwrap_helpers import bwrap_unavailable
+
+        bwrap_unavailable(f"bwrap cannot start in this environment: {exc}")
 
     try:
         res_ok = await kernel.exec_cell(
@@ -188,11 +187,10 @@ async def test_kernel_client_bwrap_isolates_filesystem(tmp_path: Path) -> None:
         kernel.close()
 
 
-@pytest.mark.skipif(
-    not sys.platform.startswith("linux") or shutil.which("bwrap") is None,
-    reason="Linux bwrap integration test requires bubblewrap",
-)
 async def test_kernel_client_bwrap_close_kills_stuck_worker_and_children(tmp_path: Path) -> None:
+    from _bwrap_helpers import require_bwrap
+
+    require_bwrap()
     import asyncio
     import contextlib
     import fcntl
@@ -205,7 +203,9 @@ async def test_kernel_client_bwrap_close_kills_stuck_worker_and_children(tmp_pat
     try:
         kernel.start(timeout=15.0)
     except Exception as exc:  # pragma: no cover - e.g. restricted userns in container
-        pytest.skip(f"bwrap cannot start in this environment: {exc}")
+        from _bwrap_helpers import bwrap_unavailable
+
+        bwrap_unavailable(f"bwrap cannot start in this environment: {exc}")
 
     # Spawn a subprocess holding an flock while the worker itself blocks in a
     # synchronous loop so it cannot process a graceful shutdown message.
@@ -262,3 +262,15 @@ async def test_kernel_client_bwrap_close_kills_stuck_worker_and_children(tmp_pat
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await stuck_task
         kernel.close()
+
+
+def test_bwrap_unavailable_fails_when_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    from _bwrap_helpers import bwrap_unavailable
+
+    monkeypatch.delenv("QUARTZ_REQUIRE_BWRAP_TESTS", raising=False)
+    with pytest.raises(pytest.skip.Exception, match="missing bwrap"):
+        bwrap_unavailable("missing bwrap")
+
+    monkeypatch.setenv("QUARTZ_REQUIRE_BWRAP_TESTS", "1")
+    with pytest.raises(pytest.fail.Exception, match="QUARTZ_REQUIRE_BWRAP_TESTS=1"):
+        bwrap_unavailable("missing bwrap")
