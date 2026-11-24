@@ -258,8 +258,14 @@ class _MCPToolProxy:
         self._server = server
         self._tool = tool
 
-    def __call__(self, **kwargs: Any) -> Any:
-        return self._manager.call_tool(self._server, self._tool, arguments=kwargs)
+    def __call__(self, args: dict[str, Any] | None = None, /, **kwargs: Any) -> Any:
+        if args is not None:
+            if not isinstance(args, dict):
+                raise TypeError(f"Expected dict arguments or keyword args, got {type(args).__name__}")
+            merged = {**args, **kwargs}
+        else:
+            merged = kwargs
+        return self._manager.call_tool(self._server, self._tool, arguments=merged)
 
     def __repr__(self) -> str:
         return f"<MCPTool {self._server}.{self._tool}>"
@@ -426,12 +432,30 @@ class MCPManager:
             save_mcp_tool_cache(cache_updates)
         return [item for batch in batches for item in batch]
 
-    async def list_tools(self, server: str | None = None) -> list[dict[str, Any]]:
+    async def list_tools(
+        self, server: str | None = None, *, refresh: bool = False
+    ) -> list[dict[str, Any]]:
         """List tools from one MCP server or all configured servers."""
         target_servers = [server] if server is not None else self.list_servers()
+        if not refresh:
+            cache = load_mcp_tool_cache()
+            if all(srv in cache for srv in target_servers):
+                return [
+                    {
+                        "server": srv,
+                        "name": t["name"],
+                        "description": t.get("description", ""),
+                        "args": t.get("args", []),
+                    }
+                    for srv in target_servers
+                    for t in cache.get(srv, [])
+                    if isinstance(t, dict) and t.get("name")
+                ]
         return await self._list_tools_for(target_servers)
 
-    async def search_tools(self, query: str, *, refresh: bool = False) -> list[dict[str, Any]]:
+    async def search_tools(
+        self, query: str = "", limit: int | None = None, *, refresh: bool = False
+    ) -> list[dict[str, Any]]:
         """Search MCP tools by keyword across configured servers (cache-first unless refresh=True)."""
         terms = [t.lower() for t in query.split() if t.strip()]
         configured = self.list_servers()
@@ -455,14 +479,14 @@ class MCPManager:
                 if isinstance(t, dict) and t.get("name")
             ]
         if not terms:
-            return all_tools
+            return all_tools[:limit] if limit is not None else all_tools
         matched: list[dict[str, Any]] = []
         for tool in all_tools:
             args_str = " ".join(str(a) for a in tool.get("args", []))
             haystack = f"{tool['server']} {tool['name']} {tool['description']} {args_str}".lower()
             if all(t in haystack for t in terms):
                 matched.append(tool)
-        return matched
+        return matched[:limit] if limit is not None else matched
 
     async def _drop_session(self, server: str, session: Any | None = None) -> None:
         """Tear down a server session under its lock (skipped if already replaced by `session`'s successor)."""

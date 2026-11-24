@@ -124,9 +124,20 @@ def _require_dir(path: str) -> Path:
     return p
 
 
-def ls(path: str = ".") -> list[str]:
+def _resolve_with_cwd(path: str, cwd: str | Path | None) -> str:
+    """Resolve a relative path against `cwd` when provided."""
+    if cwd is None:
+        return path
+    expanded = Path(path).expanduser()
+    if expanded.is_absolute():
+        return str(expanded)
+    return str(Path(cwd).expanduser() / expanded)
+
+
+def ls(path: str = ".", *, cwd: str | Path | None = None) -> list[str]:
     """List sorted entries in a directory (trailing `/` for directories)."""
-    p = _require_dir(path)
+    target = _resolve_with_cwd(path, cwd)
+    p = _require_dir(target)
     try:
         items = list(p.iterdir())
     except PermissionError as exc:
@@ -135,12 +146,14 @@ def ls(path: str = ".") -> list[str]:
     return [f"{item.name}/" if item.is_dir() else item.name for item in items]
 
 
-def find(pattern: str = "*", path: str = ".", limit: int = 200) -> list[str]:
+def find(
+    pattern: str = "*", path: str = ".", limit: int = 200, *, cwd: str | Path | None = None
+) -> list[str]:
     """Find files matching a glob pattern, skipping .git/.venv/node_modules.
 
     Symlinked directories are not followed; unreadable directories are skipped.
     """
-    root = _require_dir(path).resolve()
+    root = _require_dir(_resolve_with_cwd(path, cwd)).resolve()
     hits: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = sorted(d for d in dirnames if d not in _IGNORE_DIRS)
@@ -212,9 +225,17 @@ def _rg_python(pattern: str, path: str, glob: str | None, max_hits: int, fixed: 
     return "\n".join(hits) if hits else "(no matches)"
 
 
-def rg(pattern: str, path: str = ".", glob: str | None = None, max_hits: int = 100, fixed: bool = False) -> str:
+def rg(
+    pattern: str,
+    path: str = ".",
+    glob: str | None = None,
+    max_hits: int = 100,
+    fixed: bool = False,
+    *,
+    cwd: str | Path | None = None,
+) -> str:
     """Search files for a regex pattern (or literal string if fixed=True) and return `file:line:text` matches."""
-    expanded_path = str(Path(path).expanduser())
+    expanded_path = str(Path(_resolve_with_cwd(path, cwd)).expanduser())
     if not Path(expanded_path).exists():
         return f"Path not found: {path}"
     if shutil.which("rg"):
@@ -275,6 +296,68 @@ def _atomic_write(path: Path, content: str, newline: str | None = None) -> None:
         raise
 
 
+def _find_unique_rstrip_span(text: str, old: str) -> str | None:
+    """Return the exact slice in `text` matching `old` after rstrip() per line, if unique."""
+    if not old:
+        return None
+    old_lines = [line.rstrip() for line in old.splitlines()]
+    if not old_lines:
+        return None
+    raw_lines = text.splitlines(keepends=True)
+    stripped_lines = [line.rstrip("\r\n").rstrip() for line in raw_lines]
+    n = len(old_lines)
+    matches: list[int] = [
+        i for i in range(len(stripped_lines) - n + 1) if stripped_lines[i : i + n] == old_lines
+    ]
+    if len(matches) != 1:
+        return None
+    start_idx = matches[0]
+    span = "".join(raw_lines[start_idx : start_idx + n])
+    # Preserve whether `old` ended with a newline so surrounding line breaks stay intact.
+    if not old.endswith(("\n", "\r")) and span.endswith(("\r\n", "\n")):
+        span = span.rstrip("\r\n")
+    return span
+
+
+def _match_line_numbers(text: str, old: str, limit: int = 8) -> list[int]:
+    """Return 1-based line numbers where `old` begins in `text`."""
+    if not old:
+        return []
+    lines: list[int] = []
+    pos = 0
+    while len(lines) < limit:
+        idx = text.find(old, pos)
+        if idx == -1:
+            break
+        lines.append(text.count("\n", 0, idx) + 1)
+        pos = idx + len(old)
+    return lines
+
+
+def _closest_match_hint(text: str, old: str) -> str:
+    """Return a concise closest-match snippet with line number for failed `edit()` calls."""
+    text_lines = text.splitlines()
+    old_lines = old.splitlines()
+    if not text_lines or not old_lines:
+        return ""
+    window = min(len(old_lines), len(text_lines))
+    best_ratio = 0.0
+    best_idx = 0
+    old_joined = "\n".join(old_lines)
+    # Cap scan on huge files to keep failure diagnostics instantaneous.
+    max_start = min(len(text_lines) - window + 1, 2000)
+    for i in range(max_start):
+        cand = "\n".join(text_lines[i : i + window])
+        ratio = difflib.SequenceMatcher(None, old_joined, cand).quick_ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_idx = i
+    if best_ratio < 0.45:
+        return ""
+    snippet = "\n".join(f"{best_idx + j + 1}: {text_lines[best_idx + j]}" for j in range(min(window, 6)))
+    return f". Closest match around line {best_idx + 1}:\n{snippet}"
+
+
 def edit(path: str, old: str, new: str) -> str:
     """Replace an exact unique occurrence of `old` with `new` in `path` and return a unified diff."""
     p = Path(path).expanduser()
@@ -299,9 +382,18 @@ def edit(path: str, old: str, new: str) -> str:
 
     count = text.count(old)
     if count == 0:
-        raise ValueError(f"Target text not found in {path}")
+        # Fallback: match ignoring trailing whitespace per line only when unique.
+        matched_span = _find_unique_rstrip_span(text, old)
+        if matched_span is not None:
+            old = matched_span
+            count = 1
+        else:
+            hint = _closest_match_hint(text, old)
+            raise ValueError(f"Target text not found in {path}{hint}")
     if count > 1:
-        raise ValueError(f"Target text matched {count} times in {path}; provide more context")
+        lines = _match_line_numbers(text, old)
+        line_info = f" (lines {', '.join(map(str, lines))})" if lines else ""
+        raise ValueError(f"Target text matched {count} times in {path}{line_info}; provide more context")
     updated = text.replace(old, new, 1)
     _atomic_write(p, updated, newline="")
     diff_lines = list(

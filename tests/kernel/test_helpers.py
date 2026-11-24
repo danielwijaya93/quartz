@@ -782,3 +782,38 @@ def test_worker_output_limits_and_prompt_rules() -> None:
     assert MAX_REPR_CHARS == 24_000
     assert "Keep tool outputs lean" in PROMPT_RULES
     assert "pytest -q --tb=short" in PROMPT_RULES
+
+
+def test_edit_trailing_whitespace_fallback_and_diagnostics(tmp_path: Path) -> None:
+    from quartz.kernel.helpers import edit
+
+    f = tmp_path / "sample.py"
+    f.write_text("def alpha():  \n    return 1\n\ndef beta():\n    return 2\n", encoding="utf-8")
+
+    # Trailing-whitespace-only mismatch succeeds when unique
+    out = edit(str(f), "def alpha():\n    return 1", "def alpha():\n    return 10")
+    assert "return 10" in f.read_text(encoding="utf-8")
+    assert "Updated" in out
+
+    # Missing target includes closest line-numbered snippet
+    with pytest.raises(ValueError, match=r"Closest match around line"):
+        edit(str(f), "def beta():\n    return 999", "def beta():\n    return 3")
+
+    # Ambiguous target includes matching line numbers
+    f2 = tmp_path / "dup.py"
+    f2.write_text("x = 1\ny = 2\nx = 1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"lines 1, 3"):
+        edit(str(f2), "x = 1", "x = 2")
+
+
+def test_ls_find_rg_accept_cwd(tmp_path: Path) -> None:
+    from quartz.kernel.helpers import find, ls, rg
+
+    sub = tmp_path / "proj"
+    sub.mkdir()
+    (sub / "a.py").write_text("needle = 1\n", encoding="utf-8")
+
+    assert ls(".", cwd=sub) == ["a.py"]
+    assert find("*.py", ".", cwd=sub) == ["a.py"]
+    assert "needle = 1" in rg("needle", ".", cwd=sub)
+    assert rg("needle", ".", cwd=tmp_path / "missing").startswith("Path not found")

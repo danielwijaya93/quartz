@@ -47,6 +47,11 @@ class BashResult:
     duration: float
     timed_out: bool = False
 
+    @property
+    def returncode(self) -> int:
+        """Alias for `exit_code` matching `subprocess.CompletedProcess`."""
+        return self.exit_code
+
 
 class BashHandle:
     """Handle to a background shell command running in its own process group.
@@ -101,6 +106,13 @@ class BashHandle:
     @property
     def running(self) -> bool:
         return self._result is None
+
+    @property
+    def exit_code(self) -> int:
+        """Return exit code if finished, or raise a clear `await` hint while running."""
+        if self._result is None:
+            raise RuntimeError("Command still running; use `await handle` to wait for BashResult")
+        return self._result.exit_code
 
     def output(self) -> str:
         if self._result is not None:
