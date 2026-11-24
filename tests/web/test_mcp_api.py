@@ -10,25 +10,27 @@ import pytest
 from quartz.core.commands import COMMAND_REGISTRY
 
 
-def test_slash_mcp_crud_and_hot_reload(
+async def test_slash_mcp_crud_and_hot_reload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime: Any
 ) -> None:
     cfg = tmp_path / "mcp.json"
     monkeypatch.setenv("MCP_CONFIG", str(cfg))
 
     executed: list[str] = []
-    monkeypatch.setattr(
-        runtime.kernel, "exec_cell", lambda code, **kw: executed.append(code), raising=False
-    )
+
+    async def _fake_exec_cell(code: str, **_kw: Any) -> None:
+        executed.append(code)
+
+    monkeypatch.setattr(runtime.kernel, "exec_cell", _fake_exec_cell, raising=False)
 
     cmd = COMMAND_REGISTRY.get("/mcp")
     assert cmd is not None
 
-    res_empty = cmd.handler(runtime, "")
+    res_empty = await cmd.handler(runtime, "")  # type: ignore[misc]
     assert res_empty is not None
     assert "No MCP servers" in (res_empty.body or "")
 
-    res_add = cmd.handler(
+    res_add = await cmd.handler(  # type: ignore[misc]
         runtime,
         "add exa --url https://mcp.exa.ai/mcp --header x-api-key=secret-val",
     )
@@ -37,21 +39,21 @@ def test_slash_mcp_crud_and_hot_reload(
     assert "Saved MCP server 'exa'" in (res_add.body or "")
     assert "await mcp.close()" in executed
 
-    res_list = cmd.handler(runtime, "list")
+    res_list = await cmd.handler(runtime, "list")  # type: ignore[misc]
     assert res_list is not None
     assert res_list.kind == "list"
     assert res_list.items[0]["label"] == "exa"
     assert "enabled" in res_list.items[0]["detail"]
 
-    res_dis = cmd.handler(runtime, "disable exa")
+    res_dis = await cmd.handler(runtime, "disable exa")  # type: ignore[misc]
     assert res_dis is not None
     assert "Disabled MCP server(s): exa" in (res_dis.body or "")
 
-    res_en = cmd.handler(runtime, "enable --all")
+    res_en = await cmd.handler(runtime, "enable --all")  # type: ignore[misc]
     assert res_en is not None
     assert "Enabled MCP server(s): exa" in (res_en.body or "")
 
-    res_rm = cmd.handler(runtime, "remove exa")
+    res_rm = await cmd.handler(runtime, "remove exa")  # type: ignore[misc]
     assert res_rm is not None
     assert "Removed MCP server 'exa'" in (res_rm.body or "")
 

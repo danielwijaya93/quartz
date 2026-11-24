@@ -122,7 +122,7 @@ def test_web_app_serves_attached_file_and_replays_cell_files(
         def interrupt(self) -> None: pass
         def close(self) -> None: pass
         def has_pending_events(self) -> bool: return False
-        def wait_until_event(self, _ev: Any, timeout: float = 0.25) -> bool: return False
+        async def wait_event(self, timeout: float | None = 0.25) -> bool: return False
         def running_bash_count(self) -> int: return 0
 
     class _FakeClient:

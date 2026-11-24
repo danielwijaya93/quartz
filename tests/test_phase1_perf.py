@@ -105,24 +105,16 @@ def test_action_classifier_recognizes_python_m_quartz() -> None:
     assert label == "Quartz worker · wt"
 
 
-def test_kernel_client_wait_until_event_wakes_immediately_on_wake_event_waiters() -> None:
+async def test_kernel_client_wait_until_event_wakes_immediately_on_wake_event_waiters() -> None:
+    import asyncio
+
     kc = KernelClient(cwd=Path.cwd())
-    stop = threading.Event()
-    finished = threading.Event()
-    result: list[bool] = []
-
-    def _waiter() -> None:
-        result.append(kc.wait_until_event(stop, timeout=None))
-        finished.set()
-
-    t = threading.Thread(target=_waiter, daemon=True)
-    t.start()
-    time.sleep(0.02)
-    assert not finished.is_set()
+    task = asyncio.create_task(kc.wait_event(timeout=None))
+    await asyncio.sleep(0.02)
+    assert not task.done()
 
     t0 = time.monotonic()
-    stop.set()
     kc.wake_event_waiters()
-    assert finished.wait(timeout=1.0)
+    res = await asyncio.wait_for(task, timeout=1.0)
     assert time.monotonic() - t0 < 0.5
-    assert result == [False]
+    assert res is False

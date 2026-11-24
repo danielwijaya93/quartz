@@ -144,19 +144,19 @@ def test_session_manager_never_hibernates_attached_or_busy_sessions(tmp_path: Pa
     mgr.close_all()
 
 
-def test_inprocess_kernel_exec_await_snapshot_and_restore(tmp_path: Path) -> None:
+async def test_inprocess_kernel_exec_await_snapshot_and_restore(tmp_path: Path) -> None:
     k = InProcessKernel(cwd=tmp_path)
     k.start()
     try:
         k.configure(headless=True)
-        r1 = k.exec_cell("x = 21 * 2\nx")
+        r1 = await k.exec_cell("x = 21 * 2\nx")
         assert r1.ok and r1.result == "42"
 
-        r2 = k.exec_cell("await asyncio.sleep(0.01)\nprint('hi', x)")
+        r2 = await k.exec_cell("await asyncio.sleep(0.01)\nprint('hi', x)")
         assert r2.ok and "hi 42" in r2.stdout
 
         # Headless bash() runs inline and returns output
-        r3 = k.exec_cell("res = await bash('echo hello-inprocess')\nprint(res.output.strip())")
+        r3 = await k.exec_cell("res = await bash('echo hello-inprocess')\nprint(res.output.strip())")
         assert r3.ok and "hello-inprocess" in r3.stdout
 
         assert "x" in k.list_vars()
@@ -173,13 +173,13 @@ def test_inprocess_kernel_exec_await_snapshot_and_restore(tmp_path: Path) -> Non
     try:
         restored = k2.restore(tmp_path / "snap", root=tmp_path)
         assert "x" in restored["restored"]
-        r4 = k2.exec_cell("x")
+        r4 = await k2.exec_cell("x")
         assert r4.ok and r4.result == "42"
     finally:
         k2.close()
 
 
-def test_bootstrap_selects_inprocess_kernel_for_unsandboxed_headless(tmp_path: Path) -> None:
+async def test_bootstrap_selects_inprocess_kernel_for_unsandboxed_headless(tmp_path: Path) -> None:
     def _fake_client():
         return object(), "stub", "stub-model", "high", 128_000
 
@@ -193,7 +193,7 @@ def test_bootstrap_selects_inprocess_kernel_for_unsandboxed_headless(tmp_path: P
     )
     try:
         assert isinstance(rt_inproc.kernel, InProcessKernel)
-        res = rt_inproc.kernel.exec_cell("2 + 2")
+        res = await rt_inproc.kernel.exec_cell("2 + 2")
         assert res.ok and res.result == "4"
     finally:
         rt_inproc.kernel.close()

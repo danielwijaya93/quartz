@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import inspect
 import io
 import logging
-import queue
 import shutil
 import sys
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -159,10 +160,11 @@ class InteractiveDock:
 
         self._lock = threading.RLock()
         self._stdout_lock = threading.RLock()
-        self._worker_lock = threading.Lock()
-        self._stop_event = threading.Event()
-        self._abort_event = threading.Event()
-        self._steering_queue: queue.Queue[str] = queue.Queue()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._worker_lock: asyncio.Lock | None = None
+        self._stop_event: asyncio.Event | None = None
+        self._abort_event: asyncio.Event | None = None
+        self._steering_queue: asyncio.Queue[str] = asyncio.Queue()
 
         self._show_thinking = show_thinking
         self._show_details = show_details
@@ -179,9 +181,10 @@ class InteractiveDock:
         self._modal: InlineModalState | None = None
         self._ansi_cache: tuple[tuple[int, int], Any, StyleAndTextTuples] | None = None
 
-        self._bg_thread: threading.Thread | None = None
-        self._refresh_thread: threading.Thread | None = None
-        self._worker_thread: threading.Thread | None = None
+        self._bg_task: asyncio.Task[None] | None = None
+        self._refresh_task: asyncio.Task[None] | None = None
+        self._turn_task: asyncio.Task[None] | None = None
+        self._worker_tasks: set[asyncio.Task[None]] = set()
 
         self._history_path.parent.mkdir(parents=True, exist_ok=True)
         self.input_buffer = Buffer(
@@ -694,7 +697,28 @@ class InteractiveDock:
             if not self._turn_running:
                 return
             self._aborting = True
-        self._abort_event.set()
+        abort_event = getattr(self, "_abort_event", None)
+        turn_task = getattr(self, "_turn_task", None)
+        loop = getattr(self, "_loop", None)
+
+        def _signal() -> None:
+            if abort_event is not None:
+                abort_event.set()
+            if turn_task is not None and not turn_task.done():
+                turn_task.cancel()
+
+        if loop is not None and loop.is_running() and not loop.is_closed():
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+            if running is loop:
+                _signal()
+            else:
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(_signal)
+        elif abort_event is not None:
+            abort_event.set()
         try:
             self.rt.kernel.interrupt()
         except Exception:
@@ -744,7 +768,7 @@ class InteractiveDock:
         if action is SubmitAction.IGNORE:
             self._invalidate()
         elif action is SubmitAction.STEER:
-            self._steering_queue.put(text)
+            self._steering_queue.put_nowait(text)
             with self._lock:
                 tracker = self._active_tracker
             if tracker is not None:
@@ -764,25 +788,41 @@ class InteractiveDock:
         for the worker lock, so they are announced first: silently queueing is what
         made ``/settings`` look like it had done nothing at all.
 
-        Commands registered as ``immediate`` only touch local state, so they run on
-        their own thread right away and answer while the turn keeps going.
+        Commands registered as ``immediate`` only touch local state, so they run
+        right away and answer while the turn keeps going.
         """
         from quartz.tui.commands import COMMAND_REGISTRY
 
         cmd = COMMAND_REGISTRY.lookup(text)
         if cmd is not None and cmd.immediate:
-            threading.Thread(
-                target=self._run_slash_command, args=(text,), daemon=True
-            ).start()
+            loop = getattr(self, "_loop", None)
+            if loop is not None and loop.is_running() and not loop.is_closed():
+                task = loop.create_task(self._run_slash_command_async(text))
+                self._worker_tasks.add(task)
+                task.add_done_callback(self._worker_tasks.discard)
+            else:
+                threading.Thread(
+                    target=self._run_slash_command, args=(text,), daemon=True
+                ).start()
             return
         self._announce_queued(cmd.name if cmd is not None else text.split()[0])
         self._launch_worker(lambda: self._handle_submitted_idle(text))
 
     def _run_slash_command(self, text: str) -> None:
-        """Run one slash command off the UI thread, without the worker lock."""
+        """Run one slash command without the worker lock (sync fallback for unit tests)."""
         from quartz.tui.commands import _handle_slash_command
 
         if _handle_slash_command(self.rt, text) is True:
+            self.exit()
+            return
+        self._refresh_bg_count()
+        self._invalidate()
+
+    async def _run_slash_command_async(self, text: str) -> None:
+        """Run one slash command natively on the event loop without the worker lock."""
+        from quartz.tui.commands import _handle_slash_command_async
+
+        if await _handle_slash_command_async(self.rt, text) is True:
             self.exit()
             return
         self._refresh_bg_count()
@@ -796,20 +836,34 @@ class InteractiveDock:
                 Text(f"{name} queued — runs when this turn finishes.", style="dim")
             )
 
-    def _launch_worker(self, fn: Callable[[], None]) -> None:
-        def _runner() -> None:
-            with self._worker_lock:
-                fn()
+    def _launch_worker(self, fn: Callable[[], Awaitable[None] | None]) -> None:
+        loop = getattr(self, "_loop", None)
+        if loop is not None and loop.is_running() and not loop.is_closed():
+            async def _runner() -> None:
+                if self._worker_lock is None:
+                    self._worker_lock = asyncio.Lock()
+                async with self._worker_lock:
+                    res = fn()
+                    if inspect.isawaitable(res):
+                        await res
 
-        t = threading.Thread(target=_runner, daemon=True)
-        self._worker_thread = t
-        t.start()
+            task = loop.create_task(_runner())
+            self._worker_tasks.add(task)
+            task.add_done_callback(self._worker_tasks.discard)
+            return
 
-    def _handle_submitted_idle(self, text: str) -> None:
+        def _thread_runner() -> None:
+            res = fn()
+            if inspect.isawaitable(res):
+                asyncio.run(res)  # type: ignore[arg-type]
+
+        threading.Thread(target=_thread_runner, daemon=True).start()
+
+    async def _handle_submitted_idle(self, text: str) -> None:
         from quartz.core.images import build_user_content, extract_inline_image_mentions
-        from quartz.tui.commands import _handle_slash_command
+        from quartz.tui.commands import _handle_slash_command_async
 
-        cmd_res = _handle_slash_command(self.rt, text)
+        cmd_res = await _handle_slash_command_async(self.rt, text)
         if cmd_res is True:
             self.exit()
             return
@@ -832,21 +886,21 @@ class InteractiveDock:
         attached_images = [*self.rt.pending_images, *inline_images]
         self.rt.pending_images.clear()
         self.rt.messages.append({"role": "user", "content": build_user_content(text, attached_images)})
-        self._execute_dock_turn()
+        await self._execute_dock_turn()
 
-    def _execute_dock_turn(self) -> None:
+    async def _execute_dock_turn(self) -> None:
         from quartz.core.turn import TurnStatus, run_interactive_turn
         from quartz.tui.render import TurnProgressTracker, console
         from quartz.tui.turn_view import make_turn_view
 
         active_printer = _active_printer()
         active_console = console
+        if self._abort_event is None:
+            self._abort_event = asyncio.Event()
         self._abort_event.clear()
         while not self._steering_queue.empty():
-            try:
+            with contextlib.suppress(asyncio.QueueEmpty):
                 self._steering_queue.get_nowait()
-            except queue.Empty:
-                break
 
         tracker = TurnProgressTracker(
             active_console,
@@ -862,6 +916,7 @@ class InteractiveDock:
             self._turn_running = True
             self._aborting = False
             self._active_tracker = tracker
+            self._turn_task = asyncio.current_task()
         self._invalidate()
 
         def _on_steering(msg: str) -> None:
@@ -874,7 +929,7 @@ class InteractiveDock:
 
         try:
             view = make_turn_view(self.rt, tracker=tracker, on_steering=_on_steering)
-            outcome = run_interactive_turn(
+            outcome = await run_interactive_turn(
                 self.rt,
                 view,
                 abort_event=self._abort_event,
@@ -893,12 +948,15 @@ class InteractiveDock:
                 )
                 active_printer.block(Text(timing, style="dim"))
                 self._notify("Quartz: Turn finished", f"Completed in {outcome.elapsed_s:.1f}s")
+        except asyncio.CancelledError:
+            active_printer.block(Text("Aborted (Esc).", style="yellow"))
         finally:
             tracker.close()
             with self._lock:
                 self._turn_running = False
                 self._aborting = False
                 self._active_tracker = None
+                self._turn_task = None
             self.set_live_renderable(None)
             self._refresh_bg_count()
             self._invalidate()
@@ -924,10 +982,16 @@ class InteractiveDock:
         if changed:
             self._invalidate()
 
-    def _bg_watcher_loop(self) -> None:
+    async def _bg_watcher_loop(self) -> None:
         from quartz.core.loop import drain_bash_events
 
-        while not self._stop_event.is_set():
+        if self._stop_event is None:
+            self._stop_event = asyncio.Event()
+        if self._worker_lock is None:
+            self._worker_lock = asyncio.Lock()
+        stop_event = self._stop_event
+
+        while not stop_event.is_set():
             self._refresh_bg_count()
             with self._lock:
                 busy = self._turn_running or self._modal is not None
@@ -938,25 +1002,33 @@ class InteractiveDock:
                     if self.rt.kernel.has_pending_events():
                         has_events = True
                     elif bg > 0:
-                        has_events = bool(self.rt.kernel.wait_until_event(self._stop_event, timeout=0.25))
+                        has_events = bool(await self.rt.kernel.wait_event(timeout=0.25))
+                except asyncio.CancelledError:
+                    break
                 except Exception:
                     has_events = False
 
-                if has_events and not self._stop_event.is_set():
-                    if self._worker_lock.acquire(blocking=False):
-                        try:
+                if has_events and not stop_event.is_set():
+                    if not self._worker_lock.locked():
+                        async with self._worker_lock:
                             notice = drain_bash_events(self.rt.kernel, self.rt.messages)
                             if notice:
                                 self._notify("Quartz: Background job finished", notice)
                                 _render_bash_notice(notice)
-                                self._execute_dock_turn()
-                        finally:
-                            self._worker_lock.release()
+                                await self._execute_dock_turn()
                     continue
-            self._stop_event.wait(0.25)
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(stop_event.wait(), timeout=0.25)
 
-    def _refresh_loop(self) -> None:
-        while not self._stop_event.wait(0.1):
+    async def _refresh_loop(self) -> None:
+        if self._stop_event is None:
+            self._stop_event = asyncio.Event()
+        stop_event = self._stop_event
+        while not stop_event.is_set():
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(stop_event.wait(), timeout=0.1)
+            if stop_event.is_set():
+                break
             self._refresh_bg_count()
             with self._lock:
                 turn_running = self._turn_running
@@ -972,22 +1044,7 @@ class InteractiveDock:
                 self._invalidate()
 
     def run(self) -> None:
-        set_active_dock(self)
-        self._stop_event.clear()
-        self._refresh_bg_count()
-        try:
-            if self._use_patch_stdout:
-                with patch_stdout(raw=True):
-                    self._run_inner()
-            else:
-                self._run_inner()
-        finally:
-            self._stop_event.set()
-            set_active_dock(None)
-            if self._bg_thread is not None:
-                self._bg_thread.join(timeout=0.5)
-            if self._refresh_thread is not None:
-                self._refresh_thread.join(timeout=0.5)
+        asyncio.run(self._run_async())
 
         if self.rt.messages:
             from quartz.tui.render import console
@@ -997,7 +1054,35 @@ class InteractiveDock:
                 f"resume with: quartz -r {escape(self.rt.active_session.id)}[/dim]"
             )
 
-    def _run_inner(self) -> None:
+    async def _run_async(self) -> None:
+        self._loop = asyncio.get_running_loop()
+        self._stop_event = asyncio.Event()
+        self._abort_event = asyncio.Event()
+        self._steering_queue = asyncio.Queue()
+        self._worker_lock = asyncio.Lock()
+
+        set_active_dock(self)
+        self._refresh_bg_count()
+        try:
+            if self._use_patch_stdout:
+                with patch_stdout(raw=True):
+                    await self._run_inner_async()
+            else:
+                await self._run_inner_async()
+        finally:
+            self._stop_event.set()
+            set_active_dock(None)
+            tasks = [t for t in (self._bg_task, self._refresh_task, *self._worker_tasks) if t is not None]
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            self._bg_task = None
+            self._refresh_task = None
+            self._loop = None
+
+    async def _run_inner_async(self) -> None:
         if self.resumed:
             _replay_session(
                 self.rt.messages,
@@ -1013,9 +1098,7 @@ class InteractiveDock:
                     Text(_format_turn_footer(self.rt.usage_stats, self.rt.max_context_tokens), style="dim")
                 )
 
-        self._bg_thread = threading.Thread(target=self._bg_watcher_loop, daemon=True)
-        self._bg_thread.start()
-        self._refresh_thread = threading.Thread(target=self._refresh_loop, daemon=True)
-        self._refresh_thread.start()
+        self._bg_task = asyncio.create_task(self._bg_watcher_loop())
+        self._refresh_task = asyncio.create_task(self._refresh_loop())
 
-        self.app.run()
+        await self.app.run_async()
