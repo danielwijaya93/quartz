@@ -153,7 +153,7 @@ class BackgroundEventWatcher:
                     for p in pending:
                         p.cancel()
                     for p in pending:
-                        with contextlib.suppress(Exception):
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
                             await p
                     if wait_task in done:
                         has_events = bool(wait_task.result())
