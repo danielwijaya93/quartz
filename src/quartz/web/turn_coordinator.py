@@ -217,7 +217,17 @@ class TurnCoordinator:
         self._finalize_turn(turn, outcome)
 
     def _finalize_turn(self, turn: _Turn, outcome: TurnOutcome) -> None:
+        cleared = False
         try:
+            # Settle interrupted text and clear `_turn` BEFORE emitting `turn_end` so
+            # a client that immediately sends the next prompt upon receiving `turn_end`
+            # never races with a stale "A turn is already running" rejection.
+            self._settle_streamed_text(outcome)
+            with self._lock:
+                if self._turn is turn:
+                    self._turn = None
+                    cleared = True
+            self._sink_hub.mark_active()
             rt = self._require_runtime()
             max_ctx = rt.max_context_tokens
             ctx_pct = round(rt.usage_stats.context_pct(max_ctx), 1) if max_ctx > 0 else 0.0
@@ -231,12 +241,14 @@ class TurnCoordinator:
                 )
             )
         finally:
-            self._settle_streamed_text(outcome)
             with self._lock:
                 if self._turn is turn:
                     self._turn = None
-                    self._bg_watcher.mark_turn_done()
-            self._sink_hub.mark_active()
+                    cleared = True
+            # Signal bg_watcher AFTER `turn_end` is emitted so any auto-wake turn's
+            # `turn_start` is strictly ordered after this turn's `turn_end`.
+            if cleared:
+                self._bg_watcher.mark_turn_done()
 
     def _settle_streamed_text(self, outcome: TurnOutcome) -> None:
         """Keep what the turn wrote when stopped before it can save itself."""

@@ -368,6 +368,9 @@ class KernelClient:
         if self._proc is not None and self._proc.poll() is None:
             return
 
+        # Detach any dead previous process BEFORE resetting readiness flags so its
+        # dying `_read_loop` thread cannot clobber `_worker_exited` / `_ready_event`.
+        self._proc = None
         self._ready_event.clear()
         self._worker_exited = False
         self._running_bash_count = 0
@@ -392,7 +395,7 @@ class KernelClient:
         else:
             env.pop("QUARTZ_HOST_BRIDGE", None)
 
-        self._proc = subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -404,7 +407,8 @@ class KernelClient:
             env=env,
             start_new_session=True,
         )
-        self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._proc = proc
+        self._reader_thread = threading.Thread(target=self._read_loop, args=(proc,), daemon=True)
         self._reader_thread.start()
         if self._proc.stderr is not None:
             self._stderr_thread = threading.Thread(
@@ -468,9 +472,9 @@ class KernelClient:
         except Exception:
             logger.debug("Kernel stderr reader stopped", exc_info=True)
 
-    def _read_loop(self) -> None:
-        assert self._proc is not None and self._proc.stdout is not None
-        for line in self._proc.stdout:
+    def _read_loop(self, proc: subprocess.Popen[str]) -> None:
+        assert proc.stdout is not None
+        for line in proc.stdout:
             line = line.strip()
             if not line:
                 continue
@@ -481,7 +485,8 @@ class KernelClient:
 
             msg_type = msg.get("type")
             if msg_type == "ready":
-                self._ready_event.set()
+                if self._proc is proc:
+                    self._ready_event.set()
             elif msg_type == "bg_count":
                 count = int(msg.get("count", 0))
                 self._running_bash_count = count
@@ -521,6 +526,10 @@ class KernelClient:
                         loop, fut = async_waiter
                         self._resolve_async_future(loop, fut, msg)
 
+        # Ignore EOF from a superseded worker so a dying reader thread can never
+        # clobber `_worker_exited` / `_ready_event` / pending requests of a restarted worker.
+        if self._proc is not proc:
+            return
         # Unblock any waiters if the worker exited unexpectedly
         self._worker_exited = True
         self._running_bash_count = 0
