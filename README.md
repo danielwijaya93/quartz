@@ -14,8 +14,7 @@ Early development — version 0.1.0 (see `pyproject.toml`).
   snapshot, with resume, fork, and in-session session switching.
 - Context compaction that keeps the kernel alive, plus background `bash()` job
   visibility from the interactive prompt and the `/jobs` command.
-- MCP tool support (stdio and streamable HTTP) and an ACP (Agent Client Protocol)
-  JSON-RPC stdio server mode for external clients.
+- MCP tool support (stdio and streamable HTTP).
 - Login-only credentials: API keys are stored via `/login` in `~/.quartz/auth.json`,
   never read from `.env`.
 
@@ -189,7 +188,6 @@ can slow a turn down but never wedge it.
 | `--provider PROVIDER` | LLM provider backend (default: `auto`). |
 | `--model MODEL` | Override `MODEL` from the environment. |
 | `--effort EFFORT` | Reasoning effort level (e.g. `low`, `medium`, `high`, `max`, `xhigh`). |
-| `--acp` | Run as an ACP JSON-RPC 2.0 server over stdio. |
 | `--verbose` | Show full `ipython` code and output panels instead of compact summaries. |
 | `--show-thinking` | Show the reasoning trace (same as `Ctrl+T`). |
 | `--show-details` | Show full tool-call details (same as `Ctrl+O`). |
@@ -207,7 +205,6 @@ quartz mcp add NAME [CMD ...]  # Add or update an MCP server
 quartz mcp remove NAME         # Remove an MCP server
 quartz mcp enable NAME         # Enable one or more MCP servers
 quartz mcp disable NAME        # Disable one or more MCP servers
-quartz acp                     # ACP server over stdio (same as --acp)
 quartz web                     # Browser client (see "Quartz web" below)
 ```
 
@@ -221,10 +218,7 @@ answer means. The terminal renders seven turn events; `quartz web` renders the s
 seven in a page — streamed markdown, the reasoning trace, collapsible tool cells
 with inline images, compaction boundaries, and background-job notices.
 
-It is **not** an ACP client. ACP exists so one client can drive many agents;
-this drives exactly one. `quartz --acp` is untouched and remains the editor
-transport. The wire format is specified in
-[`docs/web-protocol.md`](docs/web-protocol.md).
+The wire format is specified in [`docs/web-protocol.md`](docs/web-protocol.md).
 
 ```bash
 cd webapp && npm ci && npm run build   # once, and after pulling webapp changes
@@ -349,11 +343,10 @@ provider exposes.
 
 ```
 src/quartz/
-  cli/       app.py  subcommands.py  acp.py
+  cli/       app.py  subcommands.py
              Composition root: `app.py` is the `quartz` entry point (interactive REPL,
              `-p` headless mode, flags), `subcommands.py` parses the `mcp` / `auth` /
-             `web` arguments and nothing else, `acp.py` is the ACP JSON-RPC 2.0 stdio
-             server.
+             `web` arguments and nothing else.
   web/       app.py  session.py  bridge.py  sidebar.py  files.py
              The browser transport. `app.py` is the FastAPI app (routes, the one
              WebSocket, static SPA serving), `session.py` owns the runtime and the turn

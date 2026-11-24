@@ -323,7 +323,7 @@ def _bootstrap_options(args: argparse.Namespace) -> BootstrapOptions:
 
 def _maybe_prompt_project_trust(args: argparse.Namespace) -> None:
     """Prompt once in interactive TTY mode when an untrusted folder has `.quartz/` config."""
-    if args.prompt or args.acp or getattr(args, "trust_project", False):
+    if args.prompt or getattr(args, "trust_project", False):
         return
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return
@@ -403,9 +403,6 @@ def main() -> None:
 
         _handle_web_cli(sys.argv[2:])
         return
-    if len(sys.argv) > 1 and sys.argv[1] == "acp":
-        sys.argv[1] = "--acp"
-
     def _handle_sigterm(_signum: int, _frame: Any) -> None:
         raise SystemExit(0)
 
@@ -447,11 +444,6 @@ def main() -> None:
     )
     parser.add_argument("--model", help="Override MODEL from environment.")
     parser.add_argument("--effort", help="Reasoning effort level (e.g. low, medium, high, max, xhigh).")
-    parser.add_argument(
-        "--acp",
-        action="store_true",
-        help="Run as an ACP (Agent Client Protocol) JSON-RPC 2.0 server over stdio.",
-    )
     parser.add_argument(
         "--verbose",
         action="store_true",
@@ -500,30 +492,6 @@ def main() -> None:
 
     if args.fork and not args.resume and not args.cont:
         parser.error("--fork requires -r <session-id> (or -c)")
-
-    if args.acp:
-        from quartz.cli.acp import ACPServer
-
-        _settings = _get_attr("load_settings")()
-        compact_reserve_tokens = _settings.compact_reserve_tokens
-        keep_recent_tokens = _settings.keep_recent_tokens
-
-        def _provider_with_resolved_context():
-            client, pname, model_name, effort_name = _get_attr("build_provider")(
-                provider=args.provider, model_override=args.model, effort_override=args.effort
-            )
-            resolved = _get_attr("resolve_context_tokens")(pname, model_name, client)
-            return client, pname, model_name, effort_name, resolved
-
-        server = ACPServer(
-            _provider_with_resolved_context,
-            compact_reserve_tokens=compact_reserve_tokens,
-            keep_recent_tokens=keep_recent_tokens,
-            progress_every=_settings.progress_every,
-            background_check_every=_settings.background_check_every,
-        )
-        server.serve()
-        return
 
     _maybe_prompt_project_trust(args)
     rt, resumed = _build_runtime(args)

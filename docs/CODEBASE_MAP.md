@@ -10,7 +10,7 @@ For exact class/function line numbers, run `uv run python scripts/gen_index.py` 
 | `src/quartz/core/` | Shared agent loop, `SessionController`, turns, compaction, events, slash commands |
 | `src/quartz/web/` | FastAPI server, WebSocket hub, session manager, permissions, push notifications |
 | `src/quartz/tui/` | Terminal UI (`prompt_toolkit` dock, rendering, modals, replay) |
-| `src/quartz/cli/` | CLI entrypoint (`app.py`), subcommands, ACP mode |
+| `src/quartz/cli/` | CLI entrypoint (`app.py`) and subcommands (`subcommands.py`) |
 | `src/quartz/providers/` | LLM provider adapters (`google.py`, `openai.py`), registry, HTTP pool |
 | `src/quartz/kernel/` | Python REPL execution, OS sandbox (`bwrap`/`sandbox-exec`), bash jobs, snapshots |
 | `src/quartz/mcp/` | MCP client and connection pool |

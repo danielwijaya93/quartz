@@ -1,8 +1,7 @@
 """`TurnObserver` events rendered as `quartz web` frames.
 
-This is the file that delivers the whole point of the web transport: the terminal
-renders all seven turn events, `quartz --acp` renders two, and this renders all
-seven. Nothing here needs a new core hook -- `core/events.py` already defines every
+This is the file that delivers the whole point of the web transport: like the
+terminal, it renders all seven turn events with full fidelity. Nothing here needs a new core hook -- `core/events.py` already defines every
 event a transport may show; the web transport simply chooses not to drop any.
 
 Two rules keep this file honest:
