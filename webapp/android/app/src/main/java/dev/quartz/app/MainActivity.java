@@ -12,6 +12,8 @@ import com.getcapacitor.BridgeActivity;
  */
 public class MainActivity extends BridgeActivity {
 
+    public static volatile boolean isForeground = false;
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(QuartzNativePlugin.class);
@@ -20,7 +22,15 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
+    public void onResume() {
+        super.onResume();
+        isForeground = true;
+        QuartzKeepAliveService.clearAlertNotifications(this);
+    }
+
+    @Override
     public void onPause() {
+        isForeground = false;
         super.onPause();
         if (QuartzKeepAliveService.isRunning()) {
             WebView webView = getBridge() == null ? null : getBridge().getWebView();

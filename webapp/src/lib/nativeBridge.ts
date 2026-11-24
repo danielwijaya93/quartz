@@ -11,7 +11,16 @@ import { registerPlugin } from "@capacitor/core";
 
 export interface QuartzNativePlugin {
   /** Run (or stop) the foreground service that survives screen-off. */
-  setKeepAlive(options: { active: boolean }): Promise<{ active: boolean }>;
+  setKeepAlive(options: {
+    active: boolean;
+    serverUrl?: string;
+    token?: string;
+    notificationsEnabled?: boolean;
+  }): Promise<{ active: boolean }>;
+  /** Whether Android battery optimization is disabled for Quartz. */
+  batteryOptimizationStatus(): Promise<{ ignored: boolean }>;
+  /** Open the Android system prompt to exempt Quartz from battery optimization. */
+  requestIgnoreBatteryOptimizations(): Promise<void>;
   /** Whether this device can do biometrics, and whether one is enrolled. */
   biometricStatus(): Promise<{ available: boolean; enrolled: boolean; kind: string }>;
   /** Show the system biometric prompt. Resolves `{ ok }` — never throws on cancel. */

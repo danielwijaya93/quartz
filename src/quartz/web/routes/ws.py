@@ -356,4 +356,58 @@ def create_router(ctx: AppContext) -> APIRouter:
             with contextlib.suppress(asyncio.CancelledError):
                 await writer
 
+    @router.websocket("/ws/notifications")
+    async def websocket_notifications(socket: WebSocket) -> None:
+        """Read-only alert stream for Android's native background service."""
+        if not is_allowed_origin(
+            socket.headers.get("origin"),
+            socket.headers.get("host"),
+            dev=ctx.dev,
+        ):
+            await socket.close(code=1008)
+            return
+        if ctx.auth_token is not None:
+            candidate = extract_ws_token(socket)
+            if not verify_token(candidate, ctx.auth_token):
+                await socket.close(code=WS_AUTH_CLOSE_CODE, reason="Unauthorized")
+                return
+        await socket.accept()
+        outbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def push(frame: dict[str, Any]) -> None:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(outbox.put_nowait, frame)
+
+        async def write() -> None:
+            while True:
+                frame = await outbox.get()
+                try:
+                    await socket.send_text(json.dumps(frame, ensure_ascii=False))
+                except Exception:
+                    return
+
+        writer = asyncio.create_task(write())
+        manager.add_notification_listener(push)
+        try:
+            from quartz.settings import load_settings
+
+            loaded = await asyncio.to_thread(load_settings)
+            push(
+                {
+                    "type": "settings_state",
+                    "notifications": loaded.notifications,
+                    "richUi": loaded.rich_ui,
+                }
+            )
+            while True:
+                await socket.receive_text()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            manager.remove_notification_listener(push)
+            writer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await writer
+
     return router

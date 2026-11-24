@@ -202,6 +202,7 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
 
   useNativeShell({
     turnRunning: quartz.state.turnRunning,
+    notificationsEnabled: notifications.enabled,
     onBack: handleAndroidBack,
     onSharedText: setSharedText,
   });

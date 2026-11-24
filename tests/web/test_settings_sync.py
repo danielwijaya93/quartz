@@ -85,3 +85,29 @@ def test_notifications_read_broadcasts_notifications_cleared(
         ws1.send_json({"type": "notifications_read"})
         assert ws1.receive_json() == {"type": "notifications_cleared"}
         assert ws2.receive_json() == {"type": "notifications_cleared"}
+
+
+def test_ws_notifications_streams_settings_and_alerts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime: Any
+) -> None:
+    app = _make_app(tmp_path, monkeypatch, runtime)
+    with TestClient(app) as client, client.websocket_connect("/ws/notifications") as nws:
+        initial = nws.receive_json()
+        assert initial == {"type": "settings_state", "notifications": True, "richUi": False}
+
+        # Updating settings via REST pushes to /ws/notifications
+        res = client.post("/api/settings", json={"key": "notifications", "value": "off"})
+        assert res.status_code == 200
+        assert nws.receive_json() == {
+            "type": "settings_state",
+            "notifications": False,
+            "richUi": False,
+        }
+
+        # Notifications read on another client pushes notifications_cleared
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "hello", "clientVersion": 1})
+            assert ws.receive_json()["type"] == "session_state"
+            assert ws.receive_json()["type"] == "active_sessions_state"
+            ws.send_json({"type": "notifications_read"})
+            assert nws.receive_json() == {"type": "notifications_cleared"}

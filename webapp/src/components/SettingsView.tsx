@@ -1,6 +1,7 @@
 import * as React from "react";
 import { ServerUrlCard } from "./ServerUrlCard";
 import { isNativeCapacitor } from "../lib/serverUrl";
+import { NativePlugin } from "../lib/nativeBridge";
 import { BiometricLockCard } from "./BiometricLockCard";
 import { authFetch } from "../lib/authToken";
 import { apiUrl } from "../lib/serverUrl";
@@ -80,6 +81,7 @@ export function SettingsView({
   const [savingKey, setSavingKey] = React.useState<string | null>(null);
   const [status, setStatus] = React.useState<{ ok: boolean; text: string } | null>(null);
   const [serverVersion, setServerVersion] = React.useState<string | null>(null);
+  const [batteryUnrestricted, setBatteryUnrestricted] = React.useState<boolean | null>(null);
   const isNative = isNativeCapacitor();
 
   const load = React.useCallback(async () => {
@@ -116,6 +118,18 @@ export function SettingsView({
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  React.useEffect(() => {
+    if (!isNative) return;
+    const checkBattery = (): void => {
+      void NativePlugin.batteryOptimizationStatus()
+        .then((res) => setBatteryUnrestricted(Boolean(res?.ignored)))
+        .catch(() => setBatteryUnrestricted(null));
+    };
+    checkBattery();
+    window.addEventListener("focus", checkBattery);
+    return () => window.removeEventListener("focus", checkBattery);
+  }, [isNative]);
 
   const saveKey = async (key: string, value?: string): Promise<void> => {
     setSavingKey(key);
@@ -325,6 +339,27 @@ export function SettingsView({
               </Button>
             </div>
           </div>
+          {isNative && batteryUnrestricted === false ? (
+            <div className="mt-3 flex flex-col gap-2 border-t border-separator pt-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-foreground">
+                  Battery optimization is restricting background alerts
+                </p>
+                <p className="text-xs text-muted">
+                  Allow unrestricted background usage so lock-screen notifications arrive on time.
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onPress={() => {
+                  void NativePlugin.requestIgnoreBatteryOptimizations();
+                }}
+              >
+                Allow unrestricted
+              </Button>
+            </div>
+          ) : null}
         </section>
 
         {status ? (

@@ -14,13 +14,20 @@ import { setKeepAlive } from "./useAndroidKeepAlive";
 export interface NativeShellOptions {
   /** A turn is running; hold the process so the socket is not frozen. */
   turnRunning: boolean;
+  /** Whether notifications are enabled (keeps the native listener alive in background). */
+  notificationsEnabled?: boolean;
   /** Hardware/keyboard Back. Return true to mean "handled, do not exit". */
   onBack: () => boolean;
   /** Text shared into the app from another app, already trimmed. */
   onSharedText: (text: string) => void;
 }
 
-export function useNativeShell({ turnRunning, onBack, onSharedText }: NativeShellOptions): void {
+export function useNativeShell({
+  turnRunning,
+  notificationsEnabled = true,
+  onBack,
+  onSharedText,
+}: NativeShellOptions): void {
   const backRef = React.useRef(onBack);
   backRef.current = onBack;
   const shareRef = React.useRef(onSharedText);
@@ -28,8 +35,16 @@ export function useNativeShell({ turnRunning, onBack, onSharedText }: NativeShel
 
   React.useEffect(() => {
     if (!isNativeCapacitor()) return;
-    setKeepAlive(turnRunning);
-  }, [turnRunning]);
+    const active = notificationsEnabled || turnRunning;
+    setKeepAlive(active, notificationsEnabled);
+    const onServerChange = (): void => {
+      setKeepAlive(active, notificationsEnabled);
+    };
+    window.addEventListener("quartz:change-server", onServerChange);
+    return () => {
+      window.removeEventListener("quartz:change-server", onServerChange);
+    };
+  }, [turnRunning, notificationsEnabled]);
 
   React.useEffect(() => {
     if (!isNativeCapacitor()) return;
