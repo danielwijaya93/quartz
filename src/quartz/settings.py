@@ -29,12 +29,16 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
+import math
 import os
 import stat
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_COMPACT_RESERVE_TOKENS = 16_384
 DEFAULT_KEEP_RECENT_TOKENS = 32_000
@@ -55,6 +59,8 @@ DEFAULT_WEB_IDLE_HOURS = 2
 #: Max live (in-memory) web session kernels before LRU idle ones auto-hibernate (0 disables).
 DEFAULT_WEB_MAX_LIVE_SESSIONS = 4
 DEFAULT_NOTIFICATIONS_ENABLED = True
+DEFAULT_BRIDGE_TIMEOUT_S = 290
+DEFAULT_BRIDGE_WORKER_TIMEOUT_S = 1800
 
 _MIN_TOKENS = 256
 _MAX_TOKENS = 10_000_000
@@ -78,6 +84,8 @@ class Settings:
     web_idle_hours: int = DEFAULT_WEB_IDLE_HOURS
     web_max_live_sessions: int = DEFAULT_WEB_MAX_LIVE_SESSIONS
     notifications: bool = DEFAULT_NOTIFICATIONS_ENABLED
+    bridge_timeout_s: int | None = None
+    bridge_worker_timeout_s: int | None = None
 
 
 def _config_path(path: Path | None = None) -> Path:
@@ -195,6 +203,24 @@ def _coerce_bool(value: Any, default: bool) -> bool:
     return default
 
 
+def _coerce_bridge_timeout(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float):
+        if math.isfinite(value) and value >= 1:
+            return int(value)
+        return None
+    if isinstance(value, str) and value.strip():
+        try:
+            coerced = int(value.strip())
+        except ValueError:
+            return None
+        return coerced if coerced > 0 else None
+    return None
+
+
 def load_settings(path: Path | None = None) -> Settings:
     """Load settings from config.json, falling back to defaults (never raises)."""
     raw = _read_raw(path)
@@ -220,6 +246,8 @@ def load_settings(path: Path | None = None) -> Settings:
             raw.get("web_max_live_sessions"), DEFAULT_WEB_MAX_LIVE_SESSIONS
         ),
         notifications=_coerce_bool(raw.get("notifications"), DEFAULT_NOTIFICATIONS_ENABLED),
+        bridge_timeout_s=_coerce_bridge_timeout(raw.get("bridge_timeout_s")),
+        bridge_worker_timeout_s=_coerce_bridge_timeout(raw.get("bridge_worker_timeout_s")),
     )
 
 
@@ -262,6 +290,45 @@ def validate_web_max_live_sessions(value: int) -> bool:
         and not isinstance(value, bool)
         and 0 <= value <= _MAX_WEB_MAX_LIVE_SESSIONS
     )
+
+
+def validate_bridge_timeout(value: int | float) -> bool:
+    """Return True when ``value`` is a positive finite timeout in seconds."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value) and value > 0
+
+
+def resolve_bridge_timeout(tool: str) -> float:
+    """Resolve host-bridge timeout in seconds for ``tool`` (env -> settings -> default)."""
+    if tool == "quartz":
+        env_name = "QUARTZ_BRIDGE_WORKER_TIMEOUT"
+        default = float(DEFAULT_BRIDGE_WORKER_TIMEOUT_S)
+        setting_attr = "bridge_worker_timeout_s"
+    else:
+        env_name = "QUARTZ_BRIDGE_TIMEOUT"
+        default = float(DEFAULT_BRIDGE_TIMEOUT_S)
+        setting_attr = "bridge_timeout_s"
+
+    raw_env = os.getenv(env_name)
+    if raw_env is not None and raw_env.strip():
+        try:
+            parsed = float(raw_env.strip())
+        except ValueError:
+            logger.debug("Ignoring invalid %s=%r; falling back to settings/default", env_name, raw_env)
+        else:
+            if validate_bridge_timeout(parsed):
+                return parsed
+            logger.debug(
+                "Ignoring non-positive/non-finite %s=%r; falling back to settings/default",
+                env_name,
+                raw_env,
+            )
+
+    setting_val = getattr(load_settings(), setting_attr, None)
+    if setting_val is not None and validate_bridge_timeout(setting_val):
+        return float(setting_val)
+    return default
 
 
 def update_config_json(
@@ -401,13 +468,21 @@ def save_settings(settings: Settings, path: Path | None = None) -> Path:
         data["web_idle_hours"] = settings.web_idle_hours
         data["web_max_live_sessions"] = settings.web_max_live_sessions
         data["notifications"] = settings.notifications
+        if settings.bridge_timeout_s is not None:
+            data["bridge_timeout_s"] = settings.bridge_timeout_s
+        else:
+            data.pop("bridge_timeout_s", None)
+        if settings.bridge_worker_timeout_s is not None:
+            data["bridge_worker_timeout_s"] = settings.bridge_worker_timeout_s
+        else:
+            data.pop("bridge_worker_timeout_s", None)
 
     return update_config_json(_apply, path=path)
 
 
 def settings_as_dict(settings: Settings) -> dict[str, int | bool]:
     """Return the JSON-serialisable preference mapping for ``/settings list``."""
-    return {
+    out: dict[str, int | bool] = {
         "compact_reserve_tokens": settings.compact_reserve_tokens,
         "keep_recent_tokens": settings.keep_recent_tokens,
         "progress_every": settings.progress_every,
@@ -416,3 +491,8 @@ def settings_as_dict(settings: Settings) -> dict[str, int | bool]:
         "web_max_live_sessions": settings.web_max_live_sessions,
         "notifications": settings.notifications,
     }
+    if settings.bridge_timeout_s is not None:
+        out["bridge_timeout_s"] = settings.bridge_timeout_s
+    if settings.bridge_worker_timeout_s is not None:
+        out["bridge_worker_timeout_s"] = settings.bridge_worker_timeout_s
+    return out

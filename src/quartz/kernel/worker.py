@@ -9,10 +9,8 @@ from __future__ import annotations
 import ast
 import asyncio
 import builtins
-import codecs
 import contextlib
 import contextvars
-import dataclasses
 import importlib
 import importlib.util
 import inspect
@@ -23,21 +21,26 @@ import os
 import re
 import shutil
 import signal
-import subprocess
 import symtable
 import sys
-import tempfile
 import threading
 import time
 import traceback
-import types
 import uuid
 import warnings
-from collections import deque
 from pathlib import Path
 from typing import Any
 
 from quartz.kernel.base import STATUS_TAIL_LINES
+from quartz.kernel.bash_jobs import (
+    MAX_OUTPUT_CHARS,
+    BashHandle,
+    BashResult,
+)
+from quartz.kernel.bash_jobs import (
+    spill_or_truncate as _spill_or_truncate,
+)
+from quartz.kernel.bridge_server import BridgeServer
 from quartz.kernel.helpers import (
     _FILES_VAR,
     _IMAGES_VAR,
@@ -45,117 +48,40 @@ from quartz.kernel.helpers import (
     _truncate,
     load_helpers,
 )
-from quartz.kernel.pycheck import unresolved_global_names
+from quartz.kernel.pycheck import (
+    AUTO_IMPORT_BLOCKLIST as _AUTO_IMPORT_BLOCKLIST,
+)
+from quartz.kernel.pycheck import (
+    LAZY_STDLIB_SYMBOLS as _LAZY_STDLIB_SYMBOLS,
+)
+from quartz.kernel.pycheck import (
+    dotted_chains as _dotted_chains,
+)
+from quartz.kernel.pycheck import (
+    unresolved_global_names,
+)
 from quartz.kernel.snapshots import (
-    is_json_safe,
-    load_or_create_snapshot_key,
-    load_snapshot_key,
-    sha256_hex,
-    sign_manifest,
-    verify_manifest_hmac,
+    MAX_TOTAL_SNAPSHOT_BYTES,
+    MAX_VAR_BYTES,
+    restore_cwd,
+    restore_namespace,
+    snapshot_namespace,
 )
 from quartz.mcp.client import HostMCPProxy, MCPManager
 
+__all__ = [
+    "MAX_OUTPUT_CHARS",
+    "MAX_REPR_CHARS",
+    "MAX_TOTAL_SNAPSHOT_BYTES",
+    "MAX_VAR_BYTES",
+    "BashHandle",
+    "BashResult",
+    "KernelWorker",
+]
+
 logger = logging.getLogger(__name__)
 
-MAX_OUTPUT_CHARS = 24_000
 MAX_REPR_CHARS = 24_000
-MAX_VAR_BYTES = 16 * 1024 * 1024
-MAX_TOTAL_SNAPSHOT_BYTES = 256 * 1024 * 1024
-
-_AUTO_IMPORT_BLOCKLIST: frozenset[str] = frozenset(
-    {
-        "antigravity",
-        "this",
-        "test",
-        "__hello__",
-        "__phello__",
-        "idlelib",
-        "tkinter",
-        "turtle",
-        "turtledemo",
-    }
-)
-
-_LAZY_STDLIB_SYMBOLS: dict[str, tuple[str, str]] = {
-    "Counter": ("collections", "Counter"),
-    "defaultdict": ("collections", "defaultdict"),
-    "deque": ("collections", "deque"),
-    "OrderedDict": ("collections", "OrderedDict"),
-    "namedtuple": ("collections", "namedtuple"),
-    "dataclass": ("dataclasses", "dataclass"),
-    "timedelta": ("datetime", "timedelta"),
-    "timezone": ("datetime", "timezone"),
-    "StringIO": ("io", "StringIO"),
-    "BytesIO": ("io", "BytesIO"),
-    "SimpleNamespace": ("types", "SimpleNamespace"),
-    "ThreadPoolExecutor": ("concurrent.futures", "ThreadPoolExecutor"),
-    "ProcessPoolExecutor": ("concurrent.futures", "ProcessPoolExecutor"),
-    "partial": ("functools", "partial"),
-    "lru_cache": ("functools", "lru_cache"),
-    "Any": ("typing", "Any"),
-}
-
-
-
-_CELL_MODULES: tuple[str | None, ...] = ("__main__", "<cell>", None)
-
-
-class _UnpickleFailed:
-    """Sentinel cached for a snapshot file that failed verification or unpickling.
-
-    Two names can share one file now, so a failure has to be remembered rather
-    than retried: otherwise the skip line is recorded once per alias.
-    """
-
-    def __init__(self, reason: str = "unpickle error") -> None:
-        self.reason = reason
-
-
-_UNPICKLE_FAILED = _UnpickleFailed("unpickle error")
-_TAMPERED_SNAPSHOT = _UnpickleFailed("tampered snapshot")
-
-
-def _skip_reason(pickle_err: BaseException, dill_err: BaseException) -> str:
-    """One short clause explaining why a value was left out of a snapshot.
-
-    Both serializers ran, so the useful fact is what the *fallback* said: `TypeError`
-    on a lambda is normal, but dill failing on a plain dict means the value holds
-    something genuinely unserializable (an open socket, a C extension handle). Report
-    the exception class plus a trimmed message -- enough to act on, short enough that
-    the resume notice stays readable.
-    """
-    detail = str(dill_err).strip().splitlines()[0] if str(dill_err).strip() else ""
-    if not detail:
-        detail = str(pickle_err).strip().splitlines()[0] if str(pickle_err).strip() else ""
-    if len(detail) > 80:
-        # `_truncate` keeps head and tail with a marker in between; a one-line reason
-        # wants a simple tail cut so the message stays a single readable clause.
-        detail = detail[:77] + "..."
-    name = type(dill_err).__name__
-    return f"{name}: {detail}" if detail else name
-
-
-def _is_reimportable(mod: types.ModuleType) -> bool:
-    """True for named modules that can be re-imported by name after a restart."""
-    name = getattr(mod, "__name__", "")
-    return bool(name) and not name.startswith("_") and sys.modules.get(name) is mod
-
-
-def _dotted_chains(tree: ast.AST) -> list[list[str]]:
-    """Return `[root, attr1, attr2, ...]` for every Attribute chain rooted at a loaded Name."""
-    chains: list[list[str]] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Attribute):
-            continue
-        parts: list[str] = []
-        cur: ast.AST = node
-        while isinstance(cur, ast.Attribute):
-            parts.append(cur.attr)
-            cur = cur.value
-        if isinstance(cur, ast.Name) and isinstance(cur.ctx, ast.Load):
-            chains.append([cur.id, *reversed(parts)])
-    return chains
 
 
 _STDOUT_VAR: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar("quartz_stdout", default=None)
@@ -184,221 +110,6 @@ class _ContextStreamProxy:
         buf = self._var.get()
         return getattr(buf if buf is not None else self._fallback, name)
 
-
-def _spill_or_truncate(text: str, limit: int, kind: str, cell_id: str) -> str:
-    """Return text if within limit, otherwise spill full text to disk and truncate inline."""
-    if len(text) <= limit:
-        return text
-    safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", cell_id or "cell")
-    spill_dir = Path(tempfile.gettempdir()) / "quartz_outputs"
-    spill_dir.mkdir(parents=True, exist_ok=True)
-    spill_path = spill_dir / f"{safe_id}_{kind}.txt"
-    spill_path.write_text(text, encoding="utf-8")
-    return (
-        f"{_truncate(text, limit)}\n"
-        f"[full {kind} ({len(text):,} chars) saved to {spill_path}; use read()/rg() to inspect]"
-    )
-
-
-@dataclasses.dataclass
-class BashResult:
-    exit_code: int
-    output: str
-    duration: float
-    timed_out: bool = False
-
-
-class BashHandle:
-    """Handle to a background shell command running in its own process group.
-
-    The child is spawned synchronously (so `.pid` is available immediately) and its
-    output is drained by an asyncio task over a non-blocking pipe: zero OS threads.
-    """
-
-    MAX_LINES = 20_000
-    _READ_CHUNK = 65_536
-
-    def __init__(
-        self,
-        command: str,
-        timeout: float | None,
-        started_cell_id: str | None,
-        on_done_callback: Any,
-        check_every: float | None = None,
-        on_status_callback: Any = None,
-    ) -> None:
-        self.command = command
-        self._timeout = timeout
-        self._started_cell_id = started_cell_id
-        self._on_done_callback = on_done_callback
-        self._check_every = check_every
-        self._on_status_callback = on_status_callback
-        self._lines: deque[str] = deque(maxlen=self.MAX_LINES)
-        self.dropped_lines = 0
-        self._partial = ""
-        self._start_time = time.monotonic()
-        self._started_wall = time.time()
-        self._result: BashResult | None = None
-        self._awaited = False
-        self._timed_out = False
-
-        self._proc = subprocess.Popen(
-            command,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-            cwd=os.getcwd(),
-            env=os.environ.copy(),
-        )
-        self.pid = self._proc.pid
-        self._task = asyncio.create_task(self._monitor())
-        self._status_task: asyncio.Task[None] | None = None
-        if check_every and check_every > 0 and on_status_callback is not None:
-            self._status_task = asyncio.create_task(self._status_loop())
-
-    @property
-    def running(self) -> bool:
-        return self._result is None
-
-    def output(self) -> str:
-        if self._result is not None:
-            return self._result.output
-        return "".join(self._lines) + self._partial
-
-    def tail(self, n: int = 50) -> str:
-        if n <= 0:
-            return ""
-        if self._result is not None:
-            return "".join(self._result.output.splitlines(keepends=True)[-n:])
-        return "".join(list(self._lines)[-n:])
-
-    def poll(self) -> BashResult | None:
-        return self._result
-
-    def kill(self, sig: int = signal.SIGTERM, grace: float = 5.0) -> None:
-        """Send `sig` to the process group, escalating to SIGKILL after `grace` seconds."""
-        if not self.running:
-            return
-        try:
-            os.killpg(self.pid, sig)
-        except ProcessLookupError:
-            return
-        if sig != signal.SIGKILL and grace is not None and grace > 0:
-            self._escalate_task = asyncio.create_task(self._escalate_kill(grace))
-
-    async def _escalate_kill(self, grace: float) -> None:
-        await asyncio.sleep(grace)
-        if self.running:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(self.pid, signal.SIGKILL)
-
-    def _append_line(self, line: str) -> None:
-        if len(self._lines) == self._lines.maxlen:
-            self.dropped_lines += 1
-        self._lines.append(line)
-
-    def _feed(self, text: str) -> None:
-        """Split decoded text into complete lines, keeping any trailing partial line."""
-        pieces = (self._partial + text).splitlines(keepends=True)
-        self._partial = ""
-        for piece in pieces:
-            if piece.endswith(("\n", "\r")):
-                self._append_line(piece)
-            else:
-                self._partial = piece
-
-    def _flush_partial(self) -> None:
-        if self._partial:
-            self._append_line(self._partial)
-            self._partial = ""
-
-    async def _drain_output(self) -> int:
-        """Read the child's merged stdout/stderr until EOF, then reap it."""
-        assert self._proc.stdout is not None
-        loop = asyncio.get_running_loop()
-        reader = asyncio.StreamReader(limit=self._READ_CHUNK * 2)
-        transport, _ = await loop.connect_read_pipe(
-            lambda: asyncio.StreamReaderProtocol(reader), self._proc.stdout
-        )
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        try:
-            while chunk := await reader.read(self._READ_CHUNK):
-                self._feed(decoder.decode(chunk))
-            self._feed(decoder.decode(b"", final=True))
-            self._flush_partial()
-        finally:
-            transport.close()
-        while (code := self._proc.poll()) is None:
-            await asyncio.sleep(0.01)
-        return code
-
-    @property
-    def elapsed_s(self) -> float:
-        """Seconds this command has been running (frozen once it finishes)."""
-        if self._result is not None:
-            return self._result.duration
-        return time.monotonic() - self._start_time
-
-    async def _status_loop(self) -> None:
-        """Ask the harness to report this job every ``check_every`` seconds.
-
-        The clock is the *harness's*, not the model's: a job that outlives the
-        period would otherwise stay silent until it finished, which is precisely
-        when a waiting user starts typing "how is it going?". A sleep-then-check
-        loop (rather than a fixed deadline) means a job that ends mid-sleep is
-        never reported as still running.
-        """
-        assert self._check_every is not None
-        while True:
-            await asyncio.sleep(self._check_every)
-            if not self.running:
-                return
-            try:
-                self._on_status_callback(self)
-            except Exception:
-                logger.debug("Bash status callback failed", exc_info=True)
-
-    async def _monitor(self) -> BashResult:
-        exit_code = -1
-        waiter = asyncio.create_task(self._drain_output())
-        try:
-            try:
-                if self._timeout is not None:
-                    exit_code = await asyncio.wait_for(asyncio.shield(waiter), timeout=self._timeout)
-                else:
-                    exit_code = await waiter
-            except TimeoutError:
-                self._timed_out = True
-                self.kill(signal.SIGTERM, grace=3.0)
-                exit_code = await waiter
-        finally:
-            if not waiter.done():
-                waiter.cancel()
-            if self._status_task is not None and not self._status_task.done():
-                self._status_task.cancel()
-            self._flush_partial()
-            self._result = BashResult(
-                exit_code=exit_code,
-                output="".join(self._lines),
-                duration=round(time.monotonic() - self._start_time, 3),
-                timed_out=self._timed_out,
-            )
-            self._lines.clear()
-            try:
-                self._on_done_callback(self)
-            except Exception:
-                logger.debug("Bash done callback failed", exc_info=True)
-        return self._result
-
-    def __await__(self):
-        self._awaited = True
-        return asyncio.shield(self._task).__await__()
-
-    def __repr__(self) -> str:
-        status = "running" if self.running or self._result is None else f"exit={self._result.exit_code}"
-        return f"<BashHandle pid={self.pid} {status} command={self.command!r}>"
 
 
 class KernelWorker:
@@ -852,281 +563,27 @@ class KernelWorker:
         return vars_info
 
     def snapshot_vars(self, snapshot_dir: str) -> dict[str, Any]:
-        """Serialize user-defined variables to `snapshot_dir` (JSON-first, then pickle/dill) with SHA-256 + HMAC."""
-        import pickle
-        import shutil
-        from pathlib import Path
-
-        import dill
-
-        if not snapshot_dir or not str(snapshot_dir).strip():
-            raise ValueError("snapshot_dir must not be empty")
-
-        target = Path(snapshot_dir).resolve()
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp_dir = target.parent / f".{target.name}.{os.getpid()}.tmp"
-        if tmp_dir.exists():
-            shutil.rmtree(tmp_dir)
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-
-        saved: list[str] = []
-        skipped: list[str] = []
-        module_hints: dict[str, str] = {}
-        total_bytes = 0
-        # One file per *object*, not per name: `rows2 = rows` is one payload that
-        # two names point at. Keyed by `id()` while `self._namespace` keeps every
-        # value alive, so an id cannot be recycled mid-loop.
-        files: dict[str, str] = {}
-        hashes: dict[str, str] = {}
-        written: dict[int, str] = {}
-
-        try:
-            for name, val in list(self._namespace.items()):
-                if (
-                    (name in self._reserved_names and val is self._default_bindings.get(name))
-                    or (name in self._auto_imported and val is self._auto_imported.get(name))
-                    or name.startswith("__")
-                ):
-                    continue
-                if isinstance(val, BashHandle):
-                    skipped.append(f"{name} (running/process handle)")
-                    continue
-                if isinstance(val, types.ModuleType):
-                    if _is_reimportable(val):
-                        module_hints[name] = val.__name__
-                    continue
-
-                key = id(val)
-                if key in written:
-                    files[name] = written[key]
-                    saved.append(name)
-                    continue
-
-                ext = ".dill"
-                blob: bytes | None = None
-                if is_json_safe(val):
-                    try:
-                        blob = json.dumps(val, ensure_ascii=False, allow_nan=False).encode("utf-8")
-                        ext = ".json"
-                    except Exception:
-                        blob = None
-
-                if blob is None:
-                    try:
-                        blob = pickle.dumps(val, protocol=pickle.HIGHEST_PROTOCOL)
-                    except Exception as pickle_err:
-                        try:
-                            blob = dill.dumps(val, recurse=True)
-                        except Exception as dill_err:
-                            # Both serializers failed, so this value genuinely cannot ride
-                            # along. Name the reason from the *fallback* failure: pickle
-                            # rejecting a lambda or a live socket is expected and boring,
-                            # while dill failing on plain data is the surprising case.
-                            skipped.append(
-                                f"{name} ({type(val).__name__}: {_skip_reason(pickle_err, dill_err)})"
-                            )
-                            continue
-
-                if len(blob) > MAX_VAR_BYTES:
-                    skipped.append(f"{name} (>16 MiB)")
-                    continue
-                if total_bytes + len(blob) > MAX_TOTAL_SNAPSHOT_BYTES:
-                    skipped.append(f"{name} (snapshot >256 MiB)")
-                    continue
-
-                fname = f"obj{len(written):05d}{ext}"
-                (tmp_dir / fname).write_bytes(blob)
-                written[key] = fname
-                files[name] = fname
-                hashes[fname] = sha256_hex(blob)
-                total_bytes += len(blob)
-                saved.append(name)
-
-            manifest: dict[str, Any] = {
-                "saved": saved,
-                "skipped": skipped,
-                "modules": module_hints,
-                "files": files,
-                "hashes": hashes,
-                "cwd": os.getcwd(),
-            }
-            hmac_key = load_or_create_snapshot_key()
-            if hmac_key is not None:
-                manifest["hmac"] = sign_manifest(manifest, hmac_key)
-            (tmp_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-            backup_dir: Path | None = None
-            if target.exists():
-                backup_dir = target.parent / f".{target.name}.{os.getpid()}.bak"
-                if backup_dir.exists():
-                    shutil.rmtree(backup_dir, ignore_errors=True)
-                target.rename(backup_dir)
-            try:
-                tmp_dir.rename(target)
-            except BaseException:
-                if backup_dir is not None and backup_dir.exists() and not target.exists():
-                    backup_dir.rename(target)
-                raise
-            if backup_dir is not None and backup_dir.exists():
-                shutil.rmtree(backup_dir, ignore_errors=True)
-        except BaseException:
-            if tmp_dir.exists():
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-            raise
-        return manifest
-
-    def _reimport_modules(self, hints: dict[str, str], restored: list[str], skipped: list[str]) -> None:
-        """Re-import `alias -> module_name` hints for modules that were not pickled."""
-        for alias, mod_name in hints.items():
-            if alias in self._namespace:
-                continue
-            try:
-                self._namespace[alias] = importlib.import_module(mod_name)
-                restored.append(alias)
-            except Exception:
-                skipped.append(f"{alias} (module {mod_name} not importable)")
+        """Serialize user-defined variables to ``snapshot_dir`` (JSON-first, then pickle/dill) with SHA-256 + HMAC."""
+        return snapshot_namespace(
+            self._namespace,
+            snapshot_dir,
+            reserved_names=self._reserved_names,
+            default_bindings=self._default_bindings,
+            auto_imported=self._auto_imported,
+        )
 
     @staticmethod
     def _restore_cwd(saved_cwd: object, root: str | None) -> str | None:
-        """Which directory a restore should land in, or ``None`` to leave it alone.
-
-        Three cases, and the third is the one that matters:
-
-        - No snapshot cwd, or it no longer exists: stay in ``root`` if it is usable.
-        - It names a place inside ``root`` (or ``root`` itself): honour it, because a
-          person who ``os.chdir``-ed into a subdirectory expects to come back there.
-        - It names somewhere else entirely -- a different project, or an ancestor of
-          ``root`` recorded before the session's folder was corrected: ignore it and
-          use ``root``. A snapshot is a picture of a kernel, not a decision about
-          which project the session belongs to; that decision is the log's.
-        """
-        if not isinstance(root, str) or root == "":
-            # A caller that did not say where it is has not said anything better than
-            # the snapshot did, so the old behaviour is still the right one.
-            return saved_cwd if isinstance(saved_cwd, str) and os.path.isdir(saved_cwd) else None
-
-        usable_root = root if os.path.isdir(root) else None
-        if not isinstance(saved_cwd, str) or not os.path.isdir(saved_cwd):
-            return usable_root
-        root_real = os.path.realpath(root)
-        saved_real = os.path.realpath(saved_cwd)
-        if saved_real == root_real or saved_real.startswith(root_real + os.sep):
-            return saved_cwd
-        return usable_root
+        return restore_cwd(saved_cwd, root)
 
     def restore_vars(self, snapshot_dir: str, root: str | None = None) -> dict[str, Any]:
-        """Restore variables from `snapshot_dir` into the kernel namespace.
-
-        ``root`` is the directory this kernel was started in -- the folder the
-        session is being resumed in. A snapshot also records the directory the
-        kernel happened to be in when it was saved, because a person can call
-        ``os.chdir`` and expect to come back to it. That absolute path is only
-        meaningful while it still names a place inside ``root``: a session reopened
-        from another folder, or one whose snapshot was written before that folder
-        was fixed, would otherwise restore the kernel into a directory the rest of
-        the runtime does not believe it is in -- the model then reads files from a
-        project the page never mentioned.
-        """
-        import pickle
-        from pathlib import Path
-
-        import dill
-
-        target = Path(snapshot_dir)
-        manifest_path = target / "manifest.json"
-        if not manifest_path.is_file():
-            return {"restored": [], "skipped": []}
-
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        restore_into = self._restore_cwd(manifest.get("cwd"), root)
-        if restore_into is not None:
-            os.chdir(restore_into)
-
-        restored: list[str] = []
-        skipped: list[str] = list(manifest.get("skipped", []))
-        self._reimport_modules(manifest.get("modules", {}), restored, skipped)
-
-        hmac_rejected = False
-        strict_unsigned = False
-        if "hmac" in manifest:
-            hmac_key = load_snapshot_key()
-            if hmac_key is None or not verify_manifest_hmac(manifest, hmac_key):
-                hmac_rejected = True
-        elif os.environ.get("QUARTZ_STRICT_SNAPSHOTS") == "1":
-            strict_unsigned = True
-
-        has_hashes = "hashes" in manifest and isinstance(manifest.get("hashes"), dict)
-        hashes: dict[str, Any] = manifest.get("hashes") if has_hashes else {}
-
-        # Snapshot files are keyed by object (`obj00000.json` / `obj00000.dill`) since dedup landed;
-        # older snapshots keyed them by variable name. Restoring through a cache
-        # keyed on the file keeps aliasing intact on the way back in, so a snapshot
-        # where `rows2 is rows` restores as `rows2 is rows` rather than two copies.
-        files: dict[str, str] = manifest.get("files") or {}
-        loaded_by_file: dict[str, Any] = {}
-
-        for name in manifest.get("saved", []):
-            fname = files.get(name) or f"{name}.dill"
-            is_json = fname.endswith(".json")
-            if not is_json:
-                if hmac_rejected:
-                    skipped.append(f"{name} (tampered snapshot)")
-                    continue
-                if strict_unsigned:
-                    skipped.append(f"{name} (unsigned snapshot rejected)")
-                    continue
-            var_file = target / fname
-            if not var_file.is_file():
-                skipped.append(f"{name} (missing)")
-                continue
-            if fname in loaded_by_file:
-                loaded = loaded_by_file[fname]
-                if isinstance(loaded, _UnpickleFailed):
-                    skipped.append(f"{name} ({loaded.reason})")
-                    continue
-                self._namespace[name] = loaded
-                restored.append(name)
-                continue
-            try:
-                raw = var_file.read_bytes()
-                if has_hashes:
-                    expected_hash = hashes.get(fname)
-                    if not isinstance(expected_hash, str) or sha256_hex(raw) != expected_hash:
-                        loaded_by_file[fname] = _TAMPERED_SNAPSHOT
-                        skipped.append(f"{name} (tampered snapshot)")
-                        continue
-                if is_json:
-                    loaded = json.loads(raw.decode("utf-8"))
-                else:
-                    try:
-                        loaded = pickle.loads(raw)
-                    except Exception:
-                        loaded = dill.loads(raw)
-                    if inspect.isfunction(loaded) and loaded.__module__ in _CELL_MODULES:
-                        rebuilt = types.FunctionType(
-                            loaded.__code__,
-                            self._namespace,
-                            loaded.__name__,
-                            loaded.__defaults__,
-                            loaded.__closure__,
-                        )
-                        rebuilt.__kwdefaults__ = loaded.__kwdefaults__
-                        rebuilt.__doc__ = loaded.__doc__
-                        rebuilt.__annotations__ = loaded.__annotations__
-                        loaded = rebuilt
-                loaded_by_file[fname] = loaded
-                self._namespace[name] = loaded
-                restored.append(name)
-            except Exception:
-                loaded_by_file[fname] = _UNPICKLE_FAILED
-                skipped.append(f"{name} (unpickle error)")
-
-        for name, val in self._default_bindings.items():
-            if name not in self._namespace:
-                self._namespace[name] = val
-
-        return {"restored": restored, "skipped": skipped}
-
-
+        """Restore variables from ``snapshot_dir`` into the kernel namespace."""
+        return restore_namespace(
+            self._namespace,
+            snapshot_dir,
+            default_bindings=self._default_bindings,
+            root=root,
+        )
 def _start_stdin_reader(
     worker: KernelWorker,
     loop: asyncio.AbstractEventLoop,
@@ -1193,119 +650,11 @@ async def _main() -> None:
     with contextlib.suppress(ValueError, OSError):
         signal.signal(signal.SIGINT, _sigint_handler)
 
-    bridge_sock: socket.socket | None = None
-    bridge_stop = threading.Event()
-    bridge_tmpdir: str | None = None
-    if os.environ.get("QUARTZ_HOST_BRIDGE") == "1":
-        import select
-        import socket
-        import tempfile
-
-        from quartz.kernel.bridge import ensure_shim_dir
-
-        bridge_tmpdir = tempfile.mkdtemp(prefix="quartz-bridge-")
-        bridge_dir = Path(bridge_tmpdir)
-        shim_dir = ensure_shim_dir(bridge_dir / "shims", python_executable=sys.executable)
-        sock_path = bridge_dir / "bridge.sock"
-        os.environ["QUARTZ_HOST_BRIDGE_SOCK"] = str(sock_path)
-        os.environ["PATH"] = f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
-
-        bridge_inflight_lock = threading.Lock()
-        bridge_inflight = 0
-
-        def _handle_bridge_conn(conn: socket.socket) -> None:
-            nonlocal bridge_inflight
-            try:
-                buf = bytearray()
-                while b"\n" not in buf:
-                    chunk = conn.recv(65536)
-                    if not chunk:
-                        return
-                    buf.extend(chunk)
-                raw_line = bytes(buf).split(b"\n", 1)[0]
-                if not raw_line:
-                    return
-                req = json.loads(raw_line.decode("utf-8"))
-
-                with bridge_inflight_lock:
-                    bridge_inflight += 1
-                    os.environ["QUARTZ_BRIDGE_WAITING"] = "1"
-
-                rpc_id = uuid.uuid4().hex
-                ev = threading.Event()
-                box: list[dict[str, Any]] = []
-                with worker._sync_host_lock:
-                    worker._sync_host_pending[rpc_id] = (ev, box)
-                try:
-                    worker._send(
-                        {
-                            "type": "host_request",
-                            "id": rpc_id,
-                            "method": "bridge.exec",
-                            "params": req,
-                        }
-                    )
-                    cancelled = False
-                    while not ev.wait(timeout=0.05):
-                        if bridge_stop.is_set():
-                            cancelled = True
-                            break
-                        readable, _, _ = select.select([conn], [], [], 0)
-                        if readable:
-                            peek = conn.recv(1, socket.MSG_PEEK)
-                            if peek == b"":
-                                cancelled = True
-                                break
-                    if cancelled:
-                        worker._send({"type": "host_cancel", "id": rpc_id})
-                        return
-                    resp = box[0] if box else {}
-                finally:
-                    with worker._sync_host_lock:
-                        worker._sync_host_pending.pop(rpc_id, None)
-                    with bridge_inflight_lock:
-                        bridge_inflight = max(0, bridge_inflight - 1)
-                        if bridge_inflight == 0:
-                            os.environ.pop("QUARTZ_BRIDGE_WAITING", None)
-
-                if resp.get("ok") and isinstance(resp.get("result"), dict):
-                    out = resp["result"]
-                else:
-                    out = {
-                        "exit_code": 126,
-                        "stdout": "",
-                        "stderr": str(resp.get("error", "Host bridge request failed")) + "\n",
-                    }
-                conn.sendall((json.dumps(out) + "\n").encode("utf-8"))
-            except Exception as exc:
-                with contextlib.suppress(Exception):
-                    conn.sendall(
-                        (
-                            json.dumps({"exit_code": 126, "stdout": "", "stderr": f"bridge error: {exc}\n"})
-                            + "\n"
-                        ).encode("utf-8")
-                    )
-            finally:
-                with contextlib.suppress(Exception):
-                    conn.close()
-
-        bridge_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        bridge_sock.bind(str(sock_path))
-        bridge_sock.listen(16)
-        bridge_sock.settimeout(0.2)
-
-        def _accept_bridge() -> None:
-            while not bridge_stop.is_set():
-                try:
-                    conn, _ = bridge_sock.accept()
-                except TimeoutError:
-                    continue
-                except OSError:
-                    break
-                threading.Thread(target=_handle_bridge_conn, args=(conn,), daemon=True).start()
-
-        threading.Thread(target=_accept_bridge, daemon=True).start()
-
+    bridge_server = BridgeServer.start_if_enabled(
+        send_fn=worker._send,
+        sync_host_lock=worker._sync_host_lock,
+        sync_host_pending=worker._sync_host_pending,
+    )
     worker._send({"type": "ready"})
 
     async def _run_and_send(req_id: str, code: str) -> None:
@@ -1388,12 +737,8 @@ async def _main() -> None:
             break
 
     # Clean up any still-running background bash processes, bridge, and MCP sessions on shutdown
-    bridge_stop.set()
-    if bridge_sock is not None:
-        with contextlib.suppress(Exception):
-            bridge_sock.close()
-    if bridge_tmpdir is not None:
-        shutil.rmtree(bridge_tmpdir, ignore_errors=True)
+    if bridge_server is not None:
+        bridge_server.close()
     await worker.mcp.close()
     for h in worker._handles:
         if h.running:

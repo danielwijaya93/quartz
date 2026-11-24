@@ -33,6 +33,7 @@ from quartz.kernel.bridge import (
     validate_bridge_cwd,
 )
 from quartz.kernel.sandbox import SandboxConfig, sandbox_env_overrides, wrap_command
+from quartz.settings import resolve_bridge_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -304,7 +305,7 @@ class KernelClient:
         else:
             return {"exit_code": 127, "stdout": "", "stderr": f"{tool}: command not found on host\n"}
 
-        timeout_s = 900.0 if tool == "quartz" else 290.0
+        timeout_s = resolve_bridge_timeout(tool)
         proc = subprocess.Popen(
             cmd,
             cwd=str(target_cwd),
