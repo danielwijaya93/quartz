@@ -597,7 +597,7 @@ describe("FolderSidebar's undo notice", () => {
     expect(onSelectSession).toHaveBeenCalledWith("s1");
   });
 
-  it("supports per-row dismiss for done/error (not permission/working) and Unread filter chip", async () => {
+  it("supports per-row dismiss for done/error (not permission/working) and omits Refresh and Unread buttons", async () => {
     const user = userEvent.setup();
     const onDismissActiveSession = vi.fn();
     renderSidebar({
@@ -659,12 +659,8 @@ describe("FolderSidebar's undo notice", () => {
     await user.click(within(activeRegion).getByRole("button", { name: "Dismiss Write tests" }));
     expect(onDismissActiveSession).toHaveBeenCalledWith("s2");
 
-    // Unread filter chip filters workspace sessions to unread/attention ones.
-    const unreadBtn = screen.getByRole("button", { name: /^Unread\s*\d*$/i });
-    expect(unreadBtn).toHaveAttribute("aria-pressed", "false");
-    await user.click(unreadBtn);
-    expect(unreadBtn).toHaveAttribute("aria-pressed", "true");
-    expect(screen.queryByRole("button", { name: /^Write tests$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Unread\s*\d*$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Refresh sessions" })).not.toBeInTheDocument();
   });
 
   it("does not render Pin or Unpin buttons", () => {

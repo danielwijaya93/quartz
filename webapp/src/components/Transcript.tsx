@@ -1,6 +1,6 @@
 import * as React from "react";
 import { ScrollShadow } from "@heroui/react";
-import { ArrowDown, FileCode, GitBranch, Sparkles, Terminal } from "lucide-react";
+import { ArrowDown, FileCode, GitBranch, Terminal } from "lucide-react";
 import { directoryLabel } from "@/lib/sidebar";
 import {
   groupTurns,
@@ -447,9 +447,6 @@ function EmptyTranscript({
   const folder = cwd ? directoryLabel(cwd) : "";
   return (
     <div className="flex flex-col items-center gap-4 py-16 text-center">
-      <div className="relative flex size-12 items-center justify-center rounded-2xl border border-border/80 bg-surface-secondary/60 shadow-xs ring-1 ring-border/40">
-        <Sparkles aria-hidden="true" className="size-5 text-accent" />
-      </div>
       <div className="space-y-1.5">
         <p className="text-lg font-semibold tracking-tight text-foreground" title={cwd || undefined}>
           {folder ? `New session in ${folder}` : "No turns yet"}

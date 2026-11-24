@@ -1,6 +1,6 @@
 import * as React from "react";
-import { Disclosure, cn } from "@heroui/react";
-import { Sparkles, Wrench } from "lucide-react";
+import { Disclosure, Spinner, cn } from "@heroui/react";
+import { AlertTriangle, Wrench } from "lucide-react";
 import {
   failedToolCount,
   stepLabel,
@@ -118,13 +118,13 @@ export function TurnTray({
               the failure count from a screen reader, which is the one thing this
               header must never do. `aria-expanded` already says it opens. */}
           <Disclosure.Trigger className="flex min-h-0 w-full cursor-pointer items-center gap-2 px-2 py-1 text-left text-xs text-muted">
-            <Sparkles
-              aria-hidden="true"
-              className={cn(
-                "size-3.5 shrink-0",
-                turn.live ? "text-accent motion-safe:animate-pulse" : "text-muted",
-              )}
-            />
+            {turn.live ? (
+              <Spinner size="sm" color="current" aria-hidden="true" className="size-3.5 shrink-0 text-accent" />
+            ) : failed > 0 ? (
+              <AlertTriangle aria-hidden="true" className="size-3.5 shrink-0 text-danger" />
+            ) : (
+              <Wrench aria-hidden="true" className="size-3.5 shrink-0 text-muted" />
+            )}
             <span className={cn("min-w-0 truncate", turn.live && "text-foreground")}>{label}</span>
             {failed > 0 ? (
               <>

@@ -119,33 +119,15 @@ export function FolderSidebar({
   );
   const expandedOverrides = collapseState.folders;
   const [searchQuery, setSearchQuery] = React.useState("");
-  const [unreadOnly, setUnreadOnly] = React.useState(false);
 
   const groups = React.useMemo(() => (data ? groupSessions(data) : []), [data]);
   const sidebarState = data?.sidebar ?? EMPTY_STATE;
-  const unreadIds = React.useMemo(() => {
-    const ids = new Set<string>();
-    for (const [sid, act] of Object.entries(sessionActivity)) {
-      if (act?.unread || act?.status === "permission" || act?.status === "error") {
-        ids.add(sid);
-      }
-    }
-    for (const item of activeSessionItems) {
-      if (item.kind === "permission" || item.kind === "error" || !item.read) {
-        ids.add(item.sessionId);
-      }
-    }
-    return ids;
-  }, [activeSessionItems, sessionActivity]);
-  const visibleGroups = React.useMemo(() => {
-    const base = filterWorkspaceGroups(groups, searchQuery, sidebarState);
-    if (!unreadOnly) return base;
-    return base
-      .map((g) => ({ ...g, sessions: g.sessions.filter((s) => unreadIds.has(s.sessionId)) }))
-      .filter((g) => g.sessions.length > 0);
-  }, [groups, searchQuery, sidebarState, unreadIds, unreadOnly]);
+  const visibleGroups = React.useMemo(
+    () => filterWorkspaceGroups(groups, searchQuery, sidebarState),
+    [groups, searchQuery, sidebarState],
+  );
   const searching = searchQuery.trim() !== "";
-  const filtering = searching || unreadOnly;
+  const filtering = searching;
   const sessions = React.useMemo(() => data?.sessions ?? [], [data]);
   const sessionById = React.useMemo(() => {
     const map = new Map<string, SidebarSession>();
@@ -279,14 +261,9 @@ export function FolderSidebar({
       <SidebarHeader
         drawer={drawer}
         searchQuery={searchQuery}
-        unreadOnly={unreadOnly}
-        unreadCount={unreadIds.size}
         onNewFolder={onNewFolder}
-        onReload={onReload}
-        onOpenArchive={onOpenArchive}
         onClose={onClose}
         onSearchChange={setSearchQuery}
-        onToggleUnreadOnly={() => setUnreadOnly((prev) => !prev)}
       />
 
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5">
@@ -336,19 +313,12 @@ export function FolderSidebar({
             : visibleGroups.length === 0
               ? (
                 <div className="px-2 py-4 text-center text-xs text-muted">
-                  <p>
-                    {searching
-                      ? `No matches for “${searchQuery.trim()}”.`
-                      : "No unread sessions."}
-                  </p>
+                  <p>No matches for “{searchQuery.trim()}”.</p>
                   <Button
                     size="sm"
                     variant="ghost"
                     className="mt-1.5 h-6 text-xs"
-                    onPress={() => {
-                      setSearchQuery("");
-                      setUnreadOnly(false);
-                    }}
+                    onPress={() => setSearchQuery("")}
                   >
                     Clear filter
                   </Button>
@@ -440,6 +410,7 @@ export function FolderSidebar({
       <SidebarFooter
         drawer={drawer}
         onClose={onClose}
+        onOpenArchive={onOpenArchive}
         onOpenMcp={onOpenMcp}
         onOpenSettings={onOpenSettings}
       />
