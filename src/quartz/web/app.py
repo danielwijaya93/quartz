@@ -142,6 +142,14 @@ def create_app(
         finally:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(manager.close_all)
+            with contextlib.suppress(Exception):
+                from quartz.mcp.pool import close_shared_host_mcp_pool
+
+                await asyncio.to_thread(close_shared_host_mcp_pool)
+            with contextlib.suppress(Exception):
+                from quartz.providers.http_pool import close_shared_http_clients
+
+                await asyncio.to_thread(close_shared_http_clients)
 
     app = FastAPI(
         title="quartz web",

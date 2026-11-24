@@ -760,8 +760,9 @@ def parse_sse_payload(payload: dict[str, Any], tc_counter: list[int]) -> list[St
 class GoogleAntigravityProvider:
     """LLMProvider backed by Google Antigravity OAuth subscription."""
 
-    def __init__(self) -> None:
-        self._http: Any = None
+    def __init__(self, *, http_client: Any | None = None) -> None:
+        self._http: Any = http_client
+        self._owns_http = http_client is None
         self.capabilities = ProviderCapabilities(
             reasoning_effort=True,
             stream_options=False,
@@ -771,6 +772,7 @@ class GoogleAntigravityProvider:
     def _get_http(self) -> Any:
         if self._http is None:
             self._http = httpx2.Client(timeout=resolve_http_timeout())
+            self._owns_http = True
         return self._http
 
     def stream(
@@ -852,8 +854,8 @@ class GoogleAntigravityProvider:
 
     def close(self) -> None:
         http = self._http
-        if http is not None:
-            self._http = None
+        self._http = None
+        if http is not None and self._owns_http:
             close_fn = getattr(http, "close", None)
             if callable(close_fn):
                 close_fn()

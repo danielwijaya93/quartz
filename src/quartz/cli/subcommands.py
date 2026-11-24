@@ -532,6 +532,7 @@ def _handle_web_cli(argv: list[str]) -> None:
                 origin="web",
                 transport="web",
                 sandbox=args.sandbox if sandbox is None else sandbox,
+                shared_resources=True,
             )
         )
 
