@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { initialState, reduceAll, resetIdCounter } from "./transcript";
-import type { ServerMessage } from "../protocol";
+import { initialState, reduceAll, resetIdCounter } from "../src/lib/transcript";
+import type { ServerMessage } from "../src/protocol";
 // The mock is the reference recording of a turn, so the reducer is tested against
 // the same frames a developer sees in the browser.
-import { commandResultFrame, scriptedTurn } from "../../mock/script.mjs";
+import { commandResultFrame, scriptedTurn } from "./script.mjs";
 
 const frames = scriptedTurn() as ServerMessage[];
 

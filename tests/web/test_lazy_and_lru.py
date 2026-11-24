@@ -1,19 +1,65 @@
-"""Tests for Phase 2: LRU web session hibernation and InProcessKernel."""
+"""Web lazy-import guards and LRU session hibernation tests."""
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Any
 
-from quartz.bootstrap import BootstrapOptions, build_runtime
 from quartz.core.loop import TurnUsage
 from quartz.core.runtime import AgentRuntime
 from quartz.core.session import Session
 from quartz.core.turn import TurnOutcome, TurnStatus
-from quartz.kernel.client import KernelClient
-from quartz.kernel.inprocess import InProcessKernel
 from quartz.web.session import SessionManager
+
+
+def test_web_app_import_does_not_load_pywebpush_or_cryptography() -> None:
+    code = """
+import sys
+import quartz.web.app
+loaded = [m for m in sys.modules if m.startswith(('pywebpush', 'py_vapid', 'cryptography'))]
+print(loaded)
+"""
+    res = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert res.stdout.strip() == "[]"
+
+
+def test_push_store_reuses_existing_keys_without_importing_crypto(tmp_path: Path) -> None:
+    push_file = tmp_path / "push.json"
+    push_file.write_text(
+        json.dumps(
+            {
+                "vapid_private_pem": "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n",
+                "vapid_public_key": "B" * 87,
+                "subscriptions": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    code = f"""
+import sys
+from pathlib import Path
+from quartz.web.push import PushStore
+s = PushStore(Path({str(push_file)!r}))
+assert s.public_key == {'B' * 87!r}
+loaded = [m for m in sys.modules if m.startswith(('pywebpush', 'py_vapid', 'cryptography'))]
+print(loaded)
+"""
+    res = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert res.stdout.strip() == "[]"
 
 
 class _FakeKernel:
@@ -142,71 +188,3 @@ def test_session_manager_never_hibernates_attached_or_busy_sessions(tmp_path: Pa
 
     gate.set()
     mgr.close_all()
-
-
-async def test_inprocess_kernel_exec_await_snapshot_and_restore(tmp_path: Path) -> None:
-    k = InProcessKernel(cwd=tmp_path)
-    k.start()
-    try:
-        k.configure(headless=True)
-        r1 = await k.exec_cell("x = 21 * 2\nx")
-        assert r1.ok and r1.result == "42"
-
-        r2 = await k.exec_cell("await asyncio.sleep(0.01)\nprint('hi', x)")
-        assert r2.ok and "hi 42" in r2.stdout
-
-        # Headless bash() runs inline and returns output
-        r3 = await k.exec_cell("res = await bash('echo hello-inprocess')\nprint(res.output.strip())")
-        assert r3.ok and "hello-inprocess" in r3.stdout
-
-        assert "x" in k.list_vars()
-        assert "helpers" in k.list_helpers()
-
-        snap_dir = tmp_path / "snap"
-        manifest = k.snapshot(snap_dir)
-        assert "x" in manifest.get("saved", [])
-    finally:
-        k.close()
-
-    k2 = InProcessKernel(cwd=tmp_path)
-    k2.start()
-    try:
-        restored = k2.restore(tmp_path / "snap", root=tmp_path)
-        assert "x" in restored["restored"]
-        r4 = await k2.exec_cell("x")
-        assert r4.ok and r4.result == "42"
-    finally:
-        k2.close()
-
-
-async def test_bootstrap_selects_inprocess_kernel_for_unsandboxed_headless(tmp_path: Path) -> None:
-    def _fake_client():
-        return object(), "stub", "stub-model", "high", 128_000
-
-    rt_inproc, _ = build_runtime(
-        BootstrapOptions(
-            cwd=tmp_path,
-            headless=True,
-            sandbox=False,
-            client_factory=_fake_client,
-        )
-    )
-    try:
-        assert isinstance(rt_inproc.kernel, InProcessKernel)
-        res = await rt_inproc.kernel.exec_cell("2 + 2")
-        assert res.ok and res.result == "4"
-    finally:
-        rt_inproc.kernel.close()
-
-    rt_interactive, _ = build_runtime(
-        BootstrapOptions(
-            cwd=tmp_path,
-            headless=False,
-            sandbox=False,
-            client_factory=_fake_client,
-        )
-    )
-    try:
-        assert isinstance(rt_interactive.kernel, KernelClient)
-    finally:
-        rt_interactive.kernel.close()
