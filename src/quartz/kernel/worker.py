@@ -537,8 +537,11 @@ class KernelWorker:
         prompt_path = _shlex.quote(str(prompt_file))
         cwd_path = _shlex.quote(str(cwd))
         sid = _shlex.quote(str(session_id))
-        py_exe = _shlex.quote(sys.executable)
-        command = f"{py_exe} -m quartz -p \"$(cat {prompt_path})\" -r {sid} --fork --cwd {cwd_path}"
+        if os.environ.get("QUARTZ_HOST_BRIDGE_SOCK"):
+            command = f"quartz -p \"$(cat {prompt_path})\" -r {sid} --fork --cwd {cwd_path}"
+        else:
+            py_exe = _shlex.quote(sys.executable)
+            command = f"{py_exe} -m quartz -p \"$(cat {prompt_path})\" -r {sid} --fork --cwd {cwd_path}"
         return self._start_bash(command, timeout)
 
     def _send(self, payload: dict[str, Any]) -> None:
