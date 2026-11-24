@@ -450,20 +450,19 @@ def test_real_seam_multi_session_lru_hibernation_restore_and_bg_guard(tmp_path: 
 
 def test_real_seam_bg_bash_wakeup_success_and_failure(tmp_path: Path) -> None:
     """Real bg bash jobs (both exit 0 and non-zero) wake an idle WebSession automatically."""
+    go_ok = tmp_path / "go_ok.flag"
+    go_fail = tmp_path / "go_fail.flag"
 
     def _script(messages: list[dict[str, Any]], idx: int) -> list[Any]:
         last = messages[-1]
         if last["role"] == "user":
             text = str(last["content"])
             if "launch-ok" in text:
-                return _tool_events(
-                    f"tc-ok-{idx}", "h = bash('sleep 0.25 && echo bg-hello'); print(h.pid)"
-                )
+                cmd = f"while [ ! -f {str(go_ok)!r} ]; do sleep 0.02; done; echo bg-hello"
+                return _tool_events(f"tc-ok-{idx}", f"h = bash({cmd!r}); print(h.pid)")
             if "launch-fail" in text:
-                return _tool_events(
-                    f"tc-fail-{idx}",
-                    "h = bash('sleep 0.25 && echo bg-boom >&2 && exit 7'); print(h.pid)",
-                )
+                cmd = f"while [ ! -f {str(go_fail)!r} ]; do sleep 0.02; done; echo bg-boom >&2; exit 7"
+                return _tool_events(f"tc-fail-{idx}", f"h = bash({cmd!r}); print(h.pid)")
             # Auto-woken turn receives the `[bash-done ...]` notice directly as user content.
             return _text_events(f"Woke on: {text}")
         return _text_events("Launched job.")
@@ -475,18 +474,20 @@ def test_real_seam_bg_bash_wakeup_success_and_failure(tmp_path: Path) -> None:
         ws.send_json({"type": "hello", "clientVersion": 1})
         _recv_until(ws, lambda f: f.get("type") == "session_state")
 
-        # 1. Happy path: bg job finishes with exit 0 -> wakes idle session automatically.
+        # 1. Happy path: release bg job ONLY after Turn 1 completes (guaranteed idle wakeup).
         ws.send_json({"type": "prompt", "text": "launch-ok"})
         _recv_until(ws, lambda f: f.get("type") == "turn_end")
+        go_ok.write_text("go", encoding="utf-8")
 
         wake_ok = _recv_until(ws, lambda f: f.get("type") == "turn_end")
         deltas_ok = "".join(f.get("text", "") for f in wake_ok if f.get("type") == "text_delta")
         assert "bg-hello" in deltas_ok
         assert "exit:0" in deltas_ok
 
-        # 2. Unhappy path: bg job fails with exit 7 -> failure wakes idle session too.
+        # 2. Unhappy path: release failing bg job (exit 7) after launch turn completes.
         ws.send_json({"type": "prompt", "text": "launch-fail"})
         _recv_until(ws, lambda f: f.get("type") == "turn_end")
+        go_fail.write_text("go", encoding="utf-8")
 
         wake_fail = _recv_until(ws, lambda f: f.get("type") == "turn_end")
         deltas_fail = "".join(f.get("text", "") for f in wake_fail if f.get("type") == "text_delta")
