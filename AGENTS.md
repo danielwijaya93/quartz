@@ -14,6 +14,7 @@
 - **Explicit errors**: Never silently swallow `except Exception: pass`. Narrow expected cleanup with `contextlib.suppress(...)` or log best-effort failures at `logger.debug(..., exc_info=True)`.
 - **Fail closed on security**: Keep web token auth (`~/.quartz/web-token`), strict `/api/fs/*` path checks, fail-closed OS sandbox (`bwrap`/`sandbox-exec`), host-bridge approvals (`git`/`gh`/`quartz`), and JSON-first HMAC-signed snapshots intact.
 - **Test behavior & comment why**: Test happy paths plus edge/error/cancellation paths. Write comments explaining *why* a non-obvious invariant exists, not *what* the code does.
+- **Fast navigation**: Check `docs/CODEBASE_MAP.md` and `docs/SYMBOL_INDEX.md` before broad searches so you can jump straight to the right file and line.
 
 ## PR Workflow (Features, Fixes, Refactors)
 1. **Branch**: `git checkout main && git pull && git checkout -b <type>/<short-description>` (`feat/`, `fix/`, `perf/`, `refactor/`, `chore/`).
@@ -22,6 +23,7 @@
    - `uv run pyright`
    - `uv run pytest`
    - `cd webapp && npm run verify` (whenever `webapp/` changed)
+   - `uv run python scripts/gen_index.py` (refresh `docs/SYMBOL_INDEX.md` when symbols/files change)
 3. **Version & Commit**: For `feat/`, `fix/`, `perf/`, `refactor/`, bump version via `uv run python scripts/bump_version.py <X.Y.Z>` (minor for `feat`, patch for `fix`/`perf`/`refactor`; skip for `chore/` or docs). Use Conventional Commits (`feat: ...`, `fix: ...`, `perf: ...`, `refactor: ...`).
 4. **PR & CI**: `git push -u origin <branch>` -> `gh pr create --title "..." --body "..."` -> `gh pr checks --watch`.
 5. **Merge & Post-merge**: `gh pr merge --squash --delete-branch && git checkout main && git pull`.
