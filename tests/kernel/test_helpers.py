@@ -257,7 +257,7 @@ def test_format_helpers_for_prompt_includes_custom(tmp_path: Path) -> None:
     assert "`deploy_db(env: str) -> bool`: Migrate database for target environment. (project)" in prompt
 
 
-def test_kernel_executes_custom_project_helper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_kernel_executes_custom_project_helper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("QUARTZ_TRUST_PROJECT", "1")
     project_dir = tmp_path / ".quartz"
     project_dir.mkdir(parents=True)
@@ -273,7 +273,7 @@ def test_kernel_executes_custom_project_helper(tmp_path: Path, monkeypatch: pyte
     kernel.start()
     try:
         # Check cell execution
-        res = kernel.exec_cell("multiply(6, 7)")
+        res = await kernel.exec_cell("multiply(6, 7)")
         assert res.ok
         assert res.result == "42"
 
@@ -333,7 +333,7 @@ def test_custom_helper_can_compose_builtin_helpers(tmp_path: Path) -> None:
     assert "1: first line" in res
 
 
-def test_custom_helper_can_call_bash_in_kernel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_custom_helper_can_call_bash_in_kernel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("QUARTZ_TRUST_PROJECT", "1")
     project_dir = tmp_path / ".quartz"
     project_dir.mkdir(parents=True)
@@ -350,7 +350,7 @@ def test_custom_helper_can_call_bash_in_kernel(tmp_path: Path, monkeypatch: pyte
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        res = kernel.exec_cell("await custom_pwd()")
+        res = await kernel.exec_cell("await custom_pwd()")
         assert res.ok
         assert str(tmp_path.resolve()) == res.result.strip("'\"")
     finally:

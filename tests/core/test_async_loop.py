@@ -11,12 +11,12 @@ from typing import Any
 
 import pytest
 
-from quartz.core.compact import CompactionReason, CompactionResult, compact_messages_async
+from quartz.core.compact import CompactionReason, CompactionResult, compact_messages
 from quartz.core.events import TurnObserver
-from quartz.core.loop import TurnAborted, TurnUsage, agent_loop_async
+from quartz.core.loop import TurnAborted, TurnUsage, agent_loop
 from quartz.core.runtime import AgentRuntime
 from quartz.core.session import Session
-from quartz.core.turn import TurnStatus, TurnView, run_interactive_turn_async
+from quartz.core.turn import TurnStatus, TurnView, run_interactive_turn
 from quartz.kernel.base import CellResult
 from quartz.providers.base import (
     CompletionResult,
@@ -98,7 +98,7 @@ class _FakeAsyncProvider:
         self.stream_calls: list[list[dict[str, Any]]] = []
         self.complete_calls: list[list[dict[str, Any]]] = []
 
-    async def astream(
+    async def stream(
         self,
         model: str,
         messages: list[dict[str, Any]],
@@ -110,7 +110,7 @@ class _FakeAsyncProvider:
         self.stream_calls.append([dict(m) for m in messages])
         return self._streams.pop(0)
 
-    async def acomplete(
+    async def complete(
         self,
         model: str,
         messages: list[dict[str, Any]],
@@ -133,19 +133,14 @@ class _FakeKernel:
         self.interrupted = 0
         self.vars = {"x": "int"}
 
-    async def aexec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
+    async def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
         del timeout
         self.executed.append(code)
         return CellResult(ok=True, stdout="42\n", stderr="", result=None)
 
-    async def await_event(self, timeout: float | None = None) -> bool:
+    async def wait_event(self, timeout: float | None = None) -> bool:
         del timeout
         return False
-
-    def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
-        del timeout
-        self.executed.append(code)
-        return CellResult(ok=True, stdout="42\n", stderr="", result=None)
 
     def interrupt(self) -> None:
         self.interrupted += 1
@@ -154,10 +149,6 @@ class _FakeKernel:
         return []
 
     def has_pending_events(self) -> bool:
-        return False
-
-    def wait_until_event(self, stop_event: Any, timeout: float | None = 0.25) -> bool:
-        del stop_event, timeout
         return False
 
     def consume_restart_notice(self) -> str | None:
@@ -172,11 +163,7 @@ class _FakeKernel:
         return {"helpers": [{"name": "sh", "source": "global"}]}
 
 
-def test_agent_loop_async_streaming_and_tool_calls() -> None:
-    asyncio.run(_test_agent_loop_async_streaming_and_tool_calls())
-
-
-async def _test_agent_loop_async_streaming_and_tool_calls() -> None:
+async def test_agent_loop_streaming_and_tool_calls() -> None:
     stream1 = _FakeAsyncStreamHandle(
         [
             ThinkingDelta("Planning"),
@@ -197,7 +184,7 @@ async def _test_agent_loop_async_streaming_and_tool_calls() -> None:
     usage_stats = TurnUsage()
     messages: list[dict[str, Any]] = [{"role": "user", "content": "compute"}]
 
-    answer, updated, tokens = await agent_loop_async(
+    answer, updated, tokens = await agent_loop(
         provider,  # type: ignore[arg-type]
         "test-model",
         "sys",
@@ -218,11 +205,7 @@ async def _test_agent_loop_async_streaming_and_tool_calls() -> None:
     assert updated[-1] == {"role": "assistant", "content": "Done: 42"}
 
 
-def test_compact_messages_async_and_loop_compaction() -> None:
-    asyncio.run(_test_compact_messages_async_and_loop_compaction())
-
-
-async def _test_compact_messages_async_and_loop_compaction() -> None:
+async def test_compact_messages_and_loop_compaction() -> None:
     provider = _FakeAsyncProvider(completions=[CompletionResult(text="Concise summary.", tool_calls=[], usage=Usage())])
     kernel = _FakeKernel()
     msgs = [
@@ -233,7 +216,7 @@ async def _test_compact_messages_async_and_loop_compaction() -> None:
         {"role": "user", "content": "latest question"},
     ]
 
-    res = await compact_messages_async(
+    res = await compact_messages(
         provider,  # type: ignore[arg-type]
         "test-model",
         msgs,
@@ -253,7 +236,7 @@ async def _test_compact_messages_async_and_loop_compaction() -> None:
     )
     obs = _RecordingObserver()
     loop_msgs = [dict(m) for m in msgs]
-    answer, _, _ = await agent_loop_async(
+    answer, _, _ = await agent_loop(
         provider2,  # type: ignore[arg-type]
         "test-model",
         "sys",
@@ -269,11 +252,7 @@ async def _test_compact_messages_async_and_loop_compaction() -> None:
     assert obs.compactions[0].reason is CompactionReason.SUMMARIZED
 
 
-def test_agent_loop_async_abort_via_asyncio_event() -> None:
-    asyncio.run(_test_agent_loop_async_abort_via_asyncio_event())
-
-
-async def _test_agent_loop_async_abort_via_asyncio_event() -> None:
+async def test_agent_loop_abort_via_asyncio_event() -> None:
     stream = _FakeAsyncStreamHandle(
         [TextDelta("part1"), TextDelta("part2"), TextDelta("part3")],
         delay_s=0.05,
@@ -288,7 +267,7 @@ async def _test_agent_loop_async_abort_via_asyncio_event() -> None:
 
     trigger = asyncio.create_task(_trigger_abort())
     with pytest.raises(TurnAborted):
-        await agent_loop_async(
+        await agent_loop(
             provider,  # type: ignore[arg-type]
             "test-model",
             "sys",
@@ -300,12 +279,7 @@ async def _test_agent_loop_async_abort_via_asyncio_event() -> None:
     assert stream.closed
 
 
-@pytest.mark.parametrize("use_async_queue", [True, False])
-def test_agent_loop_async_mid_turn_steering(use_async_queue: bool) -> None:
-    asyncio.run(_test_agent_loop_async_mid_turn_steering(use_async_queue))
-
-
-async def _test_agent_loop_async_mid_turn_steering(use_async_queue: bool) -> None:
+async def test_agent_loop_mid_turn_steering() -> None:
     stream1 = _FakeAsyncStreamHandle(
         [TextDelta("initial "), TextDelta("slow1"), TextDelta("slow2")],
         delay_s=0.04,
@@ -314,9 +288,7 @@ async def _test_agent_loop_async_mid_turn_steering(use_async_queue: bool) -> Non
     provider = _FakeAsyncProvider(streams=[stream1, stream2])
     kernel = _FakeKernel()
     obs = _RecordingObserver()
-    steering: asyncio.Queue[str] | queue.Queue[str] = (
-        asyncio.Queue() if use_async_queue else queue.Queue()
-    )
+    steering: asyncio.Queue[str] = asyncio.Queue()
 
     async def _send_steer() -> None:
         await asyncio.sleep(0.03)
@@ -324,7 +296,7 @@ async def _test_agent_loop_async_mid_turn_steering(use_async_queue: bool) -> Non
 
     steer_task = asyncio.create_task(_send_steer())
     messages: list[dict[str, Any]] = [{"role": "user", "content": "hi"}]
-    answer, updated, _ = await agent_loop_async(
+    answer, updated, _ = await agent_loop(
         provider,  # type: ignore[arg-type]
         "test-model",
         "sys",
@@ -339,11 +311,7 @@ async def _test_agent_loop_async_mid_turn_steering(use_async_queue: bool) -> Non
     assert any(m.get("role") == "user" and m.get("content") == "change direction" for m in updated)
 
 
-def test_run_interactive_turn_async_outcomes(tmp_path: Path) -> None:
-    asyncio.run(_test_run_interactive_turn_async_outcomes(tmp_path))
-
-
-async def _test_run_interactive_turn_async_outcomes(tmp_path: Path) -> None:
+async def test_run_interactive_turn_outcomes(tmp_path: Path) -> None:
     class _View(TurnView):
         def __init__(self) -> None:
             super().__init__()
@@ -374,7 +342,7 @@ async def _test_run_interactive_turn_async_outcomes(tmp_path: Path) -> None:
 
     # OK
     rt_ok = _make_rt(_FakeAsyncProvider(streams=[_FakeAsyncStreamHandle([TextDelta("ok")])]))
-    outcome_ok = await run_interactive_turn_async(rt_ok, _View())
+    outcome_ok = await run_interactive_turn(rt_ok, _View())
     assert outcome_ok.status is TurnStatus.OK
     assert rt_ok.turn_count == 1
 
@@ -382,17 +350,17 @@ async def _test_run_interactive_turn_async_outcomes(tmp_path: Path) -> None:
     rt_abort = _make_rt(_FakeAsyncProvider(streams=[_FakeAsyncStreamHandle([TextDelta("x")], delay_s=0.1)]))
     abort_ev = asyncio.Event()
     abort_ev.set()
-    outcome_abort = await run_interactive_turn_async(rt_abort, _View(), abort_event=abort_ev)
+    outcome_abort = await run_interactive_turn(rt_abort, _View(), abort_event=abort_ev)
     assert outcome_abort.status is TurnStatus.ABORTED
 
     # ERROR
     class _BoomProvider:
-        async def astream(self, *args: Any, **kwargs: Any) -> Any:
+        async def stream(self, *args: Any, **kwargs: Any) -> Any:
             del args, kwargs
             raise RuntimeError("boom")
 
     rt_err = _make_rt(_BoomProvider())
-    outcome_err = await run_interactive_turn_async(rt_err, _View())
+    outcome_err = await run_interactive_turn(rt_err, _View())
     assert outcome_err.status is TurnStatus.ERROR
     assert isinstance(outcome_err.error, RuntimeError)
     assert len(rt_err.messages) == 1

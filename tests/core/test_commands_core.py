@@ -96,6 +96,11 @@ def _run(rt: AgentRuntime, name: str, arg: str = "") -> CommandResult | None:
     return cmd.handler(rt, arg)
 
 
+async def _run_async(rt: AgentRuntime, name: str, arg: str = "") -> CommandResult | None:
+    raw = f"{name} {arg}".strip() if arg else name
+    return await COMMAND_REGISTRY.handle_async(rt, raw)
+
+
 def test_the_registry_lists_every_command_once() -> None:
     names = [cmd.name for cmd in COMMAND_REGISTRY.list_commands()]
     assert len(names) == len(set(names))
@@ -128,21 +133,21 @@ def test_aliases_resolve_to_their_command() -> None:
     assert COMMAND_REGISTRY.get("/nope") is None
 
 
-def test_every_command_returns_a_documented_kind(
+async def test_every_command_returns_a_documented_kind(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A handler either says something (`CommandResult`) or says nothing (`/exit`)."""
     rt = _make_rt(tmp_path, monkeypatch)
     for cmd in COMMAND_REGISTRY.list_commands():
         if cmd.exits:
-            assert cmd.handler(rt, "") is None, "/exit leaves; it has nothing to render"
+            assert await COMMAND_REGISTRY.handle_async(rt, cmd.name) is None, "/exit leaves; it has nothing to render"
             continue
-        result = cmd.handler(rt, "")
+        result = await COMMAND_REGISTRY.handle_async(rt, cmd.name)
         assert isinstance(result, CommandResult), f"{cmd.name} returned {result!r}"
         assert result.kind in KINDS, f"{cmd.name} returned kind={result.kind!r}"
 
 
-def test_only_the_terminal_commands_ask_for_a_terminal(
+async def test_only_the_terminal_commands_ask_for_a_terminal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rt = _make_rt(tmp_path, monkeypatch)
@@ -150,7 +155,7 @@ def test_only_the_terminal_commands_ask_for_a_terminal(
     for cmd in COMMAND_REGISTRY.list_commands():
         if cmd.exits:
             continue
-        result = cmd.handler(rt, "")
+        result = await COMMAND_REGISTRY.handle_async(rt, cmd.name)
         if isinstance(result, CommandResult) and result.kind == "needs_terminal":
             asking.add(cmd.name)
     assert asking == NEEDS_TERMINAL
@@ -340,18 +345,18 @@ def test_prompt_and_usage_are_text(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert "128,000" in usage.body
 
 
-def test_compact_says_nothing_to_do_and_reports_the_new_size(
+async def test_compact_says_nothing_to_do_and_reports_the_new_size(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rt = _make_rt(tmp_path, monkeypatch)
-    untouched = _run(rt, "/compact")
+    untouched = await _run_async(rt, "/compact")
     assert isinstance(untouched, CommandResult)
     assert untouched.kind == "text"
     assert untouched.body == "Nothing to compact yet."
     assert untouched.items == []
 
 
-def test_compact_carries_the_numbers_a_renderer_needs(
+async def test_compact_carries_the_numbers_a_renderer_needs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The compaction line is drawing, but its numbers are data."""
@@ -360,7 +365,7 @@ def test_compact_carries_the_numbers_a_renderer_needs(
     rt = _make_rt(tmp_path, monkeypatch)
     rt.messages = [{"role": "user", "content": "hello"}]
 
-    def _fake_compact(self: AgentRuntime, focus: str | None = None) -> CompactionResult:
+    async def _fake_compact(self: AgentRuntime, focus: str | None = None) -> CompactionResult:
         del focus
         return CompactionResult(
             messages=[{"role": "user", "content": "[summary]"}],
@@ -372,7 +377,7 @@ def test_compact_carries_the_numbers_a_renderer_needs(
         )
 
     monkeypatch.setattr(AgentRuntime, "compact", _fake_compact)
-    result = _run(rt, "/compact", "keep the plan")
+    result = await _run_async(rt, "/compact", "keep the plan")
     assert isinstance(result, CommandResult)
     assert result.items == [
         {

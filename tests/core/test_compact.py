@@ -153,9 +153,9 @@ class _StubKernel:
         return []
 
 
-def test_compact_reports_nothing_to_do_instead_of_silently_failing() -> None:
+async def test_compact_reports_nothing_to_do_instead_of_silently_failing() -> None:
     messages = _tool_loop_turn(steps=2)
-    result = compact_messages(
+    result = await compact_messages(
         _ExplodingClient(),  # type: ignore[arg-type]
         "m",
         messages,
@@ -167,10 +167,10 @@ def test_compact_reports_nothing_to_do_instead_of_silently_failing() -> None:
     assert result.messages is messages
 
 
-def test_compact_clears_tool_results_when_that_is_enough() -> None:
+async def test_compact_clears_tool_results_when_that_is_enough() -> None:
     messages = _tool_loop_turn(steps=8, payload="w" * 3_000)
     tokens_before = estimate_context_tokens(messages)
-    result = compact_messages(
+    result = await compact_messages(
         _ExplodingClient(),  # type: ignore[arg-type]
         "m",
         messages,
@@ -231,7 +231,7 @@ class _OverflowClient:
         self.model_calls = 0
         self.summary_calls = 0
 
-    def complete(
+    async def complete(
         self,
         model: str,
         messages: list[dict[str, Any]],
@@ -254,12 +254,12 @@ class _OverflowClient:
         return _text_turn_response("recovered")
 
 
-def test_loop_compacts_and_retries_once_on_context_overflow() -> None:
+async def test_loop_compacts_and_retries_once_on_context_overflow() -> None:
     client = _OverflowClient()
     messages = _tool_loop_turn(steps=10)
     observer = RecordingObserver()
 
-    answer, updated, _ = agent_loop(
+    answer, updated, _ = await agent_loop(
         client,  # type: ignore[arg-type]
         "m",
         "system",
@@ -279,7 +279,7 @@ def test_loop_compacts_and_retries_once_on_context_overflow() -> None:
 
 
 class _AlwaysOverflowClient:
-    def complete(
+    async def complete(
         self,
         model: str,
         messages: list[dict[str, Any]],
@@ -293,9 +293,9 @@ class _AlwaysOverflowClient:
         raise ContextOverflowError("still too long", provider="test", status_code=400)
 
 
-def test_loop_raises_after_a_single_overflow_recovery() -> None:
+async def test_loop_raises_after_a_single_overflow_recovery() -> None:
     with pytest.raises(ContextOverflowError):
-        agent_loop(
+        await agent_loop(
             _AlwaysOverflowClient(),  # type: ignore[arg-type]
             "m",
             "system",

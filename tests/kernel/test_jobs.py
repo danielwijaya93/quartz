@@ -159,11 +159,11 @@ def test_banner_count_without_jobs() -> None:
     assert line.endswith("· bg x3")
 
 
-def test_kernel_running_bash_jobs_roundtrip(tmp_path: Path) -> None:
+async def test_kernel_running_bash_jobs_roundtrip(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        res = kernel.exec_cell("bg = bash('sleep 0.4 && echo jobs_ok')")
+        res = await kernel.exec_cell("bg = bash('sleep 0.4 && echo jobs_ok')")
         assert res.ok
         # bg_jobs push follows bg_count; poll briefly for arrival.
         jobs: list[dict] = []
@@ -227,7 +227,7 @@ def test_running_bash_jobs_fallback_without_started_at(tmp_path: Path) -> None:
         kernel.close()
 
 
-def test_jobs_slash_command_lists_and_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_jobs_slash_command_lists_and_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     buf = io.StringIO()
     test_console = Console(file=buf, force_terminal=False, width=120, color_system=None)
     test_printer = BlockPrinter(test_console)
@@ -255,7 +255,7 @@ def test_jobs_slash_command_lists_and_empty(tmp_path: Path, monkeypatch: pytest.
         rt.kernel.start()
         assert _handle_slash_command(rt, "/jobs") is False
         assert "No background jobs" in buf.getvalue()
-        rt.kernel.exec_cell("bg = bash('sleep 0.4')")
+        await rt.kernel.exec_cell("bg = bash('sleep 0.4')")
         jobs: list[dict] = []
         for _ in range(50):
             jobs = rt.kernel.running_bash_jobs()
@@ -476,11 +476,11 @@ def test_non_immediate_command_queues_and_says_so(tmp_path: Path, monkeypatch) -
     assert commands.COMMAND_REGISTRY.get("/jobs").immediate is True  # type: ignore[union-attr]
 
 
-def test_launch_worker_uses_bash_tracking(tmp_path: Path) -> None:
+async def test_launch_worker_uses_bash_tracking(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        missing = kernel.exec_cell("launch_worker('', '', '')")
+        missing = await kernel.exec_cell("launch_worker('', '', '')")
         assert not missing.ok
         assert "session_id" in (missing.stderr or missing.stdout)
     finally:

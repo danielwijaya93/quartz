@@ -15,12 +15,12 @@ from quartz.core.loop import drain_bash_events
 from quartz.kernel.client import KernelClient
 
 
-def test_drain_appends_a_status_notice(tmp_path: Path) -> None:
+async def test_drain_appends_a_status_notice(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
         kernel.configure(background_check_every=0.4)
-        assert kernel.exec_cell("bg = bash('echo alive; sleep 2')").ok
+        assert (await kernel.exec_cell("bg = bash('echo alive; sleep 2')")).ok
 
         messages: list[dict] = []
         notice = None
@@ -43,12 +43,12 @@ def test_drain_appends_a_status_notice(tmp_path: Path) -> None:
         kernel.close()
 
 
-def test_drain_reports_done_after_status(tmp_path: Path) -> None:
+async def test_drain_reports_done_after_status(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
         kernel.configure(background_check_every=0.4)
-        assert kernel.exec_cell("bg = bash('sleep 1')").ok
+        assert (await kernel.exec_cell("bg = bash('sleep 1')")).ok
         messages: list[dict] = []
         kinds: list[str] = []
         import time

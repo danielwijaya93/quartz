@@ -14,9 +14,9 @@ import pytest
 
 from quartz.errors import ProviderError
 from quartz.providers.base import (
-    SSEStreamHandle,
     CompletionResult,
     SSEStreamHandle,
+    StreamEvent,
     TextDelta,
     ThinkingDelta,
     ToolCall,
