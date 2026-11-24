@@ -155,9 +155,10 @@ def build_bwrap_command(
     if not cfg.network:
         args.append("--unshare-net")
 
-    # --unshare-pid isolates the worker PID tree so tearing down the worker
-    # reaps any subprocesses it spawned even when --new-session is set.
-    args.extend(["--unshare-pid", "--new-session", "--", *cmd])
+    # --unshare-pid + --die-with-parent ensures tearing down the outer bwrap
+    # process (gracefully or via signal) SIGKILLs the inner PID-1 reaper and
+    # every subprocess spawned inside the sandbox even with --new-session.
+    args.extend(["--unshare-pid", "--die-with-parent", "--new-session", "--", *cmd])
     return args
 
 
