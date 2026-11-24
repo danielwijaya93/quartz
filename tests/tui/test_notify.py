@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
-from quartz.core.commands import _cmd_settings
+from quartz.core.commands import cmd_settings
 from quartz.core.loop import TurnUsage
 from quartz.core.runtime import AgentRuntime
 from quartz.core.session import Session
@@ -126,12 +126,12 @@ def test_settings_notifications_command(tmp_path: Path, monkeypatch) -> None:
         compact_reserve_tokens=16_384,
         keep_recent_tokens=32_000,
     )
-    res_off = _cmd_settings(rt, "notifications off")
+    res_off = cmd_settings(rt, "notifications off")
     assert res_off is not None and "off" in (res_off.body or "")
     assert rt.notifications is False
     assert load_settings(tmp_path / "config.json").notifications is False
 
-    res_on = _cmd_settings(rt, "notifications on")
+    res_on = cmd_settings(rt, "notifications on")
     assert res_on is not None and "on" in (res_on.body or "")
     assert rt.notifications is True
     assert load_settings(tmp_path / "config.json").notifications is True

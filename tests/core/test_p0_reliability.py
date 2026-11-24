@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from conftest import RecordingObserver
 
+from quartz.core.commands import cmd_compact
 from quartz.core.compact import _serialize_for_summary, clear_old_tool_results
 from quartz.core.loop import TurnAborted, TurnUsage, agent_loop
 from quartz.core.runtime import AgentRuntime as _CLIRuntime
@@ -18,7 +19,6 @@ from quartz.errors import ProviderError
 from quartz.kernel.client import KernelClient
 from quartz.providers.base import CompletionResult, TextDelta, Usage, UsageEvent
 from quartz.providers.registry import resolve_provider_credentials
-from quartz.tui.commands import _cmd_compact
 
 
 class _FakeStream:
@@ -332,7 +332,7 @@ async def test_cmd_compact_resets_prompt_tokens_preventing_double_compact(tmp_pa
             plain_output=True,
             headless=True,
         )
-        await _cmd_compact(rt, "")
+        await cmd_compact(rt, "")
         assert rt.usage_stats.prompt_tokens < 16_000
 
         observer = RecordingObserver()

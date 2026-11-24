@@ -33,7 +33,6 @@ from quartz.core.commands import (  # re-exported: the registry is the public su
     CommandRegistry,
     CommandResult,
     SlashCommand,
-    cmd_compact,
     cmd_jobs,
     cmd_mcp,
     cmd_settings,
@@ -77,9 +76,6 @@ from quartz.tui.render import (
     dock_status,
 )
 from quartz.tui.replay import _replay_session
-
-# Backward-compatible alias for tests importing `_cmd_compact` from `quartz.tui.commands`.
-_cmd_compact = cmd_compact
 
 __all__ = [
     "COMMAND_REGISTRY",
