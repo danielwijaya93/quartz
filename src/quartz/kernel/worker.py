@@ -512,9 +512,16 @@ class KernelWorker:
         except asyncio.CancelledError:
             ok = False
             stderr_buf.write("KeyboardInterrupt: cell execution cancelled\n")
-        except BaseException:
+        except BaseException as exc:
             ok = False
             stderr_buf.write(traceback.format_exc())
+            if isinstance(exc, ModuleNotFoundError):
+                venv_py = Path(os.getcwd()) / ".venv" / "bin" / "python"
+                if venv_py.exists() and str(venv_py) != sys.executable:
+                    stderr_buf.write(
+                        "[hint] Project .venv detected at .venv/bin/python; "
+                        "run project scripts/tests via run('.venv/bin/python ...') or uv run.\n"
+                    )
         finally:
             self._active_cell_ids.discard(cell_id)
 
