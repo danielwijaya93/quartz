@@ -205,10 +205,12 @@ class OpenAIProvider:
         base_url: str | None = None,
         timeout: httpx2.Timeout | float | None = None,
         capabilities: ProviderCapabilities | None = None,
+        http_client: httpx2.Client | None = None,
     ) -> None:
         self.api_key = api_key
         self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
-        self._http = httpx2.Client(timeout=timeout or resolve_http_timeout())
+        self._owns_http = http_client is None
+        self._http = http_client if http_client is not None else httpx2.Client(timeout=timeout or resolve_http_timeout())
         self.capabilities = capabilities or ProviderCapabilities()
 
     def _headers(self) -> dict[str, str]:
@@ -370,4 +372,5 @@ class OpenAIProvider:
         return parse_model_details(items)
 
     def close(self) -> None:
-        self._http.close()
+        if self._owns_http:
+            self._http.close()

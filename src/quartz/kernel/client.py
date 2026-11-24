@@ -51,6 +51,7 @@ class KernelClient:
         host_bridge: bool | None = None,
         permission_handler: PermissionHandler | None = None,
         preapproved_scopes: set[str] | None = None,
+        shared_host_mcp: bool = False,
     ) -> None:
         self.cwd = (cwd or Path.cwd()).resolve()
         self._proc: subprocess.Popen[str] | None = None
@@ -85,6 +86,7 @@ class KernelClient:
         self._permission_waiting_lock = threading.Lock()
         self._host_cancel_events: dict[str, threading.Event] = {}
         self._host_cancel_lock = threading.Lock()
+        self._shared_host_mcp = shared_host_mcp
         self._host_mcp: Any = None
         self._host_loop: asyncio.AbstractEventLoop | None = None
         self._host_thread: threading.Thread | None = None
@@ -100,23 +102,39 @@ class KernelClient:
             return self._host_bridge_override
         return self._sandbox_config.enabled
 
+    def enable_shared_host_mcp(self, enabled: bool = True) -> None:
+        """Opt into the process-wide shared host MCP pool and event loop."""
+        self._shared_host_mcp = bool(enabled)
+
     def set_permission_handler(self, handler: PermissionHandler | None) -> None:
         """Register (or clear) the interactive approval callback for host-bridged commands."""
         self._permission_handler = handler
 
+    @staticmethod
+    def _dispatch_host_image(img: dict[str, str]) -> None:
+        sink = _HOST_IMAGE_SINK.get()
+        if sink is not None:
+            sink.append(img)
+
     def _get_host_mcp(self) -> Any:
         if self._host_mcp is None:
-            from quartz.mcp.client import MCPManager
+            if self._shared_host_mcp:
+                from quartz.mcp.pool import get_shared_host_mcp_pool
 
-            def _on_image(img: dict[str, str]) -> None:
-                sink = _HOST_IMAGE_SINK.get()
-                if sink is not None:
-                    sink.append(img)
+                self._host_mcp = get_shared_host_mcp_pool().get_manager(
+                    self.cwd, on_image=self._dispatch_host_image
+                )
+            else:
+                from quartz.mcp.client import MCPManager
 
-            self._host_mcp = MCPManager(cwd=self.cwd, on_image=_on_image)
+                self._host_mcp = MCPManager(cwd=self.cwd, on_image=self._dispatch_host_image)
         return self._host_mcp
 
     def _ensure_host_loop(self) -> asyncio.AbstractEventLoop:
+        if self._shared_host_mcp:
+            from quartz.mcp.pool import get_shared_host_mcp_pool
+
+            return get_shared_host_mcp_pool().ensure_loop()
         with self._host_loop_lock:
             if self._host_loop is not None and self._host_loop.is_running():
                 return self._host_loop
@@ -743,16 +761,17 @@ class KernelClient:
         if self._stderr_thread is not None:
             self._stderr_thread.join(timeout=0.5)
             self._stderr_thread = None
-        if self._host_mcp is not None and self._host_loop is not None and self._host_loop.is_running():
-            with contextlib.suppress(Exception):
-                fut = asyncio.run_coroutine_threadsafe(self._host_mcp.close(), self._host_loop)
-                fut.result(timeout=2.0)
-        if self._host_loop is not None and self._host_loop.is_running():
-            self._host_loop.call_soon_threadsafe(self._host_loop.stop)
-            if self._host_thread is not None:
-                self._host_thread.join(timeout=1.0)
-            self._host_loop = None
-            self._host_thread = None
+        if not self._shared_host_mcp:
+            if self._host_mcp is not None and self._host_loop is not None and self._host_loop.is_running():
+                with contextlib.suppress(Exception):
+                    fut = asyncio.run_coroutine_threadsafe(self._host_mcp.close(), self._host_loop)
+                    fut.result(timeout=2.0)
+            if self._host_loop is not None and self._host_loop.is_running():
+                self._host_loop.call_soon_threadsafe(self._host_loop.stop)
+                if self._host_thread is not None:
+                    self._host_thread.join(timeout=1.0)
+                self._host_loop = None
+                self._host_thread = None
         self._host_mcp = None
 
     def restart(self) -> None:

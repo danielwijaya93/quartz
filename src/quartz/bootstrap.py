@@ -22,6 +22,7 @@ supply configuration another way) before calling `build_runtime`.
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import os
 import threading
 from pathlib import Path
@@ -130,6 +131,8 @@ class BootstrapOptions:
     kernel_factory: Any | None = None
     lazy_provider: bool = False
     sandbox: bool | None = None
+    #: Share process-wide host MCPManager + provider httpx2 connection pool (used by `quartz web`).
+    shared_resources: bool = False
 
 
 def _resolve_sandbox_enabled(explicit: bool | None, setting: bool) -> bool:
@@ -193,6 +196,8 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
     else:
         kernel_cls = options.kernel_factory or KernelClient
         kernel = kernel_cls(cwd=cwd)
+    if options.shared_resources and hasattr(kernel, "enable_shared_host_mcp"):
+        kernel.enable_shared_host_mcp(True)
     if sandbox_enabled and hasattr(kernel, "enable_sandbox"):
         kernel.enable_sandbox(SandboxConfig(enabled=True))
     kernel_err: list[BaseException] = []
@@ -211,10 +216,17 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
                 def _lazy_factory() -> tuple[Any, ...]:
                     if options.client_factory is not None:
                         return options.client_factory()
+                    extra_kw = (
+                        {"shared_http": True}
+                        if options.shared_resources
+                        and "shared_http" in inspect.signature(build_provider).parameters
+                        else {}
+                    )
                     p_client, pname, p_model, p_effort = build_provider(
                         provider=options.provider or "auto",
                         model_override=options.model,
                         effort_override=options.effort,
+                        **extra_kw,
                     )
                     ctx = resolve_context_tokens(pname, p_model, p_client)
                     return p_client, pname, p_model, p_effort, ctx
@@ -238,10 +250,17 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
                     max_ctx = resolve_context_tokens(provider_name, model, client)
                 max_context_tokens = options.max_context_tokens or max_ctx
             else:
+                extra_kw = (
+                    {"shared_http": True}
+                    if options.shared_resources
+                    and "shared_http" in inspect.signature(build_provider).parameters
+                    else {}
+                )
                 client, provider_name, model, effort = build_provider(
                     provider=options.provider or "auto",
                     model_override=options.model,
                     effort_override=options.effort,
+                    **extra_kw,
                 )
                 # Resolve from the offline table immediately so startup never blocks
                 # on a /models HTTP round-trip; refresh from the provider in the
