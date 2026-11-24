@@ -2,6 +2,7 @@ import * as React from "react";
 import { ServerUrlCard } from "./ServerUrlCard";
 import { isNativeCapacitor } from "../lib/serverUrl";
 import { BiometricLockCard } from "./BiometricLockCard";
+import { authFetch } from "../lib/authToken";
 import { apiUrl } from "../lib/serverUrl";
 import { Button, Input } from "@heroui/react";
 import { ArrowLeft, Bell, RotateCcw } from "lucide-react";
@@ -86,7 +87,7 @@ export function SettingsView({
     setStatus(null);
     try {
       const [resp, healthResp] = await Promise.all([
-        fetch(apiUrl("/api/settings")),
+        authFetch(apiUrl("/api/settings")),
         fetch(apiUrl("/api/health")).catch(() => null),
       ]);
       if (healthResp?.ok) {
@@ -120,7 +121,7 @@ export function SettingsView({
     setSavingKey(key);
     setStatus(null);
     try {
-      const resp = await fetch(apiUrl("/api/settings"), {
+      const resp = await authFetch(apiUrl("/api/settings"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(key === "reset" ? { key: "reset" } : { key, value }),

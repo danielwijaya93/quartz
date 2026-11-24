@@ -81,6 +81,8 @@ def resolve_directory(raw: Any, fallback: Path) -> tuple[Path | None, str | None
         return fallback.expanduser().resolve(), None
     if not isinstance(raw, str):
         return None, "path must be a string"
+    if "\x00" in raw:
+        raise ValueError("Invalid path: null byte")
     text = raw.strip()
     if not text.startswith(("~", os.sep)):
         return None, "path must be absolute"
@@ -156,8 +158,16 @@ def create_directory(raw: Any, name: Any, fallback: Path) -> DirectoryListing:
         return DirectoryListing(path=str(raw or fallback), parents=[], entries=[], error=error)
     if not isinstance(name, str):
         return DirectoryListing(path=str(path), parents=[], entries=[], error="name must be a string")
+    if "\x00" in name:
+        raise ValueError("Invalid folder name: null byte")
     cleaned = name.strip()
-    if cleaned in ("", ".", "..") or os.sep in cleaned or (os.altsep and os.altsep in cleaned):
+    if (
+        cleaned in ("", ".", "..")
+        or "/" in cleaned
+        or "\\" in cleaned
+        or os.sep in cleaned
+        or (os.altsep and os.altsep in cleaned)
+    ):
         return DirectoryListing(
             path=str(path),
             parents=[],

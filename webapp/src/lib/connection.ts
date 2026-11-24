@@ -13,6 +13,7 @@
  *   - announce connection status changes
  */
 
+import { withAuthToken } from "./authToken";
 import { configuredWsUrl } from "./serverUrl";
 import {
   CLIENT_VERSION,
@@ -29,6 +30,8 @@ export interface ConnectionEvents {
   status: ConnectionStatus;
   /** Fired on every successful open, including reconnects, before `hello` is sent. */
   open: undefined;
+  /** Fired when the server closes the socket with 4401 (Unauthorized). */
+  authError: undefined;
 }
 
 type Listener<T> = (payload: T) => void;
@@ -80,6 +83,7 @@ export class Connection {
     message: new Set(),
     status: new Set(),
     open: new Set(),
+    authError: new Set(),
   };
 
   /**
@@ -201,7 +205,7 @@ export class Connection {
 
     let socket: SocketLike;
     try {
-      socket = this.socketFactory(this.url);
+      socket = this.socketFactory(withAuthToken(this.url));
     } catch {
       this.setStatus("disconnected");
       this.scheduleReconnect();
@@ -232,10 +236,15 @@ export class Connection {
       // `onclose` always follows, and that is where reconnect is scheduled.
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       this.clearWakeWatchdog();
       this.socket = null;
       this.setStatus("disconnected");
+      const closeCode = (event as { code?: unknown } | undefined)?.code;
+      if (closeCode === 4401) {
+        this.emit("authError", undefined);
+        return;
+      }
       if (!this.closedByUser) this.scheduleReconnect();
     };
   }
