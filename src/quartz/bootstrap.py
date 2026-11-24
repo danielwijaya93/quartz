@@ -35,7 +35,13 @@ from quartz.core.background import resolve_interval
 from quartz.core.loop import TurnUsage
 from quartz.core.progress import resolve_every
 from quartz.core.prompt import build_system_prompt
-from quartz.core.runtime import AgentRuntime
+from quartz.core.runtime import (
+    AgentRuntime,
+    ModelConfig,
+    RuntimeOptions,
+    SessionState,
+    ViewConfig,
+)
 from quartz.core.session import Session, default_sessions_dir, prune_snapshots
 from quartz.errors import SessionNotFoundError
 from quartz.kernel.client import KernelClient
@@ -339,33 +345,45 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
             else settings.keep_recent_tokens
         )
 
-        runtime = AgentRuntime(
-            cwd=cwd,
-            kernel=kernel,
-            client=client,
+        model_config = ModelConfig(
             provider_name=provider_name,
             model=model,
             effort=effort,
             system_prompt=system_prompt,
-            active_session=active_session,
-            messages=messages,
-            usage_stats=TurnUsage.from_dict(active_session.last_usage),
             max_context_tokens=max_context_tokens,
             compact_reserve_tokens=compact_reserve_tokens,
             keep_recent_tokens=keep_recent_tokens,
+        )
+        session_state = SessionState(
+            session=active_session,
+            messages=messages,
+            usage=TurnUsage.from_dict(active_session.last_usage),
+        )
+        view_config = ViewConfig(
             verbose=options.verbose,
             plain_output=options.plain_output,
-            headless=options.headless,
             show_thinking=options.show_thinking,
             show_details=options.show_details,
-            notifications=settings.notifications,
+        )
+        runtime_options = RuntimeOptions(
+            headless=options.headless,
             progress_every=resolve_every(
                 options.progress_every,
                 headless=options.headless,
                 default=settings.progress_every,
             ),
             background_check_every=background_check_every,
+            notifications=settings.notifications,
             transport=options.transport,
+        )
+        runtime = AgentRuntime.from_configs(
+            cwd=cwd,
+            kernel=kernel,
+            client=client,
+            model_config=model_config,
+            session_state=session_state,
+            view_config=view_config,
+            options=runtime_options,
         )
         if (
             not options.lazy_provider

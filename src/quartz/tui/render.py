@@ -12,7 +12,7 @@ from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.text import Text
 
-from quartz.core.commands import parse_expand_range as _parse_expand_range  # noqa: F401
+from quartz.core.commands import parse_expand_range
 
 # `/expand` parses in core so the web transport can read the same ranges; the
 # name stays here because this is where callers (and tests) look for it.
@@ -22,6 +22,8 @@ from quartz.kernel.actions import describe_cell_actions, describe_cell_intent
 from quartz.kernel.client import CellResult
 from quartz.tui.banner import _fmt_k, format_usage_metrics
 from quartz.tui.banner import _short_path as _short_path
+
+_parse_expand_range = parse_expand_range
 
 console = Console()
 
