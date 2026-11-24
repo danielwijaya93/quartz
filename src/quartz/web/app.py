@@ -168,8 +168,11 @@ def create_app(
 
     def _on_push_event(_ws: WebSession, frame: dict[str, Any]) -> None:
         payload = format_push_payload(frame)
-        if payload is not None:
-            push_store().send_async(payload)
+        if payload is None:
+            return
+        if push_ref is None and not default_push_path().is_file():
+            return
+        push_store().send_async(payload)
 
     manager.set_push_hook(_on_push_event)
 

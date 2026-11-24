@@ -404,6 +404,8 @@ def _describe_shell_command(cmd_str: str) -> str | None:
         return f"Run {sub}"
     if prog == "quartz":
         return _describe_quartz_command(args)
+    if prog.startswith("python") and len(args) >= 2 and args[0] == "-m" and args[1] == "quartz":
+        return _describe_quartz_command(args[2:])
     if prog == "pytest":
         return "Run pytest"
     if prog == "python" and "-m" in args and "pytest" in args:
