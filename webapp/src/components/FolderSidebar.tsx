@@ -36,7 +36,7 @@ import {
   type SidebarState,
   type WorkspaceGroup,
 } from "@/lib/sidebar";
-import type { InboxItem } from "@/protocol";
+import type { ActiveSessionItem } from "@/protocol";
 
 export interface FolderSidebarProps {
   /** The last good payload, or null before the first load succeeds. */
@@ -79,11 +79,11 @@ export interface FolderSidebarProps {
   /** Per-session live status (running / done / error / unread). */
   sessionActivity?: Readonly<Record<string, SessionActivity>>;
   /** Sessions needing attention (permission prompt, finished turn, or error). */
-  inbox?: readonly InboxItem[];
-  /** Dismiss a non-permission item from the sidebar inbox. */
-  onDismissInboxItem?: (sessionId: string) => void;
-  /** Clear all read non-permission items from the sidebar inbox. */
-  onClearReadInbox?: () => void;
+  activeSessions?: readonly ActiveSessionItem[];
+  /** Dismiss a non-permission item from Active Sessions. */
+  onDismissActiveSession?: (sessionId: string) => void;
+  /** Clear all read non-permission items from Active Sessions. */
+  onClearReadActiveSessions?: () => void;
 }
 
 const EMPTY_STATE: SidebarState = EMPTY_SIDEBAR;
@@ -122,8 +122,8 @@ export function FolderSidebar({
   onOpenSettings,
   onOpenMcp,
   sessionActivity = {},
-  inbox = [],
-  onDismissInboxItem,
+  activeSessions: activeSessionItems = [],
+  onDismissActiveSession,
 }: FolderSidebarProps): React.ReactElement {
   const [collapseState, setCollapseState] = React.useState<SidebarCollapseState>(() =>
     readSidebarCollapseState(),
@@ -141,13 +141,13 @@ export function FolderSidebar({
         ids.add(sid);
       }
     }
-    for (const item of inbox) {
+    for (const item of activeSessionItems) {
       if (item.kind === "permission" || item.kind === "error" || !item.read) {
         ids.add(item.sessionId);
       }
     }
     return ids;
-  }, [inbox, sessionActivity]);
+  }, [activeSessionItems, sessionActivity]);
   const visibleGroups = React.useMemo(() => {
     const base = filterWorkspaceGroups(groups, searchQuery, sidebarState);
     if (!unreadOnly) return base;
@@ -166,7 +166,7 @@ export function FolderSidebar({
   const activeSessions = React.useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     const filtered = q
-      ? inbox.filter((item) => {
+      ? activeSessionItems.filter((item) => {
           const s = sessionById.get(item.sessionId);
           const title = sidebarState.renames[item.sessionId] ?? s?.title ?? item.title ?? "";
           const preview = item.preview ?? "";
@@ -175,14 +175,14 @@ export function FolderSidebar({
             preview.toLowerCase().includes(q)
           );
         })
-      : [...inbox];
-    const priority = (kind: InboxItem["kind"]): number => {
+      : [...activeSessionItems];
+    const priority = (kind: ActiveSessionItem["kind"]): number => {
       if (kind === "permission" || kind === "error") return 0;
       if (kind === "working") return 1;
       return 2;
     };
     return [...filtered].sort((a, b) => priority(a.kind) - priority(b.kind));
-  }, [inbox, searchQuery, sessionById, sidebarState.renames]);
+  }, [activeSessionItems, searchQuery, sessionById, sidebarState.renames]);
   const drawer = variant === "drawer";
 
   const live = React.useMemo<LiveSession>(
@@ -428,7 +428,7 @@ export function FolderSidebar({
             sessionById={sessionById}
             renames={sidebarState.renames}
             onSelectSession={onSelectSession}
-            onDismiss={onDismissInboxItem}
+            onDismiss={onDismissActiveSession}
           />
         ) : null}
 
@@ -706,7 +706,7 @@ function ActiveSessionsSection({
   onSelectSession,
   onDismiss,
 }: {
-  items: readonly InboxItem[];
+  items: readonly ActiveSessionItem[];
   currentSessionId: string;
   sessionById: ReadonlyMap<string, SidebarSession>;
   renames: Readonly<Record<string, string>>;

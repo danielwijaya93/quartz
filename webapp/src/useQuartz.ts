@@ -36,10 +36,10 @@ export interface QuartzApi {
   setFormState: (id: string, formState: Record<string, unknown>) => void;
   /** Clear the failed background job badge once the user opens /jobs. */
   clearBgFailed: () => void;
-  /** Dismiss a non-permission item from the sidebar inbox. */
-  dismissInboxItem: (sessionId: string) => void;
-  /** Clear all read non-permission items from the sidebar inbox. */
-  clearReadInbox: () => void;
+  /** Dismiss a non-permission item from Active Sessions. */
+  dismissActiveSession: (sessionId: string) => void;
+  /** Clear all read non-permission items from Active Sessions. */
+  clearReadActiveSessions: () => void;
 }
 
 /**
@@ -163,12 +163,12 @@ export function useQuartz(
     setState((prev) => clearBgFailedState(prev));
   }, []);
 
-  const dismissInboxItem = React.useCallback((sessionId: string) => {
-    connectionRef.current?.sendInboxDismiss(sessionId);
+  const dismissActiveSession = React.useCallback((sessionId: string) => {
+    connectionRef.current?.sendActiveSessionDismiss(sessionId);
   }, []);
 
-  const clearReadInbox = React.useCallback(() => {
-    connectionRef.current?.sendInboxClearRead();
+  const clearReadActiveSessions = React.useCallback(() => {
+    connectionRef.current?.sendActiveSessionsClearRead();
   }, []);
 
   return {
@@ -186,7 +186,7 @@ export function useQuartz(
     respondIdleSession,
     setFormState,
     clearBgFailed,
-    dismissInboxItem,
-    clearReadInbox,
+    dismissActiveSession,
+    clearReadActiveSessions,
   };
 }

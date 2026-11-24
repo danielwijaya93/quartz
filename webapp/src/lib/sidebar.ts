@@ -588,22 +588,20 @@ export const SIDEBAR_COLLAPSE_STORAGE_KEY = "quartz-sidebar-collapse";
 
 export interface SidebarCollapseState {
   folders: Record<string, boolean>;
-  inbox: boolean;
   pinned: boolean;
 }
 
 export const DEFAULT_SIDEBAR_COLLAPSE_STATE: SidebarCollapseState = {
   folders: {},
-  inbox: true,
   pinned: true,
 };
 
 function defaultCollapseState(): SidebarCollapseState {
-  return { folders: {}, inbox: true, pinned: true };
+  return { folders: {}, pinned: true };
 }
 
 /**
- * Read the persisted folder, Inbox, and Pinned expand/collapse preferences.
+ * Read the persisted folder and Pinned expand/collapse preferences.
  * Never throws; returns defaults when storage is absent, blocked, or malformed.
  */
 export function readSidebarCollapseState(
@@ -627,7 +625,6 @@ export function readSidebarCollapseState(
     }
     return {
       folders,
-      inbox: typeof record.inbox === "boolean" ? record.inbox : true,
       pinned: typeof record.pinned === "boolean" ? record.pinned : true,
     };
   } catch {
@@ -636,7 +633,7 @@ export function readSidebarCollapseState(
 }
 
 /**
- * Persist the folder, Inbox, and Pinned expand/collapse preferences.
+ * Persist the folder and Pinned expand/collapse preferences.
  * A blocked or full store is silently ignored so the UI continues to work.
  */
 export function writeSidebarCollapseState(

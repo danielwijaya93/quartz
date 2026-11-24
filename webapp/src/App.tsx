@@ -167,8 +167,8 @@ export function App(): React.ReactElement {
     Readonly<Record<string, SessionActivity>>
   >({});
 
-  const mergedInbox = React.useMemo(() => {
-    const base = quartz.state.inbox ?? [];
+  const mergedActiveSessions = React.useMemo(() => {
+    const base = quartz.state.activeSessions ?? [];
     if (!quartz.state.turnRunning || !sessionId) return base;
     if (base.some((item) => item.sessionId === sessionId)) return base;
     return [
@@ -181,26 +181,30 @@ export function App(): React.ReactElement {
         updatedAt: new Date().toISOString(),
       },
     ];
-  }, [quartz.state.inbox, quartz.state.turnRunning, quartz.state.session.cwd, sessionId]);
+  }, [quartz.state.activeSessions, quartz.state.turnRunning, quartz.state.session.cwd, sessionId]);
 
   const mergedSessionActivity = React.useMemo(() => {
-    if (quartz.state.inbox === undefined && !quartz.state.turnRunning) return sessionActivity;
+    if (quartz.state.activeSessions === undefined && !quartz.state.turnRunning) {
+      return sessionActivity;
+    }
     const next: Record<string, SessionActivity> = {};
-    for (const item of mergedInbox) {
+    for (const item of mergedActiveSessions) {
       next[item.sessionId] = {
         status: item.kind === "working" ? "running" : item.kind,
         unread: item.kind === "permission" ? true : !item.read,
       };
     }
     return next;
-  }, [mergedInbox, quartz.state.inbox, quartz.state.turnRunning, sessionActivity]);
+  }, [mergedActiveSessions, quartz.state.activeSessions, quartz.state.turnRunning, sessionActivity]);
 
   // A session becomes listable as soon as the first prompt is persisted on
   // turn start, and its title/updatedAt may settle at turn end, so reload on
   // both transitions and update per-session live activity state.
   const wasRunning = React.useRef(false);
+  const prevSessionIdRef = React.useRef<string | undefined>(undefined);
   React.useEffect(() => {
     const running = quartz.state.turnRunning;
+    const sameSession = prevSessionIdRef.current === sessionId;
     if (wasRunning.current !== running) sidebar.reload();
 
     if (sessionId) {
@@ -209,7 +213,7 @@ export function App(): React.ReactElement {
           ...prev,
           [sessionId]: { status: "running", unread: false },
         }));
-      } else if (wasRunning.current) {
+      } else if (wasRunning.current && sameSession) {
         const lastRow = quartz.state.rows[quartz.state.rows.length - 1];
         const failed =
           quartz.state.fatalError !== null ||
@@ -223,6 +227,7 @@ export function App(): React.ReactElement {
       }
     }
     wasRunning.current = running;
+    prevSessionIdRef.current = sessionId;
   }, [
     quartz.state.turnRunning,
     quartz.state.fatalError,
@@ -341,9 +346,9 @@ export function App(): React.ReactElement {
       setMcpOpen(true);
     },
     sessionActivity: mergedSessionActivity,
-    inbox: mergedInbox,
-    onDismissInboxItem: quartz.dismissInboxItem,
-    onClearReadInbox: quartz.clearReadInbox,
+    activeSessions: mergedActiveSessions,
+    onDismissActiveSession: quartz.dismissActiveSession,
+    onClearReadActiveSessions: quartz.clearReadActiveSessions,
   };
 
   return (

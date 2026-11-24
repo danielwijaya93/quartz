@@ -1,4 +1,4 @@
-"""Tests for the server-side sidebar Inbox tracking in SessionManager."""
+"""Tests for the server-side sidebar Active Sessions tracking in SessionManager."""
 
 from __future__ import annotations
 
@@ -47,38 +47,38 @@ def test_background_turn_end_adds_done_and_clears_on_attach(tmp_path: Path) -> N
 
         # While running -> appears as "working"
         s1.start_turn("Fix the bug", [])
-        working_items = manager.inbox_items()
+        working_items = manager.active_sessions_items()
         assert len(working_items) == 1
         assert working_items[0]["sessionId"] == sid1
         assert working_items[0]["kind"] == "working"
-        assert manager.dismiss_inbox_item(sid1) is False
+        assert manager.dismiss_active_session(sid1) is False
 
         release.set()
         _wait_turn(s1)
 
-        items = manager.inbox_items()
+        items = manager.active_sessions_items()
         assert len(items) == 1
         assert items[0]["sessionId"] == sid1
         assert items[0]["kind"] == "done"
         assert items[0]["title"] == "Fix the bug"
-        assert any(f.get("type") == "inbox_state" and len(f["items"]) == 1 for f in events)
+        assert any(f.get("type") == "active_sessions_state" and len(f["items"]) == 1 for f in events)
 
         # Attaching does NOT clear "done" from Active Sessions (must be dismissed explicitly).
         s1.attach(lambda _f: None)
-        assert len(manager.inbox_items()) == 1
-        assert manager.inbox_items()[0]["kind"] == "done"
+        assert len(manager.active_sessions_items()) == 1
+        assert manager.active_sessions_items()[0]["kind"] == "done"
 
         # Attached follow-up turns transition to "working" then "done".
         release.clear()
         s1.start_turn("Follow up", [])
-        assert manager.inbox_items()[0]["kind"] == "working"
+        assert manager.active_sessions_items()[0]["kind"] == "working"
         release.set()
         _wait_turn(s1)
-        assert manager.inbox_items()[0]["kind"] == "done"
+        assert manager.active_sessions_items()[0]["kind"] == "done"
 
         # Explicit dismiss removes "done".
-        assert manager.dismiss_inbox_item(sid1) is True
-        assert manager.inbox_items() == []
+        assert manager.dismiss_active_session(sid1) is True
+        assert manager.active_sessions_items() == []
     finally:
         manager.close_all()
 
@@ -96,11 +96,11 @@ def test_foreground_turn_end_stays_in_active_sessions_until_dismissed(tmp_path: 
         sid1 = s1.runtime.active_session.id
         s1.attach(lambda _f: None)
         s1.start_turn("Hello", [])
-        assert manager.inbox_items()[0]["kind"] == "working"
+        assert manager.active_sessions_items()[0]["kind"] == "working"
         release.set()
         _wait_turn(s1)
 
-        items = manager.inbox_items()
+        items = manager.active_sessions_items()
         assert len(items) == 1
         assert items[0]["sessionId"] == sid1
         assert items[0]["kind"] == "done"
@@ -119,7 +119,7 @@ def test_background_error_adds_error_item(tmp_path: Path) -> None:
         s1.start_turn("Run", [])
         _wait_turn(s1)
 
-        items = manager.inbox_items()
+        items = manager.active_sessions_items()
         assert len(items) == 1
         assert items[0]["sessionId"] == sid1
         assert items[0]["kind"] == "error"
@@ -148,11 +148,11 @@ def test_permission_persists_across_attach_until_resolved(tmp_path: Path) -> Non
 
         # Wait for permission_request to be registered.
         for _ in range(100):
-            if manager.inbox_items():
+            if manager.active_sessions_items():
                 break
             time.sleep(0.01)
 
-        items = manager.inbox_items()
+        items = manager.active_sessions_items()
         assert len(items) == 1
         assert items[0]["sessionId"] == sid1
         assert items[0]["kind"] == "permission"
@@ -160,18 +160,18 @@ def test_permission_persists_across_attach_until_resolved(tmp_path: Path) -> Non
 
         # Attaching to the session does NOT clear a pending permission.
         s1.attach(lambda _f: None)
-        assert len(manager.inbox_items()) == 1
+        assert len(manager.active_sessions_items()) == 1
 
         # Resolving the permission clears it.
         req_id = s1._pending_permission["requestId"]  # type: ignore[index]
         assert s1.resolve_permission(req_id, "allow_once")
         t.join(timeout=2.0)
-        assert manager.inbox_items() == []
+        assert manager.active_sessions_items() == []
     finally:
         manager.close_all()
 
 
-def test_hello_replays_non_empty_inbox_after_refresh(tmp_path: Path) -> None:
+def test_hello_replays_non_empty_active_sessions_after_refresh(tmp_path: Path) -> None:
     def runner(rt: Any, observer: Any, **_kw: Any) -> TurnOutcome:
         return TurnOutcome(TurnStatus.OK)
 
@@ -185,7 +185,7 @@ def test_hello_replays_non_empty_inbox_after_refresh(tmp_path: Path) -> None:
     s_bg.start_turn("Background task", [])
     _wait_turn(s_bg)
 
-    # A new WebSocket connection (e.g. page refresh) on a different session receives inbox_state.
+    # A new WebSocket connection (e.g. page refresh) on a different session receives active_sessions_state.
     s_fg = manager.create_session(tmp_path)
     sid_fg = s_fg.runtime.active_session.id
     with client.websocket_connect("/ws") as ws:
@@ -194,12 +194,12 @@ def test_hello_replays_non_empty_inbox_after_refresh(tmp_path: Path) -> None:
         second = ws.receive_json()
 
     assert first["type"] == "session_state"
-    assert second["type"] == "inbox_state"
+    assert second["type"] == "active_sessions_state"
     assert len(second["items"]) == 1
     assert second["items"][0]["sessionId"] == sid_bg
 
 
-def test_dismiss_inbox_item(tmp_path: Path) -> None:
+def test_dismiss_active_session(tmp_path: Path) -> None:
     def runner(rt: Any, observer: Any, **_kw: Any) -> TurnOutcome:
         return TurnOutcome(TurnStatus.OK)
 
@@ -216,19 +216,19 @@ def test_dismiss_inbox_item(tmp_path: Path) -> None:
         s_two.start_turn("Task 2", [])
         _wait_turn(s_two)
 
-        items = manager.inbox_items()
+        items = manager.active_sessions_items()
         assert [i["sessionId"] for i in items] == [sid_two, sid_one]
 
-        assert manager.dismiss_inbox_item(sid_two) is True
-        assert [i["sessionId"] for i in manager.inbox_items()] == [sid_one]
-        assert manager.dismiss_inbox_item(sid_two) is False
-        assert manager.dismiss_inbox_item(sid_one) is True
-        assert manager.inbox_items() == []
+        assert manager.dismiss_active_session(sid_two) is True
+        assert [i["sessionId"] for i in manager.active_sessions_items()] == [sid_one]
+        assert manager.dismiss_active_session(sid_two) is False
+        assert manager.dismiss_active_session(sid_one) is True
+        assert manager.active_sessions_items() == []
     finally:
         manager.close_all()
 
 
-def test_websocket_inbox_dismiss(tmp_path: Path) -> None:
+def test_websocket_active_sessions_dismiss(tmp_path: Path) -> None:
     def runner(rt: Any, observer: Any, **_kw: Any) -> TurnOutcome:
         return TurnOutcome(TurnStatus.OK)
 
@@ -246,10 +246,24 @@ def test_websocket_inbox_dismiss(tmp_path: Path) -> None:
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"type": "hello", "clientVersion": 1, "sessionId": sid_fg})
         _ = ws.receive_json()  # session_state
-        initial = ws.receive_json()  # inbox_state
+        initial = ws.receive_json()  # active_sessions_state
         assert [i["sessionId"] for i in initial["items"]] == [sid2]
 
-        ws.send_json({"type": "inbox_dismiss", "sessionId": sid2})
+        ws.send_json({"type": "active_session_dismiss", "sessionId": sid2})
         after_dismiss = ws.receive_json()
-        assert after_dismiss["type"] == "inbox_state"
+        assert after_dismiss["type"] == "active_sessions_state"
         assert after_dismiss["items"] == []
+
+
+def test_websocket_connect_sends_empty_active_sessions_state(tmp_path: Path) -> None:
+    """Connecting with no active sessions still pushes active_sessions_state: []."""
+    app = create_app(build=_build_factory(tmp_path), cwd=tmp_path, static_dir=tmp_path / "missing")
+    client = TestClient(app)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "hello", "clientVersion": 1})
+        frames = [ws.receive_json(), ws.receive_json()]
+    assert any(
+        f.get("type") == "active_sessions_state" and f.get("items") == []
+        for f in frames
+    )

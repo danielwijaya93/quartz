@@ -605,7 +605,6 @@ describe("sidebar collapse persistence", () => {
   it("returns defaults when storage is absent or malformed", () => {
     expect(readSidebarCollapseState(undefined)).toEqual({
       folders: {},
-      inbox: true,
       pinned: true,
     });
     expect(
@@ -614,16 +613,14 @@ describe("sidebar collapse persistence", () => {
       }),
     ).toEqual({
       folders: {},
-      inbox: true,
       pinned: true,
     });
     expect(
       readSidebarCollapseState({
-        getItem: () => JSON.stringify({ folders: { "/a": "yes", "/b": false }, inbox: "no" }),
+        getItem: () => JSON.stringify({ folders: { "/a": "yes", "/b": false }, pinned: "no" }),
       }),
     ).toEqual({
       folders: { "/b": false },
-      inbox: true,
       pinned: true,
     });
   });
@@ -638,7 +635,6 @@ describe("sidebar collapse persistence", () => {
     };
     const state = {
       folders: { "/work/api": false, "/work/web": true },
-      inbox: false,
       pinned: true,
     };
     writeSidebarCollapseState(state, storage);
