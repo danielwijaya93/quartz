@@ -155,10 +155,13 @@ def build_bwrap_command(
     if not cfg.network:
         args.append("--unshare-net")
 
-    # --unshare-pid + --die-with-parent ensures tearing down the outer bwrap
-    # process (gracefully or via signal) SIGKILLs the inner PID-1 reaper and
-    # every subprocess spawned inside the sandbox even with --new-session.
-    args.extend(["--unshare-pid", "--die-with-parent", "--new-session", "--", *cmd])
+    # --unshare-pid isolates the worker PID tree so tearing down the worker
+    # reaps any subprocesses it spawned even when --new-session is set.
+    # Do NOT pass --die-with-parent: Linux ties PR_SET_PDEATHSIG to the spawning
+    # thread, so kernels started from ThreadPoolExecutor/ACP worker threads get
+    # SIGKILLed as soon as that thread exits. Graceful orphan cleanup is handled
+    # inside worker.py via `_reap_sandbox_pid_namespace()`.
+    args.extend(["--unshare-pid", "--new-session", "--", *cmd])
     return args
 
 

@@ -600,6 +600,7 @@ def _start_stdin_reader(
                 time.sleep(0.5)
                 with contextlib.suppress(OSError):
                     os.killpg(0, signal.SIGKILL)
+                _reap_sandbox_pid_namespace()
                 os._exit(0)
             line = line.strip()
             if not line:
@@ -748,6 +749,20 @@ async def _main() -> None:
     for h in worker._handles:
         if h.running:
             h.kill(signal.SIGKILL, grace=0)
+    _reap_sandbox_pid_namespace()
+
+
+def _reap_sandbox_pid_namespace() -> None:
+    """Kill any remaining child processes inside our isolated `--unshare-pid` namespace.
+
+    Only runs when both `QUARTZ_SANDBOXED=1` and `os.getpid() == 2`, proving we
+    are the primary command inside `bwrap --unshare-pid`. On Linux, `kill(-1, SIGKILL)`
+    skips PID 1 and the caller itself while reaping all stray subprocesses spawned
+    in the REPL so bwrap's inner PID-1 exits cleanly with zero orphans.
+    """
+    if sys.platform.startswith("linux") and os.environ.get("QUARTZ_SANDBOXED") == "1" and os.getpid() == 2:
+        with contextlib.suppress(OSError):
+            os.kill(-1, signal.SIGKILL)
 
 
 if __name__ == "__main__":
