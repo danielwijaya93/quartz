@@ -59,6 +59,7 @@ DEFAULT_WEB_IDLE_HOURS = 2
 #: Max live (in-memory) web session kernels before LRU idle ones auto-hibernate (0 disables).
 DEFAULT_WEB_MAX_LIVE_SESSIONS = 4
 DEFAULT_NOTIFICATIONS_ENABLED = True
+DEFAULT_RICH_UI = False
 DEFAULT_BRIDGE_TIMEOUT_S = 290
 DEFAULT_BRIDGE_WORKER_TIMEOUT_S = 1800
 
@@ -84,6 +85,7 @@ class Settings:
     web_idle_hours: int = DEFAULT_WEB_IDLE_HOURS
     web_max_live_sessions: int = DEFAULT_WEB_MAX_LIVE_SESSIONS
     notifications: bool = DEFAULT_NOTIFICATIONS_ENABLED
+    rich_ui: bool = DEFAULT_RICH_UI
     bridge_timeout_s: int | None = None
     bridge_worker_timeout_s: int | None = None
 
@@ -246,6 +248,7 @@ def load_settings(path: Path | None = None) -> Settings:
             raw.get("web_max_live_sessions"), DEFAULT_WEB_MAX_LIVE_SESSIONS
         ),
         notifications=_coerce_bool(raw.get("notifications"), DEFAULT_NOTIFICATIONS_ENABLED),
+        rich_ui=_coerce_bool(raw.get("rich_ui"), DEFAULT_RICH_UI),
         bridge_timeout_s=_coerce_bridge_timeout(raw.get("bridge_timeout_s")),
         bridge_worker_timeout_s=_coerce_bridge_timeout(raw.get("bridge_worker_timeout_s")),
     )
@@ -468,6 +471,7 @@ def save_settings(settings: Settings, path: Path | None = None) -> Path:
         data["web_idle_hours"] = settings.web_idle_hours
         data["web_max_live_sessions"] = settings.web_max_live_sessions
         data["notifications"] = settings.notifications
+        data["rich_ui"] = settings.rich_ui
         if settings.bridge_timeout_s is not None:
             data["bridge_timeout_s"] = settings.bridge_timeout_s
         else:
@@ -490,6 +494,7 @@ def settings_as_dict(settings: Settings) -> dict[str, int | bool]:
         "web_idle_hours": settings.web_idle_hours,
         "web_max_live_sessions": settings.web_max_live_sessions,
         "notifications": settings.notifications,
+        "rich_ui": settings.rich_ui,
     }
     if settings.bridge_timeout_s is not None:
         out["bridge_timeout_s"] = settings.bridge_timeout_s

@@ -27,7 +27,7 @@ import { useMediaQuery } from "./lib/useMediaQuery";
 import { useOpenUIThemeMirror } from "./lib/theme";
 import { useNativeShell } from "./lib/useNativeShell";
 import { wantsRichUi } from "./lib/richUi";
-import type { ImageAttachment } from "./protocol";
+import type { ImageAttachment, ServerMessage } from "./protocol";
 
 /** What the folder picker is being opened for. */
 type PickerMode = "session" | "workspace";
@@ -82,13 +82,32 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
   // drawn *and* whether the session is told to produce OpenUI Lang at all.
   const richUi = useRichUiMode();
   const systemPromptAppend = useOpenUISystemPrompt(richUi.mode);
-  const notifications = useNotifications();
+  const markNotificationsReadRef = React.useRef<() => void>(() => undefined);
+  const notifications = useNotifications({
+    onNotificationsRead: () => markNotificationsReadRef.current(),
+  });
+  const handleServerMessage = React.useCallback(
+    (message: ServerMessage) => {
+      if (message.type === "settings_state") {
+        richUi.applySyncedMode(message.richUi ? "rich" : "markdown");
+        void notifications.applySyncedEnabled(message.notifications);
+        return;
+      }
+      if (message.type === "session_state" && message.settings) {
+        richUi.applySyncedMode(message.settings.richUi ? "rich" : "markdown");
+        void notifications.applySyncedEnabled(message.settings.notifications);
+      }
+      notifications.notifyFromFrame(message);
+    },
+    [richUi, notifications],
+  );
   const quartz = useQuartz(
     undefined,
     systemPromptAppend,
-    notifications.notifyFromFrame,
+    handleServerMessage,
     onAuthError,
   );
+  markNotificationsReadRef.current = quartz.markNotificationsRead;
   const sidebar = useSidebar();
 
   const composerRef = React.useRef<HTMLTextAreaElement | null>(null);

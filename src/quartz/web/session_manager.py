@@ -280,6 +280,20 @@ class SessionManager:
     def _broadcast_active_sessions(self) -> None:
         self._broadcast({"type": "active_sessions_state", "items": self.active_sessions_items()})
 
+    def broadcast_settings_state(self, *, notifications: bool, rich_ui: bool) -> None:
+        """Broadcast synced UI preferences to every connected Web/Android client."""
+        self._broadcast(
+            {
+                "type": "settings_state",
+                "notifications": notifications,
+                "richUi": rich_ui,
+            }
+        )
+
+    def broadcast_notifications_cleared(self) -> None:
+        """Notify connected clients that alerts were read/dismissed on a device."""
+        self._broadcast({"type": "notifications_cleared"})
+
     def _on_session_event(self, ws: WebSession, frame: Frame) -> None:
         if not ws.built:
             return

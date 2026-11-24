@@ -74,6 +74,10 @@ export interface ActiveSessionsClearReadFrame {
   type: "active_sessions_clear_read";
 }
 
+export interface NotificationsReadFrame {
+  type: "notifications_read";
+}
+
 export type GeneratedClientFrame =
   | HelloFrame
   | PromptFrame
@@ -87,7 +91,8 @@ export type GeneratedClientFrame =
   | PermissionResponseFrame
   | IdleSessionResponseFrame
   | ActiveSessionDismissFrame
-  | ActiveSessionsClearReadFrame;
+  | ActiveSessionsClearReadFrame
+  | NotificationsReadFrame;
 
 export interface AuthLoginRequest {
   token: string;

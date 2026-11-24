@@ -39,7 +39,9 @@ def create_router(ctx: AppContext) -> APIRouter:
             DEFAULT_BACKGROUND_CHECK_EVERY,
             DEFAULT_COMPACT_RESERVE_TOKENS,
             DEFAULT_KEEP_RECENT_TOKENS,
+            DEFAULT_NOTIFICATIONS_ENABLED,
             DEFAULT_PROGRESS_EVERY,
+            DEFAULT_RICH_UI,
             DEFAULT_WEB_IDLE_HOURS,
             load_settings,
         )
@@ -54,6 +56,8 @@ def create_router(ctx: AppContext) -> APIRouter:
                 "progress": rt.progress_every,
                 "bg": rt.background_check_every,
                 "idle": loaded.web_idle_hours,
+                "notifications": loaded.notifications,
+                "richUi": loaded.rich_ui,
             }
         else:
             values = {
@@ -62,6 +66,8 @@ def create_router(ctx: AppContext) -> APIRouter:
                 "progress": loaded.progress_every,
                 "bg": loaded.background_check_every,
                 "idle": loaded.web_idle_hours,
+                "notifications": loaded.notifications,
+                "richUi": loaded.rich_ui,
             }
         return JSONResponse(
             {
@@ -72,6 +78,8 @@ def create_router(ctx: AppContext) -> APIRouter:
                     "progress": DEFAULT_PROGRESS_EVERY,
                     "bg": DEFAULT_BACKGROUND_CHECK_EVERY,
                     "idle": DEFAULT_WEB_IDLE_HOURS,
+                    "notifications": DEFAULT_NOTIFICATIONS_ENABLED,
+                    "richUi": DEFAULT_RICH_UI,
                 },
                 "configPath": str(config_file_path()),
             }
@@ -102,6 +110,10 @@ def create_router(ctx: AppContext) -> APIRouter:
             )
         rt = current.runtime
         loaded = await asyncio.to_thread(load_settings)
+        manager.broadcast_settings_state(
+            notifications=loaded.notifications,
+            rich_ui=loaded.rich_ui,
+        )
         return JSONResponse(
             {
                 "ok": True,
@@ -112,6 +124,8 @@ def create_router(ctx: AppContext) -> APIRouter:
                     "progress": rt.progress_every,
                     "bg": rt.background_check_every,
                     "idle": loaded.web_idle_hours,
+                    "notifications": loaded.notifications,
+                    "richUi": loaded.rich_ui,
                 },
             }
         )

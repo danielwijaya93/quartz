@@ -32,6 +32,7 @@ from quartz.web.schemas import (
     IdleSessionResponseFrame,
     LoadSessionFrame,
     NewSessionFrame,
+    NotificationsReadFrame,
     PermissionResponseFrame,
     PromptFrame,
     SetSandboxFrame,
@@ -125,7 +126,14 @@ async def _dispatch(
             else:
                 _switch_connection(conn, session, push, app)
             await asyncio.to_thread(remember_workspace, sidebar, session)
+            from quartz.settings import load_settings
+
+            loaded_settings = await asyncio.to_thread(load_settings)
             snapshot = session.snapshot()
+            snapshot["settings"] = {
+                "notifications": loaded_settings.notifications,
+                "richUi": loaded_settings.rich_ui,
+            }
             push(snapshot)
             # A tab that just (re)connected in the middle of a turn is told what the
             # turn is doing, and what it has written so far, in ordinary frames.
@@ -250,6 +258,9 @@ async def _dispatch(
 
         elif isinstance(frame, ActiveSessionsClearReadFrame):
             await asyncio.to_thread(manager.clear_read_active_sessions)
+
+        elif isinstance(frame, NotificationsReadFrame):
+            manager.broadcast_notifications_cleared()
 
     except WebSocketDisconnect:
         raise

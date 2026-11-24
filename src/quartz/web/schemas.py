@@ -131,6 +131,10 @@ class ActiveSessionsClearReadFrame(_WireModel):
     type: Literal["active_sessions_clear_read"]
 
 
+class NotificationsReadFrame(_WireModel):
+    type: Literal["notifications_read"]
+
+
 ClientFrame = Annotated[
     HelloFrame
     | PromptFrame
@@ -144,7 +148,8 @@ ClientFrame = Annotated[
     | PermissionResponseFrame
     | IdleSessionResponseFrame
     | ActiveSessionDismissFrame
-    | ActiveSessionsClearReadFrame,
+    | ActiveSessionsClearReadFrame
+    | NotificationsReadFrame,
     Field(discriminator="type"),
 ]
 
@@ -163,6 +168,7 @@ CLIENT_FRAME_TYPES: frozenset[str] = frozenset(
         "idle_session_response",
         "active_session_dismiss",
         "active_sessions_clear_read",
+        "notifications_read",
     }
 )
 
