@@ -17,8 +17,8 @@
 
 ## Parallel Worker & Worktree Workflow
 1. Create worktree: `git worktree add -b <branch> .worktrees/<branch> main`.
-2. Write self-contained brief (start with `YOU ARE A WORKER. YOU IMPLEMENT. YOU DO NOT ORCHESTRATE.`, forbid sub-workers/polling) and launch via `bash()`:
-   `cd .worktrees/<branch> && env -u PYTHONPATH uv run quartz -p "$(cat ../.worker-prompt-<name>.md)" --cwd .`
+2. Write self-contained brief (start with `YOU ARE A WORKER. YOU IMPLEMENT. YOU DO NOT ORCHESTRATE.`, forbid sub-workers/polling) and launch via `launch_worker(..., provider=..., model=..., effort=...)` or `bash()`:
+   `cd .worktrees/<branch> && env -u PYTHONPATH uv run python -m quartz -p "$(cat ../.worker-prompt-<name>.md)" --cwd .`
 3. Do not poll; wait for `[bash-done]`. Workers stop at typecheck/tests/build and **never** verify UI. Clean up with `git worktree remove .worktrees/<branch>`.
 
 ## UI Verification (Orchestrator Only)

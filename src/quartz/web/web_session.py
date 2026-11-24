@@ -33,8 +33,12 @@ from typing import TYPE_CHECKING, Any, Protocol
 from quartz.core.commands import (
     COMMAND_REGISTRY,
     CommandResult,
-    SlashCommand,
     serves_web,
+)
+from quartz.core.controller import (
+    NoActiveTurnError,
+    SessionController,
+    TurnBusyError,
 )
 from quartz.core.images import ImageAttachment, build_user_content
 from quartz.core.loop import drain_bash_events
@@ -94,14 +98,6 @@ class BuildRuntime(Protocol):
 TurnRunner = Callable[..., TurnOutcome]
 
 
-class TurnBusyError(RuntimeError):
-    """A turn is already running. The protocol rejects rather than queues."""
-
-
-class NoActiveTurnError(RuntimeError):
-    """There is no running turn to steer or cancel."""
-
-
 @dataclasses.dataclass
 class _Turn:
     """The mutable state of the turn in flight."""
@@ -140,6 +136,7 @@ class WebSession:
         self._on_event = on_event
         self._file_registry = file_registry
         self._runtime: AgentRuntime | None = None
+        self._controller: SessionController | None = None
         self._turn: _Turn | None = None
         self._lock = threading.Lock()
         # Whoever is looking right now. A turn keeps pushing through `emit`, which
@@ -182,6 +179,13 @@ class WebSession:
         if self._runtime is None:
             raise RuntimeError("runtime is not built yet")
         return self._runtime
+
+    @property
+    def controller(self) -> SessionController:
+        rt = self.runtime
+        if self._controller is None or self._controller.runtime is not rt:
+            self._controller = SessionController(rt)
+        return self._controller
 
     @property
     def built(self) -> bool:
@@ -1003,25 +1007,18 @@ class WebSession:
         nowhere to show "waiting". `immediate` commands -- local state only -- run
         either way, which is what makes `/settings` and `/jobs` useful mid-turn.
         """
-        cleaned = name.strip().lstrip("/")
-        command: SlashCommand | None = COMMAND_REGISTRY.get(f"/{cleaned}")
-        if command is None:
-            return False, CommandResult.error(f"Unknown command: /{cleaned}")
-        if not command.immediate and self.turn_running:
-            return False, CommandResult.error(
-                f"/{cleaned} needs the kernel, which the running turn is using.",
-                body="Wait for the turn to finish, or press Esc to abort it.",
-            )
-        self.mark_active()
-        result = command.handler(self.runtime, arg.strip())
-        if result is None:
-            # Only `exits` commands say nothing; in a browser there is nothing to
-            # exit, so acknowledge it plainly rather than rendering an empty card.
-            return True, CommandResult.text(
-                f"/{cleaned} does nothing in the browser.",
-                title=f"/{cleaned}",
-            )
-        return result.kind != "error", result
+        ok, result = self.controller.run_command(
+            name,
+            arg,
+            transport="web",
+            turn_running=self.turn_running,
+        )
+        if ok or result.kind != "error" or not (
+            result.message.startswith("Unknown command:")
+            or "needs the kernel, which the running turn is using." in result.message
+        ):
+            self.mark_active()
+        return ok, result
 
     # -- state -------------------------------------------------------------
 
