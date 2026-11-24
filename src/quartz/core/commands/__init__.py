@@ -29,13 +29,6 @@ from quartz.core.commands.settings_cmds import cmd_settings
 # Keep submodules referenced so registration decorators are guaranteed to execute.
 _ = (_model_cmds, _session_cmds, _settings_cmds, _mcp_cmds)
 
-# Backward-compatible private aliases for existing tests.
-_cmd_compact = cmd_compact
-_cmd_jobs = cmd_jobs
-_cmd_mcp = cmd_mcp
-_cmd_settings = cmd_settings
-_format_mcp_detail = format_mcp_detail
-
 __all__ = [
     "COMMAND_REGISTRY",
     "CommandHandler",

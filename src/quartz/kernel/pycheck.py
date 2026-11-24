@@ -102,3 +102,53 @@ def check_python_source(path: Path, content: str) -> list[str]:
         f"line {lineno}: undefined name '{name}' (missing import?)"
         for lineno, name in ordered[:MAX_WARNINGS]
     ]
+
+
+AUTO_IMPORT_BLOCKLIST: frozenset[str] = frozenset(
+    {
+        "antigravity",
+        "this",
+        "test",
+        "__hello__",
+        "__phello__",
+        "idlelib",
+        "tkinter",
+        "turtle",
+        "turtledemo",
+    }
+)
+
+LAZY_STDLIB_SYMBOLS: dict[str, tuple[str, str]] = {
+    "Counter": ("collections", "Counter"),
+    "defaultdict": ("collections", "defaultdict"),
+    "deque": ("collections", "deque"),
+    "OrderedDict": ("collections", "OrderedDict"),
+    "namedtuple": ("collections", "namedtuple"),
+    "dataclass": ("dataclasses", "dataclass"),
+    "timedelta": ("datetime", "timedelta"),
+    "timezone": ("datetime", "timezone"),
+    "StringIO": ("io", "StringIO"),
+    "BytesIO": ("io", "BytesIO"),
+    "SimpleNamespace": ("types", "SimpleNamespace"),
+    "ThreadPoolExecutor": ("concurrent.futures", "ThreadPoolExecutor"),
+    "ProcessPoolExecutor": ("concurrent.futures", "ProcessPoolExecutor"),
+    "partial": ("functools", "partial"),
+    "lru_cache": ("functools", "lru_cache"),
+    "Any": ("typing", "Any"),
+}
+
+
+def dotted_chains(tree: ast.AST) -> list[list[str]]:
+    """Return ``[root, attr1, attr2, ...]`` for every Attribute chain rooted at a loaded Name."""
+    chains: list[list[str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute):
+            continue
+        parts: list[str] = []
+        cur: ast.AST = node
+        while isinstance(cur, ast.Attribute):
+            parts.append(cur.attr)
+            cur = cur.value
+        if isinstance(cur, ast.Name) and isinstance(cur.ctx, ast.Load):
+            chains.append([cur.id, *reversed(parts)])
+    return chains

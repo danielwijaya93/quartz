@@ -466,3 +466,72 @@ def test_launch_worker_accepts_provider_model_effort_and_sandbox_off(
     assert "--model gpt-5.4" in cmd_local
     assert "--effort medium" in cmd_local
     assert "--sandbox-off" not in cmd_local
+
+
+def test_resolve_bridge_timeout_defaults_env_settings_and_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from quartz.settings import (
+        DEFAULT_BRIDGE_TIMEOUT_S,
+        DEFAULT_BRIDGE_WORKER_TIMEOUT_S,
+        Settings,
+        load_settings,
+        resolve_bridge_timeout,
+        save_settings,
+        settings_as_dict,
+        validate_bridge_timeout,
+    )
+
+    cfg = tmp_path / "config.json"
+    monkeypatch.setenv("QUARTZ_CONFIG_FILE", str(cfg))
+    monkeypatch.delenv("QUARTZ_BRIDGE_TIMEOUT", raising=False)
+    monkeypatch.delenv("QUARTZ_BRIDGE_WORKER_TIMEOUT", raising=False)
+
+    # Defaults when neither env nor config.json sets them
+    assert DEFAULT_BRIDGE_TIMEOUT_S == 290
+    assert DEFAULT_BRIDGE_WORKER_TIMEOUT_S == 1800
+    assert resolve_bridge_timeout("quartz") == 1800.0
+    assert resolve_bridge_timeout("git") == 290.0
+    assert resolve_bridge_timeout("gh") == 290.0
+
+    # Validation helper
+    assert validate_bridge_timeout(1) is True
+    assert validate_bridge_timeout(45.5) is True
+    assert validate_bridge_timeout(0) is False
+    assert validate_bridge_timeout(-10) is False
+    assert validate_bridge_timeout(float("nan")) is False
+    assert validate_bridge_timeout(float("inf")) is False
+    assert validate_bridge_timeout(True) is False
+
+    # Settings roundtrip & override
+    save_settings(Settings(bridge_timeout_s=420, bridge_worker_timeout_s=2400), path=cfg)
+    loaded = load_settings(cfg)
+    assert loaded.bridge_timeout_s == 420
+    assert loaded.bridge_worker_timeout_s == 2400
+    as_dict = settings_as_dict(loaded)
+    assert as_dict["bridge_timeout_s"] == 420
+    assert as_dict["bridge_worker_timeout_s"] == 2400
+
+    assert resolve_bridge_timeout("git") == 420.0
+    assert resolve_bridge_timeout("gh") == 420.0
+    assert resolve_bridge_timeout("quartz") == 2400.0
+
+    # Env vars take precedence over settings.json
+    monkeypatch.setenv("QUARTZ_BRIDGE_TIMEOUT", "123.5")
+    monkeypatch.setenv("QUARTZ_BRIDGE_WORKER_TIMEOUT", "3600")
+    assert resolve_bridge_timeout("git") == 123.5
+    assert resolve_bridge_timeout("quartz") == 3600.0
+
+    # Invalid/non-positive env values fall back safely to settings (or default)
+    for bad in ("0", "-5", "not-a-number", "nan", "inf"):
+        monkeypatch.setenv("QUARTZ_BRIDGE_TIMEOUT", bad)
+        monkeypatch.setenv("QUARTZ_BRIDGE_WORKER_TIMEOUT", bad)
+        assert resolve_bridge_timeout("git") == 420.0
+        assert resolve_bridge_timeout("quartz") == 2400.0
+
+    # With no settings.json values, invalid env falls back to defaults
+    cfg.write_text(json.dumps({}), encoding="utf-8")
+    assert resolve_bridge_timeout("git") == 290.0
+    assert resolve_bridge_timeout("quartz") == 1800.0
