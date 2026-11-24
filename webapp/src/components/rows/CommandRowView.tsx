@@ -1,6 +1,5 @@
 import * as React from "react";
-import { authFetch } from "../../lib/authToken";
-import { apiUrl } from "../../lib/serverUrl";
+import { useJobActions } from "../../lib/jobsApi";
 import { Alert, Button, Card, Chip, Input, Separator } from "@heroui/react";
 import { Check, Copy, Eye, RotateCcw, Square, Terminal } from "lucide-react";
 import { Markdown } from "../Markdown";
@@ -227,45 +226,8 @@ function InteractiveJobsBody({
   items: readonly { label: string; detail: string; key: string }[];
   onRunCommand?: (name: string, arg?: string) => void;
 }): React.ReactElement {
-  const [tails, setTails] = React.useState<Record<string, string | null>>({});
-  const [loadingPid, setLoadingPid] = React.useState<string | null>(null);
-  const [killingPid, setKillingPid] = React.useState<string | null>(null);
-
-  const toggleTail = async (pid: string): Promise<void> => {
-    if (tails[pid] !== undefined) {
-      setTails((prev) => {
-        const next = { ...prev };
-        delete next[pid];
-        return next;
-      });
-      return;
-    }
-    setLoadingPid(pid);
-    try {
-      const resp = await authFetch(apiUrl(`/api/jobs/${encodeURIComponent(pid)}/tail`));
-      if (!resp.ok) {
-        setTails((prev) => ({ ...prev, [pid]: "(output tail unavailable)" }));
-      } else {
-        const data = (await resp.json()) as { tail?: string };
-        const text = (data.tail ?? "").trim();
-        setTails((prev) => ({ ...prev, [pid]: text || "(no output yet)" }));
-      }
-    } catch {
-      setTails((prev) => ({ ...prev, [pid]: "(failed to load output tail)" }));
-    } finally {
-      setLoadingPid(null);
-    }
-  };
-
-  const killJob = async (pid: string): Promise<void> => {
-    setKillingPid(pid);
-    try {
-      await authFetch(apiUrl(`/api/jobs/${encodeURIComponent(pid)}/kill`), { method: "POST" });
-      onRunCommand?.("jobs");
-    } finally {
-      setKillingPid(null);
-    }
-  };
+  const onKilled = React.useCallback(() => onRunCommand?.("jobs"), [onRunCommand]);
+  const { tails, busyPid, toggleTail, killJob } = useJobActions(onKilled);
 
   return (
     <ul className="divide-y divide-separator rounded-md border border-border">
@@ -286,7 +248,7 @@ function InteractiveJobsBody({
                 <Button
                   size="sm"
                   variant="outline"
-                  isDisabled={loadingPid === pid}
+                  isDisabled={busyPid === pid}
                   onPress={() => void toggleTail(pid)}
                 >
                   <Eye aria-hidden="true" className="size-3.5" />
@@ -295,7 +257,7 @@ function InteractiveJobsBody({
                 <Button
                   size="sm"
                   variant="danger-soft"
-                  isDisabled={killingPid === pid}
+                  isDisabled={busyPid === pid}
                   onPress={() => void killJob(pid)}
                 >
                   <Square aria-hidden="true" className="size-3" />

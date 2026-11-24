@@ -64,15 +64,15 @@ export function addUserPrompt(
   return appendRow(state, row);
 }
 
+function patchSession(
+  state: TranscriptState,
+  patch: Partial<TranscriptState["session"]>,
+): TranscriptState {
+  return { ...state, session: { ...state.session, ...patch } };
+}
+
 export function clearBgFailed(state: TranscriptState): TranscriptState {
-  if ((state.session.bgFailed ?? 0) === 0) return state;
-  return {
-    ...state,
-    session: {
-      ...state.session,
-      bgFailed: 0,
-    },
-  };
+  return (state.session.bgFailed ?? 0) === 0 ? state : patchSession(state, { bgFailed: 0 });
 }
 
 /**
@@ -521,85 +521,46 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
       });
 
     case "tool_result": {
-      // A result without its call must not crash: render a completed row so the
-      // output is not lost, which is what a resumed/misordered stream produces.
-      if (!state.seen.has(message.id)) {
-        return appendRow(state, {
-          kind: "tool",
-          id: message.id,
-          code: "",
-          status: message.ok ? "ok" : "failed",
-          output: message.output,
-          durationMs: message.durationMs,
-          images: message.images ?? [],
-          files: message.files ?? [],
-          actions: message.actions ?? null,
-        });
-      }
-      return patchToolRow(state, message.id, (row) => ({
-        ...row,
-        status: message.ok ? "ok" : "failed",
+      const update = {
+        status: (message.ok ? "ok" : "failed") as "ok" | "failed",
         output: message.output,
         durationMs: message.durationMs,
         images: message.images ?? [],
         files: message.files ?? [],
         actions: message.actions ?? null,
-      }));
+      };
+      if (!state.seen.has(message.id)) {
+        return appendRow(state, { kind: "tool", id: message.id, code: "", ...update });
+      }
+      return patchToolRow(state, message.id, (row) => ({ ...row, ...update }));
     }
 
     case "permission_request":
-      return {
-        ...state,
-        session: {
-          ...state.session,
-          pendingPermission: {
-            requestId: message.requestId,
-            tool: message.tool,
-            command: message.command,
-            cwd: message.cwd,
-            scope: message.scope,
-          },
+      return patchSession(state, {
+        pendingPermission: {
+          requestId: message.requestId,
+          tool: message.tool,
+          command: message.command,
+          cwd: message.cwd,
+          scope: message.scope,
         },
-      };
+      });
 
     case "permission_resolved":
-      if (state.session.pendingPermission?.requestId !== message.requestId) {
-        return state;
-      }
-      return {
-        ...state,
-        session: {
-          ...state.session,
-          pendingPermission: null,
-        },
-      };
+      return state.session.pendingPermission?.requestId === message.requestId
+        ? patchSession(state, { pendingPermission: null })
+        : state;
 
     case "bg_count":
-      return {
-        ...state,
-        session: {
-          ...state.session,
-          bgCount: Math.max(0, message.count),
-        },
-      };
+      return patchSession(state, { bgCount: Math.max(0, message.count) });
 
     case "bash_notice": {
       const exitMatch = /\[bash-done\b[^\]]*\bexit:(-?\d+)/.exec(message.text);
-      const failed = exitMatch !== null && Number(exitMatch[1]) !== 0;
-      const nextState = failed
-        ? {
-            ...state,
-            session: {
-              ...state.session,
-              bgFailed: (state.session.bgFailed ?? 0) + 1,
-            },
-          }
-        : state;
-      return appendRow(nextState, {
-        kind: "bash_notice",
-        id: makeId("bash"),
-        text: message.text,
-      });
+      const nextState =
+        exitMatch !== null && Number(exitMatch[1]) !== 0
+          ? patchSession(state, { bgFailed: (state.session.bgFailed ?? 0) + 1 })
+          : state;
+      return appendRow(nextState, { kind: "bash_notice", id: makeId("bash"), text: message.text });
     }
 
     case "steering":

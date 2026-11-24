@@ -1,5 +1,6 @@
 import * as React from "react";
 import { authFetch } from "../lib/authToken";
+import { useJobActions } from "../lib/jobsApi";
 import { apiUrl } from "../lib/serverUrl";
 import { Button } from "@heroui/react";
 import { Eye, RefreshCw, Square, X } from "lucide-react";
@@ -18,12 +19,6 @@ function formatElapsed(seconds: number): string {
   return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 }
 
-/**
- * Non-blocking floating tray for background jobs, anchored above the composer.
- *
- * Unlike a modal, it has no backdrop and traps no focus: you can watch live job
- * tails, kill a stuck worker, and keep reading or steering the chat at once.
- */
 export function JobsTray({
   open,
   onClose,
@@ -35,8 +30,6 @@ export function JobsTray({
   const [fetchedAt, setFetchedAt] = React.useState<number>(() => Date.now());
   const [now, setNow] = React.useState<number>(() => Date.now());
   const [loading, setLoading] = React.useState(false);
-  const [tails, setTails] = React.useState<Record<string, string>>({});
-  const [busyPid, setBusyPid] = React.useState<string | null>(null);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -55,59 +48,23 @@ export function JobsTray({
     }
   }, []);
 
+  const { tails, busyPid, clearTails, toggleTail, killJob } = useJobActions(load);
+
   React.useEffect(() => {
     if (open) {
-      setTails({});
+      clearTails();
       void load();
     }
-  }, [open, load]);
+  }, [open, load, clearTails]);
 
   React.useEffect(() => {
     if (!open || jobs.length === 0) return;
     setNow(Date.now());
-    const id = window.setInterval(() => {
-      setNow(Date.now());
-    }, 1000);
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, [open, jobs.length]);
 
   if (!open) return null;
-
-  const toggleTail = async (pid: string): Promise<void> => {
-    if (tails[pid] !== undefined) {
-      setTails((prev) => {
-        const next = { ...prev };
-        delete next[pid];
-        return next;
-      });
-      return;
-    }
-    setBusyPid(pid);
-    try {
-      const resp = await authFetch(apiUrl(`/api/jobs/${encodeURIComponent(pid)}/tail`));
-      if (!resp.ok) {
-        setTails((prev) => ({ ...prev, [pid]: "(output tail unavailable)" }));
-      } else {
-        const data = (await resp.json()) as { tail?: string };
-        const text = (data.tail ?? "").trim();
-        setTails((prev) => ({ ...prev, [pid]: text || "(no output yet)" }));
-      }
-    } catch {
-      setTails((prev) => ({ ...prev, [pid]: "(failed to load output tail)" }));
-    } finally {
-      setBusyPid(null);
-    }
-  };
-
-  const killJob = async (pid: string): Promise<void> => {
-    setBusyPid(pid);
-    try {
-      await authFetch(apiUrl(`/api/jobs/${encodeURIComponent(pid)}/kill`), { method: "POST" });
-      await load();
-    } finally {
-      setBusyPid(null);
-    }
-  };
 
   return (
     <div className="shrink-0 px-4 pb-1">
@@ -123,9 +80,7 @@ export function JobsTray({
         className="mx-auto w-full max-w-3xl overflow-hidden rounded-xl border border-border bg-surface shadow-lg"
       >
         <div className="flex items-center justify-between border-b border-separator px-3 py-2">
-          <h2 className="text-xs font-semibold tracking-wide text-foreground">
-            Background Jobs
-          </h2>
+          <h2 className="text-xs font-semibold tracking-wide text-foreground">Background Jobs</h2>
           <div className="flex items-center gap-1">
             <Button
               isIconOnly
@@ -167,7 +122,8 @@ export function JobsTray({
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="min-w-0 flex-1">
                         <p className="text-xs font-medium tabular-nums text-foreground">
-                          pid {pid} · {job.label} · {formatElapsed(job.elapsed_s + Math.max(0, (now - fetchedAt) / 1000))}
+                          pid {pid} · {job.label} ·{" "}
+                          {formatElapsed(job.elapsed_s + Math.max(0, (now - fetchedAt) / 1000))}
                         </p>
                         <p className="mt-0.5 truncate font-mono text-[11px] text-muted">
                           {job.command}
