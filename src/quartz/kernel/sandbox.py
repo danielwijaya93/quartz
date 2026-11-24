@@ -157,6 +157,10 @@ def build_bwrap_command(
 
     # --unshare-pid isolates the worker PID tree so tearing down the worker
     # reaps any subprocesses it spawned even when --new-session is set.
+    # Do NOT pass --die-with-parent: Linux ties PR_SET_PDEATHSIG to the spawning
+    # thread, so kernels started from ThreadPoolExecutor/ACP worker threads get
+    # SIGKILLed as soon as that thread exits. Graceful orphan cleanup is handled
+    # inside worker.py via `_reap_sandbox_pid_namespace()`.
     args.extend(["--unshare-pid", "--new-session", "--", *cmd])
     return args
 

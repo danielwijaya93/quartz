@@ -92,6 +92,7 @@ def test_build_bwrap_command_mounts_and_masks(tmp_path: Path) -> None:
 
     assert "--unshare-net" in wrapped
     assert "--unshare-pid" in wrapped
+    assert "--die-with-parent" not in wrapped
     assert "--new-session" in wrapped
     assert wrapped[-4:] == ["--", "python", "-u", "-m", "quartz.kernel.worker"][-4:]
 

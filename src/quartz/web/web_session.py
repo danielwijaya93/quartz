@@ -324,7 +324,19 @@ class WebSession:
         rt = self._runtime
         if rt is None:
             return False
-        return bool(getattr(rt.kernel, "running_bash_count", 0) or getattr(rt.kernel, "_running_bash_count", 0))
+        # Real KernelClient/InProcessKernel expose `running_bash_count` as a method;
+        # checking bool() directly on the bound method was always True and blocked LRU hibernation.
+        count_attr = getattr(rt.kernel, "running_bash_count", None)
+        if callable(count_attr):
+            try:
+                count = count_attr()
+            except Exception:
+                return False
+            return isinstance(count, int) and count > 0
+        if isinstance(count_attr, int):
+            return count_attr > 0
+        fallback = getattr(rt.kernel, "_running_bash_count", 0)
+        return isinstance(fallback, int) and fallback > 0
 
     def can_hibernate(self) -> bool:
         """Return True when this session's kernel can be safely evicted to disk."""
