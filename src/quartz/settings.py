@@ -52,6 +52,8 @@ DEFAULT_SNAPSHOT_RETENTION_DAYS = 7
 DEFAULT_SANDBOX_ENABLED = True
 #: Prompt before closing an idle backgrounded web session after this many hours (0 disables).
 DEFAULT_WEB_IDLE_HOURS = 2
+#: Max live (in-memory) web session kernels before LRU idle ones auto-hibernate (0 disables).
+DEFAULT_WEB_MAX_LIVE_SESSIONS = 4
 DEFAULT_NOTIFICATIONS_ENABLED = True
 
 _MIN_TOKENS = 256
@@ -60,6 +62,7 @@ _MAX_PROGRESS_EVERY = 1_000
 _MAX_BACKGROUND_CHECK_EVERY = 86_400
 _MAX_RETENTION_DAYS = 3_650
 _MAX_WEB_IDLE_HOURS = 8_760
+_MAX_WEB_MAX_LIVE_SESSIONS = 100
 
 
 @dataclasses.dataclass(frozen=True)
@@ -73,6 +76,7 @@ class Settings:
     snapshot_retention_days: int = DEFAULT_SNAPSHOT_RETENTION_DAYS
     sandbox: bool = DEFAULT_SANDBOX_ENABLED
     web_idle_hours: int = DEFAULT_WEB_IDLE_HOURS
+    web_max_live_sessions: int = DEFAULT_WEB_MAX_LIVE_SESSIONS
     notifications: bool = DEFAULT_NOTIFICATIONS_ENABLED
 
 
@@ -165,6 +169,20 @@ def _coerce_idle_hours(value: Any, default: int) -> int:
     return default
 
 
+def _coerce_max_live_sessions(value: Any, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value if 0 <= value <= _MAX_WEB_MAX_LIVE_SESSIONS else default
+    if isinstance(value, str) and value.strip():
+        try:
+            coerced = int(value.strip())
+        except ValueError:
+            return default
+        return coerced if 0 <= coerced <= _MAX_WEB_MAX_LIVE_SESSIONS else default
+    return default
+
+
 def _coerce_bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
@@ -197,6 +215,9 @@ def load_settings(path: Path | None = None) -> Settings:
         sandbox=_coerce_bool(raw.get("sandbox"), DEFAULT_SANDBOX_ENABLED),
         web_idle_hours=_coerce_idle_hours(
             raw.get("web_idle_hours"), DEFAULT_WEB_IDLE_HOURS
+        ),
+        web_max_live_sessions=_coerce_max_live_sessions(
+            raw.get("web_max_live_sessions"), DEFAULT_WEB_MAX_LIVE_SESSIONS
         ),
         notifications=_coerce_bool(raw.get("notifications"), DEFAULT_NOTIFICATIONS_ENABLED),
     )
@@ -231,6 +252,15 @@ def validate_web_idle_hours(value: int) -> bool:
         isinstance(value, int)
         and not isinstance(value, bool)
         and 0 <= value <= _MAX_WEB_IDLE_HOURS
+    )
+
+
+def validate_web_max_live_sessions(value: int) -> bool:
+    """Return True when ``value`` is a sane live web kernel cap (``0`` disables)."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= _MAX_WEB_MAX_LIVE_SESSIONS
     )
 
 
@@ -370,6 +400,7 @@ def save_settings(settings: Settings, path: Path | None = None) -> Path:
         data["progress_every"] = settings.progress_every
         data["background_check_every"] = settings.background_check_every
         data["web_idle_hours"] = settings.web_idle_hours
+        data["web_max_live_sessions"] = settings.web_max_live_sessions
         data["notifications"] = settings.notifications
 
     return update_config_json(_apply, path=path)
@@ -383,5 +414,6 @@ def settings_as_dict(settings: Settings) -> dict[str, int | bool]:
         "progress_every": settings.progress_every,
         "background_check_every": settings.background_check_every,
         "web_idle_hours": settings.web_idle_hours,
+        "web_max_live_sessions": settings.web_max_live_sessions,
         "notifications": settings.notifications,
     }

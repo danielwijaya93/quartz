@@ -167,21 +167,33 @@ export function App(): React.ReactElement {
     Readonly<Record<string, SessionActivity>>
   >({});
 
+  const mergedInbox = React.useMemo(() => {
+    const base = quartz.state.inbox ?? [];
+    if (!quartz.state.turnRunning || !sessionId) return base;
+    if (base.some((item) => item.sessionId === sessionId)) return base;
+    return [
+      ...base,
+      {
+        sessionId,
+        cwd: quartz.state.session.cwd,
+        kind: "working" as const,
+        read: false,
+        updatedAt: new Date().toISOString(),
+      },
+    ];
+  }, [quartz.state.inbox, quartz.state.turnRunning, quartz.state.session.cwd, sessionId]);
+
   const mergedSessionActivity = React.useMemo(() => {
-    const inbox = quartz.state.inbox;
-    if (inbox === undefined) return sessionActivity;
+    if (quartz.state.inbox === undefined && !quartz.state.turnRunning) return sessionActivity;
     const next: Record<string, SessionActivity> = {};
-    for (const item of inbox) {
+    for (const item of mergedInbox) {
       next[item.sessionId] = {
         status: item.kind === "working" ? "running" : item.kind,
         unread: item.kind === "permission" ? true : !item.read,
       };
     }
-    if (quartz.state.turnRunning && sessionId && !next[sessionId]) {
-      next[sessionId] = { status: "running", unread: false };
-    }
     return next;
-  }, [quartz.state.inbox, quartz.state.turnRunning, sessionActivity, sessionId]);
+  }, [mergedInbox, quartz.state.inbox, quartz.state.turnRunning, sessionActivity]);
 
   // A session becomes listable as soon as the first prompt is persisted on
   // turn start, and its title/updatedAt may settle at turn end, so reload on
@@ -329,7 +341,7 @@ export function App(): React.ReactElement {
       setMcpOpen(true);
     },
     sessionActivity: mergedSessionActivity,
-    inbox: quartz.state.inbox ?? [],
+    inbox: mergedInbox,
     onDismissInboxItem: quartz.dismissInboxItem,
     onClearReadInbox: quartz.clearReadInbox,
   };

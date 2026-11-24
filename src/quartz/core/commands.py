@@ -717,6 +717,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
         progress_every=rt.progress_every,
         background_check_every=rt.background_check_every,
         web_idle_hours=stored_settings.web_idle_hours,
+        web_max_live_sessions=stored_settings.web_max_live_sessions,
         notifications=notifications,
     )
     parts = (arg or "").split()
@@ -785,6 +786,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 progress_every=every,
                 background_check_every=current.background_check_every,
                 web_idle_hours=current.web_idle_hours,
+                web_max_live_sessions=current.web_max_live_sessions,
                 notifications=current.notifications,
             )
         )
@@ -814,6 +816,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 progress_every=current.progress_every,
                 background_check_every=every,
                 web_idle_hours=current.web_idle_hours,
+                web_max_live_sessions=current.web_max_live_sessions,
                 notifications=current.notifications,
             )
         )
@@ -845,6 +848,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 progress_every=current.progress_every,
                 background_check_every=current.background_check_every,
                 web_idle_hours=current.web_idle_hours,
+                web_max_live_sessions=current.web_max_live_sessions,
                 notifications=current.notifications,
             )
             rt.compact_reserve_tokens = value
@@ -856,6 +860,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 progress_every=current.progress_every,
                 background_check_every=current.background_check_every,
                 web_idle_hours=current.web_idle_hours,
+                web_max_live_sessions=current.web_max_live_sessions,
                 notifications=current.notifications,
             )
             rt.keep_recent_tokens = value
@@ -885,6 +890,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 progress_every=current.progress_every,
                 background_check_every=current.background_check_every,
                 web_idle_hours=hours,
+                web_max_live_sessions=current.web_max_live_sessions,
                 notifications=current.notifications,
             )
         )
@@ -911,6 +917,7 @@ def _cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 progress_every=current.progress_every,
                 background_check_every=current.background_check_every,
                 web_idle_hours=current.web_idle_hours,
+                web_max_live_sessions=current.web_max_live_sessions,
                 notifications=enabled,
             )
         )

@@ -145,6 +145,24 @@ def _resolve_sandbox_enabled(explicit: bool | None, setting: bool) -> bool:
     return setting
 
 
+def _resolve_in_process_kernel(options: BootstrapOptions, sandbox_enabled: bool) -> bool:
+    """Use a single-process in-memory kernel for unsandboxed headless `-p` workers.
+
+    Never returns True when OS sandboxing is enabled: sandboxing requires an
+    isolated subprocess.
+    """
+    if sandbox_enabled or options.kernel_factory is not None:
+        return False
+    env_val = os.getenv("QUARTZ_IN_PROCESS_KERNEL")
+    if env_val is not None:
+        norm = env_val.strip().lower()
+        if norm in {"0", "false", "no", "off"}:
+            return False
+        if norm in {"1", "true", "yes", "on"}:
+            return True
+    return bool(options.headless)
+
+
 def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
     """Build a live runtime around a started kernel. Returns ``(runtime, resumed)``.
 
@@ -168,8 +186,13 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
     settings = load_settings()
     sandbox_enabled = _resolve_sandbox_enabled(options.sandbox, settings.sandbox)
 
-    kernel_cls = options.kernel_factory or KernelClient
-    kernel = kernel_cls(cwd=cwd)
+    if _resolve_in_process_kernel(options, sandbox_enabled):
+        from quartz.kernel.inprocess import InProcessKernel
+
+        kernel: Any = InProcessKernel(cwd=cwd)
+    else:
+        kernel_cls = options.kernel_factory or KernelClient
+        kernel = kernel_cls(cwd=cwd)
     if sandbox_enabled and hasattr(kernel, "enable_sandbox"):
         kernel.enable_sandbox(SandboxConfig(enabled=True))
     kernel_err: list[BaseException] = []
