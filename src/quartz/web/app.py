@@ -146,6 +146,10 @@ def create_app(
             return push_ref
 
     def _on_push_event(_ws: WebSession, frame: dict[str, Any]) -> None:
+        from quartz.settings import load_settings
+
+        if not load_settings().notifications:
+            return
         payload = format_push_payload(frame)
         if payload is None:
             return

@@ -1,4 +1,6 @@
 import * as React from "react";
+import { authFetch } from "./authToken";
+import { apiUrl } from "./serverUrl";
 import {
   readRichUiMode,
   wantsRichUi,
@@ -8,10 +10,22 @@ import {
 
 export interface RichUiController {
   mode: RichUiMode;
-  /** Persist a new mode and adopt it immediately. */
+  /** Persist a new mode locally and sync it to the server. */
   setMode: (mode: RichUiMode) => void;
-  /** Flip between the two modes. */
+  /** Flip between the two modes and sync to the server. */
   toggle: () => void;
+  /** Apply a server-synced mode without re-posting back to the server. */
+  applySyncedMode: (mode: RichUiMode) => void;
+}
+
+function persistRichUiToServer(mode: RichUiMode): void {
+  void authFetch(apiUrl("/api/settings"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key: "rich_ui", value: mode === "rich" ? "on" : "off" }),
+  }).catch(() => {
+    /* Offline or test environment: localStorage still holds the choice. */
+  });
 }
 
 /**
@@ -24,20 +38,27 @@ export interface RichUiController {
 export function useRichUiMode(): RichUiController {
   const [mode, setModeState] = React.useState<RichUiMode>(() => readRichUiMode());
 
+  const applySyncedMode = React.useCallback((next: RichUiMode) => {
+    setModeState(next);
+    writeRichUiMode(next);
+  }, []);
+
   const setMode = React.useCallback((next: RichUiMode) => {
     setModeState(next);
     writeRichUiMode(next);
+    persistRichUiToServer(next);
   }, []);
 
   const toggle = React.useCallback(() => {
     setModeState((current) => {
       const next: RichUiMode = current === "rich" ? "markdown" : "rich";
       writeRichUiMode(next);
+      persistRichUiToServer(next);
       return next;
     });
   }, []);
 
-  return { mode, setMode, toggle };
+  return { mode, setMode, toggle, applySyncedMode };
 }
 
 /**

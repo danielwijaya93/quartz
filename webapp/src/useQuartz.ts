@@ -40,6 +40,8 @@ export interface QuartzApi {
   dismissActiveSession: (sessionId: string) => void;
   /** Clear all read non-permission items from Active Sessions. */
   clearReadActiveSessions: () => void;
+  /** Tell other connected devices that notifications were read. */
+  markNotificationsRead: () => void;
 }
 
 /**
@@ -183,6 +185,10 @@ export function useQuartz(
     connectionRef.current?.sendActiveSessionsClearRead();
   }, []);
 
+  const markNotificationsRead = React.useCallback(() => {
+    connectionRef.current?.sendNotificationsRead();
+  }, []);
+
   return {
     state,
     status,
@@ -200,5 +206,6 @@ export function useQuartz(
     clearBgFailed,
     dismissActiveSession,
     clearReadActiveSessions,
+    markNotificationsRead,
   };
 }

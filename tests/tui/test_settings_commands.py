@@ -112,6 +112,7 @@ def test_settings_progress_edit_preserves_compaction_values(
         "web_idle_hours": 2,
         "web_max_live_sessions": 4,
         "notifications": True,
+        "rich_ui": False,
     }
 
 

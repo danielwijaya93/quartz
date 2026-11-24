@@ -409,6 +409,10 @@ export class Connection {
   sendActiveSessionsClearRead(): boolean {
     return this.send({ type: "active_sessions_clear_read" });
   }
+
+  sendNotificationsRead(): boolean {
+    return this.send({ type: "notifications_read" });
+  }
 }
 
 /**

@@ -20,6 +20,18 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
+    public void onPause() {
+        super.onPause();
+        if (QuartzKeepAliveService.isRunning()) {
+            WebView webView = getBridge() == null ? null : getBridge().getWebView();
+            if (webView != null) {
+                webView.onResume();
+                webView.resumeTimers();
+            }
+        }
+    }
+
+    @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);

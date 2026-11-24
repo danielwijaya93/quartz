@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from typing import TYPE_CHECKING
 
@@ -47,6 +48,9 @@ _SETTING_ALIASES: dict[str, str] = {
     "notifications": "notifications",
     "notify": "notifications",
     "notification": "notifications",
+    "rich_ui": "rich_ui",
+    "richui": "rich_ui",
+    "rich-ui": "rich_ui",
 }
 
 _SETTINGS_USAGE = (
@@ -78,6 +82,7 @@ def cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
         web_idle_hours=stored_settings.web_idle_hours,
         web_max_live_sessions=stored_settings.web_max_live_sessions,
         notifications=notifications,
+        rich_ui=stored_settings.rich_ui,
     )
     parts = (arg or "").split()
     if parts:
@@ -95,7 +100,8 @@ def cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
             f"(default {DEFAULT_BACKGROUND_CHECK_EVERY}s, 0 disables; off in -p)\n"
             f"web_idle_hours: {current.web_idle_hours}h "
             f"(default {DEFAULT_WEB_IDLE_HOURS}h, 0 disables)\n"
-            f"notifications: {'on' if current.notifications else 'off'} (default on)\n\n"
+            f"notifications: {'on' if current.notifications else 'off'} (default on)\n"
+            f"rich_ui: {'on' if current.rich_ui else 'off'} (default off)\n\n"
             f"Stored in {config_file_path()}\n\n"
             f"{_SETTINGS_USAGE}",
             title="Settings",
@@ -138,17 +144,7 @@ def cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 f"Invalid value {every}: must be between 0 and 1,000 calls.",
                 body="Usage: /settings progress <n> (0 disables updates)",
             )
-        save_settings(
-            Settings(
-                compact_reserve_tokens=current.compact_reserve_tokens,
-                keep_recent_tokens=current.keep_recent_tokens,
-                progress_every=every,
-                background_check_every=current.background_check_every,
-                web_idle_hours=current.web_idle_hours,
-                web_max_live_sessions=current.web_max_live_sessions,
-                notifications=current.notifications,
-            )
-        )
+        save_settings(dataclasses.replace(current, progress_every=every))
         rt.progress_every = every
         state = "off" if every == 0 else f"every {every} ipython calls"
         return CommandResult.text(
@@ -168,17 +164,7 @@ def cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 f"Invalid value {every}: must be between 0 and 86,400 seconds.",
                 body="Usage: /settings bg <seconds> (0 disables status checks)",
             )
-        save_settings(
-            Settings(
-                compact_reserve_tokens=current.compact_reserve_tokens,
-                keep_recent_tokens=current.keep_recent_tokens,
-                progress_every=current.progress_every,
-                background_check_every=every,
-                web_idle_hours=current.web_idle_hours,
-                web_max_live_sessions=current.web_max_live_sessions,
-                notifications=current.notifications,
-            )
-        )
+        save_settings(dataclasses.replace(current, background_check_every=every))
         rt.background_check_every = every
         rt.kernel.configure(background_check_every=every)
         state = "off" if every == 0 else f"every {every}s while a job runs"
@@ -200,27 +186,11 @@ def cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 body="Usage: /settings reserve <tokens> | /settings keep <tokens>",
             )
         if parts[0] == "reserve":
-            updated = Settings(
-                compact_reserve_tokens=value,
-                keep_recent_tokens=current.keep_recent_tokens,
-                progress_every=current.progress_every,
-                background_check_every=current.background_check_every,
-                web_idle_hours=current.web_idle_hours,
-                web_max_live_sessions=current.web_max_live_sessions,
-                notifications=current.notifications,
-            )
+            updated = dataclasses.replace(current, compact_reserve_tokens=value)
             rt.compact_reserve_tokens = value
             label = "reserve_tokens"
         else:
-            updated = Settings(
-                compact_reserve_tokens=current.compact_reserve_tokens,
-                keep_recent_tokens=value,
-                progress_every=current.progress_every,
-                background_check_every=current.background_check_every,
-                web_idle_hours=current.web_idle_hours,
-                web_max_live_sessions=current.web_max_live_sessions,
-                notifications=current.notifications,
-            )
+            updated = dataclasses.replace(current, keep_recent_tokens=value)
             rt.keep_recent_tokens = value
             label = "keep_recent_tokens"
         save_settings(updated)
@@ -241,17 +211,7 @@ def cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 f"Invalid value {hours}: must be between 0 and 8,760 hours.",
                 body="Usage: /settings idle <hours> (0 disables idle prompts)",
             )
-        save_settings(
-            Settings(
-                compact_reserve_tokens=current.compact_reserve_tokens,
-                keep_recent_tokens=current.keep_recent_tokens,
-                progress_every=current.progress_every,
-                background_check_every=current.background_check_every,
-                web_idle_hours=hours,
-                web_max_live_sessions=current.web_max_live_sessions,
-                notifications=current.notifications,
-            )
-        )
+        save_settings(dataclasses.replace(current, web_idle_hours=hours))
         state = "off" if hours == 0 else f"every {hours}h"
         return CommandResult.text(
             f"Saved. web_idle_hours = {hours}h ({state})."
@@ -268,20 +228,26 @@ def cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
                 f"Invalid value {parts[1]!r}: expected on or off.",
                 body="Usage: /settings notifications <on|off>",
             )
-        save_settings(
-            Settings(
-                compact_reserve_tokens=current.compact_reserve_tokens,
-                keep_recent_tokens=current.keep_recent_tokens,
-                progress_every=current.progress_every,
-                background_check_every=current.background_check_every,
-                web_idle_hours=current.web_idle_hours,
-                web_max_live_sessions=current.web_max_live_sessions,
-                notifications=enabled,
-            )
-        )
+        save_settings(dataclasses.replace(current, notifications=enabled))
         rt.notifications = enabled
         return CommandResult.text(
             f"Saved. notifications = {'on' if enabled else 'off'}."
+        )
+
+    if parts[0] == "rich_ui" and len(parts) == 2:
+        raw_val = parts[1].strip().lower()
+        if raw_val in ("on", "true", "yes", "1"):
+            enabled = True
+        elif raw_val in ("off", "false", "no", "0"):
+            enabled = False
+        else:
+            return CommandResult.error(
+                f"Invalid value {parts[1]!r}: expected on or off.",
+                body="Usage: /settings rich_ui <on|off>",
+            )
+        save_settings(dataclasses.replace(current, rich_ui=enabled))
+        return CommandResult.text(
+            f"Saved. rich_ui = {'on' if enabled else 'off'}."
         )
 
     return CommandResult.error(f"Unknown settings argument {arg!r}.", body=_SETTINGS_USAGE)
