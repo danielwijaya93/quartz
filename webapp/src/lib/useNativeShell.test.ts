@@ -25,7 +25,7 @@ vi.mock("./serverUrl", () => ({ isNativeCapacitor: () => isNative.value }));
 
 const setKeepAliveMock = vi.fn();
 vi.mock("./useAndroidKeepAlive", () => ({
-  setKeepAlive: (active: boolean) => setKeepAliveMock(active),
+  setKeepAlive: (active: boolean, notificationsEnabled?: boolean) => setKeepAliveMock(active, notificationsEnabled),
 }));
 
 const consumeMock = vi.fn(async () => ({ text: "", kind: "" }));
@@ -49,18 +49,23 @@ describe("useNativeShell", () => {
     expect(Object.keys(listeners)).toHaveLength(0);
   });
 
-  it("starts the keep-alive only while a turn runs", async () => {
+  it("keeps the service alive when notifications are enabled or a turn runs", async () => {
     isNative.value = true;
     const { rerender } = renderHook(
-      ({ running }: { running: boolean }) =>
-        useNativeShell({ turnRunning: running, onBack: () => false, onSharedText: () => {} }),
-      { initialProps: { running: false } },
+      ({ running, notif }: { running: boolean; notif: boolean }) =>
+        useNativeShell({
+          turnRunning: running,
+          notificationsEnabled: notif,
+          onBack: () => false,
+          onSharedText: () => {},
+        }),
+      { initialProps: { running: false, notif: false } },
     );
-    expect(setKeepAliveMock).toHaveBeenLastCalledWith(false);
-    rerender({ running: true });
-    expect(setKeepAliveMock).toHaveBeenLastCalledWith(true);
-    rerender({ running: false });
-    expect(setKeepAliveMock).toHaveBeenLastCalledWith(false);
+    expect(setKeepAliveMock).toHaveBeenLastCalledWith(false, false);
+    rerender({ running: true, notif: false });
+    expect(setKeepAliveMock).toHaveBeenLastCalledWith(true, false);
+    rerender({ running: false, notif: true });
+    expect(setKeepAliveMock).toHaveBeenLastCalledWith(true, true);
   });
 
   it("lets Back close a dialog before leaving the app", async () => {

@@ -9,6 +9,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
+import android.provider.Settings;
 
 import androidx.biometric.BiometricPrompt;
 import androidx.core.content.ContextCompat;
@@ -53,8 +55,15 @@ public class QuartzNativePlugin extends Plugin {
     @PluginMethod
     public void setKeepAlive(PluginCall call) {
         boolean active = Boolean.TRUE.equals(call.getBoolean("active", false));
+        String serverUrl = call.getString("serverUrl", null);
+        String token = call.getString("token", null);
+        boolean enabled = Boolean.TRUE.equals(call.getBoolean("notificationsEnabled", active));
         Context context = getContext();
+        QuartzKeepAliveService.saveConfig(context, serverUrl, token, enabled);
         Intent intent = new Intent(context, QuartzKeepAliveService.class);
+        if (serverUrl != null) intent.putExtra("server_url", serverUrl);
+        if (token != null) intent.putExtra("auth_token", token);
+        intent.putExtra("notifications_enabled", enabled);
         if (active) {
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -71,6 +80,41 @@ public class QuartzNativePlugin extends Plugin {
         JSObject result = new JSObject();
         result.put("active", active);
         call.resolve(result);
+    }
+
+    @PluginMethod
+    public void batteryOptimizationStatus(PluginCall call) {
+        JSObject result = new JSObject();
+        boolean ignored = true;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Context context = getContext();
+            PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            ignored = pm != null && pm.isIgnoringBatteryOptimizations(context.getPackageName());
+        }
+        result.put("ignored", ignored);
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void requestIgnoreBatteryOptimizations(PluginCall call) {
+        Context context = getContext();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                intent.setData(Uri.parse("package:" + context.getPackageName()));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(intent);
+            } catch (Exception ignored) {
+                try {
+                    Intent fallback = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+                    fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    context.startActivity(fallback);
+                } catch (Exception ignoredToo) {
+                    // Device has no battery optimization screen.
+                }
+            }
+        }
+        call.resolve();
     }
 
     @PluginMethod

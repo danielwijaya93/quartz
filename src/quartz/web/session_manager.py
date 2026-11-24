@@ -60,6 +60,7 @@ class SessionManager:
         self._placeholder: WebSession | None = None
         self._system_prompt_append = ""
         self._global_sinks: set[Push] = set()
+        self._notification_listeners: set[Push] = set()
         self._active_sessions: dict[str, dict[str, Any]] = {}
         self._active_sessions_seq = 0
         self._idle_hours_override = idle_hours
@@ -282,17 +283,19 @@ class SessionManager:
 
     def broadcast_settings_state(self, *, notifications: bool, rich_ui: bool) -> None:
         """Broadcast synced UI preferences to every connected Web/Android client."""
-        self._broadcast(
-            {
-                "type": "settings_state",
-                "notifications": notifications,
-                "richUi": rich_ui,
-            }
-        )
+        frame: Frame = {
+            "type": "settings_state",
+            "notifications": notifications,
+            "richUi": rich_ui,
+        }
+        self._broadcast(frame)
+        self._broadcast_notification(frame)
 
     def broadcast_notifications_cleared(self) -> None:
         """Notify connected clients that alerts were read/dismissed on a device."""
-        self._broadcast({"type": "notifications_cleared"})
+        frame: Frame = {"type": "notifications_cleared"}
+        self._broadcast(frame)
+        self._broadcast_notification(frame)
 
     def _on_session_event(self, ws: WebSession, frame: Frame) -> None:
         if not ws.built:
@@ -383,10 +386,32 @@ class SessionManager:
                     changed = True
         if changed:
             self._broadcast_active_sessions()
+        if kind in ("turn_end", "permission_request", "bash_notice", "error"):
+            payload = dict(frame)
+            payload["sessionId"] = sid
+            payload["sessionTitle"] = self._session_title(ws)
+            self._broadcast_notification(payload)
         hook = self._push_hook
         if hook is not None:
             with contextlib.suppress(Exception):
                 hook(ws, frame)
+
+    def add_notification_listener(self, push: Push) -> None:
+        with self._lock:
+            self._notification_listeners.add(push)
+
+    def remove_notification_listener(self, push: Push) -> None:
+        with self._lock:
+            self._notification_listeners.discard(push)
+
+    def _broadcast_notification(self, frame: Frame) -> None:
+        with self._lock:
+            listeners = tuple(self._notification_listeners)
+        for listener in listeners:
+            try:
+                listener(frame)
+            except Exception:
+                self.remove_notification_listener(listener)
 
     def register_sink(self, push: Push) -> None:
         with self._lock:
