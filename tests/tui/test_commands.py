@@ -11,19 +11,17 @@ import pytest
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from quartz.tui.commands import (
-    COMMAND_REGISTRY,
-    CommandRegistry,
-    SlashCommand,
-    _handle_slash_command,
-)
 from quartz.core.compact import CompactionReason, CompactionResult
-from quartz.tui.completer import AgentCompleter
-from quartz.errors import CredentialError
-from quartz.kernel.client import CellResult
 from quartz.core.loop import TurnUsage
 from quartz.core.runtime import AgentRuntime
 from quartz.core.session import Session
+from quartz.errors import CredentialError
+from quartz.kernel.client import CellResult
+from quartz.tui.commands import (
+    CommandRegistry,
+    _handle_slash_command,
+)
+from quartz.tui.completer import AgentCompleter
 
 
 def test_command_registry_registration_and_dispatch() -> None:

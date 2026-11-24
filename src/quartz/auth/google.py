@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import html
 import http.server
 import json
+import logging
 import os
 import re
 import secrets
@@ -22,21 +24,28 @@ from typing import Any
 
 import httpx2
 
+from quartz.auth.oauth import resolve_oauth_client
 from quartz.auth.store import (
     FALLBACK_PROJECT_ID,
     GoogleCredentials,
     auth_file_path,
     auth_lock,
-    delete_google_credentials,
     load_google_credentials,
-    read_auth_json,
     save_google_credentials,
-    write_auth_json,
 )
+from quartz.auth.store import (
+    delete_google_credentials as delete_google_credentials,
+)
+from quartz.auth.store import (
+    read_auth_json as read_auth_json,
+)
+from quartz.auth.store import (
+    write_auth_json as write_auth_json,
+)
+from quartz.endpoints import resolve_cloudcode_endpoint
 from quartz.errors import CredentialError, ProviderError
-from quartz.auth.oauth import resolve_oauth_client
-from quartz.providers.config import resolve_cloudcode_endpoint
 
+logger = logging.getLogger(__name__)
 
 AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -81,7 +90,7 @@ def _refresh_antigravity_version_bg(cache_path: Path) -> None:
                     encoding="utf-8",
                 )
     except Exception:
-        pass
+        logger.debug("Failed to refresh Antigravity version cache", exc_info=True)
     finally:
         _refreshing_ag_version = False
 
@@ -106,7 +115,7 @@ def get_antigravity_version() -> str:
                 best = ver
             stale = (time.time() - checked_at) > _VERSION_CACHE_TTL_S
         except Exception:
-            pass
+            logger.debug("Failed to read Antigravity version cache", exc_info=True)
 
     _cached_ag_version = best
     if stale and not _refreshing_ag_version:
@@ -337,10 +346,10 @@ def login_google_interactive(
     done_event = threading.Event()
 
     class _Handler(http.server.BaseHTTPRequestHandler):
-        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+        def log_message(self, format: str, *args: Any) -> None:
             return
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             parsed = urllib.parse.urlparse(self.path)
             if parsed.path != CALLBACK_PATH:
                 self.send_response(404)
@@ -378,10 +387,8 @@ def login_google_interactive(
 
     if on_url is not None:
         on_url(auth_url)
-    try:
+    with contextlib.suppress(OSError, webbrowser.Error):
         webbrowser.open(auth_url)
-    except Exception:
-        pass
 
     # Race browser callback against optional manual paste (only when not in full-screen TUI)
     def _read_paste() -> None:

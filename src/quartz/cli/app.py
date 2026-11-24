@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib
+import logging
 import os
 import signal
 import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from quartz.bootstrap import BootstrapOptions
@@ -397,10 +401,8 @@ def main() -> None:
     def _handle_sigterm(_signum: int, _frame: Any) -> None:
         raise SystemExit(0)
 
-    try:
+    with contextlib.suppress(OSError, ValueError):
         signal.signal(signal.SIGTERM, _handle_sigterm)
-    except (OSError, ValueError):
-        pass
 
     from quartz import __version__
 
@@ -528,11 +530,11 @@ def main() -> None:
             try:
                 rt.active_session.save_kernel(rt.kernel)
             except Exception:
-                pass
+                logger.debug("Kernel snapshot save on exit failed", exc_info=True)
         rt.kernel.close()
         close_client = getattr(rt.client, "close", None)
         if callable(close_client):
             try:
                 close_client()
             except Exception:
-                pass
+                logger.debug("Client close on exit failed", exc_info=True)

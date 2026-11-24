@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import queue
@@ -22,7 +23,7 @@ from quartz.core.images import prune_old_images
 from quartz.core.progress import ProgressCheckpointer, announced_to_user
 from quartz.core.session import repair_dangling_tool_calls
 from quartz.errors import ContextOverflowError
-from quartz.kernel.base import CellExecutor, CellResult
+from quartz.kernel.base import CellExecutor, CellResult, Kernel
 from quartz.providers.base import (
     CompletionResult,
     LLMProvider,
@@ -219,6 +220,10 @@ def _call_model(
     stream_done = threading.Event()
     preempted = threading.Event()
     aborted_stream = threading.Event()
+    content_parts: list[str] = []
+    thinking_parts: list[str] = []
+    tool_calls_acc: dict[int, dict[str, Any]] = {}
+    usage: Usage | None = None
     try:
         stream_handle = client.stream(
             model=model,
@@ -232,27 +237,19 @@ def _call_model(
                 while not stream_done.is_set():
                     if abort_event is not None and abort_event.is_set():
                         aborted_stream.set()
-                        try:
+                        with contextlib.suppress(Exception):
                             stream_handle.close()
-                        except Exception:
-                            pass
                         return
                     if steering_queue is not None and not steering_queue.empty():
                         preempted.set()
-                        try:
+                        with contextlib.suppress(Exception):
                             stream_handle.close()
-                        except Exception:
-                            pass
                         return
                     if stream_done.wait(timeout=0.05):
                         return
 
             threading.Thread(target=_watch_preempt, daemon=True).start()
 
-        content_parts: list[str] = []
-        thinking_parts: list[str] = []
-        tool_calls_acc: dict[int, dict[str, Any]] = {}
-        usage: Usage | None = None
         status_cleared = False
 
         with stream_handle as events:
@@ -262,10 +259,8 @@ def _call_model(
                     raise TurnAborted()
                 if steering_queue is not None and not steering_queue.empty():
                     preempted.set()
-                    try:
+                    with contextlib.suppress(Exception):
                         stream_handle.close()
-                    except Exception:
-                        pass
                     break
 
                 if isinstance(event, UsageEvent):
@@ -296,7 +291,7 @@ def _call_model(
                         entry["meta"].update(event.meta)
     except Exception:
         if aborted_stream.is_set() or (abort_event is not None and abort_event.is_set()):
-            raise TurnAborted()
+            raise TurnAborted() from None
         if not preempted.is_set():
             raise
     finally:
@@ -357,7 +352,7 @@ def agent_loop(
     model: str,
     system_prompt: str,
     messages: list[dict[str, Any]],
-    kernel: CellExecutor,
+    kernel: Kernel,
     *,
     observer: TurnObserver = NO_OBSERVER,
     max_context_tokens: int = 128_000,

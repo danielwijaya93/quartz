@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
+import logging
 import sys
 import threading
 import uuid
@@ -15,12 +16,14 @@ from typing import Any, TextIO
 from quartz.bootstrap import BootstrapOptions, build_runtime
 from quartz.core.compact import DEFAULT_KEEP_RECENT_TOKENS
 from quartz.core.images import content_to_text
-from quartz.core.loop import TurnAborted, TurnUsage, agent_loop
+from quartz.core.loop import TurnUsage, agent_loop
 from quartz.core.runtime import AgentRuntime
 from quartz.core.session import Session
 from quartz.core.turn import TurnOutcome, TurnStatus, TurnView, run_interactive_turn
 from quartz.kernel.base import CellResult, Kernel
 from quartz.kernel.client import KernelClient
+
+logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = 1
 
@@ -553,7 +556,7 @@ class ACPServer:
                         if state.messages and not state.runtime.headless and state.kernel.dirty:
                             state.session.save_kernel(state.kernel)
                     except Exception:
-                        pass
+                        logger.debug("ACP session cleanup failed", exc_info=True)
                     state.kernel.close()
                     with contextlib.suppress(Exception):
                         state.runtime.client.close()

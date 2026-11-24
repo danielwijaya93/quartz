@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -135,7 +134,7 @@ def test_session_manager_never_hibernates_attached_or_busy_sessions(tmp_path: Pa
     ws_turn.start_turn("working", [])
 
     # Creating a 4th session cannot evict any of the 3 protected sessions.
-    ws4 = mgr.create_session()
+    mgr.create_session()
     assert len(mgr.all_sessions()) == 4
     assert not kernels[sid_attached].closed
     assert not kernels[sid_bg_job].closed

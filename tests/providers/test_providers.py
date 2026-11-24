@@ -7,15 +7,14 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from quartz.tui.commands import _handle_slash_command
-from quartz.core.runtime import AgentRuntime as _CLIRuntime
-from quartz.providers.selection import build_provider as _build_client
 from quartz.auth.google import (
     GoogleCredentials,
     delete_google_credentials,
     save_google_credentials,
 )
 from quartz.core.loop import TurnUsage
+from quartz.core.runtime import AgentRuntime as _CLIRuntime
+from quartz.core.session import Session
 from quartz.providers.registry import (
     delete_provider_auth,
     discover_models,
@@ -25,7 +24,8 @@ from quartz.providers.registry import (
     resolve_provider_credentials,
     save_provider_auth,
 )
-from quartz.core.session import Session
+from quartz.providers.selection import build_provider as _build_client
+from quartz.tui.commands import _handle_slash_command
 
 
 def test_provider_auth_crud_and_auth_types(tmp_path: Path, monkeypatch) -> None:
@@ -122,7 +122,7 @@ def _make_runtime(tmp_path: Path) -> _CLIRuntime:
     sess = Session.create(tmp_path, sessions_dir=tmp_path / "sessions")
     return _CLIRuntime(
         cwd=tmp_path,
-        kernel=SimpleNamespace(list_vars=lambda: {}, restart=lambda: None),  # type: ignore[arg-type]
+        kernel=SimpleNamespace(list_vars=dict, restart=lambda: None),  # type: ignore[arg-type]
         client=None,
         provider_name="deepseek",
         model="deepseek-flash",
@@ -243,6 +243,7 @@ def test_build_provider_raises_typed_errors_never_system_exit(
     tmp_path: Path, monkeypatch
 ) -> None:
     import pytest
+
     from quartz.errors import CredentialError, EndpointConfigError
     from quartz.providers.selection import build_provider
 

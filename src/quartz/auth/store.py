@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import os
@@ -10,9 +11,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, TypeVar
-
-_T = TypeVar("_T")
+from typing import Any
 
 FALLBACK_PROJECT_ID = "rising-fact-p41fc"
 _AUTH_LOCK = threading.RLock()
@@ -60,28 +59,24 @@ def write_auth_json(data: dict[str, Any], path: Path | None = None) -> Path:
                 delete=False,
             ) as tmp:
                 tmp_path = Path(tmp.name)
-                try:
+                with contextlib.suppress(OSError):
                     os.chmod(tmp_path, 0o600)
-                except OSError:
-                    pass
                 tmp.write(json.dumps(data, indent=2) + "\n")
                 tmp.flush()
                 os.fsync(tmp.fileno())
             os.replace(tmp_path, cfg)
         except BaseException:
             if tmp_path is not None:
-                try:
+                with contextlib.suppress(OSError):
                     tmp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
             raise
         return cfg
 
 
-def update_auth_json(
-    mutator: Callable[[dict[str, Any]], _T],
+def update_auth_json[T](
+    mutator: Callable[[dict[str, Any]], T],
     path: Path | None = None,
-) -> _T:
+) -> T:
     """Atomically read, mutate, and write auth.json under the store lock."""
     with _AUTH_LOCK:
         cfg = path or auth_file_path()

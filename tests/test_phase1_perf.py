@@ -12,7 +12,6 @@ from typing import Any
 
 from quartz.kernel.actions import _describe_shell_command
 from quartz.kernel.client import KernelClient
-from quartz.web.push import PushStore
 
 
 def test_cli_app_import_stays_lazy_without_rich_or_tui() -> None:

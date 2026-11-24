@@ -163,7 +163,7 @@ def test_reconnecting_mid_turn_reattaches_instead_of_blocking(live_server: Any) 
     nobody owned, and every later prompt answered "a turn is already running" -- the
     page looked connected and never moved again.
     """
-    url, _runtime_, _state, websockets = live_server
+    url, _rt, _state, websockets = live_server
 
     async def scenario() -> tuple[dict[str, Any], list[dict[str, Any]]]:
         first = await websockets.connect(url, max_size=None)
@@ -202,7 +202,7 @@ def test_reconnecting_mid_turn_reattaches_instead_of_blocking(live_server: Any) 
 
 
 def test_the_health_route_answers_over_a_real_server(live_server: Any) -> None:
-    url, _runtime_, _state, _ws = live_server
+    url, _rt, _state, _ws = live_server
     import urllib.request
 
     base = url.replace("ws://", "http://").removesuffix("/ws")

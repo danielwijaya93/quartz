@@ -7,6 +7,9 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from quartz.cli.acp import ACPServer
 
@@ -88,16 +91,10 @@ def test_acp_initialize_new_prompt_and_load(tmp_path: Path, monkeypatch) -> None
     out_buf2 = io.StringIO()
     server2 = ACPServer(_make_fake_client, in_stream=io.StringIO(json.dumps(reqs2[0]) + "\n"), out_stream=out_buf2)
     server2.serve()
-    sid2 = json.loads(out_buf2.getvalue().splitlines()[0])["result"]["sessionId"]
+    json.loads(out_buf2.getvalue().splitlines()[0])["result"]["sessionId"]
 
     # Send prompt directly via _handle_session_prompt on a fresh server with open session
     out_buf3 = io.StringIO()
-    prompt_req = {
-        "jsonrpc": "2.0",
-        "id": 4,
-        "method": "session/prompt",
-        "params": {"sessionId": sid2, "prompt": [{"type": "text", "text": "Compute 21*2"}]},
-    }
     in_stream3 = io.StringIO(
         "\n".join(
             [
@@ -108,7 +105,7 @@ def test_acp_initialize_new_prompt_and_load(tmp_path: Path, monkeypatch) -> None
     )
     server3 = ACPServer(_make_fake_client, in_stream=in_stream3, out_stream=out_buf3)
     server3.serve()
-    sid3 = json.loads(out_buf3.getvalue().splitlines()[0])["result"]["sessionId"]
+    json.loads(out_buf3.getvalue().splitlines()[0])["result"]["sessionId"]
 
     # Dispatch prompt on server3 (re-opening kernel via _handle_session_load)
     out_buf4 = io.StringIO()
@@ -138,7 +135,7 @@ def test_acp_initialize_new_prompt_and_load(tmp_path: Path, monkeypatch) -> None
     for st in server4._sessions.values():
         st.kernel.close()
 
-    msgs = [json.loads(l) for l in out_buf4.getvalue().splitlines() if l.strip()]
+    msgs = [json.loads(line) for line in out_buf4.getvalue().splitlines() if line.strip()]
     updates = [m["params"]["update"] for m in msgs if m.get("method") == "session/update"]
     assert any(u["sessionUpdate"] == "tool_call" and u["title"] == "ipython" for u in updates)
     assert any(u["sessionUpdate"] == "tool_call_update" and u["status"] == "completed" and u["rawOutput"] == "42" for u in updates)
@@ -152,7 +149,7 @@ def test_acp_initialize_new_prompt_and_load(tmp_path: Path, monkeypatch) -> None
     server5._dispatch_request({"jsonrpc": "2.0", "id": 13, "method": "session/load", "params": {"sessionId": sid4, "cwd": str(tmp_path)}})
     for st in server5._sessions.values():
         st.kernel.close()
-    load_msgs = [json.loads(l) for l in out_buf5.getvalue().splitlines() if l.strip()]
+    load_msgs = [json.loads(line) for line in out_buf5.getvalue().splitlines() if line.strip()]
     load_updates = [m["params"]["update"] for m in load_msgs if m.get("method") == "session/update"]
     assert any(u["sessionUpdate"] == "user_message_chunk" for u in load_updates)
     assert any(u["sessionUpdate"] == "agent_message_chunk" for u in load_updates)
@@ -316,7 +313,6 @@ def test_acp_out_of_order_tool_call_id_callbacks(tmp_path: Path, monkeypatch) ->
 
 def test_acp_session_cancel_stops_active_turn(tmp_path: Path, monkeypatch) -> None:
     import threading
-    from types import SimpleNamespace
 
     monkeypatch.setenv("SESSION_DIR", str(tmp_path / "sessions"))
     started = threading.Event()
@@ -466,8 +462,8 @@ def test_acp_serve_prunes_finished_worker_threads(tmp_path: Path, monkeypatch) -
 
     class _SlowLineReader:
         def __iter__(self):
-            for l in lines:
-                yield l + "\n"
+            for line in lines:
+                yield line + "\n"
                 time.sleep(0.05)
 
     server2 = ACPServer(_make_fake_client, in_stream=_SlowLineReader(), out_stream=io.StringIO())
@@ -754,11 +750,8 @@ def test_acp_session_load_closes_kernel_on_restore_failure(
     )
 
     server = ACPServer(_make_fake_client, in_stream=io.StringIO(), out_stream=io.StringIO())
-    try:
+    with pytest.raises(RuntimeError):
         server._handle_session_load({"sessionId": s.id, "cwd": str(tmp_path)})
-        assert False, "expected RuntimeError"
-    except RuntimeError:
-        pass
 
     assert len(created_kernels) == 1
     assert created_kernels[0].started is True

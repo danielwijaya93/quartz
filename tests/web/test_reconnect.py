@@ -119,7 +119,7 @@ def test_a_detached_turn_is_not_aborted_by_the_detach_itself(tmp_path: Path) -> 
     assert stopped.is_set() is False, "a disconnect aborted the turn"
     assert session.turn_running is True
 
-    turn = session._turn  # noqa: SLF001 - end the turn so the thread can exit
+    turn = session._turn
     assert turn is not None
     turn.abort.set()
     assert stopped.wait(timeout=10)
@@ -209,7 +209,7 @@ def test_the_grace_is_cancelled_by_a_reconnect(tmp_path: Path) -> None:
     time.sleep(0.2)
 
     assert stopped.is_set() is False, "the reconnected tab's turn was aborted anyway"
-    turn = session._turn  # noqa: SLF001
+    turn = session._turn
     if turn is not None:
         turn.abort.set()
 

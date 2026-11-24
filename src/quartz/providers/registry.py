@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import os
@@ -15,11 +16,19 @@ if TYPE_CHECKING:
     from quartz.providers.base import LLMProvider
 
 from quartz.auth.store import (
-    ApiKeyCredentials,
-    delete_provider_auth,
-    list_logged_in_providers,
+    ApiKeyCredentials as ApiKeyCredentials,
+)
+from quartz.auth.store import (
+    delete_provider_auth as delete_provider_auth,
+)
+from quartz.auth.store import (
+    list_logged_in_providers as list_logged_in_providers,
+)
+from quartz.auth.store import (
     load_provider_auth,
-    save_provider_auth,
+)
+from quartz.auth.store import (
+    save_provider_auth as save_provider_auth,
 )
 
 
@@ -389,7 +398,7 @@ def discover_models(
 #   effort: {supported_levels: [...], default_level: "..."}
 # in GET /models. We parse both shapes and cache the result per (provider, model).
 
-_EFFORT_CACHE: dict[tuple[str, str], "tuple[list[str] | None, str | None]"] = {}
+_EFFORT_CACHE: dict[tuple[str, str], tuple[list[str] | None, str | None]] = {}
 _EFFORT_CACHE_LOCK = threading.Lock()
 
 
@@ -460,10 +469,8 @@ def discover_model_efforts(
                     details_list = None
                 finally:
                     if client is not None:
-                        try:
+                        with contextlib.suppress(Exception):
                             client.close()
-                        except Exception:
-                            pass
 
             if details_list is not None:
                 for details in details_list:

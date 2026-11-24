@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import http.server
 import json
 import threading
@@ -10,8 +11,8 @@ from typing import Any
 import pytest
 
 from quartz.errors import ContextOverflowError, ProviderError
-from quartz.providers.openai import OpenAIProvider
 from quartz.providers.base import TextDelta, ToolCallDelta, UsageEvent
+from quartz.providers.openai import OpenAIProvider
 
 
 class _FakeStreamResp:
@@ -30,7 +31,7 @@ class _FakeStreamResp:
         self.enter_count = 0
         self.exit_count = 0
 
-    def __enter__(self) -> "_FakeStreamResp":
+    def __enter__(self) -> _FakeStreamResp:
         self.enter_count += 1
         return self
 
@@ -110,10 +111,10 @@ def test_sse_close_mid_stream_interrupts_live_blocking_http_server() -> None:
     release_server = threading.Event()
 
     class _BlockingSSEHandler(http.server.BaseHTTPRequestHandler):
-        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+        def log_message(self, format: str, *args: Any) -> None:
             return
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length") or "0")
             if length:
                 self.rfile.read(length)
@@ -148,14 +149,12 @@ def test_sse_close_mid_stream_interrupts_live_blocking_http_server() -> None:
         abort_thread.start()
 
         received: list[str] = []
-        try:
+        with contextlib.suppress(Exception):
+            # Closing the underlying socket mid-read may raise a transport error or end cleanly.
             for event in stream:
                 if isinstance(event, TextDelta):
                     received.append(event.text)
                     first_chunk_received.set()
-        except Exception:
-            # Closing the underlying socket mid-read may raise a transport error or end cleanly.
-            pass
         abort_thread.join(timeout=2.0)
         assert received == ["first"]
     finally:

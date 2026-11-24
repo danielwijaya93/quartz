@@ -19,6 +19,7 @@ from quartz.tui.render import (
     render_user_prompt,
 )
 
+
 def _replay_session(
     messages: list[dict[str, Any]],
     cell_history: list[tuple[str, CellResult, float]],
@@ -47,13 +48,7 @@ def _replay_session(
             cell_group.flush()
             text = content_to_text(content)
             if (
-                text.startswith("[")
-                and text.endswith("]")
-                or text.startswith("[bash-done")
-                or text.startswith("[bash-status")
-                or text.startswith("[progress]")
-                or text.startswith("[compaction-summary]")
-                or text.startswith("[python-state")
+                (text.startswith("[") and text.endswith("]")) or text.startswith(("[bash-done", "[bash-status", "[progress]", "[compaction-summary]", "[python-state"))
             ):
                 _render_bash_notice(text)
             elif steering_indices and idx in steering_indices:
@@ -92,10 +87,7 @@ def _replay_session(
                     duration = float(meta.get("duration_s", 0.0))
                 else:
                     is_err = (
-                        "[stderr]" in raw_out
-                        or raw_out.startswith("[error]")
-                        or raw_out.startswith("[aborted")
-                        or raw_out.startswith("[interrupted")
+                        "[stderr]" in raw_out or raw_out.startswith(("[error]", "[aborted", "[interrupted"))
                     )
                     is_ok = not is_err
                     duration = 0.0

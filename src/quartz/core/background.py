@@ -22,12 +22,13 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["format_bash_events", "format_elapsed", "resolve_interval"]
+from quartz.kernel.base import STATUS_TAIL_LINES as STATUS_TAIL_LINES
+
+__all__ = ["STATUS_TAIL_LINES", "format_bash_events", "format_elapsed", "resolve_interval"]
 
 #: Tail lines carried by a status notice. A status is a peek at a running job,
 #: not a transcript of it: enough to see progress or a stuck prompt, short enough
 #: that asking every five minutes does not flood the context with old output.
-STATUS_TAIL_LINES = 10
 
 
 def format_elapsed(seconds: float) -> str:

@@ -4,14 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from conftest import RecordingObserver
 
 from quartz.core.compact import compact_messages, strip_reasoning
-from quartz.kernel.client import KernelClient
 from quartz.core.loop import TurnUsage, agent_loop
-from quartz.providers.base import TextDelta, ThinkingDelta, ToolCallDelta, Usage, UsageEvent
 from quartz.core.session import Session
+from quartz.kernel.client import KernelClient
+from quartz.providers.base import TextDelta, ThinkingDelta, ToolCallDelta, Usage, UsageEvent
 
 
 class _FakeStream:
@@ -68,7 +67,7 @@ def test_streaming_thinking_captured_and_callback_fired(tmp_path: Path) -> None:
             observer=observer,
             usage_stats=usage,
         )
-        assistant = [m for m in msgs if m.get("role") == "assistant"][0]
+        assistant = next(m for m in msgs if m.get("role") == "assistant")
         assert assistant["reasoning"] == "plan... step 2"
         assert observer.thinking_deltas == ["plan...", " step 2"]
         # Tool result still delivered alongside reasoning
@@ -93,7 +92,7 @@ def test_no_thinking_deltas_omits_reasoning_key(tmp_path: Path) -> None:
             stream=True,
             usage_stats=TurnUsage(),
         )
-        assistant = [m for m in msgs if m.get("role") == "assistant"][0]
+        assistant = next(m for m in msgs if m.get("role") == "assistant")
         assert "reasoning" not in assistant
     finally:
         kernel.close()
@@ -121,7 +120,7 @@ def test_empty_thinking_deltas_ignored(tmp_path: Path) -> None:
             usage_stats=TurnUsage(),
         )
         assert observer.thinking_deltas == []
-        assistant = [m for m in msgs if m.get("role") == "assistant"][0]
+        assistant = next(m for m in msgs if m.get("role") == "assistant")
         assert "reasoning" not in assistant
         assert assistant["content"] == "hello"
     finally:

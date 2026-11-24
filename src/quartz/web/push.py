@@ -5,11 +5,14 @@ from __future__ import annotations
 import base64
 import contextlib
 import json
+import logging
 import os
 import tempfile
 import threading
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "PushStore",
@@ -138,7 +141,7 @@ class PushStore:
                 raw = json.loads(self._path.read_text(encoding="utf-8"))
                 if isinstance(raw, dict):
                     data = raw
-            except Exception:  # noqa: BLE001 - corrupt file falls back to fresh keys
+            except Exception:
                 data = {}
 
         priv = data.get("vapid_private_pem")
@@ -160,7 +163,7 @@ class PushStore:
                     self._private_pem = priv
                     self._public_key = _public_key_b64(vapid)
                     valid_keys = True
-                except Exception:  # noqa: BLE001
+                except Exception:
                     valid_keys = False
 
         if not valid_keys:
@@ -278,7 +281,8 @@ class PushStore:
                 status = getattr(getattr(exc, "response", None), "status_code", None)
                 if status in (404, 410):
                     expired.append(sub["endpoint"])
-            except Exception:  # noqa: BLE001 - never break a turn on push failure
+            except Exception:
+                logger.debug("Web push delivery failed", exc_info=True)
                 continue
 
         if expired:

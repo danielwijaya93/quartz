@@ -10,11 +10,11 @@ from unittest.mock import MagicMock
 import pytest
 
 import quartz.tui.commands as commands
-from quartz.tui.commands import _handle_slash_command
 from quartz.core.loop import TurnUsage
 from quartz.core.runtime import AgentRuntime
 from quartz.core.session import Session
 from quartz.settings import DEFAULT_PROGRESS_EVERY
+from quartz.tui.commands import _handle_slash_command
 
 
 def _make_rt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AgentRuntime:

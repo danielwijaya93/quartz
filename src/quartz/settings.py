@@ -275,27 +275,26 @@ def update_config_json(
     result = mutator(data)
     updated = result if isinstance(result, dict) else data
     existing_mode = stat.S_IMODE(cfg.stat().st_mode) if cfg.exists() else None
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        dir=cfg.parent,
-        prefix=f".{cfg.name}.",
-        suffix=".tmp",
-        delete=False,
-    )
-    tmp_path = Path(tmp.name)
+    tmp_path: Path | None = None
     try:
-        if existing_mode is not None:
-            os.chmod(tmp_path, existing_mode)
-        tmp.write(json.dumps(updated, indent=2) + "\n")
-        tmp.flush()
-        os.fsync(tmp.fileno())
-        tmp.close()
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=cfg.parent,
+            prefix=f".{cfg.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            if existing_mode is not None:
+                os.chmod(tmp_path, existing_mode)
+            tmp.write(json.dumps(updated, indent=2) + "\n")
+            tmp.flush()
+            os.fsync(tmp.fileno())
         os.replace(tmp_path, cfg)
     except BaseException:
-        if not tmp.closed:
-            tmp.close()
-        tmp_path.unlink(missing_ok=True)
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
         raise
     return cfg
 

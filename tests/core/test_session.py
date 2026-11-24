@@ -7,8 +7,8 @@ import os
 import time
 from pathlib import Path
 
-from quartz.kernel.client import KernelClient
 from quartz.core.session import Session, prune_snapshots
+from quartz.kernel.client import KernelClient
 
 
 def test_session_jsonl_save_load_and_compaction(tmp_path: Path) -> None:

@@ -114,11 +114,10 @@ def notify_desktop(
             msg = f"{clean_title}: {clean_body}" if clean_body else clean_title
             if _write_sequence(f"\x1b]9;{msg}\x07", active_stream):
                 return "osc9"
-        elif osc == "osc777":
-            if _write_sequence(
-                f"\x1b]777;notify;{clean_title};{clean_body}\x07", active_stream
-            ):
-                return "osc777"
+        elif osc == "osc777" and _write_sequence(
+            f"\x1b]777;notify;{clean_title};{clean_body}\x07", active_stream
+        ):
+            return "osc777"
 
     if not _is_ssh(active_env):
         if active_platform == "darwin" and shutil.which("osascript"):

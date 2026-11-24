@@ -5,19 +5,19 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
-from quartz.tui.commands import _handle_slash_command
+from quartz.core.prompt import build_system_prompt
 from quartz.core.runtime import AgentRuntime as _CLIRuntime
+from quartz.core.session import Session
+from quartz.kernel.client import KernelClient
 from quartz.kernel.helpers import (
-    PROTECTED_NAMES,
     format_helpers_for_prompt,
     load_helpers,
 )
-from quartz.kernel.client import KernelClient
-from quartz.core.prompt import build_system_prompt
-from quartz.core.session import Session
+from quartz.tui.commands import _handle_slash_command
 
 
 def test_builtin_helpers_loaded_by_default() -> None:
@@ -368,18 +368,19 @@ def test_edit_and_write_atomic_and_crlf_safe(tmp_path: Path) -> None:
     # Test edit with LF old/new string adapting to CRLF file
     edit(str(f), "world", "quartz")
     raw = f.read_bytes()
-    assert b"hello\r\nquartz\r\n" == raw
+    assert raw == b"hello\r\nquartz\r\n"
     assert b"\r\n" in raw
     assert raw.count(b"\r\n") == 2
 
     # Test multiline edit with LF in arguments preserves CRLF in file
     edit(str(f), "hello\nquartz", "greeting\ngalaxy")
     raw2 = f.read_bytes()
-    assert b"greeting\r\ngalaxy\r\n" == raw2
+    assert raw2 == b"greeting\r\ngalaxy\r\n"
     assert b"\n" not in raw2.replace(b"\r\n", b"")
 
 def test_rg_fixed_literal_search(tmp_path: Path) -> None:
     from unittest.mock import patch
+
     from quartz.kernel.helpers import rg
 
     test_file = tmp_path / "sample.txt"
@@ -498,6 +499,7 @@ def test_system_prompt_mentions_stdlib_auto_import_and_explicit_py_imports(tmp_p
 def test_edit_preserves_mode_and_write_respects_umask(tmp_path: Path) -> None:
     import os
     import stat
+
     from quartz.kernel.helpers import edit, write
 
     script = tmp_path / "run.sh"

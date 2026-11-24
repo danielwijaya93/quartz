@@ -177,7 +177,7 @@ def test_the_needs_terminal_flag_agrees_with_the_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The flag lets a client grey a command out without calling it; it cannot drift."""
-    rt = _make_rt(tmp_path, monkeypatch)
+    _make_rt(tmp_path, monkeypatch)
     flagged = {cmd.name for cmd in COMMAND_REGISTRY.list_commands() if cmd.needs_terminal}
     assert flagged == NEEDS_TERMINAL
 

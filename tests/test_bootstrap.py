@@ -13,7 +13,7 @@ import argparse
 import ast
 import io
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from rich.console import Console
@@ -28,7 +28,7 @@ from quartz.settings import DEFAULT_PROGRESS_EVERY
 class _FakeKernel:
     """Stand-in for `KernelClient` that records start/close without a subprocess."""
 
-    instances: list[_FakeKernel] = []
+    instances: ClassVar[list[_FakeKernel]] = []
 
     def __init__(self, cwd: Path | None = None) -> None:
         self.cwd = cwd
@@ -305,10 +305,7 @@ def test_bootstrap_imports_neither_tui_nor_cli() -> None:
     offenders = sorted(
         module
         for module in imported
-        if module == "quartz.tui"
-        or module.startswith("quartz.tui.")
-        or module == "quartz.cli"
-        or module.startswith("quartz.cli.")
+        if module == "quartz.tui" or module.startswith(("quartz.tui.", "quartz.cli.")) or module == "quartz.cli"
     )
     assert offenders == []
 

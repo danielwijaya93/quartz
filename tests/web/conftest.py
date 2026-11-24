@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 

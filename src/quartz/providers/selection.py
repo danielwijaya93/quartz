@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import os
 
-from quartz.errors import CredentialError, EndpointConfigError
 from quartz.auth.google import load_google_credentials
+from quartz.errors import CredentialError, EndpointConfigError
 from quartz.providers.base import LLMProvider
 from quartz.providers.google import GoogleAntigravityProvider
 from quartz.providers.registry import (
@@ -24,7 +24,7 @@ from quartz.providers.registry import (
     resolve_provider_credentials,
 )
 
-__all__ = ["build_provider", "_provider_ready", "_provider_status_label"]
+__all__ = ["_provider_ready", "_provider_status_label", "build_provider"]
 
 
 def _provider_ready(provider: str) -> bool:

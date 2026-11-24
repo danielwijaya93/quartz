@@ -126,10 +126,7 @@ def _logout_provider(target_provider: str | None = None) -> bool:
             console.print("[dim]Cancelled.[/dim]")
             return False
 
-    if target_provider == "google":
-        removed = delete_google_credentials()
-    else:
-        removed = delete_provider_auth(target_provider)
+    removed = delete_google_credentials() if target_provider == "google" else delete_provider_auth(target_provider)
 
     if removed:
         console.print(f"[green]Logged out from [bold]{escape(target_provider)}[/bold].[/green]")

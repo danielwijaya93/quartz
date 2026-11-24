@@ -8,12 +8,15 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
+    "STATUS_TAIL_LINES",
     "CellExecutor",
     "CellResult",
     "Kernel",
     "KernelIntrospector",
     "KernelSnapshotter",
 ]
+
+STATUS_TAIL_LINES = 10
 
 
 @dataclasses.dataclass
@@ -49,7 +52,9 @@ class CellExecutor(Protocol):
 
     def drain_events(self) -> list[dict[str, Any]]: ...
 
-    def wait_until_event(self, stop_event: threading.Event, timeout: float = 0.25) -> bool: ...
+    def has_pending_events(self) -> bool: ...
+
+    def wait_until_event(self, stop_event: threading.Event, timeout: float | None = 0.25) -> bool: ...
 
     def consume_restart_notice(self) -> str | None: ...
 

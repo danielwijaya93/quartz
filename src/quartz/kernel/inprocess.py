@@ -14,6 +14,7 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextlib
+import inspect
 import json
 import os
 import threading
@@ -130,7 +131,7 @@ class InProcessKernel:
                 if self._configured:
                     self._worker.headless = self._headless
                     self._worker.background_check_every = self._background_check_every
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 err_box.append(exc)
                 ready.set()
                 loop.close()
@@ -348,7 +349,9 @@ class InProcessKernel:
                     close_mcp = getattr(mcp, "close", None)
                     if callable(close_mcp):
                         with contextlib.suppress(Exception):
-                            await close_mcp()
+                            res = close_mcp()
+                            if inspect.isawaitable(res):
+                                await res
 
             with contextlib.suppress(Exception):
                 asyncio.run_coroutine_threadsafe(_cleanup(), loop).result(timeout=2.0)

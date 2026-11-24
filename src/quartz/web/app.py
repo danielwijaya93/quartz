@@ -18,9 +18,9 @@ import contextlib
 import json
 import os
 import threading
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
@@ -36,6 +36,7 @@ from quartz.web.files import (
     list_workspace_files,
     resolve_directory,
 )
+from quartz.web.push import PushStore, default_push_path, format_push_payload
 from quartz.web.session import (
     BuildRuntime,
     SessionManager,
@@ -44,7 +45,6 @@ from quartz.web.session import (
     WebSession,
     resolve_cwd,
 )
-from quartz.web.push import PushStore, default_push_path, format_push_payload
 from quartz.web.sidebar import SidebarStore, default_sidebar_path, sidebar_payload
 
 __all__ = ["create_app", "resolve_static_dir"]
@@ -266,6 +266,8 @@ def create_app(
         except Exception:
             return JSONResponse({"error": "Invalid JSON"}, status_code=400)
         endpoint = body.get("endpoint") if isinstance(body, dict) else None
+        if not isinstance(endpoint, str) or not endpoint:
+            return JSONResponse({"error": "Missing endpoint"}, status_code=400)
         ps = await asyncio.to_thread(push_store)
         removed = await asyncio.to_thread(ps.unsubscribe, endpoint)
         return JSONResponse({"ok": True, "removed": removed})
@@ -399,8 +401,10 @@ def create_app(
         servers: list[dict[str, Any]] = []
         for name, spec in sorted(raw.items()):
             is_http = "url" in spec
-            headers = spec.get("headers") if isinstance(spec.get("headers"), dict) else {}
-            env = spec.get("env") if isinstance(spec.get("env"), dict) else {}
+            raw_headers = spec.get("headers")
+            raw_env = spec.get("env")
+            headers: dict[str, Any] = raw_headers if isinstance(raw_headers, dict) else {}
+            env: dict[str, Any] = raw_env if isinstance(raw_env, dict) else {}
             servers.append(
                 {
                     "name": name,
@@ -410,8 +414,8 @@ def create_app(
                     "command": "" if is_http else str(spec.get("command", "")),
                     "args": [] if is_http else [str(a) for a in spec.get("args", [])],
                     "cwd": str(spec.get("cwd", "")) if spec.get("cwd") else "",
-                    "headerKeys": sorted(str(k) for k in headers.keys()),
-                    "envKeys": sorted(str(k) for k in env.keys()),
+                    "headerKeys": sorted(str(k) for k in headers),
+                    "envKeys": sorted(str(k) for k in env),
                 }
             )
         return {"configPath": str(cfg_path), "servers": servers}
@@ -540,7 +544,9 @@ def create_app(
         from quartz.kernel.actions import describe_job_label
 
         jobs_fn = getattr(target.runtime.kernel, "running_bash_jobs", None)
-        raw_jobs = await asyncio.to_thread(lambda: list(jobs_fn()) if callable(jobs_fn) else [])
+        raw_jobs = await asyncio.to_thread(
+            lambda: list(cast(Iterable[dict[str, Any]], jobs_fn())) if callable(jobs_fn) else []
+        )
         out = []
         for job in raw_jobs:
             cmd = str(job.get("command", ""))
@@ -819,19 +825,17 @@ def create_app(
             A socket that has closed is not an error: the loop is going away and
             `outbox` with it, and the turn is expected to outlive this call.
             """
-            try:
-                loop.call_soon_threadsafe(outbox.put_nowait, frame)
-            except RuntimeError:
+            with contextlib.suppress(RuntimeError):
                 # The loop this socket belonged to has stopped. Whoever is listening
                 # next will get the state on reconnect; nothing to do here.
-                pass
+                loop.call_soon_threadsafe(outbox.put_nowait, frame)
 
         async def write() -> None:
             while True:
                 frame = await outbox.get()
                 try:
                     await socket.send_text(json.dumps(frame, ensure_ascii=False))
-                except Exception:  # noqa: BLE001 - the reader will notice and stop
+                except Exception:
                     return
 
         writer = asyncio.create_task(write())
@@ -930,7 +934,7 @@ async def _ensure_conn_session(
         return conn.session
     try:
         target = await asyncio.to_thread(manager.ensure_default_session, cwd)
-    except Exception as exc:  # noqa: BLE001 - surfaced to the browser, on purpose
+    except Exception as exc:
         push({"type": "error", "message": f"{exc.__class__.__name__}: {exc}", "fatal": True})
         raise _AlreadyReported from exc
     _switch_connection(conn, target, push, app)
@@ -1115,7 +1119,7 @@ async def _dispatch(
         return
     except TurnBusyError as exc:
         push({"type": "error", "message": str(exc), "fatal": False})
-    except Exception as exc:  # noqa: BLE001 - one bad frame must not kill the socket
+    except Exception as exc:
         push({"type": "error", "message": f"{exc.__class__.__name__}: {exc}", "fatal": False})
 
 
@@ -1154,7 +1158,7 @@ async def _ensure(
         return
     try:
         await asyncio.to_thread(session.ensure_runtime, cwd)
-    except Exception as exc:  # noqa: BLE001 - surfaced to the browser, on purpose
+    except Exception as exc:
         push({"type": "error", "message": f"{exc.__class__.__name__}: {exc}", "fatal": True})
         raise _AlreadyReported from exc
 
@@ -1185,7 +1189,7 @@ async def _json_body(request: Request) -> dict[str, Any]:
     """A JSON object body, or an empty mapping. Junk is not worth a 500."""
     try:
         payload = await request.json()
-    except Exception:  # noqa: BLE001 - an unparseable body is the client's problem
+    except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
 

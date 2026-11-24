@@ -22,7 +22,7 @@ import socket
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -34,7 +34,7 @@ from quartz.errors import EndpointConfigError
 class _FakeKernel:
     """Records start/close without spawning a subprocess or touching a snapshot."""
 
-    instances: list[_FakeKernel] = []
+    instances: ClassVar[list[_FakeKernel]] = []
 
     def __init__(self, cwd: Path | None = None) -> None:
         self.cwd = cwd
@@ -89,8 +89,9 @@ def _capture_web_build(
     monkeypatch: pytest.MonkeyPatch, cwd: Path
 ) -> Any:
     """Run `_handle_web_cli` without a server, returning the build closure it installs."""
-    import quartz.web.app as web_app
     import uvicorn
+
+    import quartz.web.app as web_app
 
     captured: dict[str, Any] = {}
 
@@ -270,8 +271,9 @@ def _unused_port() -> int:
 @pytest.fixture()
 def no_server(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
     """Record `uvicorn.run` calls instead of starting a server."""
-    import quartz.web.app as web_app
     import uvicorn
+
+    import quartz.web.app as web_app
 
     calls: list[tuple[Any, ...]] = []
     monkeypatch.setattr(web_app, "create_app", lambda **kwargs: object())
@@ -283,22 +285,22 @@ def test_a_taken_port_fails_before_the_app_is_built(
     web_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """`quartz web` must not serve the SPA into a server that cannot bind."""
-    import quartz.web.app as web_app
     import uvicorn
+
+    import quartz.web.app as web_app
 
     built: list[Any] = []
     monkeypatch.setattr(web_app, "create_app", lambda **kwargs: built.append(kwargs))
     monkeypatch.setattr(uvicorn, "run", lambda *a, **k: built.append(k))
 
-    with _held_port() as port:
-        with pytest.raises(SystemExit) as exit_info:
-            subcommands._handle_web_cli(["--cwd", str(web_env), "--port", str(port)])
+    with _held_port() as port, pytest.raises(SystemExit) as exit_info:
+        subcommands._handle_web_cli(["--cwd", str(web_env), "--port", str(port)])
 
     captured = capsys.readouterr()
     both = captured.out + captured.err
     assert exit_info.value.code != 0
     assert f"127.0.0.1:{port}" in both
-    assert f"quartz web --port " in both
+    assert "quartz web --port " in both
     assert "Traceback" not in both
     assert "Errno 98" not in both
     assert built == []  # nothing was constructed, let alone served
@@ -308,9 +310,8 @@ def test_the_conflict_suggests_a_port_that_actually_binds(
     web_env: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The suggestion is probed, not guessed: it must be a port the next run can take."""
-    with _held_port() as port:
-        with pytest.raises(SystemExit):
-            subcommands._handle_web_cli(["--cwd", str(web_env), "--port", str(port)])
+    with _held_port() as port, pytest.raises(SystemExit):
+        subcommands._handle_web_cli(["--cwd", str(web_env), "--port", str(port)])
 
     out = capsys.readouterr().out
     suggested = int(re.search(r"--port (\d+)", out).group(1))
@@ -336,9 +337,8 @@ def test_the_message_still_works_when_the_owner_cannot_be_found(
     """An unreadable owner is a degraded message, never a missing one."""
     monkeypatch.setattr(subcommands, "_port_owner", lambda port: None)
 
-    with _held_port() as port:
-        with pytest.raises(SystemExit):
-            subcommands._handle_web_cli(["--cwd", str(web_env), "--port", str(port)])
+    with _held_port() as port, pytest.raises(SystemExit):
+        subcommands._handle_web_cli(["--cwd", str(web_env), "--port", str(port)])
 
     out = capsys.readouterr().out
     assert f"127.0.0.1:{port}" in out
@@ -403,11 +403,10 @@ def test_a_free_port_starts_the_server(
 
 def test_the_suggestion_skips_a_busy_port(monkeypatch: pytest.MonkeyPatch) -> None:
     """Port+1 taken, port+2 free: the suggestion is the next one that binds."""
-    with _held_port() as port:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as also_held:
-            also_held.bind(("127.0.0.1", port + 1))
-            also_held.listen(1)
-            suggested = subcommands._suggest_free_port("127.0.0.1", port)
+    with _held_port() as port, socket.socket(socket.AF_INET, socket.SOCK_STREAM) as also_held:
+        also_held.bind(("127.0.0.1", port + 1))
+        also_held.listen(1)
+        suggested = subcommands._suggest_free_port("127.0.0.1", port)
 
     assert suggested == port + 2
 

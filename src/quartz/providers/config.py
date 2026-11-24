@@ -10,22 +10,27 @@ import os
 
 import httpx2
 
+from quartz.endpoints import (
+    CLOUDCODE_HOSTS,
+    DAILY_ENDPOINT,
+    DEFAULT_CLOUDCODE_HOST,
+    PROD_ENDPOINT,
+    resolve_cloudcode_endpoint,
+)
 from quartz.errors import EndpointConfigError
 
-# Cloud Code Assist has two distinct entitlement surfaces:
-#   antigravity -> daily host, used by Antigravity Hub clients (what Quartz claims)
-#   gemini-cli  -> production host, used by the Gemini CLI quota path
-# They are not replicas of each other. Mixing them grants incompatible
-# entitlements, so there is deliberately no cross-host fallback.
-DAILY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com"
-PROD_ENDPOINT = "https://cloudcode-pa.googleapis.com"
-
-CLOUDCODE_HOSTS: dict[str, str] = {
-    "antigravity": DAILY_ENDPOINT,
-    "gemini-cli": PROD_ENDPOINT,
-}
-
-DEFAULT_CLOUDCODE_HOST = "antigravity"
+__all__ = [
+    "CLOUDCODE_HOSTS",
+    "DAILY_ENDPOINT",
+    "DEFAULT_CLOUDCODE_HOST",
+    "DEFAULT_CONNECT_TIMEOUT_S",
+    "DEFAULT_POOL_TIMEOUT_S",
+    "DEFAULT_READ_TIMEOUT_S",
+    "DEFAULT_WRITE_TIMEOUT_S",
+    "PROD_ENDPOINT",
+    "resolve_cloudcode_endpoint",
+    "resolve_http_timeout",
+]
 
 # Generous read budget: a large prompt can spend minutes in prefill before the
 # first SSE chunk arrives. Connect/write stay short so dead hosts fail fast.
@@ -33,24 +38,6 @@ DEFAULT_READ_TIMEOUT_S = 300.0
 DEFAULT_CONNECT_TIMEOUT_S = 10.0
 DEFAULT_WRITE_TIMEOUT_S = 30.0
 DEFAULT_POOL_TIMEOUT_S = 30.0
-
-
-def resolve_cloudcode_endpoint() -> str:
-    """Return the single Cloud Code host to use, from QUARTZ_CLOUDCODE_ENDPOINT.
-
-    Accepts a known host alias (`antigravity`, `gemini-cli`) or an http(s) URL.
-    """
-    raw = os.getenv("QUARTZ_CLOUDCODE_ENDPOINT", "").strip()
-    if not raw:
-        return CLOUDCODE_HOSTS[DEFAULT_CLOUDCODE_HOST]
-    if raw in CLOUDCODE_HOSTS:
-        return CLOUDCODE_HOSTS[raw]
-    if raw.startswith(("http://", "https://")):
-        return raw.rstrip("/")
-    raise EndpointConfigError(
-        f"QUARTZ_CLOUDCODE_ENDPOINT must be one of {sorted(CLOUDCODE_HOSTS)} "
-        f"or an http(s) URL, got {raw!r}"
-    )
 
 
 def resolve_http_timeout() -> httpx2.Timeout:

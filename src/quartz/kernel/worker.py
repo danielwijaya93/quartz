@@ -18,6 +18,7 @@ import importlib.util
 import inspect
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -28,15 +29,15 @@ import sys
 import tempfile
 import threading
 import time
-import uuid
 import traceback
 import types
+import uuid
 import warnings
 from collections import deque
 from pathlib import Path
 from typing import Any
 
-from quartz.core.background import STATUS_TAIL_LINES
+from quartz.kernel.base import STATUS_TAIL_LINES
 from quartz.kernel.helpers import (
     _FILES_VAR,
     _IMAGES_VAR,
@@ -46,6 +47,8 @@ from quartz.kernel.helpers import (
 )
 from quartz.kernel.pycheck import unresolved_global_names
 from quartz.mcp.client import HostMCPProxy, MCPManager
+
+logger = logging.getLogger(__name__)
 
 MAX_OUTPUT_CHARS = 24_000
 MAX_REPR_CHARS = 24_000
@@ -271,15 +274,13 @@ class BashHandle:
         except ProcessLookupError:
             return
         if sig != signal.SIGKILL and grace is not None and grace > 0:
-            asyncio.create_task(self._escalate_kill(grace))
+            self._escalate_task = asyncio.create_task(self._escalate_kill(grace))
 
     async def _escalate_kill(self, grace: float) -> None:
         await asyncio.sleep(grace)
         if self.running:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 os.killpg(self.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
 
     def _append_line(self, line: str) -> None:
         if len(self._lines) == self._lines.maxlen:
@@ -345,7 +346,7 @@ class BashHandle:
             try:
                 self._on_status_callback(self)
             except Exception:
-                pass
+                logger.debug("Bash status callback failed", exc_info=True)
 
     async def _monitor(self) -> BashResult:
         exit_code = -1
@@ -356,7 +357,7 @@ class BashHandle:
                     exit_code = await asyncio.wait_for(asyncio.shield(waiter), timeout=self._timeout)
                 else:
                     exit_code = await waiter
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self._timed_out = True
                 self.kill(signal.SIGTERM, grace=3.0)
                 exit_code = await waiter
@@ -376,7 +377,7 @@ class BashHandle:
             try:
                 self._on_done_callback(self)
             except Exception:
-                pass
+                logger.debug("Bash done callback failed", exc_info=True)
         return self._result
 
     def __await__(self):
@@ -384,7 +385,7 @@ class BashHandle:
         return asyncio.shield(self._task).__await__()
 
     def __repr__(self) -> str:
-        status = "running" if self.running else f"exit={self._result.exit_code}"
+        status = "running" if self.running or self._result is None else f"exit={self._result.exit_code}"
         return f"<BashHandle pid={self.pid} {status} command={self.command!r}>"
 
 
@@ -647,7 +648,8 @@ class KernelWorker:
             dotted = ".".join(parts[:end])
             try:
                 imported = importlib.import_module(dotted)
-            except Exception:
+            except ImportError:
+                logger.debug("Stdlib submodule probe failed for %s", dotted, exc_info=True)
                 continue
             if end < len(parts) and not hasattr(imported, parts[end]):
                 return False
@@ -675,7 +677,8 @@ class KernelWorker:
             mod_path, attr_name = _LAZY_STDLIB_SYMBOLS[sym_name]
             try:
                 val = getattr(importlib.import_module(mod_path), attr_name)
-            except Exception:
+            except (ImportError, AttributeError):
+                logger.debug("Lazy stdlib symbol %s.%s unavailable", mod_path, attr_name, exc_info=True)
                 continue
             self._namespace[sym_name] = val
             self._auto_imported[sym_name] = val
@@ -1109,10 +1112,8 @@ async def _main() -> None:
             raise KeyboardInterrupt
         loop.call_soon_threadsafe(_cancel_active_tasks)
 
-    try:
+    with contextlib.suppress(ValueError, OSError):
         signal.signal(signal.SIGINT, _sigint_handler)
-    except (ValueError, OSError):
-        pass
 
     bridge_sock: socket.socket | None = None
     bridge_stop = threading.Event()
@@ -1121,6 +1122,7 @@ async def _main() -> None:
         import select
         import socket
         import tempfile
+
         from quartz.kernel.bridge import ensure_shim_dir
 
         bridge_tmpdir = tempfile.mkdtemp(prefix="quartz-bridge-")

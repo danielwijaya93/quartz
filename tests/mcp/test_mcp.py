@@ -7,9 +7,9 @@ import sys
 from pathlib import Path
 
 from quartz.cli.subcommands import _handle_mcp_cli
+from quartz.core.prompt import build_system_prompt
 from quartz.kernel.client import KernelClient
 from quartz.mcp.client import add_mcp_server, load_mcp_servers, remove_mcp_server
-from quartz.core.prompt import build_system_prompt
 
 DEMO_MCP_SERVER = '''
 from mcp.server.mcpserver import MCPServer
@@ -119,9 +119,11 @@ def test_add_mcp_server_writes_0600_mode(tmp_path: Path) -> None:
 def test_mcp_http_auth_uses_read_timeout_300(tmp_path: Path, monkeypatch) -> None:
     import asyncio
     from contextlib import asynccontextmanager
+
     import httpx2
     import mcp
     import mcp.client.streamable_http as streamable_http
+
     from quartz.mcp.client import MCPManager
 
     captured: dict[str, object] = {}
@@ -295,6 +297,7 @@ def test_call_tool_timeout_drops_session(tmp_path: Path) -> None:
 
 def test_search_tools_uses_cache_without_connecting(tmp_path: Path, monkeypatch) -> None:
     import asyncio
+
     from quartz.mcp.client import MCPManager, save_mcp_tool_cache
 
     cache_path = tmp_path / "mcp_cache.json"

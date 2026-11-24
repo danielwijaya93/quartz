@@ -50,9 +50,7 @@ class PermissionPolicy:
         if decision == "allow_session":
             self.session_allowed_scopes.add(scope)
             return True
-        if decision == "allow_once":
-            return True
-        return False
+        return decision == "allow_once"
 
 
 def extract_git_subcommand(argv: list[str] | tuple[str, ...]) -> str | None:

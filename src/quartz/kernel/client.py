@@ -6,8 +6,8 @@ import asyncio
 import atexit
 import contextlib
 import contextvars
-import dataclasses
 import json
+import logging
 import os
 import queue
 import signal
@@ -32,6 +32,8 @@ from quartz.kernel.bridge import (
     validate_bridge_cwd,
 )
 from quartz.kernel.sandbox import SandboxConfig, sandbox_env_overrides, wrap_command
+
+logger = logging.getLogger(__name__)
 
 _HOST_IMAGE_SINK: contextvars.ContextVar[list[dict[str, str]] | None] = contextvars.ContextVar(
     "quartz_host_image_sink", default=None
@@ -167,7 +169,7 @@ class KernelClient:
                 proc.stdin.write(line)
                 proc.stdin.flush()
         except Exception:
-            pass
+            logger.debug("Failed to write kernel host response", exc_info=True)
 
     async def _handle_host_request(self, msg: dict[str, Any]) -> None:
         req_id = msg.get("id", "")
@@ -413,14 +415,14 @@ class KernelClient:
         except Exception:
             # Configuration is best-effort: a worker that does not answer must not
             # stop a session from starting. The defaults it keeps are the safe ones.
-            pass
+            logger.debug("Best-effort kernel configure failed", exc_info=True)
 
     def _read_stderr_loop(self, stderr_pipe: Any) -> None:
         try:
             for line in stderr_pipe:
                 self._stderr_tail.append(line)
         except Exception:
-            pass
+            logger.debug("Kernel stderr reader stopped", exc_info=True)
 
     def _read_loop(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
@@ -542,7 +544,7 @@ class KernelClient:
                                 return q.get(timeout=3.0)
                             except queue.Empty:
                                 pass
-                        raise TimeoutError(f"Kernel request timed out after {timeout}s")
+                        raise TimeoutError(f"Kernel request timed out after {timeout}s") from None
         finally:
             with self._pending_lock:
                 self._pending.pop(req_id, None)
@@ -703,10 +705,8 @@ class KernelClient:
 
     def interrupt(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 self._proc.send_signal(signal.SIGINT)
-            except ProcessLookupError:
-                pass
 
     def _send_shutdown(self, proc: subprocess.Popen[str]) -> None:
         """Write the shutdown message under the write lock so it never interleaves with a request."""
@@ -740,24 +740,18 @@ class KernelClient:
                 self._send_shutdown(proc)
                 proc.wait(timeout=1.0)
             except Exception:
-                pass
+                logger.debug("Graceful kernel shutdown failed", exc_info=True)
         if proc.poll() is None:
             try:
                 os.killpg(pid, signal.SIGTERM)
                 proc.wait(timeout=1.0)
             except Exception:
-                try:
+                with contextlib.suppress(ProcessLookupError):
                     os.killpg(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                try:
+                with contextlib.suppress(OSError):
                     proc.kill()
-                except Exception:
-                    pass
-                try:
+                with contextlib.suppress(OSError, subprocess.SubprocessError):
                     proc.wait(timeout=1.0)
-                except Exception:
-                    pass
         if self._stderr_thread is not None:
             self._stderr_thread.join(timeout=0.5)
             self._stderr_thread = None

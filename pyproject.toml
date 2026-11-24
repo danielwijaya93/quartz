@@ -29,8 +29,24 @@ packages = ["src/quartz"]
 [dependency-groups]
 dev = [
     "httpx>=0.28",
+    "pyright>=1.1.390",
     "pytest>=9.2.0",
+    "ruff>=0.11",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "PIE", "RUF", "S110", "S112"]
+ignore = ["E501", "RUF001", "RUF002"]
+
+[tool.pyright]
+include = ["src/quartz"]
+pythonVersion = "3.14"
+typeCheckingMode = "standard"
+

@@ -21,13 +21,15 @@ supply configuration another way) before calling `build_runtime`.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import inspect
+import logging
 import os
 import threading
+from collections.abc import Callable
 from pathlib import Path
-import contextlib
-from typing import Any, Callable
+from typing import Any
 
 from quartz.core.background import resolve_interval
 from quartz.core.loop import TurnUsage
@@ -38,11 +40,14 @@ from quartz.core.session import Session, default_sessions_dir, prune_snapshots
 from quartz.errors import SessionNotFoundError
 from quartz.kernel.client import KernelClient
 from quartz.kernel.sandbox import SandboxConfig
+from quartz.providers.base import ProviderCapabilities
 from quartz.providers.registry import resolve_context_tokens
 from quartz.providers.selection import build_provider
 from quartz.settings import load_settings, trust_project
 
-__all__ = ["BootstrapOptions", "build_runtime", "LazyClient"]
+logger = logging.getLogger(__name__)
+
+__all__ = ["BootstrapOptions", "LazyClient", "build_runtime"]
 
 
 class LazyClient:
@@ -63,11 +68,18 @@ class LazyClient:
     def client(self) -> Any:
         return self.resolve()[0]
 
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return self.client.capabilities
+
     def stream(self, *args: Any, **kwargs: Any) -> Any:
         return self.client.stream(*args, **kwargs)
 
     def complete(self, *args: Any, **kwargs: Any) -> Any:
         return self.client.complete(*args, **kwargs)
+
+    def list_models(self) -> list[str]:
+        return self.client.list_models()
 
     def close(self) -> None:
         with self._lock:
@@ -205,7 +217,7 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
     def _start_kernel() -> None:
         try:
             kernel.start()
-        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
+        except BaseException as exc:
             kernel_err.append(exc)
 
     kernel_thread = threading.Thread(target=_start_kernel, daemon=True)
@@ -302,8 +314,8 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
                 older_than_days=settings.snapshot_retention_days,
                 exclude_ids={active_session.id},
             )
-        except Exception:  # noqa: BLE001 - housekeeping must not break startup
-            pass
+        except Exception:
+            logger.debug("Snapshot pruning failed", exc_info=True)
 
         background_check_every = resolve_interval(
             options.background_check_every,
@@ -367,7 +379,7 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
                     if discovered > 0:
                         runtime.max_context_tokens = discovered
                 except Exception:
-                    pass
+                    logger.debug("Background context token refresh failed", exc_info=True)
 
             threading.Thread(target=_refresh_context_tokens, daemon=True).start()
         return runtime, resumed

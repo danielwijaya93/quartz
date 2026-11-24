@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,7 +11,6 @@ import pytest
 
 from quartz.cli.acp import ACPServer, _extract_prompt_content
 from quartz.core.compact import _serialize_for_summary
-from quartz.providers.google import build_cloudcode_request
 from quartz.core.images import (
     ImageAttachment,
     build_user_content,
@@ -22,6 +20,7 @@ from quartz.core.images import (
     load_image_file,
     parse_data_url,
 )
+from quartz.providers.google import build_cloudcode_request
 
 _TINY_PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
 
@@ -182,8 +181,8 @@ def test_mcp_unwrap_tool_result_collects_images() -> None:
 
 
 def test_kernel_view_image_and_loop_forwards_mid_turn(tmp_path: Path) -> None:
-    from quartz.kernel.client import KernelClient
     from quartz.core.loop import agent_loop
+    from quartz.kernel.client import KernelClient
 
     img_path = tmp_path / "shot.png"
     img_path.write_bytes(_TINY_PNG)
@@ -267,7 +266,7 @@ def test_load_image_file_accepts_magic(tmp_path: Path, name: str, data: bytes) -
 
 
 def test_load_image_file_too_large(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("quartz.core.images.MAX_IMAGE_BYTES", 10)
+    monkeypatch.setattr("quartz.media.MAX_IMAGE_BYTES", 10)
     p = tmp_path / "big.png"
     p.write_bytes(_TINY_PNG)
     with pytest.raises(ValueError, match="too large"):

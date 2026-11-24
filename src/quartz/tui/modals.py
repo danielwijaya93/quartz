@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import dataclasses
 import threading
+from collections.abc import Callable
+from typing import Any
+
 from prompt_toolkit import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.filters import Condition, Filter
@@ -11,7 +14,6 @@ from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl, UIContent, UIControl
-from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.processors import BeforeInput, DynamicProcessor, PasswordProcessor
 
 from quartz.tui.list_select import clamp_index, filter_options, move_index, page_index, visible_window

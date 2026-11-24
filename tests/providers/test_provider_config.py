@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import httpx2
 import pytest
 
 from quartz.auth import google as google_auth
-from quartz.errors import CredentialError, EndpointConfigError, ProviderError
 from quartz.auth.google import (
     FALLBACK_PROJECT_ID,
     GoogleCredentials,
@@ -21,6 +19,7 @@ from quartz.auth.oauth import (
     DEFAULT_CLIENT_SECRET,
     resolve_oauth_client,
 )
+from quartz.errors import CredentialError, EndpointConfigError, ProviderError
 from quartz.providers.config import (
     DAILY_ENDPOINT,
     DEFAULT_READ_TIMEOUT_S,
@@ -28,7 +27,6 @@ from quartz.providers.config import (
     resolve_cloudcode_endpoint,
     resolve_http_timeout,
 )
-
 
 # --------------------------------------------------------------------------- #
 # Endpoint selection
