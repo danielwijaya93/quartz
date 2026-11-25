@@ -186,7 +186,7 @@ export function TileGrid({
           style={colDividerStyle}
           className={cn(
             "absolute z-10 w-2 cursor-col-resize rounded-full transition-colors",
-            dragging === "col" ? "bg-sky-500/40" : "hover:bg-sky-500/25",
+            dragging === "col" ? "bg-accent/30" : "hover:bg-accent/15",
           )}
         />
       ) : null}
@@ -202,7 +202,7 @@ export function TileGrid({
           style={{ top: `calc(${rowPct} - 4px)`, left: 0, width: "100%" }}
           className={cn(
             "absolute z-10 h-2 cursor-row-resize rounded-full transition-colors",
-            dragging === "row" ? "bg-sky-500/40" : "hover:bg-sky-500/25",
+            dragging === "row" ? "bg-accent/30" : "hover:bg-accent/15",
           )}
         />
       ) : null}

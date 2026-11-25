@@ -135,7 +135,7 @@ export function SessionRow({
               className={cn(
                 "inline-flex size-4 shrink-0 items-center justify-center rounded text-[10px] font-bold tabular-nums group-hover/session:hidden group-focus-within/session:hidden",
                 tileBadge.focused
-                  ? "bg-sky-500 text-zinc-950"
+                  ? "bg-accent text-accent-foreground"
                   : "border border-border bg-surface-secondary text-foreground",
               )}
             >

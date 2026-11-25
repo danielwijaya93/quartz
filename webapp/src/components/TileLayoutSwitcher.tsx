@@ -176,7 +176,7 @@ export function MobileTileBar({
               className={cn(
                 "inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-1.5 text-[11px] font-semibold tabular-nums transition-colors focus-visible:ring-1 focus-visible:ring-focus focus-visible:outline-none",
                 active
-                  ? "bg-sky-500 text-zinc-950 shadow-xs"
+                  ? "bg-accent text-accent-foreground shadow-xs"
                   : "text-muted hover:text-foreground",
               )}
             >

@@ -60,10 +60,10 @@ export function GlobalJobsButton({
         title="View running workers across all sessions"
         className={cn(
           "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium transition-colors focus-visible:ring-1 focus-visible:ring-focus focus-visible:outline-none",
-          "border-sky-500/35 bg-sky-500/10 text-sky-600 hover:bg-sky-500/20 dark:text-sky-400",
+          "border-border bg-surface-secondary/50 text-foreground hover:bg-surface-secondary",
         )}
       >
-        <span aria-hidden="true" className="size-1.5 rounded-full bg-sky-500 motion-safe:animate-pulse" />
+        <span aria-hidden="true" className="size-1.5 rounded-full bg-success motion-safe:animate-pulse" />
         <Terminal aria-hidden="true" className="size-3" />
         <span className="tabular-nums">{count}</span>
         <span className="hidden lg:inline">{count === 1 ? "Worker" : "Workers"}</span>
