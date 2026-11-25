@@ -22,6 +22,7 @@ from quartz.kernel.bridge import (
     classify_bridge_scope,
     find_real_binary,
     format_command_display,
+    validate_bridge_command,
     validate_bridge_cwd,
 )
 from quartz.settings import resolve_bridge_timeout
@@ -200,6 +201,9 @@ class HostRpcHandler:
             return _bridge_err(126, "Host bridge request cancelled.\n")
         raw_argv = params.get("argv")
         argv = [str(a) for a in raw_argv] if isinstance(raw_argv, list) else []
+        validation_error = validate_bridge_command(tool, argv)
+        if validation_error is not None:
+            return _bridge_err(126, f"{validation_error}\n")
         target_cwd = validate_bridge_cwd(params.get("cwd"), self.cwd)
         scope = classify_bridge_scope(tool, argv)
         req = PermissionRequest(

@@ -25,7 +25,12 @@ from quartz.kernel.host_rpc import (
     _bridge_err,
 )
 from quartz.kernel.io_loop import get_kernel_io_loop, run_on_loop
-from quartz.kernel.sandbox import SandboxConfig, sandbox_env_overrides, wrap_command
+from quartz.kernel.sandbox import (
+    SandboxConfig,
+    build_sandbox_env,
+    sandbox_env_overrides,
+    wrap_command,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +199,12 @@ class KernelClient(BaseKernel):
         return self._host_rpc.exec_bridge_sync(params, cancel_event=cancel_event)
 
     def _build_spawn_cmd_and_env(self) -> tuple[list[str], dict[str, str]]:
-        env = os.environ.copy()
+        if self._sandbox_config.enabled:
+            env = build_sandbox_env(
+                os.environ, passthrough=self._sandbox_config.env_passthrough
+            )
+        else:
+            env = os.environ.copy()
         pkg_root = str(Path(__file__).resolve().parent.parent.parent)
         existing_pp = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = f"{pkg_root}{os.pathsep}{existing_pp}" if existing_pp else pkg_root
