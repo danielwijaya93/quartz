@@ -92,7 +92,7 @@ def test_core_never_imports_a_front_end() -> None:
     assert offenders == []
 
 
-_SUBPACKAGES = ("auth", "mcp", "providers", "kernel", "core", "tui", "web", "cli")
+_SUBPACKAGES = ("storage", "auth", "mcp", "providers", "kernel", "core", "tui", "web", "cli")
 
 
 def _subpackage_of(module: str) -> str | None:
@@ -154,6 +154,16 @@ def _forbidden_edges(src_pkg: str, forbidden: tuple[str, ...]) -> list[str]:
                 if hit:
                     offenders.append(f"{name} -> {imported}")
     return sorted(offenders)
+
+
+def test_storage_layer_boundaries() -> None:
+    assert (
+        _forbidden_edges(
+            "storage",
+            ("auth", "mcp", "providers", "kernel", "core", "tui", "web", "cli", "fastapi", "rich"),
+        )
+        == []
+    )
 
 
 def test_auth_layer_boundaries() -> None:
