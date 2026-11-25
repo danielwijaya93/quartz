@@ -14,6 +14,7 @@ For exact class/function line numbers, run `uv run python scripts/gen_index.py` 
 | `src/quartz/providers/` | LLM provider adapters (`google.py`, `openai.py`), registry, HTTP pool |
 | `src/quartz/kernel/` | Python REPL execution, OS sandbox (`bwrap`/`sandbox-exec`), bash jobs, snapshots |
 | `src/quartz/mcp/` | MCP client and connection pool |
+| `src/quartz/storage/` | Embedded SQLite WAL database engine and schema migrations |
 | `src/quartz/auth/` | OAuth and token storage |
 | `webapp/src/` | React + TypeScript web/mobile UI (`components/`, `useQuartz.ts`, `protocol.ts`) |
 | `tests/` | Pytest suite mirroring `src/quartz/` (`core/`, `web/`, `tui/`, `kernel/`, etc.) |
