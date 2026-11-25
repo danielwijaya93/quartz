@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import re
 import time
 import uuid
 from typing import Any
@@ -37,9 +38,16 @@ def _serialize_bot(bot: BotConfig, state: BotState, queued: list[QueuedTrigger])
     }
 
 
+def _generate_bot_id(name: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", name.strip().lower()).strip("-._")
+    prefix = slug[:32] if slug else "bot"
+    return f"{prefix}-{uuid.uuid4().hex[:6]}"
+
+
 def _config_from_create(req: BotCreateRequest) -> BotConfig:
+    bot_id = req.id.strip() if req.id and req.id.strip() else _generate_bot_id(req.name)
     return BotConfig(
-        id=req.id,
+        id=bot_id,
         name=req.name,
         watcher_type=req.watcher_type,
         instruction=req.instruction,
