@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import json
 import logging
@@ -103,18 +105,26 @@ class AttachedFileRegistry:
         except OSError:
             logger.debug("Failed to persist attached file registry at %s", self._path, exc_info=True)
 
-    def _copy_to_storage(self, file_id: str, source: Path) -> str | None:
-        """Persist a local copy under ``self._storage_dir`` so /tmp cleanups don't break links."""
+    def _copy_to_storage(
+        self, file_id: str, source: Path, data_b64: str | None = None
+    ) -> str | None:
+        """Persist a local copy under ``self._storage_dir`` so /tmp cleanups or sandboxes don't break links."""
         try:
-            if not source.is_file() or source.stat().st_size > _MAX_COPY_BYTES:
-                return None
             self._storage_dir.mkdir(parents=True, exist_ok=True)
             dest = self._storage_dir / f"{file_id}{source.suffix}"
             tmp = self._storage_dir / f".{file_id}.tmp"
-            shutil.copy2(source, tmp)
-            tmp.replace(dest)
-            return str(dest)
-        except OSError:
+            if source.is_file() and source.stat().st_size <= _MAX_COPY_BYTES:
+                shutil.copy2(source, tmp)
+                tmp.replace(dest)
+                return str(dest)
+            if data_b64:
+                raw = base64.b64decode(data_b64, validate=True)
+                if len(raw) <= _MAX_COPY_BYTES:
+                    tmp.write_bytes(raw)
+                    tmp.replace(dest)
+                    return str(dest)
+            return None
+        except (OSError, binascii.Error, ValueError):
             logger.debug("Failed to copy attached file %s to %s", source, self._storage_dir, exc_info=True)
             return None
 
@@ -155,6 +165,8 @@ class AttachedFileRegistry:
         name = str(file_meta.get("name") or resolved_path.name)
         mime_type = str(file_meta.get("mime_type") or file_meta.get("mimeType") or "application/octet-stream")
         size = int(file_meta.get("size") or 0)
+        raw_b64 = file_meta.get("data_b64")
+        data_b64 = raw_b64 if isinstance(raw_b64, str) and raw_b64 else None
 
         with self._lock:
             self._ensure_loaded()
@@ -166,7 +178,7 @@ class AttachedFileRegistry:
                     break
             if file_id is None:
                 file_id = uuid.uuid4().hex[:16]
-            stored_path = self._copy_to_storage(file_id, resolved_path)
+            stored_path = self._copy_to_storage(file_id, resolved_path, data_b64=data_b64)
             entry: dict[str, Any] = {
                 "path": resolved,
                 "name": name,

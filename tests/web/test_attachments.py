@@ -311,3 +311,25 @@ def test_download_preserves_extension_and_sanitizes_label(
     from urllib.parse import unquote
     disp = unquote(resp.headers.get("content-disposition", ""))
     assert "Mockup 1_ Clean Sidebar + Bot Run View.png" in disp
+
+
+def test_registry_persists_sandbox_data_b64_when_source_missing_on_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("QUARTZ_WEB_FILES", str(tmp_path / "web-files.json"))
+    import base64
+
+    registry = AttachedFileRegistry()
+    raw = b"sandbox-png-bytes"
+    desc = registry.register(
+        {
+            "path": "/tmp/nonexistent-sandbox-only.png",
+            "name": "Sandbox Mockup",
+            "mime_type": "image/png",
+            "size": len(raw),
+            "data_b64": base64.b64encode(raw).decode("ascii"),
+        }
+    )
+    loaded = registry.get(desc["id"])
+    assert loaded is not None
+    assert Path(loaded["path"]).read_bytes() == raw
