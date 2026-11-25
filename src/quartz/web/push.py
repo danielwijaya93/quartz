@@ -9,6 +9,7 @@ import logging
 import os
 import tempfile
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -241,7 +242,7 @@ class PushStore:
                 self._save_locked()
             return removed
 
-    def send(self, payload: dict[str, Any], *, endpoint: str | None = None) -> int:
+    def send(self, payload: Mapping[str, Any], *, endpoint: str | None = None) -> int:
         """Send a Web Push payload synchronously. Returns number of successful deliveries."""
         with self._lock:
             if endpoint is not None:
@@ -296,7 +297,11 @@ class PushStore:
 
         return sent
 
-    def send_async(self, payload: dict[str, Any]) -> None:
+    def send_all(self, payload: Mapping[str, Any]) -> int:
+        """Send a Web Push payload synchronously to all registered subscriptions."""
+        return self.send(payload)
+
+    def send_async(self, payload: Mapping[str, Any]) -> None:
         """Dispatch a Web Push payload in a daemon thread so callers never block."""
         with self._lock:
             if not self._subscriptions:
