@@ -290,14 +290,22 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
         }));
       } else if (wasRunning.current && sameSession) {
         const lastRow = quartz.state.rows[quartz.state.rows.length - 1];
+        const waitingPermission =
+          Boolean(quartz.state.session.pendingPermission) ||
+          (lastRow?.kind === "turn_end" && lastRow.status === "waiting_permission");
         const failed =
           quartz.state.fatalError !== null ||
           lastRow?.kind === "error" ||
           (lastRow?.kind === "turn_end" && lastRow.status === "error");
-        const unread = typeof document !== "undefined" && document.hidden;
+        const unread = waitingPermission
+          ? true
+          : typeof document !== "undefined" && document.hidden;
         setSessionActivity((prev) => ({
           ...prev,
-          [sessionId]: { status: failed ? "error" : "done", unread },
+          [sessionId]: {
+            status: waitingPermission ? "permission" : failed ? "error" : "done",
+            unread,
+          },
         }));
       }
     }
@@ -307,6 +315,7 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     quartz.state.turnRunning,
     quartz.state.fatalError,
     quartz.state.rows,
+    quartz.state.session.pendingPermission,
     sessionId,
     sidebar.reload,
   ]);
