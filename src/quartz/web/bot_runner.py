@@ -23,6 +23,13 @@ from quartz.bots import (
     UsageStore,
 )
 from quartz.core.turn import TurnStatus
+from quartz.telemetry import (
+    AuditLogger,
+    MetricsRegistry,
+    correlation_context,
+    get_audit_logger,
+    get_metrics_registry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +111,8 @@ class BotRunner:
         *,
         history: BotHistoryStore | None = None,
         usage_store: UsageStore | None = None,
+        audit_logger: AuditLogger | None = None,
+        metrics: MetricsRegistry | None = None,
         on_circuit_break: CircuitBreakCallback | None = None,
         max_concurrent: int = 2,
         tick_interval_s: float = 15.0,
@@ -113,6 +122,8 @@ class BotRunner:
         self._queue = queue
         self._history = history
         self._usage_store = usage_store
+        self._audit = audit_logger if audit_logger is not None else get_audit_logger()
+        self._metrics = metrics if metrics is not None else get_metrics_registry()
         self._on_circuit_break = on_circuit_break
         self._run_trigger: TriggerCallback = run_trigger or _default_run_trigger
         self._max_concurrent = max(1, int(max_concurrent))
@@ -309,6 +320,16 @@ class BotRunner:
         self._store.save_state(state)
 
     async def _notify_circuit_break(self, bot: BotConfig, reason: str) -> None:
+        self._metrics.inc("bot_circuit_breaks_total", labels={"bot_id": bot.id})
+        await asyncio.to_thread(
+            self._audit.record,
+            "bot_circuit_break",
+            actor="bot_runner",
+            decision="paused",
+            summary=reason,
+            bot_id=bot.id,
+            details={"bot_name": bot.name},
+        )
         if self._on_circuit_break is None:
             return
         try:
@@ -394,8 +415,15 @@ class BotRunner:
         return started
 
     async def _execute_trigger(self, bot: BotConfig, trigger: QueuedTrigger) -> None:
-        slot_released = False
         run_id = uuid.uuid4().hex
+        with correlation_context(bot_id=bot.id, run_id=run_id):
+            await self._execute_trigger_correlated(bot, trigger, run_id)
+
+    async def _execute_trigger_correlated(
+        self, bot: BotConfig, trigger: QueuedTrigger, run_id: str
+    ) -> None:
+        slot_released = False
+        started_monotonic = time.monotonic()
         if self._history is not None:
             await asyncio.to_thread(
                 self._history.record_run_start,
@@ -443,6 +471,8 @@ class BotRunner:
             ):
                 run_status = "cancelled"
 
+            self._metrics.inc("bot_runs_total", labels={"status": run_status})
+            self._metrics.observe("bot_run_duration_seconds", time.monotonic() - started_monotonic)
             circuit_reason = await asyncio.to_thread(
                 self._finalize_run_state,
                 bot,
