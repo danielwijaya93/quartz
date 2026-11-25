@@ -20,7 +20,7 @@ def _sign_payload(secret: str, body: bytes) -> str:
 
 def _make_client(tmp_path: Path, *, auth_token: str | None = None) -> TestClient:
     app = create_app(
-        build=lambda _sid, _cwd=None: (make_runtime(tmp_path), True),
+        build=lambda session_id, cwd=None: (make_runtime(tmp_path), True),
         cwd=tmp_path,
         runner=ScriptedTurn(),
         auth_token=auth_token,
