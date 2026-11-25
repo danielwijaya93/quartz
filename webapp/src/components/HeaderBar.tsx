@@ -51,7 +51,7 @@ function CwdChip({
   );
 
   return (
-    <li className="min-w-0 flex-1">
+    <li className="min-w-0 shrink">
       {onChangeFolder ? (
         <button
           type="button"
@@ -83,6 +83,8 @@ export function HeaderBar({
   turnRunning = false,
   sidebarOpen,
   onToggleSidebar,
+  fullWidth = false,
+  tileControls,
 }: {
   session: SessionMeta;
   status: ConnectionStatus;
@@ -98,6 +100,10 @@ export function HeaderBar({
   turnRunning?: boolean;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
+  /** Expand header to full width when multiple tiles are displayed. */
+  fullWidth?: boolean;
+  /** Optional tiling layout switcher & global worker indicator. */
+  tileControls?: React.ReactNode;
 }): React.ReactElement {
   const copy = STATUS_COPY[status];
 
@@ -110,7 +116,12 @@ export function HeaderBar({
 
   return (
     <header className="shrink-0 border-b border-separator/70 bg-background/85 backdrop-blur">
-      <div className="mx-auto flex w-full max-w-3xl items-center gap-1.5 px-2.5 py-2 sm:gap-2 sm:px-5">
+      <div
+        className={cn(
+          "mx-auto flex w-full items-center gap-1.5 px-2.5 py-2 sm:gap-2 sm:px-4",
+          !fullWidth && "max-w-3xl sm:px-5",
+        )}
+      >
         <Button
           isIconOnly
           size="sm"
@@ -222,6 +233,7 @@ export function HeaderBar({
               </Chip>
             )}
           </span>
+          {tileControls}
           <RichUiToggle mode={richUiMode} onChange={onRichUiModeChange} />
           <Button
             size="sm"

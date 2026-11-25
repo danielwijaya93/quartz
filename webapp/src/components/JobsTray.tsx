@@ -3,7 +3,7 @@ import { authFetch } from "../lib/authToken";
 import { useJobActions } from "../lib/jobsApi";
 import { apiUrl } from "../lib/serverUrl";
 import { Button } from "@heroui/react";
-import { Eye, RefreshCw, Square, X } from "lucide-react";
+import { Columns2, Eye, RefreshCw, Square, X } from "lucide-react";
 
 interface JobItem {
   pid: number | string;
@@ -22,9 +22,13 @@ function formatElapsed(seconds: number): string {
 export function JobsTray({
   open,
   onClose,
+  sessionId,
+  onOpenInTile,
 }: {
   open: boolean;
   onClose: () => void;
+  sessionId?: string;
+  onOpenInTile?: (job: { pid: string; label: string; command: string }) => void;
 }): React.ReactElement | null {
   const [jobs, setJobs] = React.useState<JobItem[]>([]);
   const [fetchedAt, setFetchedAt] = React.useState<number>(() => Date.now());
@@ -34,7 +38,10 @@ export function JobsTray({
   const load = React.useCallback(async () => {
     setLoading(true);
     try {
-      const resp = await authFetch(apiUrl("/api/jobs"));
+      const jobsPath = sessionId
+        ? `/api/jobs?sessionId=${encodeURIComponent(sessionId)}`
+        : "/api/jobs";
+      const resp = await authFetch(apiUrl(jobsPath));
       if (!resp.ok) throw new Error("Failed to load jobs");
       const data = (await resp.json()) as { jobs?: JobItem[] };
       const ts = Date.now();
@@ -46,9 +53,9 @@ export function JobsTray({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [sessionId]);
 
-  const { tails, busyPid, clearTails, toggleTail, killJob } = useJobActions(load);
+  const { tails, busyPid, clearTails, toggleTail, killJob } = useJobActions(load, sessionId);
 
   React.useEffect(() => {
     if (open) {
@@ -130,6 +137,19 @@ export function JobsTray({
                         </p>
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5">
+                        {onOpenInTile ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onPress={() =>
+                              onOpenInTile({ pid, label: job.label, command: job.command })
+                            }
+                            className="h-7 text-xs"
+                          >
+                            <Columns2 aria-hidden="true" className="size-3" />
+                            Open in Tile
+                          </Button>
+                        ) : null}
                         <Button
                           size="sm"
                           variant="outline"

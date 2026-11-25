@@ -3,20 +3,25 @@ import { cn } from "@heroui/react";
 import { Activity, X } from "lucide-react";
 import type { SidebarSession } from "@/lib/sidebar";
 import type { ActiveSessionItem } from "@/protocol";
+import type { TileBadge } from "@/lib/tiling";
 
 export function ActiveSessionsSection({
   items,
   currentSessionId,
   sessionById,
   renames,
+  tileBadges,
   onSelectSession,
+  onOpenInNewTile,
   onDismiss,
 }: {
   items: readonly ActiveSessionItem[];
   currentSessionId: string;
   sessionById: ReadonlyMap<string, SidebarSession>;
   renames: Readonly<Record<string, string>>;
+  tileBadges?: ReadonlyMap<string, TileBadge>;
   onSelectSession: (sessionId: string) => void;
+  onOpenInNewTile?: (sessionId: string) => void;
   onDismiss?: (sessionId: string) => void;
 }): React.ReactElement {
   return (
@@ -85,7 +90,14 @@ export function ActiveSessionsSection({
               >
                 <button
                   type="button"
-                  onClick={() => onSelectSession(item.sessionId)}
+                  onClick={(event) => {
+                    if ((event.metaKey || event.ctrlKey) && onOpenInNewTile) {
+                      event.preventDefault();
+                      onOpenInNewTile(item.sessionId);
+                      return;
+                    }
+                    onSelectSession(item.sessionId);
+                  }}
                   aria-current={isCurrent ? "true" : undefined}
                   className={cn(
                     "flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus",
@@ -104,6 +116,22 @@ export function ActiveSessionsSection({
                       Bot
                     </span>
                   ) : null}
+                  {(() => {
+                    const tb = tileBadges?.get(item.sessionId);
+                    return tb ? (
+                      <span
+                        aria-label={`Open in tile ${tb.number}`}
+                        className={cn(
+                          "inline-flex size-4 shrink-0 items-center justify-center rounded text-[10px] font-bold tabular-nums",
+                          tb.focused
+                            ? "bg-sky-500 text-zinc-950"
+                            : "border border-border bg-surface-secondary text-foreground",
+                        )}
+                      >
+                        {tb.number}
+                      </span>
+                    ) : null;
+                  })()}
                   <span
                     className={cn(
                       "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none",

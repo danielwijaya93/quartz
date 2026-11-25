@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Button, cn } from "@heroui/react";
-import { Pencil, X } from "lucide-react";
+import { Columns2, Pencil, X } from "lucide-react";
+import type { TileBadge } from "@/lib/tiling";
 import {
   displayTitle,
   formatAge,
@@ -16,7 +17,10 @@ export function SessionRow({
   activity,
   folderLabel,
   current,
+  tileBadge,
+  canOpenInNewTile = false,
   onSelect,
+  onOpenInNewTile,
   onRename,
   onHide,
 }: {
@@ -25,7 +29,10 @@ export function SessionRow({
   activity?: SessionActivity;
   folderLabel?: string;
   current: boolean;
+  tileBadge?: TileBadge;
+  canOpenInNewTile?: boolean;
   onSelect: () => void;
+  onOpenInNewTile?: () => void;
   onRename: (title: string) => void;
   onHide: () => void;
 }): React.ReactElement {
@@ -94,7 +101,14 @@ export function SessionRow({
         >
           <button
             type="button"
-            onClick={onSelect}
+            onClick={(event) => {
+              if ((event.metaKey || event.ctrlKey) && onOpenInNewTile) {
+                event.preventDefault();
+                onOpenInNewTile();
+                return;
+              }
+              onSelect();
+            }}
             aria-current={current ? "true" : undefined}
             className="flex h-7 min-h-7 min-w-0 flex-1 cursor-pointer items-center truncate text-left text-[12px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
           >
@@ -115,7 +129,19 @@ export function SessionRow({
             ) : null}
           </button>
 
-          {age ? (
+          {tileBadge ? (
+            <span
+              aria-label={`Open in tile ${tileBadge.number}`}
+              className={cn(
+                "inline-flex size-4 shrink-0 items-center justify-center rounded text-[10px] font-bold tabular-nums group-hover/session:hidden group-focus-within/session:hidden",
+                tileBadge.focused
+                  ? "bg-sky-500 text-zinc-950"
+                  : "border border-border bg-surface-secondary text-foreground",
+              )}
+            >
+              {tileBadge.number}
+            </span>
+          ) : age ? (
             <span
               aria-hidden="true"
               className="shrink-0 text-[10px] text-meta tabular-nums group-hover/session:hidden group-focus-within/session:hidden"
@@ -127,6 +153,19 @@ export function SessionRow({
           <div
             className="flex shrink-0 items-center gap-0.5 motion-safe:transition-opacity [@media(hover:hover)]:opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100"
           >
+            {onOpenInNewTile && !tileBadge ? (
+              <Button
+                isIconOnly
+                size="sm"
+                variant="ghost"
+                isDisabled={!canOpenInNewTile}
+                aria-label={canOpenInNewTile ? `Open ${title} in new tile` : "Max 4 tiles open"}
+                onPress={onOpenInNewTile}
+                className="size-5 min-w-5 h-5 w-5 rounded p-0 text-muted hover:text-foreground hover:bg-surface-secondary"
+              >
+                <Columns2 aria-hidden="true" className="size-2.5" />
+              </Button>
+            ) : null}
             <Button
               isIconOnly
               size="sm"

@@ -2,7 +2,33 @@ import * as React from "react";
 import { authFetch } from "./authToken";
 import { apiUrl } from "./serverUrl";
 
-export function useJobActions(onKilled?: () => void | Promise<void>) {
+export interface GlobalJobItem {
+  pid: number | string;
+  command: string;
+  label: string;
+  elapsed_s: number;
+  sessionId?: string;
+  sessionTitle?: string;
+}
+
+function withSessionQuery(path: string, sessionId?: string): string {
+  if (!sessionId) return apiUrl(path);
+  const sep = path.includes("?") ? "&" : "?";
+  return apiUrl(`${path}${sep}sessionId=${encodeURIComponent(sessionId)}`);
+}
+
+export async function fetchAllJobs(): Promise<GlobalJobItem[]> {
+  try {
+    const resp = await authFetch(apiUrl("/api/jobs?all=true"));
+    if (!resp.ok) return [];
+    const data = (await resp.json()) as { jobs?: GlobalJobItem[] };
+    return Array.isArray(data.jobs) ? data.jobs : [];
+  } catch {
+    return [];
+  }
+}
+
+export function useJobActions(onKilled?: () => void | Promise<void>, sessionId?: string) {
   const [tails, setTails] = React.useState<Record<string, string>>({});
   const [busyPid, setBusyPid] = React.useState<string | null>(null);
 
@@ -20,7 +46,9 @@ export function useJobActions(onKilled?: () => void | Promise<void>) {
       }
       setBusyPid(pid);
       try {
-        const resp = await authFetch(apiUrl(`/api/jobs/${encodeURIComponent(pid)}/tail`));
+        const resp = await authFetch(
+          withSessionQuery(`/api/jobs/${encodeURIComponent(pid)}/tail`, sessionId),
+        );
         if (!resp.ok) {
           setTails((prev) => ({ ...prev, [pid]: "(output tail unavailable)" }));
         } else {
@@ -34,20 +62,22 @@ export function useJobActions(onKilled?: () => void | Promise<void>) {
         setBusyPid(null);
       }
     },
-    [tails],
+    [tails, sessionId],
   );
 
   const killJob = React.useCallback(
     async (pid: string): Promise<void> => {
       setBusyPid(pid);
       try {
-        await authFetch(apiUrl(`/api/jobs/${encodeURIComponent(pid)}/kill`), { method: "POST" });
+        await authFetch(withSessionQuery(`/api/jobs/${encodeURIComponent(pid)}/kill`, sessionId), {
+          method: "POST",
+        });
         await onKilled?.();
       } finally {
         setBusyPid(null);
       }
     },
-    [onKilled],
+    [onKilled, sessionId],
   );
 
   return { tails, busyPid, clearTails, toggleTail, killJob };

@@ -1,38 +1,36 @@
 import * as React from "react";
 import { HeaderBar } from "./components/HeaderBar";
-import { BotRunBanner } from "./components/BotRunBanner";
 import { BotsHistoryModal } from "./components/BotsHistoryModal";
 import { CreateBotModal } from "./components/CreateBotModal";
-import { Transcript } from "./components/Transcript";
-import type { BotConfig } from "./types/bots";
-import { StatusLine } from "./components/StatusLine";
-import { Composer } from "./components/Composer";
 import { CommandPalette } from "./components/CommandPalette";
 import { FolderSidebar } from "./components/FolderSidebar";
 import { SidebarDrawer } from "./components/SidebarDrawer";
 import { FolderPicker } from "./components/FolderPicker";
 import { SessionArchiveDialog } from "./components/SessionArchiveDialog";
-import { PermissionPromptCard } from "./components/PermissionPromptCard";
-import { TrustFolderDialog } from "./components/TrustFolderDialog";
-import { ModelPickerDialog } from "./components/ModelPickerDialog";
 import { SettingsView } from "./components/SettingsView";
 import { McpView } from "./components/McpView";
-import { JobsTray } from "./components/JobsTray";
 import { AuthGate } from "./components/AuthGate";
+import { TileGrid } from "./components/TileGrid";
+import { TileLayoutSwitcher } from "./components/TileLayoutSwitcher";
+import { SessionTile, type SessionTileHandle } from "./components/SessionTile";
+import { WorkerTailTile } from "./components/WorkerTailTile";
+import { GlobalJobsButton } from "./components/GlobalJobsButton";
 import { authFetch } from "./lib/authToken";
 import { apiUrl } from "./lib/serverUrl";
-import { useQuartz } from "./useQuartz";
 import { useCommandPalette } from "./lib/useCommandPalette";
 import { useOpenUISystemPrompt, useRichUiMode } from "./lib/useRichUi";
 import { useNotifications } from "./lib/useNotifications";
 import { useSidebar } from "./lib/useSidebar";
 import { useBots } from "./lib/useBots";
-import type { SessionActivity } from "./lib/sidebar";
+import { useTiling } from "./lib/useTiling";
+import { displayTitle, EMPTY_SIDEBAR, type SessionActivity } from "./lib/sidebar";
 import { useMediaQuery } from "./lib/useMediaQuery";
 import { useOpenUIThemeMirror } from "./lib/theme";
 import { useNativeShell } from "./lib/useNativeShell";
 import { wantsRichUi } from "./lib/richUi";
-import type { ImageAttachment, ServerMessage } from "./protocol";
+import { initialState } from "./lib/transcript";
+import type { ActiveSessionItem, ServerMessage } from "./protocol";
+import type { BotConfig } from "./types/bots";
 
 /** What the folder picker is being opened for. */
 type PickerMode = "session" | "workspace";
@@ -83,15 +81,14 @@ export function App(): React.ReactElement {
 }
 
 function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.ReactElement {
-  // Rich UI is a preference with a consequence: it decides both how a reply is
-  // drawn *and* whether the session is told to produce OpenUI Lang at all.
   const richUi = useRichUiMode();
   const systemPromptAppend = useOpenUISystemPrompt(richUi.mode);
   const markNotificationsReadRef = React.useRef<() => void>(() => undefined);
   const notifications = useNotifications({
     onNotificationsRead: () => markNotificationsReadRef.current(),
   });
-  const handleServerMessage = React.useCallback(
+
+  const handleGlobalServerMessage = React.useCallback(
     (message: ServerMessage) => {
       if (message.type === "settings_state") {
         richUi.applySyncedMode(message.richUi ? "rich" : "markdown");
@@ -116,68 +113,135 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     },
     [richUi, notifications],
   );
-  const quartz = useQuartz(
-    undefined,
-    systemPromptAppend,
-    handleServerMessage,
-    onAuthError,
-  );
-  markNotificationsReadRef.current = quartz.markNotificationsRead;
+
   const sidebar = useSidebar();
   const bots = useBots();
   const [bannerHistoryBotId, setBannerHistoryBotId] = React.useState<string | null>(null);
   const [bannerEditBot, setBannerEditBot] = React.useState<BotConfig | null>(null);
 
-  React.useEffect(() => {
-    void bots.reloadRuns();
-  }, [quartz.state.activeSessions, bots.reloadRuns]);
-
-
-
-  const composerRef = React.useRef<HTMLTextAreaElement | null>(null);
-  const palette = useCommandPalette(composerRef);
-
-  // Text shared in from another app. Held in state rather than written straight into
-  // the textarea: the composer owns its draft, so it is handed the value and decides.
-  const [sharedText, setSharedText] = React.useState<string | null>(null);
-
-  // OpenUI reads `data-openui-theme`; mirror whatever HeroUI applied to `<html>`
-  // so a surface is never drawn in the other theme's palette.
-  useOpenUIThemeMirror();
-
-  // The sidebar is a column on a laptop and a drawer on a phone. It decides that
-  // from the viewport rather than from CSS because a drawer needs a backdrop,
-  // Escape handling and focus returned to its toggle -- none of which a class can do.
-  const narrow = useMediaQuery("(max-width: 1023px)", false);
-  const [sidebarOpen, setSidebarOpen] = React.useState(!narrow);
-
-  React.useEffect(() => {
-    // Opening on wide and closing on narrow is what a resize expects: a drawer left
-    // open would cover the transcript it was meant to sit beside.
-    setSidebarOpen(!narrow);
-  }, [narrow]);
-
-  const closeSidebar = React.useCallback(() => setSidebarOpen(false), []);
+  const [handles, setHandles] = React.useState<Readonly<Record<string, SessionTileHandle>>>({});
+  const onHandleUpdate = React.useCallback((tileId: string, handle: SessionTileHandle) => {
+    setHandles((prev) => (prev[tileId] === handle ? prev : { ...prev, [tileId]: handle }));
+  }, []);
+  const onHandleUnmount = React.useCallback((tileId: string) => {
+    setHandles((prev) => {
+      if (!(tileId in prev)) return prev;
+      const next = { ...prev };
+      delete next[tileId];
+      return next;
+    });
+  }, []);
 
   const [picker, setPicker] = React.useState<PickerMode | null>(null);
   const [archiveOpen, setArchiveOpen] = React.useState(false);
-  const [modelPickerOpen, setModelPickerOpen] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [mcpOpen, setMcpOpen] = React.useState(false);
-  const [jobsOpen, setJobsOpen] = React.useState(false);
-  const [dismissedTrustCwds, setDismissedTrustCwds] = React.useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
-  const projectTrust = quartz.state.session.projectTrust;
-  const trustPromptOpen = Boolean(
-    projectTrust?.needsTrust && !dismissedTrustCwds.has(projectTrust.cwd),
+  const [sharedText, setSharedText] = React.useState<string | null>(null);
+
+  const composerAnchorRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const palette = useCommandPalette(composerAnchorRef);
+
+  const narrow = useMediaQuery("(max-width: 1023px)", false);
+  const [sidebarOpen, setSidebarOpen] = React.useState(!narrow);
+  React.useEffect(() => {
+    setSidebarOpen(!narrow);
+  }, [narrow]);
+  const closeSidebar = React.useCallback(() => setSidebarOpen(false), []);
+
+  useOpenUIThemeMirror();
+
+  const overlayOpen =
+    palette.open || picker !== null || archiveOpen || bannerEditBot !== null || bannerHistoryBotId !== null;
+
+  const focusedHandleGuess = React.useMemo(() => {
+    const vals = Object.values(handles);
+    return vals[0];
+  }, [handles]);
+
+  const tiling = useTiling({
+    hotkeysEnabled: !overlayOpen,
+    defaultCwd: focusedHandleGuess?.session.cwd || undefined,
+  });
+
+  // First session tile owns global settings/notifications frames to prevent N× duplicates.
+  const primarySessionTileId = React.useMemo(
+    () => tiling.state.tiles.find((t) => t.kind === "session")?.id ?? null,
+    [tiling.state.tiles],
   );
 
-  /**
-   * Android Back, in the order a person expects it: close the thing on top, and only
-   * leave the app when nothing is open. The SPA already treats Escape that way, so
-   * this reuses the same setters instead of inventing a second navigation stack.
-   */
+  const primaryHandle = primarySessionTileId ? handles[primarySessionTileId] : undefined;
+  const focusedHandle = handles[tiling.state.focusedTileId] ?? primaryHandle;
+
+  markNotificationsReadRef.current =
+    primaryHandle?.markNotificationsRead ?? (() => undefined);
+
+  const activeSession = focusedHandle?.session ?? initialState.session;
+  const activeStatus = focusedHandle?.status ?? "connecting";
+  const anyTurnRunning = React.useMemo(
+    () => Object.values(handles).some((h) => h.turnRunning),
+    [handles],
+  );
+  const totalBgCount = React.useMemo(() => {
+    const seen = new Set<string>();
+    let sum = 0;
+    for (const h of Object.values(handles)) {
+      const sid = h.session.sessionId || h.tileId;
+      if (seen.has(sid)) continue;
+      seen.add(sid);
+      sum += h.session.bgCount ?? 0;
+    }
+    return sum;
+  }, [handles]);
+
+  const rawActiveSessions = primaryHandle?.activeSessions;
+  React.useEffect(() => {
+    void bots.reloadRuns();
+  }, [rawActiveSessions, bots.reloadRuns]);
+
+  const mergedActiveSessions = React.useMemo<readonly ActiveSessionItem[]>(() => {
+    const base = [...(rawActiveSessions ?? [])];
+    const seen = new Set(base.map((item) => item.sessionId));
+    for (const h of Object.values(handles)) {
+      const sid = h.session.sessionId;
+      if (h.turnRunning && sid && !seen.has(sid)) {
+        seen.add(sid);
+        base.push({
+          sessionId: sid,
+          cwd: h.session.cwd,
+          kind: "working",
+          read: false,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+    return base;
+  }, [rawActiveSessions, handles]);
+
+  const mergedSessionActivity = React.useMemo<Readonly<Record<string, SessionActivity>>>(() => {
+    const next: Record<string, SessionActivity> = {};
+    for (const item of mergedActiveSessions) {
+      next[item.sessionId] = {
+        status: item.kind === "working" ? "running" : item.kind,
+        unread: item.kind === "permission" ? true : !item.read,
+      };
+    }
+    return next;
+  }, [mergedActiveSessions]);
+
+  const titleBySessionId = React.useMemo(() => {
+    const map = new Map<string, string>();
+    const sidebarState = sidebar.data?.sidebar ?? EMPTY_SIDEBAR;
+    for (const s of sidebar.data?.sessions ?? []) {
+      map.set(s.sessionId, displayTitle(s, sidebarState));
+    }
+    for (const item of mergedActiveSessions) {
+      if (!map.has(item.sessionId) && item.title) {
+        map.set(item.sessionId, item.title);
+      }
+    }
+    return map;
+  }, [sidebar.data, mergedActiveSessions]);
+
   const handleAndroidBack = React.useCallback((): boolean => {
     if (palette.open) {
       palette.onOpenChange(false);
@@ -191,14 +255,6 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
       setArchiveOpen(false);
       return true;
     }
-    if (modelPickerOpen) {
-      setModelPickerOpen(false);
-      return true;
-    }
-    if (jobsOpen) {
-      setJobsOpen(false);
-      return true;
-    }
     if (settingsOpen) {
       setSettingsOpen(false);
       return true;
@@ -207,39 +263,24 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
       setMcpOpen(false);
       return true;
     }
+    if (tiling.state.maximizedTileId !== null) {
+      tiling.toggleMaximize(tiling.state.maximizedTileId);
+      return true;
+    }
     if (narrow && sidebarOpen) {
       setSidebarOpen(false);
       return true;
     }
     return false;
-  }, [
-    palette,
-    picker,
-    archiveOpen,
-    modelPickerOpen,
-    jobsOpen,
-    settingsOpen,
-    mcpOpen,
-    narrow,
-    sidebarOpen,
-  ]);
+  }, [palette, picker, archiveOpen, settingsOpen, mcpOpen, tiling, narrow, sidebarOpen]);
 
   useNativeShell({
-    turnRunning: quartz.state.turnRunning,
+    turnRunning: anyTurnRunning,
     notificationsEnabled: notifications.enabled,
     onBack: handleAndroidBack,
     onSharedText: setSharedText,
   });
 
-  /**
-   * The control the archive dialog was opened from.
-   *
-   * Recorded here, at the click, rather than inside the dialog: by the time the
-   * overlay is mounted its focus scope has already moved the keyboard into the
-   * dialog, so `document.activeElement` there is the dialog itself. Closing gives
-   * focus back to this element, which is how the keyboard stays on the archive
-   * button instead of at the top of the page.
-   */
   const archiveOpener = React.useRef<HTMLElement | null>(null);
   const openArchive = React.useCallback(() => {
     const active = document.activeElement;
@@ -247,147 +288,46 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     setArchiveOpen(true);
   }, []);
 
-  const sessionId = quartz.state.session.sessionId;
-  const activeBotRun = React.useMemo(
-    () => (sessionId ? bots.runs.find((r) => r.session_id === sessionId) : undefined),
-    [bots.runs, sessionId],
-  );
-  const activeBotConfig = React.useMemo(
-    () => (activeBotRun ? bots.bots.find((b) => b.id === activeBotRun.bot_id) : undefined),
-    [activeBotRun, bots.bots],
-  );
-
-  /**
-   * Refresh the sidebar when the live session changes.
-   *
-   * A session started in a folder makes that folder a workspace server-side, and a
-   * brand-new session has no log until its first prompt. Both facts arrive with
-   * `session_state`, so this is the one place that has to re-read them.
-   */
-  React.useEffect(() => {
-    if (sessionId) {
-      sidebar.reload();
-      void bots.reload();
-    }
-  }, [sessionId, sidebar.reload, bots.reload]);
-
-  const [sessionActivity, setSessionActivity] = React.useState<
-    Readonly<Record<string, SessionActivity>>
-  >({});
-
-  const mergedActiveSessions = React.useMemo(() => {
-    const base = quartz.state.activeSessions ?? [];
-    if (!quartz.state.turnRunning || !sessionId) return base;
-    if (base.some((item) => item.sessionId === sessionId)) return base;
-    return [
-      ...base,
-      {
-        sessionId,
-        cwd: quartz.state.session.cwd,
-        kind: "working" as const,
-        read: false,
-        updatedAt: new Date().toISOString(),
-      },
-    ];
-  }, [quartz.state.activeSessions, quartz.state.turnRunning, quartz.state.session.cwd, sessionId]);
-
-  const mergedSessionActivity = React.useMemo(() => {
-    if (quartz.state.activeSessions === undefined && !quartz.state.turnRunning) {
-      return sessionActivity;
-    }
-    const next: Record<string, SessionActivity> = {};
-    for (const item of mergedActiveSessions) {
-      next[item.sessionId] = {
-        status: item.kind === "working" ? "running" : item.kind,
-        unread: item.kind === "permission" ? true : !item.read,
-      };
-    }
-    return next;
-  }, [mergedActiveSessions, quartz.state.activeSessions, quartz.state.turnRunning, sessionActivity]);
-
-  // A session becomes listable as soon as the first prompt is persisted on
-  // turn start, and its title/updatedAt may settle at turn end, so reload on
-  // both transitions and update per-session live activity state.
-  const wasRunning = React.useRef(false);
-  const prevSessionIdRef = React.useRef<string | undefined>(undefined);
-  React.useEffect(() => {
-    const running = quartz.state.turnRunning;
-    const sameSession = prevSessionIdRef.current === sessionId;
-    if (wasRunning.current !== running) sidebar.reload();
-
-    if (sessionId) {
-      if (running) {
-        setSessionActivity((prev) => ({
-          ...prev,
-          [sessionId]: { status: "running", unread: false },
-        }));
-      } else if (wasRunning.current && sameSession) {
-        const lastRow = quartz.state.rows[quartz.state.rows.length - 1];
-        const waitingPermission =
-          Boolean(quartz.state.session.pendingPermission) ||
-          (lastRow?.kind === "turn_end" && lastRow.status === "waiting_permission");
-        const failed =
-          quartz.state.fatalError !== null ||
-          lastRow?.kind === "error" ||
-          (lastRow?.kind === "turn_end" && lastRow.status === "error");
-        const waitingBg = (quartz.state.session.bgCount ?? 0) > 0;
-        const unread = waitingPermission
-          ? true
-          : !waitingBg && typeof document !== "undefined" && document.hidden;
-        setSessionActivity((prev) => ({
-          ...prev,
-          [sessionId]: {
-            status: waitingPermission
-              ? "permission"
-              : failed
-                ? "error"
-                : waitingBg
-                  ? "waiting"
-                  : "done",
-            unread,
-          },
-        }));
-      }
-    }
-    wasRunning.current = running;
-    prevSessionIdRef.current = sessionId;
-  }, [
-    quartz.state.turnRunning,
-    quartz.state.fatalError,
-    quartz.state.rows,
-    quartz.state.session.pendingPermission,
-    quartz.state.session.bgCount,
-    sessionId,
-    sidebar.reload,
-  ]);
-
-  React.useEffect(() => {
-    const onFocus = (): void => {
-      if (!sessionId) return;
-      setSessionActivity((prev) => {
-        const current = prev[sessionId];
-        if (!current || !current.unread) return prev;
-        return { ...prev, [sessionId]: { ...current, unread: false } };
-      });
-    };
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-  }, [sessionId]);
-
-  const onSubmit = React.useCallback(
-    (text: string, images: ImageAttachment[]) => {
-      quartz.prompt(text, images);
+  const selectSession = React.useCallback(
+    (id: string) => {
+      setSettingsOpen(false);
+      setMcpOpen(false);
+      tiling.selectSession(id);
+      if (narrow) closeSidebar();
     },
-    [quartz],
+    [tiling, narrow, closeSidebar],
   );
 
-  const handleRunCommand = React.useCallback(
+  const openSessionInNewTile = React.useCallback(
+    (id: string) => {
+      setSettingsOpen(false);
+      setMcpOpen(false);
+      tiling.openSessionInNewTile(id);
+      if (narrow) closeSidebar();
+    },
+    [tiling, narrow, closeSidebar],
+  );
+
+  const newSessionIn = React.useCallback(
+    (cwd: string) => {
+      setSettingsOpen(false);
+      setMcpOpen(false);
+      const focusedTile = tiling.state.tiles.find((t) => t.id === tiling.state.focusedTileId);
+      if (focusedTile?.kind === "session" && handles[focusedTile.id]) {
+        handles[focusedTile.id]!.newSession(cwd);
+      } else if (tiling.canAdd) {
+        tiling.openNewTile(cwd);
+      } else if (primaryHandle) {
+        primaryHandle.newSession(cwd);
+      }
+      if (narrow) closeSidebar();
+    },
+    [tiling, handles, primaryHandle, narrow, closeSidebar],
+  );
+
+  const handlePaletteRun = React.useCallback(
     (name: string, arg?: string) => {
       const cleaned = name.trim().toLowerCase();
-      if (cleaned === "model" && (!arg || arg.trim() === "")) {
-        setModelPickerOpen(true);
-        return;
-      }
       if (cleaned === "settings" && (!arg || arg.trim() === "")) {
         setMcpOpen(false);
         setSettingsOpen(true);
@@ -398,48 +338,9 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
         setMcpOpen(true);
         return;
       }
-      if (cleaned === "jobs" && (!arg || arg.trim() === "")) {
-        quartz.clearBgFailed();
-        setJobsOpen(true);
-        return;
-      }
-      quartz.runCommand(name, arg);
+      focusedHandle?.runCommand(name, arg);
     },
-    [quartz],
-  );
-
-  // An OpenUI form submit (`@ToAssistant`) is just the next user turn: it goes
-  // through the same prompt frame, so the model continues this session.
-  const onPrompt = React.useCallback(
-    (text: string) => {
-      quartz.prompt(text, []);
-    },
-    [quartz],
-  );
-
-  const selectSession = React.useCallback(
-    (id: string) => {
-      setSettingsOpen(false);
-      setMcpOpen(false);
-      setSessionActivity((prev) => {
-        const current = prev[id];
-        if (!current || !current.unread) return prev;
-        return { ...prev, [id]: { ...current, unread: false } };
-      });
-      quartz.loadSession(id);
-      if (narrow) closeSidebar();
-    },
-    [quartz, narrow, closeSidebar],
-  );
-
-  const newSessionIn = React.useCallback(
-    (cwd: string) => {
-      setSettingsOpen(false);
-      setMcpOpen(false);
-      quartz.newSession(cwd);
-      if (narrow) closeSidebar();
-    },
-    [quartz, narrow, closeSidebar],
+    [focusedHandle],
   );
 
   const sidebarProps = {
@@ -447,17 +348,18 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     loading: sidebar.loading,
     error: sidebar.error,
     actionError: sidebar.actionError,
-    currentSessionId: sessionId,
-    currentCwd: quartz.state.session.cwd,
+    currentSessionId: activeSession.sessionId,
+    currentCwd: activeSession.cwd,
     onClose: closeSidebar,
     onReload: sidebar.reload,
     onSelectSession: selectSession,
+    onOpenSessionInNewTile: openSessionInNewTile,
+    tileBadges: tiling.tileBadges,
+    canAddTile: tiling.canAdd,
     onNewSession: newSessionIn,
     onNewFolder: () => setPicker("workspace"),
     onRemoveFolder: sidebar.removeWorkspace,
     onOpenFolder: () => setPicker("session"),
-    // Handed over as-is: each one resolves to whether the server did it, which is
-    // what the sidebar's undo notice reports on.
     onRename: sidebar.rename,
     onHide: sidebar.hide,
     onRestore: sidebar.restore,
@@ -472,8 +374,8 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     },
     sessionActivity: mergedSessionActivity,
     activeSessions: mergedActiveSessions,
-    onDismissActiveSession: quartz.dismissActiveSession,
-    onClearReadActiveSessions: quartz.clearReadActiveSessions,
+    onDismissActiveSession: primaryHandle?.dismissActiveSession,
+    onClearReadActiveSessions: primaryHandle?.clearReadActiveSessions,
     bots: bots.bots,
     botRuns: bots.runs,
     togglingBotIds: bots.togglingIds,
@@ -487,6 +389,42 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     onRestoreBot: bots.restore,
   };
 
+  const multiTileActive = tiling.state.tiles.length > 1;
+  const showFullWidthHeader =
+    multiTileActive && !narrow && tiling.state.maximizedTileId === null;
+
+  const tileControls = (
+    <div className="flex items-center gap-1.5">
+      <GlobalJobsButton
+        bgCountHint={totalBgCount}
+        onOpenWorkerTile={(job) => {
+          setSettingsOpen(false);
+          setMcpOpen(false);
+          tiling.openWorkerInTile(job);
+        }}
+      />
+      <TileLayoutSwitcher
+        tiles={tiling.state.tiles}
+        focusedTileId={tiling.state.focusedTileId}
+        threeOrientation={tiling.state.threeOrientation}
+        canAdd={tiling.canAdd}
+        narrow={narrow}
+        onSetCount={(count) => {
+          setSettingsOpen(false);
+          setMcpOpen(false);
+          tiling.setTileCount(count, activeSession.cwd || undefined);
+        }}
+        onAddTile={() => {
+          setSettingsOpen(false);
+          setMcpOpen(false);
+          tiling.openNewTile(activeSession.cwd || undefined);
+        }}
+        onFlipThree={tiling.flipThreeOrientation}
+        onFocusTile={tiling.focusTile}
+      />
+    </div>
+  );
+
   return (
     <div className="flex h-full min-h-0 bg-background text-foreground">
       {sidebarOpen && !narrow ? <FolderSidebar {...sidebarProps} variant="rail" /> : null}
@@ -498,142 +436,130 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
 
       <div className="flex min-w-0 flex-1 flex-col">
         <HeaderBar
-          session={quartz.state.session}
-          status={quartz.status}
+          session={activeSession}
+          status={activeStatus}
           richUiMode={richUi.mode}
           onRichUiModeChange={richUi.setMode}
           onNewSession={() => {
-            if (quartz.state.session.cwd) newSessionIn(quartz.state.session.cwd);
+            if (activeSession.cwd) newSessionIn(activeSession.cwd);
             else setPicker("session");
           }}
           onChangeFolder={() => setPicker("session")}
-          onToggleSandbox={() => quartz.setSandbox(!quartz.state.session.sandboxed)}
-          turnRunning={quartz.state.turnRunning}
+          onToggleSandbox={
+            focusedHandle
+              ? () => focusedHandle.setSandbox(!activeSession.sandboxed)
+              : undefined
+          }
+          turnRunning={focusedHandle?.turnRunning ?? false}
           sidebarOpen={sidebarOpen}
           onToggleSidebar={() => setSidebarOpen((open) => !open)}
+          fullWidth={showFullWidthHeader}
+          tileControls={tileControls}
         />
+
         {settingsOpen ? (
           <SettingsView
-            onBack={() => {
-              setSettingsOpen(false);
-            }}
+            onBack={() => setSettingsOpen(false)}
             notifications={notifications}
           />
         ) : mcpOpen ? (
-          <McpView
-            onBack={() => {
-              setMcpOpen(false);
+          <McpView onBack={() => setMcpOpen(false)} />
+        ) : (
+          <TileGrid
+            tiles={tiling.state.tiles}
+            focusedTileId={tiling.state.focusedTileId}
+            maximizedTileId={tiling.state.maximizedTileId}
+            threeOrientation={tiling.state.threeOrientation}
+            ratios={tiling.state.ratios}
+            narrow={narrow}
+            onRatioChange={tiling.setRatio}
+            onResetRatios={tiling.resetRatios}
+            renderTile={(tile, index) => {
+              const tileNumber = index + 1;
+              const focused = tile.id === tiling.state.focusedTileId;
+              const maximized = tile.id === tiling.state.maximizedTileId;
+              const canClose = tiling.state.tiles.length > 1;
+
+              if (tile.kind === "worker") {
+                return (
+                  <WorkerTailTile
+                    tileNumber={tileNumber}
+                    focused={focused}
+                    maximized={maximized}
+                    canClose={canClose}
+                    sessionId={tile.sessionId}
+                    pid={tile.pid}
+                    label={tile.label}
+                    command={tile.command}
+                    onFocus={() => tiling.focusTile(tile.id)}
+                    onClose={() => tiling.closeTile(tile.id)}
+                    onToggleMaximize={() => tiling.toggleMaximize(tile.id)}
+                    onPromote={() => tiling.promoteTile(tile.id)}
+                    onOpenParentSession={(sid) => tiling.openSessionInNewTile(sid)}
+                  />
+                );
+              }
+
+              const resolvedTitle = tile.sessionId
+                ? titleBySessionId.get(tile.sessionId)
+                : undefined;
+              return (
+                <SessionTile
+                  tileId={tile.id}
+                  tileNumber={tileNumber}
+                  multiTile={multiTileActive}
+                  focused={focused}
+                  maximized={maximized}
+                  canClose={canClose}
+                  isPrimary={tile.id === primarySessionTileId}
+                  requestedSessionId={tile.sessionId}
+                  initialCwd={tile.initialCwd}
+                  createFreshOnConnect={tile.sessionId === null && tile.id !== primarySessionTileId}
+                  systemPromptAppend={systemPromptAppend}
+                  richUi={wantsRichUi(richUi.mode)}
+                  sessionTitle={resolvedTitle}
+                  bots={bots.bots}
+                  botRuns={bots.runs}
+                  runningBotIds={bots.runningIds}
+                  sharedText={sharedText}
+                  onSharedTextConsumed={() => setSharedText(null)}
+                  onAuthError={onAuthError}
+                  onGlobalServerMessage={handleGlobalServerMessage}
+                  onSessionBound={tiling.bindSessionId}
+                  onHandleUpdate={onHandleUpdate}
+                  onHandleUnmount={onHandleUnmount}
+                  onReloadSidebar={sidebar.reload}
+                  onFocus={() => tiling.focusTile(tile.id)}
+                  onClose={() => tiling.closeTile(tile.id)}
+                  onToggleMaximize={() => tiling.toggleMaximize(tile.id)}
+                  onPromote={() => tiling.promoteTile(tile.id)}
+                  onOpenSettings={() => {
+                    setMcpOpen(false);
+                    setSettingsOpen(true);
+                  }}
+                  onOpenMcp={() => {
+                    setSettingsOpen(false);
+                    setMcpOpen(true);
+                  }}
+                  onOpenPalette={palette.openPalette}
+                  onOpenBotHistory={(botId) => setBannerHistoryBotId(botId)}
+                  onEditBot={(bot) => setBannerEditBot(bot)}
+                  onRerunBot={(botId) => {
+                    void bots.runNow(botId);
+                  }}
+                  onOpenWorkerTile={(job) => tiling.openWorkerInTile(job)}
+                />
+              );
             }}
           />
-        ) : (
-          <>
-            {activeBotRun ? (
-              <BotRunBanner
-                run={activeBotRun}
-                bot={activeBotConfig}
-                isRunning={bots.runningIds.has(activeBotRun.bot_id)}
-                onOpenHistory={(botId) => setBannerHistoryBotId(botId)}
-                onEditBot={(bot) => setBannerEditBot(bot)}
-                onRerun={(botId) => {
-                  void bots.runNow(botId);
-                }}
-              />
-            ) : null}
-            <Transcript
-              rows={quartz.state.rows}
-              turnRunning={quartz.state.turnRunning}
-              cwd={quartz.state.session.cwd}
-              richUi={wantsRichUi(richUi.mode)}
-              onPrompt={onPrompt}
-              onFormState={quartz.setFormState}
-              onRunCommand={handleRunCommand}
-            />
-            <StatusLine
-              label={quartz.state.status}
-              status={quartz.status}
-              turnRunning={quartz.state.turnRunning}
-            />
-            <JobsTray
-              open={jobsOpen}
-              onClose={() => {
-                setJobsOpen(false);
-              }}
-            />
-            {(quartz.state.idlePrompts ?? []).map((prompt) => {
-              const hours = Math.max(1, Math.round(prompt.idleSeconds / 3600));
-              const folder = prompt.cwd.split("/").filter(Boolean).pop() || prompt.cwd;
-              return (
-                <div
-                  key={prompt.sessionId}
-                  role="region"
-                  aria-label="Idle session prompt"
-                  className="mx-auto mb-2 flex w-full max-w-3xl flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-content1 px-3 py-2 text-xs shadow-sm"
-                >
-                  <span className="text-foreground/90">
-                    Session <code className="font-mono">{prompt.sessionId.slice(0, 12)}</code> (
-                    {folder}) has been idle for {hours}h. Keep it alive or close it?
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      className="rounded border border-border px-2.5 py-1 text-xs font-medium hover:bg-content2"
-                      onClick={() => quartz.respondIdleSession(prompt.sessionId, "keep")}
-                    >
-                      Keep alive
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded bg-danger/15 px-2.5 py-1 text-xs font-medium text-danger hover:bg-danger/25"
-                      onClick={() => quartz.respondIdleSession(prompt.sessionId, "close")}
-                    >
-                      Close session
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-            {quartz.state.session.pendingPermission ? (
-              <PermissionPromptCard
-                permission={quartz.state.session.pendingPermission}
-                onRespond={quartz.respondPermission}
-              />
-            ) : null}
-            <Composer
-              connection={quartz.status}
-              cwd={quartz.state.session.cwd}
-              turnRunning={quartz.state.turnRunning}
-              fatalError={quartz.state.fatalError}
-              commands={quartz.state.session.commands}
-              model={quartz.state.session.model}
-              effort={quartz.state.session.effort}
-              contextPct={quartz.state.session.contextPct}
-              maxContextTokens={quartz.state.session.maxContextTokens}
-              cacheHitPct={quartz.state.session.cacheHitPct}
-              bgCount={quartz.state.session.bgCount}
-              bgFailed={quartz.state.session.bgFailed}
-              onOpenJobs={() => {
-                quartz.clearBgFailed();
-                setJobsOpen((prev) => !prev);
-              }}
-              onOpenModelPicker={() => setModelPickerOpen(true)}
-              onSubmit={onSubmit}
-              onSteer={quartz.steer}
-              onCancel={quartz.cancel}
-              onRunCommand={handleRunCommand}
-              onOpenPalette={palette.openPalette}
-              sharedText={sharedText}
-              onSharedTextConsumed={() => setSharedText(null)}
-              textareaRef={composerRef}
-            />
-          </>
         )}
       </div>
 
       <CommandPalette
         open={palette.open}
-        commands={quartz.state.session.commands}
+        commands={activeSession.commands}
         onOpenChange={palette.onOpenChange}
-        onRun={handleRunCommand}
+        onRun={handlePaletteRun}
       />
 
       <FolderPicker
@@ -644,8 +570,6 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
         title={picker === "workspace" ? "Add a folder" : "New session"}
         chooseLabel={picker === "workspace" ? "Add to sidebar" : "Start session"}
         onChoose={(path) => {
-          // Both paths are real requests: the picker never invents a session, and
-          // adding a folder is the server's choice to remember.
           if (picker === "workspace") void sidebar.addWorkspace(path);
           else newSessionIn(path);
         }}
@@ -654,7 +578,7 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
       <CreateBotModal
         open={bannerEditBot !== null}
         initialBot={bannerEditBot}
-        defaultCwd={quartz.state.session.cwd}
+        defaultCwd={activeSession.cwd}
         onClose={() => setBannerEditBot(null)}
         onSubmit={async (payload) => {
           if (bannerEditBot) await bots.update(bannerEditBot.id, payload);
@@ -681,26 +605,6 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
         onImport={sidebar.importSession}
         onRestore={sidebar.restore}
         returnFocusTo={archiveOpener}
-      />
-
-      <TrustFolderDialog
-        open={trustPromptOpen}
-        cwd={projectTrust?.cwd ?? ""}
-        files={projectTrust?.files ?? []}
-        onTrust={() => quartz.trustProject()}
-        onDismiss={() => {
-          if (!projectTrust) return;
-          setDismissedTrustCwds((prev) => new Set(prev).add(projectTrust.cwd));
-        }}
-      />
-
-
-
-      <ModelPickerDialog
-        open={modelPickerOpen}
-        onOpenChange={setModelPickerOpen}
-        currentModel={quartz.state.session.model}
-        currentEffort={quartz.state.session.effort}
       />
     </div>
   );
