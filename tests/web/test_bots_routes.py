@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from quartz.web.app import create_app
-from tests.web.conftest import ScriptedTurn, make_runtime
+from conftest import ScriptedTurn, make_runtime  # type: ignore[import-not-found]
 
 
 def _sign_payload(secret: str, body: bytes) -> str:
