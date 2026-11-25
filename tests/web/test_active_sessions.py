@@ -337,3 +337,55 @@ def test_hibernating_done_session_keeps_it_in_active_sessions(tmp_path: Path) ->
         assert items[0]["kind"] == "done"
     finally:
         manager.close_all()
+
+
+def test_parked_permission_turn_stays_permission_in_active_sessions(tmp_path: Path) -> None:
+    from quartz.kernel.bridge import PermissionRequest
+
+    req = PermissionRequest(
+        tool="git",
+        argv=("push",),
+        cwd=str(tmp_path),
+        scope="git_remote",
+        command_display="git push",
+    )
+
+    def runner(rt: Any, observer: Any, **_kw: Any) -> TurnOutcome:
+        rt.kernel._permission_handler(req)
+        return TurnOutcome(TurnStatus.OK)
+
+    manager = SessionManager(_build_factory(tmp_path), cwd=tmp_path, runner=runner)
+    try:
+        s1 = manager.create_session(tmp_path)
+        s1._perm_gate._park_delay_s = 0.05
+        sid1 = s1.runtime.active_session.id
+        s1.ensure_runtime()
+        s1.runtime.kernel._permission_handler = s1._handle_permission_request
+        s1.start_turn("Push branch", [])
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if s1.has_pending_permission and not s1.turn_running:
+                break
+            time.sleep(0.01)
+        assert s1.has_pending_permission and not s1.turn_running
+
+        items = manager.active_sessions_items()
+        assert len(items) == 1
+        assert items[0]["sessionId"] == sid1
+        assert items[0]["kind"] == "permission"
+
+        req_id = s1.snapshot()["pendingPermission"]["requestId"]
+        assert s1.resolve_permission(req_id, "allow_once") is True
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            cur = manager.active_sessions_items()
+            if cur and cur[0]["kind"] == "done":
+                break
+            time.sleep(0.01)
+
+        items_after = manager.active_sessions_items()
+        assert len(items_after) == 1
+        assert items_after[0]["kind"] == "done"
+    finally:
+        manager.close_all()
