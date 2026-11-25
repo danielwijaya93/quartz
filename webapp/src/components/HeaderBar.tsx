@@ -1,10 +1,9 @@
 import * as React from "react";
 import { Button, Chip, cn } from "@heroui/react";
-import { ChevronDown, Folder, GitBranch, PanelLeft, Plus, Shield } from "lucide-react";
+import { GitBranch, PanelLeft, Shield } from "lucide-react";
 import { RichUiToggle } from "./RichUiToggle";
 import type { ConnectionStatus } from "@/lib/connection";
 import type { RichUiMode } from "@/lib/richUi";
-import { directoryLabel } from "@/lib/sidebar";
 import type { SessionMeta } from "@/lib/transcript";
 
 const STATUS_COPY: Record<
@@ -17,59 +16,6 @@ const STATUS_COPY: Record<
 };
 
 /**
- * Where the session is running: the folder's own name, never a stub.
- */
-function CwdChip({
-  cwd,
-  onChangeFolder,
-}: {
-  cwd: string;
-  onChangeFolder?: () => void;
-}): React.ReactElement {
-  const inner = (
-    <Chip
-      size="sm"
-      variant="soft"
-      color="default"
-      title={cwd || undefined}
-      className={cn(
-        "max-w-full min-w-0 overflow-hidden bg-surface-secondary/70",
-        onChangeFolder && "cursor-pointer transition-colors hover:bg-surface-secondary",
-      )}
-    >
-      <Folder aria-hidden="true" className="mr-1 size-3 shrink-0 text-muted" />
-      <span className="sr-only">
-        {cwd ? `Working directory ${cwd}` : "Working directory not set"}
-      </span>
-      <span aria-hidden="true" dir="rtl" className="block truncate text-left font-medium">
-        {cwd ? directoryLabel(cwd) : "—"}
-      </span>
-      {onChangeFolder ? (
-        <ChevronDown aria-hidden="true" className="ml-0.5 size-3 shrink-0 text-muted" />
-      ) : null}
-    </Chip>
-  );
-
-  return (
-    <li className="min-w-0 shrink overflow-hidden">
-      {onChangeFolder ? (
-        <button
-          type="button"
-          onClick={onChangeFolder}
-          aria-label={`Switch folder (current: ${cwd || "not set"})`}
-          title={cwd ? `${cwd} — click to switch folder` : "Click to choose a folder"}
-          className="inline-flex max-w-full min-w-0 cursor-pointer items-center rounded-md focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none"
-        >
-          {inner}
-        </button>
-      ) : (
-        inner
-      )}
-    </li>
-  );
-}
-
-/**
  * The app bar.
  */
 export const HeaderBar = React.memo(function HeaderBar({
@@ -77,8 +23,6 @@ export const HeaderBar = React.memo(function HeaderBar({
   status,
   richUiMode,
   onRichUiModeChange,
-  onNewSession,
-  onChangeFolder,
   onToggleSandbox,
   turnRunning = false,
   sidebarOpen,
@@ -90,10 +34,6 @@ export const HeaderBar = React.memo(function HeaderBar({
   status: ConnectionStatus;
   richUiMode: RichUiMode;
   onRichUiModeChange: (mode: RichUiMode) => void;
-  /** Starts a new session in the current folder (or opens the picker if unset). */
-  onNewSession: () => void;
-  /** Opens the folder picker to start a session in another folder. */
-  onChangeFolder?: () => void;
   /** Toggles the OS sandbox for the current session. */
   onToggleSandbox?: () => void;
   /** Whether a turn is currently running (disables sandbox toggling). */
@@ -144,12 +84,7 @@ export const HeaderBar = React.memo(function HeaderBar({
           </span>
         </div>
 
-        <span aria-hidden="true" className="hidden text-xs text-muted/60 sm:inline">
-          /
-        </span>
-
         <ul className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden sm:gap-1.5">
-          <CwdChip cwd={session.cwd} onChangeFolder={onChangeFolder} />
           {session.gitBranch ? (
             <li className="flex min-w-0 shrink overflow-hidden sm:shrink-0">
               <Chip
@@ -235,16 +170,6 @@ export const HeaderBar = React.memo(function HeaderBar({
           </span>
           {tileControls}
           <RichUiToggle mode={richUiMode} onChange={onRichUiModeChange} />
-          <Button
-            size="sm"
-            variant="outline"
-            onPress={onNewSession}
-            aria-label="Start a new session"
-            className="h-7 gap-1 border-border/80 bg-surface-secondary/40 font-medium hover:bg-surface-secondary hover:text-foreground"
-          >
-            <Plus aria-hidden="true" className="size-3.5" />
-            <span className="hidden md:inline">New</span>
-          </Button>
         </div>
       </div>
     </header>

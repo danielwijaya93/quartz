@@ -20,7 +20,6 @@ function renderHeader(overrides: Partial<React.ComponentProps<typeof HeaderBar>>
     status: "connected",
     richUiMode: "markdown",
     onRichUiModeChange: vi.fn(),
-    onNewSession: vi.fn(),
     sidebarOpen: true,
     onToggleSidebar: vi.fn(),
     ...overrides,
@@ -29,77 +28,23 @@ function renderHeader(overrides: Partial<React.ComponentProps<typeof HeaderBar>>
   return { props };
 }
 
-/** The chip a piece of text lives in, so its classes can be inspected. */
-function chipFor(text: string): HTMLElement {
-  const chip = screen.getByText(text).closest("li");
-  if (chip === null) throw new Error(`no chip around ${text}`);
-  return chip;
-}
-
 describe("HeaderBar", () => {
-  it("shows the folder's own name, not a two-letter stub of the path", () => {
+  it("omits folder selector, new session button, session id, model/effort, and theme toggle", () => {
     renderHeader();
-    expect(screen.getByText("fix-web-sidebar-first-run")).toBeInTheDocument();
-    expect(screen.queryByText(/^\.\.\.\//)).not.toBeInTheDocument();
-  });
-
-  it("keeps the working directory visible at all widths", () => {
-    renderHeader();
-
-    const folder = chipFor("fix-web-sidebar-first-run");
-    expect(folder).not.toHaveClass("hidden");
-    expect(folder.closest("header")).not.toBeNull();
-    expect(screen.getByRole("list")).toContainElement(folder);
-  });
-
-  it("does not render session id, model/effort, or theme toggle in the top bar", () => {
-    renderHeader();
+    expect(screen.queryByText("fix-web-sidebar-first-run")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Switch folder/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Start a new session" })).not.toBeInTheDocument();
     expect(screen.queryByText(SESSION.sessionId.slice(-8))).not.toBeInTheDocument();
     expect(screen.queryByText(/claude-sonnet-4-5/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Theme:/ })).not.toBeInTheDocument();
   });
 
-  it("keeps the full path for hover and for the accessible name", () => {
-    renderHeader();
-
-    expect(screen.getByTitle(SESSION.cwd)).toBeInTheDocument();
-    expect(screen.getByText(`Working directory ${SESSION.cwd}`)).toBeInTheDocument();
-  });
-
-  it("truncates the folder name from the left rather than collapsing", () => {
-    renderHeader();
-    const label = screen.getByText("fix-web-sidebar-first-run");
-    expect(label).toHaveAttribute("dir", "rtl");
-    expect(label).toHaveClass("truncate");
-    expect(label).toHaveClass("text-left");
-  });
-
-  it("says the directory is unknown rather than drawing an empty chip", () => {
-    renderHeader({ session: { ...SESSION, cwd: "" } });
-    expect(screen.getByText("—")).toBeInTheDocument();
-    expect(screen.getByText("Working directory not set")).toBeInTheDocument();
-  });
-
-  it("keeps the sidebar toggle and New action labelled", async () => {
+  it("keeps the sidebar toggle labelled", async () => {
     const user = userEvent.setup();
     const { props } = renderHeader({ sidebarOpen: false });
 
     await user.click(screen.getByRole("button", { name: "Show the session sidebar" }));
     expect(props.onToggleSidebar).toHaveBeenCalled();
-
-    await user.click(screen.getByRole("button", { name: "Start a new session" }));
-    expect(props.onNewSession).toHaveBeenCalled();
-  });
-
-  it("lets the folder chip trigger onChangeFolder when provided", async () => {
-    const user = userEvent.setup();
-    const onChangeFolder = vi.fn();
-    renderHeader({ onChangeFolder });
-
-    await user.click(
-      screen.getByRole("button", { name: `Switch folder (current: ${SESSION.cwd})` }),
-    );
-    expect(onChangeFolder).toHaveBeenCalledTimes(1);
   });
 
   it("renders the git branch chip and sandbox toggle visibly on mobile", () => {

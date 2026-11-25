@@ -54,7 +54,6 @@ function LayoutGlyph({
   );
 }
 
-const COUNTS: readonly TileCount[] = [1, 2, 3, 4];
 const COUNT_LABELS: Record<TileCount, string> = {
   1: "1 window (single focus)",
   2: "2 windows (vertical split)",
@@ -63,8 +62,7 @@ const COUNT_LABELS: Record<TileCount, string> = {
 };
 
 /**
- * Desktop 1-4 layout preset switcher for HeaderBar.
- * Intentionally omits a separate '+' button so the header keeps a single '+ New' action.
+ * Compact desktop layout cycle button for HeaderBar (cycles 1 -> 2 -> 3 -> 4 -> 1).
  */
 export function TileLayoutSwitcher({
   tiles,
@@ -78,37 +76,21 @@ export function TileLayoutSwitcher({
   onFlipThree: () => void;
 }): React.ReactElement {
   const count = tiles.length as TileCount;
+  const nextCount = ((count % 4) + 1) as TileCount;
+  const label = `Tile layout: ${COUNT_LABELS[count]} — click for ${nextCount}`;
 
   return (
     <div className="flex items-center gap-1.5">
-      <div
-        role="group"
-        aria-label="Tile layout"
-        className="inline-flex items-center gap-0.5 rounded-lg border border-border bg-surface-secondary/50 p-0.5"
+      <button
+        type="button"
+        onClick={() => onSetCount(nextCount)}
+        aria-label={label}
+        title={label}
+        className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg border border-border/80 bg-surface-secondary/40 px-2 text-[11px] font-semibold tabular-nums text-foreground transition-colors hover:bg-surface-secondary focus-visible:ring-1 focus-visible:ring-focus focus-visible:outline-none"
       >
-        {COUNTS.map((n) => {
-          const active = count === n;
-          return (
-            <button
-              key={n}
-              type="button"
-              onClick={() => onSetCount(n)}
-              aria-pressed={active}
-              aria-label={COUNT_LABELS[n]}
-              title={COUNT_LABELS[n]}
-              className={cn(
-                "inline-flex h-6 cursor-pointer items-center gap-1 rounded-md px-1.5 text-[11px] font-semibold tabular-nums transition-colors focus-visible:ring-1 focus-visible:ring-focus focus-visible:outline-none",
-                active
-                  ? "bg-surface text-foreground shadow-xs ring-1 ring-border"
-                  : "text-muted hover:bg-surface/50 hover:text-foreground",
-              )}
-            >
-              <LayoutGlyph count={n} orientation={threeOrientation} />
-              <span>{n}</span>
-            </button>
-          );
-        })}
-      </div>
+        <LayoutGlyph count={count} orientation={threeOrientation} />
+        <span>{count}</span>
+      </button>
 
       {count === 3 ? (
         <button

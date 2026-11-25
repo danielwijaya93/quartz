@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Button, Spinner, cn } from "@heroui/react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, X } from "lucide-react";
 import { ActionNotice, type Notice, type NoticeAction } from "./sidebar/ActionNotice";
 import { SidebarFooter } from "./sidebar/SidebarFooter";
 import { ActiveSessionsSection } from "./sidebar/ActiveSessionsSection";
@@ -300,18 +300,24 @@ export const FolderSidebar = React.memo(function FolderSidebar({
         drawer ? "w-full border-r border-separator" : "w-64 shrink-0 border-r border-separator",
       )}
     >
-      <SidebarHeader
-        drawer={drawer}
-        searchQuery={searchQuery}
-        onNewFolder={onNewFolder}
-        onClose={onClose}
-        onSearchChange={setSearchQuery}
-      />
-
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5">
         {error !== null ? (
           <div role="alert" className="rounded-xl border border-danger/40 bg-danger-soft p-3 text-sm">
-            <p className="font-medium text-foreground">Could not load sessions</p>
+            <div className="flex items-start justify-between gap-2">
+              <p className="font-medium text-foreground">Could not load sessions</p>
+              {drawer ? (
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Close the session sidebar"
+                  onPress={onClose}
+                  className="size-6 min-w-6 text-muted hover:text-foreground"
+                >
+                  <X aria-hidden="true" className="size-3.5" />
+                </Button>
+              ) : null}
+            </div>
             <p className="mt-1 break-words text-xs text-muted">{error}</p>
             <Button size="sm" variant="outline" className="mt-2" onPress={onReload}>
               <RefreshCw aria-hidden="true" className="size-3.5" />
@@ -347,6 +353,7 @@ export const FolderSidebar = React.memo(function FolderSidebar({
               onSelectSession={onSelectSession}
               onOpenInNewTile={onOpenSessionInNewTile}
               onDismiss={onDismissActiveSession}
+              onCloseDrawer={drawer ? onClose : undefined}
             />
             <BotsSection
               bots={bots}
@@ -390,8 +397,14 @@ export const FolderSidebar = React.memo(function FolderSidebar({
           </>
         ) : null}
 
-        {error === null && data !== null
-          ? groups.length === 0
+        {error === null && data !== null ? (
+          <section aria-label="Workspaces">
+            <SidebarHeader
+              searchQuery={searchQuery}
+              onNewFolder={onNewFolder}
+              onSearchChange={setSearchQuery}
+            />
+            {groups.length === 0
             ? (
               <EmptySidebar onOpenFolder={onOpenFolder} onOpenArchive={onOpenArchive} />
             )
@@ -469,8 +482,9 @@ export const FolderSidebar = React.memo(function FolderSidebar({
                   );
                 })}
               </ul>
-            )
-          : null}
+            )}
+          </section>
+        ) : null}
       </div>
 
       {/* A live region that is always mounted, because one that appears together

@@ -9,11 +9,18 @@ const TWO_TILES: readonly TileDescriptor[] = [
   { id: "tile-2", kind: "session", sessionId: "s2" },
 ];
 
+const FOUR_TILES: readonly TileDescriptor[] = [
+  { id: "tile-1", kind: "session", sessionId: "s1" },
+  { id: "tile-2", kind: "session", sessionId: "s2" },
+  { id: "tile-3", kind: "session", sessionId: "s3" },
+  { id: "tile-4", kind: "session", sessionId: "s4" },
+];
+
 describe("TileLayoutSwitcher", () => {
-  it("renders 1-4 layout controls on desktop without a redundant + button", async () => {
+  it("renders a single cycle button on desktop that cycles 1 -> 2 -> 3 -> 4 -> 1", async () => {
     const user = userEvent.setup();
     const onSetCount = vi.fn();
-    render(
+    const { rerender } = render(
       <TileLayoutSwitcher
         tiles={TWO_TILES}
         threeOrientation="top"
@@ -22,18 +29,44 @@ describe("TileLayoutSwitcher", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "1 window (single focus)" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "2 windows (vertical split)" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    expect(screen.getByRole("button", { name: "3 windows (1 wide + 2 vertical)" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "4 windows (2x2 grid)" })).toBeInTheDocument();
-    // No duplicate '+' / 'Add tile' button next to '+ New' in the header
+    const cycleBtn = screen.getByRole("button", {
+      name: /Tile layout: 2 windows/i,
+    });
+    expect(cycleBtn).toBeInTheDocument();
+    expect(cycleBtn).toHaveTextContent("2");
+    expect(screen.queryByRole("button", { name: /1 window \(single focus\)/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /add tile/i })).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: "3 windows (1 wide + 2 vertical)" }));
+    await user.click(cycleBtn);
     expect(onSetCount).toHaveBeenCalledWith(3);
+
+    rerender(
+      <TileLayoutSwitcher
+        tiles={FOUR_TILES}
+        threeOrientation="top"
+        onSetCount={onSetCount}
+        onFlipThree={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Tile layout: 4 windows/i }));
+    expect(onSetCount).toHaveBeenCalledWith(1);
+  });
+
+  it("shows the Flip button only when 3 tiles are open", async () => {
+    const user = userEvent.setup();
+    const onFlipThree = vi.fn();
+    render(
+      <TileLayoutSwitcher
+        tiles={FOUR_TILES.slice(0, 3)}
+        threeOrientation="top"
+        onSetCount={vi.fn()}
+        onFlipThree={onFlipThree}
+      />,
+    );
+
+    const flipBtn = screen.getByRole("button", { name: "Flip 3-tile horizontal pane position" });
+    await user.click(flipBtn);
+    expect(onFlipThree).toHaveBeenCalledTimes(1);
   });
 
   it("renders dedicated MobileTileBar only when multiple tiles are open", async () => {

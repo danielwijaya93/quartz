@@ -777,3 +777,52 @@ describe("FolderSidebar collapse persistence", () => {
     window.localStorage.clear();
   });
 });
+
+describe("FolderSidebar section ordering", () => {
+  it("orders Active Sessions, then Bots, then Workspaces with Add Folder and Filter below Workspaces", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(
+      <FolderSidebar
+        data={payload({
+          sessions: [session({ sessionId: "s1", title: "Alpha", cwd: "/work/api" })],
+        })}
+        loading={false}
+        error={null}
+        actionError={null}
+        currentSessionId="s1"
+        currentCwd="/work/api"
+        variant="drawer"
+        onClose={onClose}
+        onReload={vi.fn()}
+        onSelectSession={vi.fn()}
+        onNewSession={vi.fn()}
+        onNewFolder={vi.fn()}
+        onOpenFolder={vi.fn()}
+        onRename={vi.fn(async () => true)}
+        onHide={vi.fn(async () => true)}
+        onRestore={vi.fn(async () => true)}
+        onOpenArchive={vi.fn()}
+      />,
+    );
+
+    const activeRegion = screen.getByRole("region", { name: "Active Sessions" });
+    const botsRegion = screen.getByRole("region", { name: "Bots" });
+    const workspacesHeading = screen.getByRole("heading", { name: "Workspaces" });
+    const addFolderBtn = screen.getByRole("button", { name: "Add a folder to the sidebar" });
+    const filterInput = screen.getByRole("searchbox", { name: "Filter sessions and folders" });
+    const folderBtn = screen.getByRole("button", { name: /^api\b/i });
+
+    const before = (a: Node, b: Node): boolean =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+    expect(before(activeRegion, botsRegion)).toBe(true);
+    expect(before(botsRegion, workspacesHeading)).toBe(true);
+    expect(before(workspacesHeading, addFolderBtn)).toBe(true);
+    expect(before(addFolderBtn, filterInput)).toBe(true);
+    expect(before(filterInput, folderBtn)).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "Close the session sidebar" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
