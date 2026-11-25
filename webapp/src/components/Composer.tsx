@@ -59,7 +59,7 @@ export interface ComposerProps {
  * Enter key means "steer" instead of "prompt", mirroring the TUI. That is the
  * whole interaction model - no mode switch to learn.
  */
-export function Composer({
+export const Composer = React.memo(function Composer({
   connection,
   cwd = "",
   turnRunning,
@@ -432,4 +432,4 @@ export function Composer({
       </div>
     </div>
   );
-}
+});

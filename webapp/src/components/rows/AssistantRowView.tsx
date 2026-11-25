@@ -58,7 +58,7 @@ export interface AssistantRowViewProps {
  * The syntax check runs on fence-stripped text, because a model that wraps its
  * program in ```openui-lang has still produced a surface.
  */
-export function AssistantRowView({
+export const AssistantRowView = React.memo(function AssistantRowView({
   row,
   streaming,
   richUi: _richUi,
@@ -70,7 +70,7 @@ export function AssistantRowView({
     () => stripOpenUIFences(row.text, streaming),
     [row.text, streaming],
   );
-  const hasOpenUI = hasOpenUILangSyntax(row.text);
+  const hasOpenUI = React.useMemo(() => hasOpenUILangSyntax(row.text), [row.text]);
   const [showSource, setShowSource] = React.useState(false);
   const isOpenUILang = hasOpenUI && !showSource;
 
@@ -127,7 +127,7 @@ export function AssistantRowView({
       )}
     </article>
   );
-}
+});
 
 /** The renderer chunk is arriving. Text, not a spinner: it resolves in one frame. */
 function SurfacePending(): React.ReactElement {

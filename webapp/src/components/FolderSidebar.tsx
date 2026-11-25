@@ -113,7 +113,7 @@ const EMPTY_STATE: SidebarState = EMPTY_SIDEBAR;
  * reload shows exactly what was on screen: hides, renames and imported folders are
  * not this component's state at all.
  */
-export function FolderSidebar({
+export const FolderSidebar = React.memo(function FolderSidebar({
   data,
   loading,
   error,
@@ -534,4 +534,4 @@ export function FolderSidebar({
       />
     </nav>
   );
-}
+});

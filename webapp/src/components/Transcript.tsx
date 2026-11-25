@@ -33,7 +33,49 @@ interface RowProps {
   onRunCommand?: (name: string, arg?: string) => void;
 }
 
-function RowView({
+const INITIAL_VISIBLE_ITEMS = 40;
+const LOAD_MORE_BATCH = 40;
+const TOP_LOAD_THRESHOLD_PX = 120;
+
+function sameTurn(a: Turn, b: Turn): boolean {
+  if (a === b) return true;
+  if (
+    a.id !== b.id ||
+    a.live !== b.live ||
+    a.answer !== b.answer ||
+    a.elapsedMs !== b.elapsedMs ||
+    a.steps.length !== b.steps.length
+  ) {
+    return false;
+  }
+  const aFiles = a.files ?? [];
+  const bFiles = b.files ?? [];
+  if (aFiles.length !== bFiles.length) return false;
+  for (let i = 0; i < aFiles.length; i += 1) {
+    if (aFiles[i] !== bFiles[i]) return false;
+  }
+  for (let i = 0; i < a.steps.length; i += 1) {
+    const sA = a.steps[i]!;
+    const sB = b.steps[i]!;
+    if (sA.id !== sB.id || sA.kind !== sB.kind) return false;
+    if (sA.kind === "text" && sB.kind === "text") {
+      if (sA.row !== sB.row) return false;
+    } else if (sA.kind === "thinking" && sB.kind === "thinking") {
+      if (sA.rows.length !== sB.rows.length) return false;
+      for (let j = 0; j < sA.rows.length; j += 1) {
+        if (sA.rows[j] !== sB.rows[j]) return false;
+      }
+    } else if (sA.kind === "tool_run" && sB.kind === "tool_run") {
+      if (sA.rows.length !== sB.rows.length) return false;
+      for (let j = 0; j < sA.rows.length; j += 1) {
+        if (sA.rows[j] !== sB.rows[j]) return false;
+      }
+    }
+  }
+  return true;
+}
+
+const RowView = React.memo(function RowView({
   row,
   streaming,
   richUi,
@@ -77,7 +119,7 @@ function RowView({
     default:
       return <></>;
   }
-}
+});
 
 /**
  * One turn: its machinery folded into a tray, then the answer at full width.
@@ -86,45 +128,53 @@ function RowView({
  * want to audit and never has to read, so it goes above the answer, one line
  * tall, closed.
  */
-function TurnView({
-  turn,
-  streaming,
-  richUi,
-  onPrompt,
-  onFormState,
-}: {
-  turn: Turn;
-  /** The answer row is the one deltas are still landing in. */
-  streaming: boolean;
-  richUi: boolean;
-  onPrompt: (text: string) => void;
-  onFormState: (id: string, state: Record<string, unknown>) => void;
-}): React.ReactElement {
-  const attachedFiles = turn.files ?? [];
-  return (
-    <div
-      className={
-        turn.answer !== null || attachedFiles.length > 0
-          ? "mb-2 flex flex-col gap-1.5"
-          : "flex flex-col gap-1"
-      }
-    >
-      {turn.steps.length > 0 ? (
-        <TurnTray turn={turn} richUi={richUi} onPrompt={onPrompt} onFormState={onFormState} />
-      ) : null}
-      {turn.answer !== null ? (
-        <AssistantRowView
-          row={turn.answer}
-          streaming={streaming}
-          richUi={richUi}
-          onPrompt={onPrompt}
-          onFormState={onFormState}
-        />
-      ) : null}
-      {attachedFiles.length > 0 ? <FileAttachments files={attachedFiles} /> : null}
-    </div>
-  );
-}
+const TurnView = React.memo(
+  function TurnView({
+    turn,
+    streaming,
+    richUi,
+    onPrompt,
+    onFormState,
+  }: {
+    turn: Turn;
+    /** The answer row is the one deltas are still landing in. */
+    streaming: boolean;
+    richUi: boolean;
+    onPrompt: (text: string) => void;
+    onFormState: (id: string, state: Record<string, unknown>) => void;
+  }): React.ReactElement {
+    const attachedFiles = turn.files ?? [];
+    return (
+      <div
+        className={
+          turn.answer !== null || attachedFiles.length > 0
+            ? "mb-2 flex flex-col gap-1.5"
+            : "flex flex-col gap-1"
+        }
+      >
+        {turn.steps.length > 0 ? (
+          <TurnTray turn={turn} richUi={richUi} onPrompt={onPrompt} onFormState={onFormState} />
+        ) : null}
+        {turn.answer !== null ? (
+          <AssistantRowView
+            row={turn.answer}
+            streaming={streaming}
+            richUi={richUi}
+            onPrompt={onPrompt}
+            onFormState={onFormState}
+          />
+        ) : null}
+        {attachedFiles.length > 0 ? <FileAttachments files={attachedFiles} /> : null}
+      </div>
+    );
+  },
+  (prev, next) =>
+    prev.streaming === next.streaming &&
+    prev.richUi === next.richUi &&
+    prev.onPrompt === next.onPrompt &&
+    prev.onFormState === next.onFormState &&
+    sameTurn(prev.turn, next.turn),
+);
 
 /**
  * The conversation.
@@ -148,7 +198,7 @@ function TurnView({
  * announcement; `TranscriptAnnouncer` owns the coarse live region, and a live
  * turn's tray header owns "what is happening now".
  */
-export function Transcript({
+export const Transcript = React.memo(function Transcript({
   rows,
   turnRunning,
   richUi,
@@ -173,10 +223,43 @@ export function Transcript({
   const items = React.useMemo(() => groupTurns(rows, { running: turnRunning }), [rows, turnRunning]);
   const lastRowId = rows[rows.length - 1]?.id;
 
+  // Render the newest window of turns first so switching into a huge session
+  // paints immediately instead of synchronously mounting hundreds of rows.
+  const [visibleCount, setVisibleCount] = React.useState(INITIAL_VISIBLE_ITEMS);
+  const hiddenCount = Math.max(0, items.length - visibleCount);
+  const visibleItems = React.useMemo(
+    () => (hiddenCount > 0 ? items.slice(hiddenCount) : items),
+    [items, hiddenCount],
+  );
+  const hiddenCountRef = React.useRef(hiddenCount);
+  hiddenCountRef.current = hiddenCount;
+  const prependScrollHeightRef = React.useRef<number | null>(null);
+
   const endRef = React.useRef<HTMLDivElement | null>(null);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const contentRef = React.useRef<HTMLDivElement | null>(null);
   const pinnedRef = React.useRef(true);
+
+  const loadEarlier = React.useCallback((): void => {
+    const node = scrollRef.current;
+    if (node) {
+      prependScrollHeightRef.current = node.scrollHeight;
+    }
+    setVisibleCount((prev) => prev + LOAD_MORE_BATCH);
+  }, []);
+
+  // Preserve reading scroll position when older items are prepended above.
+  React.useLayoutEffect(() => {
+    const prevHeight = prependScrollHeightRef.current;
+    if (prevHeight === null) return;
+    prependScrollHeightRef.current = null;
+    const node = scrollRef.current;
+    if (!node) return;
+    const delta = node.scrollHeight - prevHeight;
+    if (delta > 0) {
+      node.scrollTop += delta;
+    }
+  }, [visibleItems.length]);
 
   /**
    * Pinned-ness as state, not only as a ref.
@@ -211,10 +294,14 @@ export function Transcript({
       setPinned(atTail);
       // At the tail, there is nothing below to be new.
       if (atTail) setHasNew(false);
+      // Smoothly expand older turns when scrolling near the top of a long chat.
+      if (hiddenCountRef.current > 0 && !atTail && node.scrollTop < TOP_LOAD_THRESHOLD_PX) {
+        loadEarlier();
+      }
     };
     node.addEventListener("scroll", onScroll, { passive: true });
     return () => node.removeEventListener("scroll", onScroll);
-  }, []);
+  }, [loadEarlier]);
 
   // A new row, or a new identity for the last row, is the obvious "follow the tail"
   // trigger.
@@ -249,7 +336,12 @@ export function Transcript({
 
     const newestUser = lastUserRowId(rows);
     const sent = newestUser !== null && !previous.some((row) => row.id === newestUser);
-    if (sent || !sameConversation(previous, rows)) {
+    if (!sameConversation(previous, rows)) {
+      setVisibleCount(INITIAL_VISIBLE_ITEMS);
+      pinToTail();
+      return;
+    }
+    if (sent) {
       pinToTail();
       return;
     }
@@ -319,7 +411,18 @@ export function Transcript({
             className="mx-auto flex w-full max-w-3xl flex-col gap-1"
           >
             {rows.length === 0 ? <EmptyTranscript cwd={cwd} onPrompt={onPrompt} /> : null}
-            {items.map((item) =>
+            {hiddenCount > 0 ? (
+              <div className="mb-2 flex justify-center">
+                <button
+                  type="button"
+                  onClick={loadEarlier}
+                  className="cursor-pointer rounded-full border border-border bg-surface-secondary/70 px-3 py-1 text-xs font-medium text-muted transition-colors hover:bg-surface-secondary hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none"
+                >
+                  Show earlier messages ({hiddenCount} hidden)
+                </button>
+              </div>
+            ) : null}
+            {visibleItems.map((item) =>
               isTurn(item) ? (
                 <TurnView
                   key={item.id}
@@ -355,7 +458,7 @@ export function Transcript({
       <TranscriptAnnouncer rows={rows} turnRunning={turnRunning} />
     </>
   );
-}
+});
 
 /**
  * The way back to the newest message.

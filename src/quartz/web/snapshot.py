@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -20,8 +22,47 @@ __all__ = [
     "_turn_end_frame",
     "build_command_descriptors",
     "build_session_snapshot",
+    "clear_git_branch_cache",
     "resolve_cwd",
 ]
+
+_GIT_BRANCH_TTL_S = 3.0
+_GIT_BRANCH_CACHE_MAX = 256
+_GIT_BRANCH_LOCK = threading.Lock()
+# Maps resolved cwd -> (expires_at, head_mtime_ns, branch_name)
+_GIT_BRANCH_CACHE: dict[str, tuple[float, int | None, str | None]] = {}
+
+
+def clear_git_branch_cache() -> None:
+    """Clear cached git branch lookups (useful for tests)."""
+    with _GIT_BRANCH_LOCK:
+        _GIT_BRANCH_CACHE.clear()
+
+
+def _git_head_mtime_ns(cwd: Path) -> int | None:
+    """Return mtime_ns of the nearest .git/HEAD so branch switches invalidate immediately."""
+    current = cwd
+    for _ in range(16):
+        dot_git = current / ".git"
+        try:
+            if dot_git.is_dir():
+                return (dot_git / "HEAD").stat().st_mtime_ns
+            if dot_git.is_file():
+                # Worktree / submodule: .git is a text pointer `gitdir: <path>`.
+                raw = dot_git.read_text(encoding="utf-8", errors="ignore").strip()
+                if raw.startswith("gitdir:"):
+                    target = Path(raw[7:].strip())
+                    if not target.is_absolute():
+                        target = (current / target).resolve()
+                    return (target / "HEAD").stat().st_mtime_ns
+                return dot_git.stat().st_mtime_ns
+        except OSError:
+            return None
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return None
 
 
 def build_command_descriptors() -> list[dict[str, Any]]:
@@ -88,8 +129,7 @@ def build_session_snapshot(
     }
 
 
-def _git_branch(cwd: Path) -> str | None:
-    """Return the active git branch (or short SHA when detached) for *cwd*, if any."""
+def _read_git_branch(cwd: Path) -> str | None:
     try:
         proc = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -121,6 +161,23 @@ def _git_branch(cwd: Path) -> str | None:
         except (OSError, subprocess.SubprocessError):
             return None
         return None
+    return branch
+
+
+def _git_branch(cwd: Path) -> str | None:
+    """Return the active git branch (or short SHA when detached) for *cwd*, if any."""
+    key = str(cwd)
+    now = time.monotonic()
+    head_mtime = _git_head_mtime_ns(cwd)
+    with _GIT_BRANCH_LOCK:
+        cached = _GIT_BRANCH_CACHE.get(key)
+        if cached is not None and now < cached[0] and cached[1] == head_mtime:
+            return cached[2]
+    branch = _read_git_branch(cwd)
+    with _GIT_BRANCH_LOCK:
+        if len(_GIT_BRANCH_CACHE) >= _GIT_BRANCH_CACHE_MAX:
+            _GIT_BRANCH_CACHE.clear()
+        _GIT_BRANCH_CACHE[key] = (now + _GIT_BRANCH_TTL_S, head_mtime, branch)
     return branch
 
 

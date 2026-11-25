@@ -43,7 +43,7 @@ function isTabularFile(filename: string): boolean {
  * A distinct card, right-aligned against a full-width assistant column: the
  * speaker is legible at a glance without a gutter label doing the work.
  */
-export function UserRowView({ row }: { row: UserRow }): React.ReactElement {
+export const UserRowView = React.memo(function UserRowView({ row }: { row: UserRow }): React.ReactElement {
   const { body, attachments } = React.useMemo(
     () => parseUserMessage(row.text),
     [row.text],
@@ -94,4 +94,4 @@ export function UserRowView({ row }: { row: UserRow }): React.ReactElement {
       </Card>
     </article>
   );
-}
+});

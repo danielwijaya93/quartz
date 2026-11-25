@@ -628,4 +628,30 @@ describe("Transcript tail following", () => {
     unmount();
     expect(observer.disconnected).toBe(true);
   });
+
+  it("windows long transcripts to recent items first and loads earlier messages on demand", () => {
+    const manyRows: Row[] = [];
+    for (let i = 0; i < 60; i += 1) {
+      manyRows.push({ kind: "user", id: `history-user-${i * 2}`, text: `Question ${i}`, images: [] });
+      manyRows.push({
+        kind: "assistant",
+        id: `history-assistant-${i * 2 + 1}`,
+        text: `Answer ${i}`,
+        formState: null,
+      });
+    }
+
+    renderRows(manyRows);
+    // Newest messages are visible right away; oldest are hidden behind the window trigger.
+    expect(screen.getByText("Answer 59")).toBeInTheDocument();
+    expect(screen.queryByText("Question 0")).toBeNull();
+    const loadEarlier = screen.getByRole("button", { name: /Show earlier messages/i });
+    expect(loadEarlier).toBeInTheDocument();
+
+    // Clicking loads older batches until all items are shown.
+    fireEvent.click(loadEarlier);
+    fireEvent.click(screen.getByRole("button", { name: /Show earlier messages/i }));
+    expect(screen.getByText("Question 0")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Show earlier messages/i })).toBeNull();
+  });
 });

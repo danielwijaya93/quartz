@@ -17,9 +17,10 @@ export interface TileGridProps {
 /**
  * Dynamic 1-4 pane tiling grid.
  *
- * All mounted tiles stay in the DOM even when one tile is maximized or the
- * viewport shrinks below 1024px, so WebSocket streams, scroll positions, and
- * composer drafts survive layout transitions intact.
+ * All mounted tiles stay in the DOM with an identical React tree shape across
+ * 1<->2<->3<->4, maximize/restore, and narrow/wide transitions, so WebSocket
+ * streams, scroll positions, Active Sessions state, and composer drafts never
+ * unmount or reset when changing layouts.
  */
 export function TileGrid({
   tiles,
@@ -44,6 +45,7 @@ export function TileGrid({
         : narrow
           ? focusedTileId
           : null;
+  const singleMode = singleVisibleId !== null;
 
   const startDrag = React.useCallback(
     (axis: keyof SplitRatios) => (event: React.PointerEvent<HTMLDivElement>) => {
@@ -52,16 +54,42 @@ export function TileGrid({
       const container = containerRef.current;
       if (!container) return;
 
-      const onMove = (moveEvent: PointerEvent): void => {
+      let pendingValue: number | null = null;
+      let frameId: number | null = null;
+
+      const flush = (): void => {
+        frameId = null;
+        if (pendingValue !== null) {
+          onRatioChange(axis, pendingValue);
+          pendingValue = null;
+        }
+      };
+
+      const computeRatio = (moveEvent: PointerEvent): number | null => {
         const rect = container.getBoundingClientRect();
         if (axis === "col" && rect.width > 0) {
-          onRatioChange("col", (moveEvent.clientX - rect.left) / rect.width);
-        } else if (axis === "row" && rect.height > 0) {
-          onRatioChange("row", (moveEvent.clientY - rect.top) / rect.height);
+          return (moveEvent.clientX - rect.left) / rect.width;
+        }
+        if (axis === "row" && rect.height > 0) {
+          return (moveEvent.clientY - rect.top) / rect.height;
+        }
+        return null;
+      };
+
+      const onMove = (moveEvent: PointerEvent): void => {
+        const next = computeRatio(moveEvent);
+        if (next === null) return;
+        pendingValue = next;
+        if (frameId === null) {
+          frameId = window.requestAnimationFrame(flush);
         }
       };
 
       const onUp = (): void => {
+        if (frameId !== null) {
+          window.cancelAnimationFrame(frameId);
+          flush();
+        }
         setDragging(null);
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
@@ -73,39 +101,12 @@ export function TileGrid({
     [onRatioChange],
   );
 
-  // Single visible mode (1 tile, maximized tile, or mobile fallback)
-  if (singleVisibleId !== null) {
-    return (
-      <div
-        ref={containerRef}
-        data-tile-layout="1"
-        className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
-      >
-        {tiles.map((tile, index) => {
-          const hidden = tile.id !== singleVisibleId;
-          return (
-            <div
-              key={tile.id}
-              data-tile-id={tile.id}
-              data-tile-hidden={hidden ? "true" : "false"}
-              className={cn(
-                "min-h-0 min-w-0 flex-1 flex-col",
-                hidden ? "hidden" : "flex h-full w-full",
-              )}
-            >
-              {renderTile(tile, index)}
-            </div>
-          );
-        })}
-      </div>
-    );
-  }
-
   const colPct = `${(ratios.col * 100).toFixed(2)}%`;
   const rowPct = `${(ratios.row * 100).toFixed(2)}%`;
 
-  const gridStyle: React.CSSProperties =
-    count === 2
+  const gridStyle: React.CSSProperties | undefined = singleMode
+    ? undefined
+    : count === 2
       ? {
           gridTemplateColumns: `${colPct} 1fr`,
           gridTemplateRows: "1fr",
@@ -115,7 +116,8 @@ export function TileGrid({
           gridTemplateRows: `${rowPct} 1fr`,
         };
 
-  const slotPlacement = (index: number): React.CSSProperties => {
+  const slotPlacement = (index: number): React.CSSProperties | undefined => {
+    if (singleMode) return undefined;
     if (count === 2) {
       return { gridColumn: index === 0 ? 1 : 2, gridRow: 1 };
     }
@@ -135,8 +137,8 @@ export function TileGrid({
     };
   };
 
-  const showColDivider = count >= 2;
-  const showRowDivider = count >= 3;
+  const showColDivider = !singleMode && count >= 2;
+  const showRowDivider = !singleMode && count >= 3;
 
   // For 3-tile mode, the vertical divider only spans the split half (bottom or top).
   const colDividerStyle: React.CSSProperties =
@@ -152,28 +154,44 @@ export function TileGrid({
           height: "100%",
         };
 
+  // IMPORTANT: Always keep the exact same 3-child shape ([tilesArray, colDivider, rowDivider])
+  // whether in single-visible mode or multi-tile grid mode. Returning only `{tiles.map(...)}`
+  // in one branch and `{tiles.map(...)} + dividers` in another changes React's child shape
+  // (Array vs [Array, null, null]) and forces React to unmount & remount every surviving tile.
   return (
     <div
       ref={containerRef}
-      data-tile-layout={String(count)}
-      data-three-orientation={count === 3 ? threeOrientation : undefined}
+      data-tile-layout={singleMode ? "1" : String(count)}
+      data-three-orientation={!singleMode && count === 3 ? threeOrientation : undefined}
       style={gridStyle}
       className={cn(
-        "relative grid min-h-0 flex-1 gap-2 overflow-hidden bg-surface-secondary/20 p-2",
+        singleMode
+          ? "relative flex min-h-0 flex-1 flex-col overflow-hidden"
+          : "relative grid min-h-0 flex-1 gap-2 overflow-hidden bg-surface-secondary/20 p-2",
         dragging && "select-none",
       )}
     >
-      {tiles.map((tile, index) => (
-        <div
-          key={tile.id}
-          data-tile-id={tile.id}
-          data-tile-hidden="false"
-          style={slotPlacement(index)}
-          className="flex min-h-0 min-w-0 flex-col overflow-hidden"
-        >
-          {renderTile(tile, index)}
-        </div>
-      ))}
+      {tiles.map((tile, index) => {
+        const hidden = singleMode && tile.id !== singleVisibleId;
+        return (
+          <div
+            key={tile.id}
+            data-tile-id={tile.id}
+            data-tile-hidden={hidden ? "true" : "false"}
+            style={slotPlacement(index)}
+            className={cn(
+              "min-h-0 min-w-0 flex-1 flex-col",
+              singleMode
+                ? hidden
+                  ? "hidden"
+                  : "flex h-full w-full"
+                : "flex overflow-hidden",
+            )}
+          >
+            {renderTile(tile, index)}
+          </div>
+        );
+      })}
 
       {showColDivider ? (
         <div
@@ -186,7 +204,7 @@ export function TileGrid({
           style={colDividerStyle}
           className={cn(
             "absolute z-10 w-2 cursor-col-resize rounded-full transition-colors",
-            dragging === "col" ? "bg-accent/30" : "hover:bg-accent/15",
+            dragging === "col" ? "bg-sky-500/40" : "hover:bg-sky-500/25",
           )}
         />
       ) : null}
@@ -202,7 +220,7 @@ export function TileGrid({
           style={{ top: `calc(${rowPct} - 4px)`, left: 0, width: "100%" }}
           className={cn(
             "absolute z-10 h-2 cursor-row-resize rounded-full transition-colors",
-            dragging === "row" ? "bg-accent/30" : "hover:bg-accent/15",
+            dragging === "row" ? "bg-sky-500/40" : "hover:bg-sky-500/25",
           )}
         />
       ) : null}

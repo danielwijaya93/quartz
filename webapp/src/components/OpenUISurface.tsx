@@ -72,7 +72,7 @@ export function buildActionUserMessage(event: ActionEvent): string {
   return event.humanFriendlyMessage ? built : built.slice(built.indexOf("\n") + 1);
 }
 
-export function OpenUISurface({
+export const OpenUISurface = React.memo(function OpenUISurface({
   response,
   isStreaming,
   initialState,
@@ -103,4 +103,4 @@ export function OpenUISurface({
       />
     </div>
   );
-}
+});

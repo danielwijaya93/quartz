@@ -39,7 +39,20 @@ export function useBots(): UseBotsResult {
   const reloadRuns = React.useCallback(async () => {
     try {
       const data = await fetchBotsHistory({ limit: 100 });
-      setRuns(data.runs);
+      setRuns((prev) => {
+        if (
+          prev.length === data.runs.length &&
+          prev.every(
+            (r, i) =>
+              r.run_id === data.runs[i]?.run_id &&
+              r.status === data.runs[i]?.status &&
+              r.finished_at === data.runs[i]?.finished_at,
+          )
+        ) {
+          return prev;
+        }
+        return data.runs;
+      });
     } catch {
       // Safe fallback if /api/bots/history is unavailable.
     }
@@ -144,20 +157,38 @@ export function useBots(): UseBotsResult {
     return restored;
   }, []);
 
-  return {
-    bots,
-    runs,
-    loading,
-    togglingIds,
-    runningIds,
-    toggleError,
-    reload,
-    reloadRuns,
-    create,
-    update,
-    toggle,
-    runNow,
-    remove,
-    restore,
-  };
+  return React.useMemo(
+    () => ({
+      bots,
+      runs,
+      loading,
+      togglingIds,
+      runningIds,
+      toggleError,
+      reload,
+      reloadRuns,
+      create,
+      update,
+      toggle,
+      runNow,
+      remove,
+      restore,
+    }),
+    [
+      bots,
+      runs,
+      loading,
+      togglingIds,
+      runningIds,
+      toggleError,
+      reload,
+      reloadRuns,
+      create,
+      update,
+      toggle,
+      runNow,
+      remove,
+      restore,
+    ],
+  );
 }
