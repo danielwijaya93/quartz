@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import contextvars
 import dataclasses
 import difflib
@@ -453,6 +454,9 @@ def view_image(path: str) -> str:
     return f"Attached {att.label} ({att.mime_type}) for viewing"
 
 
+_MAX_SANDBOX_TRANSFER_BYTES = 16 * 1024 * 1024  # 16 MiB IPC cap for sandbox /tmp files
+
+
 def attach_file(path: str, label: str | None = None) -> str:
     """Attach any file from disk so the user can download or open it in the reply."""
     p = Path(path).expanduser().resolve()
@@ -465,14 +469,21 @@ def attach_file(path: str, label: str | None = None) -> str:
     size = p.stat().st_size
     name = label.strip() if label and label.strip() else p.name
     mime_type = _guess_mime_type(p)
-    _record_cell_file(
-        {
-            "path": str(p),
-            "name": name,
-            "mime_type": mime_type,
-            "size": size,
-        }
-    )
+    meta: dict[str, Any] = {
+        "path": str(p),
+        "name": name,
+        "mime_type": mime_type,
+        "size": size,
+    }
+    # Inside OS sandboxes (bwrap), /tmp is private to the kernel and invisible to quartz-web.
+    # Include base64 bytes for non-workspace files so the host can persist them.
+    try:
+        in_cwd = p.is_relative_to(Path.cwd().resolve())
+    except OSError:
+        in_cwd = False
+    if not in_cwd and size <= _MAX_SANDBOX_TRANSFER_BYTES:
+        meta["data_b64"] = base64.b64encode(p.read_bytes()).decode("ascii")
+    _record_cell_file(meta)
     return f"Attached {name} ({mime_type}, {_format_file_size(size)}) for download"
 
 
