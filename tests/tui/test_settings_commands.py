@@ -122,8 +122,13 @@ def test_settings_progress_edit_preserves_compaction_values(
         "kernel_max_processes": 0,
         "strict_snapshots": True,
         "sandbox_env_passthrough": [],
+        "bot_max_usd_per_day": 5.0,
         "bot_max_consecutive_errors": 5,
         "bot_webhook_rate_limit": 30,
+        "track_chat_usage": True,
+        "unpriced_fallback_input_per_m": 1.0,
+        "unpriced_fallback_output_per_m": 5.0,
+        "model_pricing": [],
     }
 
 

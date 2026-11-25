@@ -17,6 +17,8 @@ interface MetricsPayload {
     inputTokens?: number;
     outputTokens?: number;
     costUsd?: number;
+    botCostUsd?: number;
+    chatCostUsd?: number;
   };
 }
 
@@ -137,6 +139,11 @@ export function SystemDiagnosticsCard(): React.ReactElement | null {
             <p className="mt-0.5 font-mono text-sm font-semibold text-foreground">
               ${costUsd.toFixed(4)}
             </p>
+            {(metrics.usage24h?.botCostUsd !== undefined || metrics.usage24h?.chatCostUsd !== undefined) ? (
+              <p className="mt-0.5 font-mono text-[10px] text-muted">
+                Bots ${(metrics.usage24h?.botCostUsd ?? 0).toFixed(2)} · Chat ${(metrics.usage24h?.chatCostUsd ?? 0).toFixed(2)}
+              </p>
+            ) : null}
           </div>
           <div className="rounded-lg border border-separator bg-background/60 px-3 py-2">
             <p className="text-[11px] text-muted">24h Tokens</p>

@@ -36,6 +36,20 @@ def _settings_values(loaded: Any, rt: Any | None = None) -> dict[str, Any]:
         "botMaxUsdPerDay": loaded.bot_max_usd_per_day,
         "botMaxConsecutiveErrors": loaded.bot_max_consecutive_errors,
         "botWebhookRateLimit": loaded.bot_webhook_rate_limit,
+        "trackChatUsage": loaded.track_chat_usage,
+        "unpricedFallback": {
+            "inputPerM": loaded.unpriced_fallback_input_per_m,
+            "outputPerM": loaded.unpriced_fallback_output_per_m,
+        },
+        "modelPricing": [
+            {
+                "pattern": r.pattern,
+                "inputPerM": r.input_per_m,
+                "cachedInputPerM": r.cached_input_per_m,
+                "outputPerM": r.output_per_m,
+            }
+            for r in loaded.model_pricing
+        ],
     }
 
 
@@ -94,10 +108,14 @@ def _register_settings_routes(router: APIRouter, ctx: AppContext) -> None:
 
     @router.get("/api/settings")
     async def get_settings() -> JSONResponse:
+        import contextlib
+
+        from quartz.bots import UsageStore
         from quartz.providers.registry import config_file_path
         from quartz.settings import (
             DEFAULT_BACKGROUND_CHECK_EVERY,
             DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS,
+            DEFAULT_BOT_MAX_USD_PER_DAY,
             DEFAULT_BOT_WEBHOOK_RATE_LIMIT,
             DEFAULT_COMPACT_RESERVE_TOKENS,
             DEFAULT_KEEP_RECENT_TOKENS,
@@ -112,11 +130,36 @@ def _register_settings_routes(router: APIRouter, ctx: AppContext) -> None:
             DEFAULT_PROGRESS_EVERY,
             DEFAULT_RICH_UI,
             DEFAULT_STRICT_SNAPSHOTS,
+            DEFAULT_TRACK_CHAT_USAGE,
+            DEFAULT_UNPRICED_FALLBACK_INPUT_PER_M,
+            DEFAULT_UNPRICED_FALLBACK_OUTPUT_PER_M,
             DEFAULT_WEB_IDLE_HOURS,
             load_settings,
         )
+        from quartz.storage import get_shared_db
 
-        loaded = await asyncio.to_thread(load_settings)
+        def _load_payload() -> tuple[Any, list[dict[str, str]]]:
+            loaded_cfg = load_settings()
+            recent: list[dict[str, str]] = []
+            seen: set[tuple[str, str]] = set()
+            with contextlib.suppress(Exception):
+                db = ctx.db if ctx.db is not None else get_shared_db()
+                store = ctx.usage_store if ctx.usage_store is not None else UsageStore(db=db)
+                for item in store.recent_models(limit=20):
+                    pair = (item.get("provider", ""), item.get("model", ""))
+                    if pair[1] and pair not in seen:
+                        seen.add(pair)
+                        recent.append({"provider": pair[0], "model": pair[1]})
+            for ws in manager.all_sessions():
+                if ws.built:
+                    prov = str(getattr(ws.runtime, "provider_name", "") or "")
+                    mod = str(getattr(ws.runtime, "model", "") or "")
+                    if mod and (prov, mod) not in seen:
+                        seen.add((prov, mod))
+                        recent.append({"provider": prov, "model": mod})
+            return loaded_cfg, recent
+
+        loaded, recent_models = await asyncio.to_thread(_load_payload)
         current = manager.current_session
         return JSONResponse({
             "values": _settings_values(loaded, current.runtime if current.built else None),
@@ -137,16 +180,27 @@ def _register_settings_routes(router: APIRouter, ctx: AppContext) -> None:
                 "kernelMaxProcesses": DEFAULT_KERNEL_MAX_PROCESSES,
                 "strictSnapshots": DEFAULT_STRICT_SNAPSHOTS,
                 "sandboxEnvPassthrough": "",
-                "botMaxUsdPerDay": None,
+                "botMaxUsdPerDay": DEFAULT_BOT_MAX_USD_PER_DAY,
                 "botMaxConsecutiveErrors": DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS,
                 "botWebhookRateLimit": DEFAULT_BOT_WEBHOOK_RATE_LIMIT,
+                "trackChatUsage": DEFAULT_TRACK_CHAT_USAGE,
+                "unpricedFallback": {
+                    "inputPerM": DEFAULT_UNPRICED_FALLBACK_INPUT_PER_M,
+                    "outputPerM": DEFAULT_UNPRICED_FALLBACK_OUTPUT_PER_M,
+                },
+                "modelPricing": [],
             },
+            "recentModels": recent_models,
             "configPath": str(config_file_path()),
         })
 
     @router.post("/api/settings")
     async def update_settings(request: Request) -> JSONResponse:
-        from quartz.settings import load_settings
+        import dataclasses
+        from types import SimpleNamespace
+
+        from quartz.core.commands.settings_cmds import cmd_settings
+        from quartz.settings import load_settings, parse_model_pricing_payload, save_settings, validate_token_rate
 
         try:
             payload = await request.json()
@@ -154,20 +208,65 @@ def _register_settings_routes(router: APIRouter, ctx: AppContext) -> None:
             return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
         if not isinstance(payload, dict):
             return JSONResponse({"error": "Body must be an object"}, status_code=400)
-        key, value = str(payload.get("key") or "").strip(), str(payload.get("value") or "").strip()
-        arg = "reset" if key == "reset" else f"{key} {value}".strip()
-        if not arg:
-            return JSONResponse({"error": "Missing setting key"}, status_code=400)
-        current = manager.current_session
-        if current.built:
-            request.app.state.session = current
-            ok, result = await current.run_command_async("settings", arg)
-            if not ok:
-                return _fail(getattr(result, "message", None) or "Invalid setting")
-        else:
-            from types import SimpleNamespace
 
-            from quartz.core.commands.settings_cmds import cmd_settings
+        def _apply_web_pricing_key(k: str, v: Any) -> str | None:
+            cur = load_settings()
+            if k == "track_chat_usage":
+                if isinstance(v, bool):
+                    enabled = v
+                else:
+                    s = str(v or "").strip().lower()
+                    if s in {"on", "true", "1", "yes"}:
+                        enabled = True
+                    elif s in {"off", "false", "0", "no"}:
+                        enabled = False
+                    else:
+                        return "track_chat_usage must be on or off."
+                save_settings(dataclasses.replace(cur, track_chat_usage=enabled))
+                return None
+            if k == "unpriced_fallback":
+                if not isinstance(v, dict):
+                    return "unpriced_fallback must be an object with inputPerM and outputPerM."
+                raw_in = v.get("inputPerM", v.get("input_per_m"))
+                raw_out = v.get("outputPerM", v.get("output_per_m"))
+                if raw_in is None or raw_out is None or isinstance(raw_in, bool) or isinstance(raw_out, bool):
+                    return "Fallback rates must be valid numbers."
+                try:
+                    in_val = float(raw_in)
+                    out_val = float(raw_out)
+                except (TypeError, ValueError):
+                    return "Fallback rates must be valid numbers."
+                if not (validate_token_rate(in_val) and validate_token_rate(out_val)):
+                    return "Fallback rates must be non-negative finite numbers."
+                save_settings(
+                    dataclasses.replace(
+                        cur,
+                        unpriced_fallback_input_per_m=round(in_val, 6),
+                        unpriced_fallback_output_per_m=round(out_val, 6),
+                    )
+                )
+                return None
+            if k == "model_pricing":
+                rules, err = parse_model_pricing_payload(v)
+                if err is not None or rules is None:
+                    return err or "Invalid model pricing rules."
+                save_settings(dataclasses.replace(cur, model_pricing=rules))
+                return None
+            return None
+
+        async def _apply_one(k: str, raw_v: Any) -> tuple[bool, str]:
+            if k in {"track_chat_usage", "unpriced_fallback", "model_pricing"}:
+                err = await asyncio.to_thread(_apply_web_pricing_key, k, raw_v)
+                return (err is None, err or "Saved.")
+            val_str = "" if k == "reset" else str(raw_v if raw_v is not None else "").strip()
+            arg = "reset" if k == "reset" else f"{k} {val_str}".strip()
+            if not arg:
+                return False, "Missing setting key"
+            cur_sess = manager.current_session
+            if cur_sess.built:
+                request.app.state.session = cur_sess
+                ok, res = await cur_sess.run_command_async("settings", arg)
+                return bool(ok), getattr(res, "message", None) or ("Saved." if ok else "Invalid setting")
 
             def _apply_without_session() -> Any:
                 cur = load_settings()
@@ -181,9 +280,30 @@ def _register_settings_routes(router: APIRouter, ctx: AppContext) -> None:
                 )
                 return cmd_settings(cast(Any, stub), arg)
 
-            result = await asyncio.to_thread(_apply_without_session)
-            if result is None or getattr(result, "kind", None) == "error":
-                return _fail(getattr(result, "message", None) or "Invalid setting")
+            res = await asyncio.to_thread(_apply_without_session)
+            ok = res is not None and getattr(res, "kind", None) != "error"
+            return ok, getattr(res, "message", None) or ("Saved." if ok else "Invalid setting")
+
+        raw_updates = payload.get("updates")
+        last_message = "Saved."
+        if raw_updates is not None:
+            if not isinstance(raw_updates, dict) or not raw_updates:
+                return _fail("updates must be a non-empty object")
+            for k, v in raw_updates.items():
+                ok, msg = await _apply_one(str(k).strip(), v)
+                if not ok:
+                    return _fail(msg)
+                last_message = msg
+            result = SimpleNamespace(message="Saved.")
+        else:
+            key = str(payload.get("key") or "").strip()
+            if not key:
+                return JSONResponse({"error": "Missing setting key"}, status_code=400)
+            ok, msg = await _apply_one(key, payload.get("value"))
+            if not ok:
+                return _fail(msg)
+            last_message = msg
+            result = SimpleNamespace(message=last_message)
 
         loaded = await asyncio.to_thread(load_settings)
         manager.broadcast_settings_state(
@@ -194,9 +314,10 @@ def _register_settings_routes(router: APIRouter, ctx: AppContext) -> None:
             notify_background=loaded.notify_background,
             notify_error=loaded.notify_error,
         )
+        current = manager.current_session
         return JSONResponse({
             "ok": True,
-            "message": getattr(result, "body", "Saved."),
+            "message": getattr(result, "body", None) or getattr(result, "message", None) or "Saved.",
             "values": _settings_values(loaded, current.runtime if current.built else None),
         })
 

@@ -37,8 +37,12 @@ DEFAULT_KERNEL_MAX_MEM_MB = 0
 DEFAULT_KERNEL_MAX_OPEN_FILES = 4096
 DEFAULT_KERNEL_MAX_PROCESSES = 0
 DEFAULT_STRICT_SNAPSHOTS = True
+DEFAULT_BOT_MAX_USD_PER_DAY: float | None = 5.0
 DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS = 5
 DEFAULT_BOT_WEBHOOK_RATE_LIMIT = 30
+DEFAULT_TRACK_CHAT_USAGE = True
+DEFAULT_UNPRICED_FALLBACK_INPUT_PER_M = 1.0
+DEFAULT_UNPRICED_FALLBACK_OUTPUT_PER_M = 5.0
 
 FORBIDDEN_PASSTHROUGH_ENV: frozenset[str] = frozenset(
     {
@@ -63,6 +67,7 @@ _MAX_KERNEL_PROCESSES = 65_536
 _MAX_BOT_USD_PER_DAY = 10_000.0
 _MAX_BOT_CONSECUTIVE_ERRORS = 1_000
 _MAX_BOT_WEBHOOK_RATE_LIMIT = 10_000
+_MAX_TOKEN_RATE_PER_M = 10_000.0
 _ENV_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 _PERSISTED_FIELDS = (
@@ -85,8 +90,22 @@ _PERSISTED_FIELDS = (
     "sandbox_env_passthrough",
     "bot_max_consecutive_errors",
     "bot_webhook_rate_limit",
+    "track_chat_usage",
+    "unpriced_fallback_input_per_m",
+    "unpriced_fallback_output_per_m",
+    "model_pricing",
 )
-_OPTIONAL_FIELDS = ("bridge_timeout_s", "bridge_worker_timeout_s", "bot_max_usd_per_day")
+_OPTIONAL_FIELDS = ("bridge_timeout_s", "bridge_worker_timeout_s")
+
+
+@dataclasses.dataclass(frozen=True)
+class ModelPricingRule:
+    """User-defined per-1M-token USD rates for a model or wildcard pattern."""
+
+    pattern: str
+    input_per_m: float
+    cached_input_per_m: float
+    output_per_m: float
 
 
 @dataclasses.dataclass(frozen=True)
@@ -114,9 +133,13 @@ class Settings:
     kernel_max_processes: int = DEFAULT_KERNEL_MAX_PROCESSES
     strict_snapshots: bool = DEFAULT_STRICT_SNAPSHOTS
     sandbox_env_passthrough: tuple[str, ...] = ()
-    bot_max_usd_per_day: float | None = None
+    bot_max_usd_per_day: float | None = DEFAULT_BOT_MAX_USD_PER_DAY
     bot_max_consecutive_errors: int = DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS
     bot_webhook_rate_limit: int = DEFAULT_BOT_WEBHOOK_RATE_LIMIT
+    track_chat_usage: bool = DEFAULT_TRACK_CHAT_USAGE
+    unpriced_fallback_input_per_m: float = DEFAULT_UNPRICED_FALLBACK_INPUT_PER_M
+    unpriced_fallback_output_per_m: float = DEFAULT_UNPRICED_FALLBACK_OUTPUT_PER_M
+    model_pricing: tuple[ModelPricingRule, ...] = ()
 
 
 def _config_path(path: Path | None = None) -> Path:
@@ -192,6 +215,91 @@ def _coerce_optional_usd(value: Any) -> float | None:
     return None
 
 
+def _coerce_rate(value: Any, default: float) -> float:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        fval = float(value)
+        return round(fval, 6) if math.isfinite(fval) and 0.0 <= fval <= _MAX_TOKEN_RATE_PER_M else default
+    if isinstance(value, str) and value.strip():
+        try:
+            fval = float(value.strip())
+        except ValueError:
+            return default
+        return round(fval, 6) if math.isfinite(fval) and 0.0 <= fval <= _MAX_TOKEN_RATE_PER_M else default
+    return default
+
+
+def validate_token_rate(value: Any) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+        and 0.0 <= float(value) <= _MAX_TOKEN_RATE_PER_M
+    )
+
+
+def _coerce_model_pricing(value: Any) -> tuple[ModelPricingRule, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    out: list[ModelPricingRule] = []
+    seen: set[str] = set()
+    for item in value:
+        if isinstance(item, ModelPricingRule):
+            pat = item.pattern.strip()
+            if not pat or pat.lower() in seen:
+                continue
+            seen.add(pat.lower())
+            out.append(item)
+            continue
+        if not isinstance(item, dict):
+            continue
+        pat = str(item.get("pattern") or "").strip()
+        if not pat or pat.lower() in seen:
+            continue
+        in_r = _coerce_rate(item.get("input_per_m", item.get("inputPerM")), -1.0)
+        cached_r = _coerce_rate(item.get("cached_input_per_m", item.get("cachedInputPerM", 0.0)), 0.0)
+        out_r = _coerce_rate(item.get("output_per_m", item.get("outputPerM")), -1.0)
+        if in_r < 0.0 or out_r < 0.0:
+            continue
+        seen.add(pat.lower())
+        out.append(ModelPricingRule(pat, in_r, cached_r, out_r))
+    return tuple(out)
+
+
+def parse_model_pricing_payload(raw: Any) -> tuple[tuple[ModelPricingRule, ...] | None, str | None]:
+    """Parse and validate a list of `{pattern, inputPerM, cachedInputPerM, outputPerM}` items."""
+    if not isinstance(raw, list):
+        return None, "Model pricing must be a list of rules."
+    out: list[ModelPricingRule] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            return None, "Each pricing rule must be an object."
+        pat = str(item.get("pattern") or "").strip()
+        if not pat:
+            return None, "Model pricing pattern cannot be empty."
+        key = pat.lower()
+        if key in seen:
+            return None, f"Duplicate model pricing pattern: {pat}"
+        seen.add(key)
+        raw_in = item.get("inputPerM", item.get("input_per_m"))
+        raw_cached = item.get("cachedInputPerM", item.get("cached_input_per_m", 0.0))
+        raw_out = item.get("outputPerM", item.get("output_per_m"))
+        if raw_in is None or raw_out is None or isinstance(raw_in, bool) or isinstance(raw_out, bool) or isinstance(raw_cached, bool):
+            return None, f"Invalid numeric rate for {pat}."
+        try:
+            in_val = float(raw_in)
+            cached_val = float(0.0 if raw_cached is None else raw_cached)
+            out_val = float(raw_out)
+        except (TypeError, ValueError):
+            return None, f"Invalid numeric rate for {pat}."
+        if not (validate_token_rate(in_val) and validate_token_rate(cached_val) and validate_token_rate(out_val)):
+            return None, f"Rates for {pat} must be between 0 and {_MAX_TOKEN_RATE_PER_M:g}."
+        out.append(ModelPricingRule(pat, round(in_val, 6), round(cached_val, 6), round(out_val, 6)))
+    return tuple(out), None
+
+
 def _coerce_env_passthrough(value: Any) -> tuple[str, ...]:
     items: list[str] = []
     if isinstance(value, str):
@@ -256,9 +364,17 @@ def load_settings(path: Path | None = None) -> Settings:
         kernel_max_processes=_coerce_int_range(raw.get("kernel_max_processes"), DEFAULT_KERNEL_MAX_PROCESSES, 0, _MAX_KERNEL_PROCESSES),
         strict_snapshots=_coerce_bool(raw.get("strict_snapshots"), DEFAULT_STRICT_SNAPSHOTS),
         sandbox_env_passthrough=_coerce_env_passthrough(raw.get("sandbox_env_passthrough")),
-        bot_max_usd_per_day=_coerce_optional_usd(raw.get("bot_max_usd_per_day")),
+        bot_max_usd_per_day=(
+            _coerce_optional_usd(raw["bot_max_usd_per_day"])
+            if "bot_max_usd_per_day" in raw
+            else DEFAULT_BOT_MAX_USD_PER_DAY
+        ),
         bot_max_consecutive_errors=_coerce_int_range(raw.get("bot_max_consecutive_errors"), DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS, 0, _MAX_BOT_CONSECUTIVE_ERRORS),
         bot_webhook_rate_limit=_coerce_int_range(raw.get("bot_webhook_rate_limit"), DEFAULT_BOT_WEBHOOK_RATE_LIMIT, 0, _MAX_BOT_WEBHOOK_RATE_LIMIT),
+        track_chat_usage=_coerce_bool(raw.get("track_chat_usage"), DEFAULT_TRACK_CHAT_USAGE),
+        unpriced_fallback_input_per_m=_coerce_rate(raw.get("unpriced_fallback_input_per_m"), DEFAULT_UNPRICED_FALLBACK_INPUT_PER_M),
+        unpriced_fallback_output_per_m=_coerce_rate(raw.get("unpriced_fallback_output_per_m"), DEFAULT_UNPRICED_FALLBACK_OUTPUT_PER_M),
+        model_pricing=_coerce_model_pricing(raw.get("model_pricing")),
     )
 
 
@@ -437,7 +553,11 @@ def settings_as_dict(settings: Settings) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for k in _PERSISTED_FIELDS:
         val = getattr(settings, k)
-        out[k] = list(val) if isinstance(val, tuple) else val
+        if k == "model_pricing":
+            out[k] = [dataclasses.asdict(r) for r in val]
+        else:
+            out[k] = list(val) if isinstance(val, tuple) else val
+    out["bot_max_usd_per_day"] = settings.bot_max_usd_per_day
     for key in _OPTIONAL_FIELDS:
         val = getattr(settings, key)
         if val is not None:
