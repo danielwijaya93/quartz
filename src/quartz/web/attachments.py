@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import re
+import shutil
 import threading
 import uuid
 from pathlib import Path
@@ -16,12 +18,16 @@ __all__ = [
     "AttachedFileRegistry",
     "default_attachments_path",
     "is_safe_inline_mime",
+    "safe_download_filename",
 ]
 
 logger = logging.getLogger(__name__)
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
+_UNSAFE_FILENAME_RE = re.compile(r'[:/\\*?"<>|\x00-\x1f]+')
 _MAX_ENTRIES = 500
+_MAX_COPY_BYTES = 50 * 1024 * 1024  # 50 MiB per-file persistence cap
+_MAX_TOTAL_BYTES = 500 * 1024 * 1024  # 500 MiB total attachment cache cap
 
 # Only passive media/document formats may render inline; HTML/SVG/JS must always
 # download as attachments to prevent stored XSS under the Quartz origin.
@@ -45,6 +51,17 @@ def is_safe_inline_mime(mime_type: str | None) -> bool:
     return essence in SAFE_INLINE_MIME_TYPES
 
 
+def safe_download_filename(name: str, source_path: str | Path) -> str:
+    """Sanitize a display label for Content-Disposition and preserve its extension."""
+    src_suffix = Path(source_path).suffix
+    cleaned = _UNSAFE_FILENAME_RE.sub("_", (name or "").strip()).strip(". ")
+    if not cleaned:
+        cleaned = Path(source_path).name or "download"
+    if src_suffix and not Path(cleaned).suffix:
+        cleaned = f"{cleaned}{src_suffix}"
+    return cleaned
+
+
 def default_attachments_path() -> Path:
     """Return the persisted attachment index path (honours ``QUARTZ_WEB_FILES``)."""
     raw = os.environ.get("QUARTZ_WEB_FILES", "").strip()
@@ -58,6 +75,7 @@ class AttachedFileRegistry:
 
     def __init__(self, path: Path | None = None) -> None:
         self._path = path or default_attachments_path()
+        self._storage_dir = self._path.parent / "attachments"
         self._lock = threading.Lock()
         self._loaded = False
         self._entries: dict[str, dict[str, Any]] = {}
@@ -85,13 +103,56 @@ class AttachedFileRegistry:
         except OSError:
             logger.debug("Failed to persist attached file registry at %s", self._path, exc_info=True)
 
+    def _copy_to_storage(self, file_id: str, source: Path) -> str | None:
+        """Persist a local copy under ``self._storage_dir`` so /tmp cleanups don't break links."""
+        try:
+            if not source.is_file() or source.stat().st_size > _MAX_COPY_BYTES:
+                return None
+            self._storage_dir.mkdir(parents=True, exist_ok=True)
+            dest = self._storage_dir / f"{file_id}{source.suffix}"
+            tmp = self._storage_dir / f".{file_id}.tmp"
+            shutil.copy2(source, tmp)
+            tmp.replace(dest)
+            return str(dest)
+        except OSError:
+            logger.debug("Failed to copy attached file %s to %s", source, self._storage_dir, exc_info=True)
+            return None
+
+    def _remove_stored_copy(self, entry: dict[str, Any] | None) -> None:
+        if not entry:
+            return
+        stored = entry.get("storedPath")
+        if isinstance(stored, str) and stored:
+            with contextlib.suppress(OSError):
+                Path(stored).unlink(missing_ok=True)
+
+    def _prune_locked(self) -> None:
+        while len(self._entries) > _MAX_ENTRIES:
+            old_id = next(iter(self._entries))
+            self._remove_stored_copy(self._entries.pop(old_id, None))
+        total_stored = 0
+        for entry in self._entries.values():
+            stored = entry.get("storedPath")
+            if isinstance(stored, str) and stored:
+                total_stored += int(entry.get("size") or 0)
+        if total_stored > _MAX_TOTAL_BYTES:
+            for old_id in list(self._entries.keys()):
+                if total_stored <= _MAX_TOTAL_BYTES or len(self._entries) <= 1:
+                    break
+                entry = self._entries.get(old_id)
+                if entry and entry.get("storedPath"):
+                    total_stored -= int(entry.get("size") or 0)
+                    self._remove_stored_copy(entry)
+                    entry.pop("storedPath", None)
+
     def register(self, file_meta: dict[str, Any]) -> dict[str, Any]:
         """Register one attached file and return its wire-safe descriptor."""
         raw_path = str(file_meta.get("path") or "").strip()
         if not raw_path:
             raise ValueError("Attached file metadata missing 'path'")
-        resolved = str(Path(raw_path).expanduser().resolve())
-        name = str(file_meta.get("name") or Path(resolved).name)
+        resolved_path = Path(raw_path).expanduser().resolve()
+        resolved = str(resolved_path)
+        name = str(file_meta.get("name") or resolved_path.name)
         mime_type = str(file_meta.get("mime_type") or file_meta.get("mimeType") or "application/octet-stream")
         size = int(file_meta.get("size") or 0)
 
@@ -105,16 +166,17 @@ class AttachedFileRegistry:
                     break
             if file_id is None:
                 file_id = uuid.uuid4().hex[:16]
-            self._entries[file_id] = {
+            stored_path = self._copy_to_storage(file_id, resolved_path)
+            entry: dict[str, Any] = {
                 "path": resolved,
                 "name": name,
                 "mimeType": mime_type,
                 "size": size,
             }
-            if len(self._entries) > _MAX_ENTRIES:
-                excess = len(self._entries) - _MAX_ENTRIES
-                for old_id in list(self._entries.keys())[:excess]:
-                    self._entries.pop(old_id, None)
+            if stored_path is not None:
+                entry["storedPath"] = stored_path
+            self._entries[file_id] = entry
+            self._prune_locked()
             self._save()
 
         return {
@@ -135,6 +197,12 @@ class AttachedFileRegistry:
             if entry is None:
                 return None
             snapshot = dict(entry)
+        stored = snapshot.get("storedPath")
+        if isinstance(stored, str) and stored:
+            sp = Path(stored)
+            if sp.is_file():
+                snapshot["path"] = str(sp)
+                return snapshot
         p = Path(str(snapshot.get("path") or ""))
         if not p.is_file():
             return None

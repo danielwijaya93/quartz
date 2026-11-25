@@ -89,7 +89,14 @@ def test_registry_persists_and_rejects_unsafe_ids(tmp_path: Path) -> None:
     assert reg2.get("../etc/passwd") is None
     assert reg2.get("bad") is None
 
+    # Deleting the original file must not break downloads because a copy is persisted.
     pdf.unlink()
+    persisted = reg2.get(desc1["id"])
+    assert persisted is not None
+    assert Path(persisted["path"]).read_bytes() == b"%PDF-1.4"
+
+    # If the persisted copy is also removed, lookup returns None.
+    Path(persisted["path"]).unlink()
     assert reg2.get(desc1["id"]) is None
 
 
@@ -277,3 +284,30 @@ def test_attachment_registry_logs_save_oserror_at_debug(
     assert desc["id"]
     assert any("Failed to persist attached file registry" in rec.message for rec in caplog.records)
 
+
+
+def test_download_preserves_extension_and_sanitizes_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("QUARTZ_WEB_FILES", str(tmp_path / "web-files.json"))
+    registry = AttachedFileRegistry()
+    png = tmp_path / "mockup-1.png"
+    png.write_bytes(b"png-data")
+    desc = registry.register(
+        {
+            "path": str(png),
+            "name": "Mockup 1: Clean Sidebar + Bot Run View",
+            "mime_type": "image/png",
+            "size": 8,
+        }
+    )
+    png.unlink()
+
+    app = create_app(build=lambda _sid, _cwd=None: (None, False), cwd=tmp_path)  # type: ignore[arg-type]
+    client = TestClient(app)
+    resp = client.get(desc["url"])
+    assert resp.status_code == 200
+    assert resp.content == b"png-data"
+    from urllib.parse import unquote
+    disp = unquote(resp.headers.get("content-disposition", ""))
+    assert "Mockup 1_ Clean Sidebar + Bot Run View.png" in disp
