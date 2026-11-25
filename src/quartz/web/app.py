@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -15,9 +16,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from quartz.bots import BotQueue, BotStore
-from quartz.core.turn import run_interactive_turn
+from quartz.bots import BotConfig, BotQueue, BotStore, QueuedTrigger
+from quartz.core.turn import TurnStatus, run_interactive_turn
 from quartz.web.auth import extract_request_token, verify_token
+from quartz.web.bot_permissions import evaluate_bot_command, notify_bot_parked
 from quartz.web.bot_runner import BotRunner
 from quartz.web.context import (
     MAX_FRAME_BYTES,
@@ -118,7 +120,53 @@ def create_app(
     manager = SessionManager(build, cwd=cwd, runner=runner)
     bot_store = BotStore(bots_dir)
     bot_queue = BotQueue(bots_dir)
-    bot_runner = BotRunner(bot_store, bot_queue)
+
+    async def _run_bot_trigger(bot: BotConfig, trigger: QueuedTrigger) -> TurnStatus:
+        target_cwd = Path(bot.cwd) if bot.cwd else None
+        ws = manager.create_session(cwd=target_cwd)
+        ws.set_auto_allow_check(
+            lambda req: evaluate_bot_command(bot.permissions, getattr(req, "command_display", ""))
+            == "allow"
+        )
+        rt = await asyncio.to_thread(ws.ensure_runtime, target_cwd)
+        state = await asyncio.to_thread(bot_store.get_state, bot.id)
+        state.active_session_id = rt.active_session.id
+        await asyncio.to_thread(bot_store.save_state, state)
+
+        payload_text = json.dumps(trigger.payload, indent=2) if trigger.payload else ""
+        prompt = (
+            f"[Bot: {bot.name}] Triggered by {trigger.source} ({trigger.event_key})\n\n"
+            f"{bot.instruction}"
+        )
+        if payload_text:
+            prompt = f"{prompt}\n\nTrigger payload:\n{payload_text}"
+
+        ws.start_turn(prompt, [])
+        while ws.turn_running:
+            if ws.has_pending_permission:
+                pending = ws._pending_permission or {}
+                if push_ref is not None or default_push_path().is_file():
+                    notify_bot_parked(
+                        push_store(),
+                        bot,
+                        rt.active_session.id,
+                        str(pending.get("command", "")),
+                    )
+                return TurnStatus.WAITING_PERMISSION
+            await asyncio.sleep(0.2)
+        if ws.has_pending_permission:
+            pending = ws._pending_permission or {}
+            if push_ref is not None or default_push_path().is_file():
+                notify_bot_parked(
+                    push_store(),
+                    bot,
+                    rt.active_session.id,
+                    str(pending.get("command", "")),
+                )
+            return TurnStatus.WAITING_PERMISSION
+        return TurnStatus.OK
+
+    bot_runner = BotRunner(bot_store, bot_queue, run_trigger=_run_bot_trigger)
     should_run_bots = (
         enable_bot_runner
         if enable_bot_runner is not None

@@ -170,6 +170,8 @@ def create_router(ctx: AppContext) -> APIRouter:
             status = 409 if "already exists" in msg else 400
             return JSONResponse({"error": msg}, status_code=status)
 
+        if ctx.bot_runner is not None:
+            ctx.bot_runner.notify_queue()
         state = await asyncio.to_thread(store.get_state, created.id)
         return JSONResponse({"bot": _serialize_bot(created, state, [])}, status_code=201)
 

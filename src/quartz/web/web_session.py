@@ -117,6 +117,7 @@ class WebSession:
         self._system_prompt_append = ""
         self._sandbox_override: bool | None = None
 
+        self._auto_allow_check: Callable[[Any], bool] | None = None
         self._sinks = SinkHub(
             on_event=self._notify_event,
             on_grace_expired=self._on_reconnect_grace_expired,
@@ -250,7 +251,12 @@ class WebSession:
     def _pending_permission(self) -> dict[str, Any] | None:
         return self._perm_gate.pending_payload
 
+    def set_auto_allow_check(self, check: Callable[[Any], bool] | None) -> None:
+        self._auto_allow_check = check
+
     def _handle_permission_request(self, req: Any) -> str:
+        if self._auto_allow_check is not None and self._auto_allow_check(req):
+            return "allow_once"
         return self._perm_gate.handle_request(req)
 
     def resolve_permission(self, request_id: str, decision: str) -> bool:
