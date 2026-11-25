@@ -109,7 +109,7 @@ export function WorkerTailTile({
 
   const statusPill =
     workerState === "running"
-      ? { text: "Live", cls: "border-sky-500/30 bg-sky-500/10 text-sky-500", dot: "bg-sky-500 motion-safe:animate-pulse" }
+      ? { text: "Live", cls: "border-border bg-surface-secondary/60 text-foreground", dot: "bg-success motion-safe:animate-pulse" }
       : workerState === "stopped"
         ? { text: "Stopped", cls: "border-danger/30 bg-danger/10 text-danger", dot: "bg-danger" }
         : { text: "Exited", cls: "border-emerald-500/30 bg-emerald-500/10 text-emerald-500", dot: "bg-emerald-500" };
@@ -121,14 +121,14 @@ export function WorkerTailTile({
       className={cn(
         "flex h-full min-h-0 flex-col overflow-hidden rounded-xl border bg-background transition-colors",
         focused
-          ? "border-sky-500/50 ring-1 ring-sky-500/20"
+          ? "border-accent/40 ring-1 ring-accent/20"
           : "border-border/80",
       )}
     >
       <header
         className={cn(
           "flex h-9 shrink-0 items-center justify-between gap-2 border-b border-separator px-2.5",
-          focused ? "bg-sky-500/5" : "bg-surface/70",
+          focused ? "bg-accent-soft/40" : "bg-surface/70",
         )}
       >
         <div className="flex min-w-0 items-center gap-1.5">
@@ -136,7 +136,7 @@ export function WorkerTailTile({
             className={cn(
               "inline-flex size-4 shrink-0 items-center justify-center rounded text-[10px] font-bold tabular-nums",
               focused
-                ? "bg-sky-500 text-zinc-950"
+                ? "bg-accent text-accent-foreground"
                 : "border border-border bg-surface-secondary text-muted",
             )}
           >
@@ -224,7 +224,7 @@ export function WorkerTailTile({
             className={cn(
               "cursor-pointer rounded border px-1.5 py-0.5 text-[10px] font-medium transition-colors",
               autoScroll
-                ? "border-sky-500/30 bg-sky-500/10 text-sky-500"
+                ? "border-accent/40 bg-accent-soft/60 text-foreground"
                 : "border-border text-muted hover:text-foreground",
             )}
           >

@@ -284,7 +284,7 @@ export function SessionTile({
   const statusDotClass = hasPermission
     ? "bg-orange-500"
     : quartz.state.turnRunning
-      ? "bg-sky-500 motion-safe:animate-pulse"
+      ? "bg-accent motion-safe:animate-pulse"
       : bgCount > 0
         ? "bg-amber-500"
         : quartz.status === "connected"
@@ -307,7 +307,7 @@ export function SessionTile({
           (hasPermission
             ? "border-orange-500/50"
             : focused
-              ? "border-sky-500/50 ring-1 ring-sky-500/20"
+              ? "border-accent/40 ring-1 ring-accent/20"
               : "border-border/80"),
       )}
     >
@@ -318,7 +318,7 @@ export function SessionTile({
             hasPermission
               ? "bg-orange-500/5"
               : focused
-                ? "bg-sky-500/5"
+                ? "bg-accent-soft/40"
                 : "bg-surface/70",
           )}
         >
@@ -327,7 +327,7 @@ export function SessionTile({
               className={cn(
                 "inline-flex size-4 shrink-0 items-center justify-center rounded text-[10px] font-bold tabular-nums",
                 focused
-                  ? "bg-sky-500 text-zinc-950"
+                  ? "bg-accent text-accent-foreground"
                   : "border border-border bg-surface-secondary text-muted",
               )}
             >
@@ -360,7 +360,7 @@ export function SessionTile({
                   setJobsOpen((prev) => !prev);
                 }}
                 aria-label={`${bgCount} background jobs in tile ${tileNumber}`}
-                className="inline-flex h-5 cursor-pointer items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-1.5 text-[10px] font-medium text-sky-600 hover:bg-sky-500/20 dark:text-sky-400"
+                className="inline-flex h-5 cursor-pointer items-center gap-1 rounded-full border border-border bg-surface-secondary/60 px-1.5 text-[10px] font-medium text-foreground hover:bg-surface-secondary"
               >
                 <Terminal aria-hidden="true" className="size-2.5" />
                 <span className="tabular-nums">{bgCount}</span>
