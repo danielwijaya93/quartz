@@ -1,5 +1,5 @@
 import * as React from "react";
-import { cn } from "@heroui/react";
+import { Button, cn } from "@heroui/react";
 import { Activity, X } from "lucide-react";
 import type { SidebarSession } from "@/lib/sidebar";
 import type { ActiveSessionItem } from "@/protocol";
@@ -14,6 +14,7 @@ export function ActiveSessionsSection({
   onSelectSession,
   onOpenInNewTile,
   onDismiss,
+  onCloseDrawer,
 }: {
   items: readonly ActiveSessionItem[];
   currentSessionId: string;
@@ -23,6 +24,7 @@ export function ActiveSessionsSection({
   onSelectSession: (sessionId: string) => void;
   onOpenInNewTile?: (sessionId: string) => void;
   onDismiss?: (sessionId: string) => void;
+  onCloseDrawer?: () => void;
 }): React.ReactElement {
   return (
     <section aria-label="Active Sessions" className="mb-2 border-b border-separator/70 pb-2">
@@ -34,6 +36,18 @@ export function ActiveSessionsSection({
         <span className="ml-auto shrink-0 rounded-full bg-surface-secondary px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-muted">
           {items.length}
         </span>
+        {onCloseDrawer ? (
+          <Button
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            aria-label="Close the session sidebar"
+            onPress={onCloseDrawer}
+            className="size-6 min-w-6 text-muted hover:text-foreground"
+          >
+            <X aria-hidden="true" className="size-3.5" />
+          </Button>
+        ) : null}
       </div>
       {items.length === 0 ? (
         <p className="mt-1 px-2 py-1 text-[11px] text-meta">No active sessions</p>

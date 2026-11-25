@@ -499,11 +499,6 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     [tiling.setTileCount, activeSession.cwd],
   );
 
-  const handleHeaderNewSession = React.useCallback(() => {
-    if (activeSession.cwd) newSessionIn(activeSession.cwd);
-    else setPicker("session");
-  }, [activeSession.cwd, newSessionIn]);
-
   const handleToggleSandbox = React.useMemo(
     () =>
       focusedHandle
@@ -555,8 +550,6 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
           status={activeStatus}
           richUiMode={richUi.mode}
           onRichUiModeChange={richUi.setMode}
-          onNewSession={handleHeaderNewSession}
-          onChangeFolder={openSessionPicker}
           onToggleSandbox={handleToggleSandbox}
           turnRunning={focusedHandle?.turnRunning ?? false}
           sidebarOpen={sidebarOpen}

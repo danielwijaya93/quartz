@@ -1,24 +1,21 @@
 import * as React from "react";
 import { Button, Tooltip } from "@heroui/react";
-import { FolderPlus, Search, X } from "lucide-react";
+import { Folder, FolderPlus, Search, X } from "lucide-react";
 
 export function SidebarHeader({
-  drawer,
   searchQuery,
   onNewFolder,
-  onClose,
   onSearchChange,
 }: {
-  drawer: boolean;
   searchQuery: string;
   onNewFolder: () => void;
-  onClose: () => void;
   onSearchChange: (value: string) => void;
 }): React.ReactElement {
   return (
     <>
-      <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-separator/70 px-2">
-        <h2 className="min-w-0 flex-1 truncate px-1 text-[11px] font-semibold uppercase tracking-wider text-muted">
+      <div className="flex h-7 items-center gap-1.5 px-1.5">
+        <Folder aria-hidden="true" className="size-3 shrink-0 text-muted" />
+        <h2 className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider text-foreground/90">
           Workspaces
         </h2>
         <Tooltip delay={250}>
@@ -34,21 +31,9 @@ export function SidebarHeader({
           </Button>
           <Tooltip.Content>Add a folder to the sidebar</Tooltip.Content>
         </Tooltip>
-        {drawer ? (
-          <Button
-            isIconOnly
-            size="sm"
-            variant="ghost"
-            aria-label="Close the session sidebar"
-            onPress={onClose}
-            className="size-6 min-w-6 text-muted hover:text-foreground"
-          >
-            <X aria-hidden="true" className="size-3.5" />
-          </Button>
-        ) : null}
       </div>
 
-      <div className="shrink-0 border-b border-separator/50 px-2 py-1.5">
+      <div className="px-1 py-1.5">
         <div className="relative flex min-w-0 items-center">
           <Search
             aria-hidden="true"
