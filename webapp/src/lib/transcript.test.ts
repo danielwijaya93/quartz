@@ -656,6 +656,141 @@ describe("session_state and reconnect", () => {
     });
   });
 
+  it("preserves thinking, tool, answer, and turn_end order when session_state replays after a finished turn", () => {
+    const withPrompt = addUserPrompt(fold([history]), "check repo");
+    const live = fold(
+      [
+        { type: "turn_start", turnId: "t1" },
+        { type: "thinking_delta", text: "Let me inspect the files." },
+        { type: "tool_call", id: "tc-order", code: "ls()" },
+        { type: "tool_result", id: "tc-order", ok: true, output: "README.md", durationMs: 12 },
+        { type: "text_delta", text: "Here is what I found." },
+        { type: "turn_end", status: "ok", tokens: 420, elapsedMs: 1200 },
+      ],
+      withPrompt,
+    );
+
+    const replayed = fold(
+      [
+        {
+          ...history,
+          messages: [
+            ...history.messages,
+            { role: "user", content: "check repo" },
+            {
+              role: "assistant",
+              content: "",
+              tool_calls: [{ id: "tc-order", function: { name: "ipython", arguments: '{"code":"ls()"}' } }],
+            },
+            { role: "tool", tool_call_id: "tc-order", content: "README.md" },
+            { role: "assistant", content: "Here is what I found." },
+          ],
+        },
+      ],
+      live,
+    );
+
+    const tailKinds = replayed.rows.slice(-5).map((row) => row.kind);
+    expect(tailKinds).toEqual(["user", "thinking", "tool", "assistant", "turn_end"]);
+
+    const items = groupTurns(replayed.rows);
+    const turn = items[items.length - 2];
+    const end = items[items.length - 1];
+    expect(turn).toMatchObject({
+      kind: "turn",
+      answer: { kind: "assistant", text: "Here is what I found." },
+    });
+    if (turn?.kind === "turn") {
+      expect(turn.steps.map((s) => s.kind)).toEqual(["thinking", "tool_run"]);
+    }
+    expect(end).toMatchObject({ kind: "turn_end", tokens: 420 });
+  });
+
+  it("keeps prior turn_end before the next turn when session_state replays across multiple turns", () => {
+    const turn1 = fold(
+      [
+        { type: "turn_start", turnId: "t1" },
+        { type: "thinking_delta", text: "First thought" },
+        { type: "text_delta", text: "First answer" },
+        { type: "turn_end", status: "ok", tokens: 100, elapsedMs: 500 },
+      ],
+      addUserPrompt(fold([history]), "first prompt"),
+    );
+
+    const turn2 = fold(
+      [
+        { type: "turn_start", turnId: "t2" },
+        { type: "thinking_delta", text: "Second thought" },
+        { type: "text_delta", text: "Second answer" },
+        { type: "turn_end", status: "ok", tokens: 200, elapsedMs: 800 },
+      ],
+      addUserPrompt(turn1, "second prompt"),
+    );
+
+    const replayed = fold(
+      [
+        {
+          ...history,
+          messages: [
+            ...history.messages,
+            { role: "user", content: "first prompt" },
+            { role: "assistant", content: "First answer" },
+            { role: "user", content: "second prompt" },
+            { role: "assistant", content: "Second answer" },
+          ],
+        },
+      ],
+      turn2,
+    );
+
+    const tailKinds = replayed.rows.slice(-8).map((row) => row.kind);
+    expect(tailKinds).toEqual([
+      "user",
+      "thinking",
+      "assistant",
+      "turn_end",
+      "user",
+      "thinking",
+      "assistant",
+      "turn_end",
+    ]);
+  });
+
+  it("inserts missed history rows in chronological order around live-only rows", () => {
+    const live = fold(
+      [
+        { type: "turn_start", turnId: "t1" },
+        { type: "thinking_delta", text: "Thinking before missed tool" },
+        { type: "text_delta", text: "Final answer" },
+        { type: "turn_end", status: "ok", tokens: 300, elapsedMs: 900 },
+      ],
+      addUserPrompt(fold([history]), "run something"),
+    );
+
+    const replayed = fold(
+      [
+        {
+          ...history,
+          messages: [
+            ...history.messages,
+            { role: "user", content: "run something" },
+            {
+              role: "assistant",
+              content: "",
+              tool_calls: [{ id: "tc-missed", function: { name: "ipython", arguments: '{"code":"1+1"}' } }],
+            },
+            { role: "tool", tool_call_id: "tc-missed", content: "2" },
+            { role: "assistant", content: "Final answer" },
+          ],
+        },
+      ],
+      live,
+    );
+
+    const tailKinds = replayed.rows.slice(-5).map((row) => row.kind);
+    expect(tailKinds).toEqual(["user", "thinking", "tool", "assistant", "turn_end"]);
+  });
+
   it("does not split the live assistant row on mid-turn reconnect (session_state -> turn_start -> text_delta)", () => {
     const reconnected = fold([
       {
