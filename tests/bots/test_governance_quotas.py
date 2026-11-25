@@ -85,11 +85,24 @@ async def test_kernel_health_check_ping_pong_and_dead_kernel(tmp_path: Path) -> 
 
 def test_cost_estimator_and_usage_store_daily_window(tmp_path: Path) -> None:
     from quartz.bots.budgets import UsageStore, estimate_usage_cost_usd
+    from quartz.settings import ModelPricingRule
 
-    known = estimate_usage_cost_usd("claude-sonnet-4-5", input_tokens=1_000_000, output_tokens=1_000_000)
-    assert known > 0.0
-    unknown = estimate_usage_cost_usd("my-local-llama-99b", input_tokens=100_000, output_tokens=50_000)
-    assert unknown == 0.0
+    rules = (ModelPricingRule("claude-sonnet-4*", input_per_m=3.0, cached_input_per_m=0.3, output_per_m=15.0),)
+    known = estimate_usage_cost_usd("claude-sonnet-4-5", input_tokens=1_000_000, output_tokens=1_000_000, rules=rules)
+    assert known == 18.0
+    fallback_cost = estimate_usage_cost_usd(
+        "my-local-llama-99b", input_tokens=100_000, output_tokens=50_000, rules=rules
+    )
+    assert fallback_cost > 0.0
+    unpriced = estimate_usage_cost_usd(
+        "my-local-llama-99b",
+        input_tokens=100_000,
+        output_tokens=50_000,
+        rules=rules,
+        fallback_input_per_m=0.0,
+        fallback_output_per_m=0.0,
+    )
+    assert unpriced == 0.0
 
     db = QuartzDB(tmp_path / "quartz.db")
     try:

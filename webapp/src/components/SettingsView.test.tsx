@@ -8,7 +8,7 @@ describe("SettingsView", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders in-canvas settings without a modal dialog or MCP clutter and returns via Back to chat", async () => {
+  it("renders 4 tabs, navigates to Session & Context, and returns via Back to chat", async () => {
     const user = userEvent.setup();
     const onBack = vi.fn();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
@@ -32,8 +32,10 @@ describe("SettingsView", () => {
     render(<SettingsView onBack={onBack} />);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByText("MCP Servers")).toBeNull();
+    expect(await screen.findByText("Stored in ~/.quartz/config.json")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Session & Context" }));
     expect(await screen.findByLabelText("Reserve tokens")).toHaveValue("16384");
-    expect(screen.getByText("Stored in ~/.quartz/config.json")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Back to chat" }));
     expect(onBack).toHaveBeenCalledTimes(1);
@@ -100,18 +102,14 @@ describe("SettingsView", () => {
 
     const bgSwitch = screen.getByRole("switch", { name: "Background jobs" });
     expect(bgSwitch).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByRole("switch", { name: "Turn updates" })).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByRole("switch", { name: "Approval requests" })).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByRole("switch", { name: "Errors" })).toHaveAttribute("aria-checked", "true");
-
     await user.click(bgSwitch);
     expect(bgSwitch).toHaveAttribute("aria-checked", "false");
     expect(posted).toContainEqual({ key: "notifyBackground", value: "off" });
   });
 
-  it("renders kernel quotas, security controls, bot governance defaults, and live diagnostics", async () => {
+  it("renders Bots & Budgets with model pricing + unified save bar, and Advanced & Audit with diagnostics", async () => {
     const user = userEvent.setup();
-    const posted: Array<{ key?: string; value?: string }> = [];
+    const posted: Array<Record<string, unknown>> = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       if (url.endsWith("/api/health")) {
@@ -125,7 +123,7 @@ describe("SettingsView", () => {
           JSON.stringify({
             db: { healthy: true, schemaVersion: 2 },
             sessions: { active: 2 },
-            usage24h: { events: 4, inputTokens: 12000, outputTokens: 3000, costUsd: 0.1234 },
+            usage24h: { events: 4, inputTokens: 12000, outputTokens: 3000, costUsd: 0.1234, botCostUsd: 0.10, chatCostUsd: 0.0234 },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
@@ -148,7 +146,7 @@ describe("SettingsView", () => {
         );
       }
       if (init?.method === "POST") {
-        const body = JSON.parse(String(init.body ?? "{}")) as { key?: string; value?: string };
+        const body = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>;
         posted.push(body);
         return new Response(
           JSON.stringify({
@@ -164,10 +162,13 @@ describe("SettingsView", () => {
               kernelMaxOpenFiles: 4096,
               kernelMaxProcesses: 256,
               strictSnapshots: body.key === "strict_snapshots" ? body.value === "on" : true,
-              sandboxEnvPassthrough: body.key === "sandbox_env" ? body.value : "",
-              botMaxUsdPerDay: null,
+              sandboxEnvPassthrough: "MY_APP_ENV",
+              botMaxUsdPerDay: 10,
               botMaxConsecutiveErrors: 5,
               botWebhookRateLimit: 30,
+              trackChatUsage: true,
+              unpricedFallback: { inputPerM: 1, outputPerM: 5 },
+              modelPricing: [{ pattern: "google/gemini-4-hydrogen", inputPerM: 0, cachedInputPerM: 0, outputPerM: 0 }],
             },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -189,6 +190,9 @@ describe("SettingsView", () => {
             botMaxUsdPerDay: 5,
             botMaxConsecutiveErrors: 5,
             botWebhookRateLimit: 30,
+            trackChatUsage: true,
+            unpricedFallback: { inputPerM: 1, outputPerM: 5 },
+            modelPricing: [],
           },
           defaults: {
             reserve: 16384,
@@ -201,10 +205,14 @@ describe("SettingsView", () => {
             kernelMaxProcesses: 256,
             strictSnapshots: true,
             sandboxEnvPassthrough: "",
-            botMaxUsdPerDay: null,
+            botMaxUsdPerDay: 5,
             botMaxConsecutiveErrors: 5,
             botWebhookRateLimit: 30,
+            trackChatUsage: true,
+            unpricedFallback: { inputPerM: 1, outputPerM: 5 },
+            modelPricing: [],
           },
+          recentModels: [{ provider: "google", model: "gemini-4-hydrogen" }],
           configPath: "~/.quartz/config.json",
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
@@ -213,9 +221,25 @@ describe("SettingsView", () => {
 
     render(<SettingsView onBack={vi.fn()} />);
 
+    // Bots & Budgets tab
+    await user.click(await screen.findByRole("tab", { name: "Bots & Budgets" }));
+    const budgetInput = await screen.findByLabelText("Default daily budget (USD)");
+    expect(budgetInput).toHaveValue("5");
+    await user.clear(budgetInput);
+    await user.type(budgetInput, "10");
+
+    // Quick-add recent model
+    await user.click(screen.getByRole("button", { name: "+ google/gemini-4-hydrogen" }));
+    expect(screen.getByLabelText("Model pattern 1")).toHaveValue("google/gemini-4-hydrogen");
+
+    // Unified save bar appears and submits batch updates
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(posted.some((p) => typeof p.updates === "object" && p.updates !== null)).toBe(true);
+
+    // Advanced & Audit tab
+    await user.click(screen.getByRole("tab", { name: "Advanced & Audit" }));
     expect(await screen.findByLabelText("Kernel memory cap (MiB)")).toHaveValue("4096");
     expect(screen.getByLabelText("Sandbox env passthrough")).toHaveValue("MY_APP_ENV");
-    expect(screen.getByLabelText("Default daily budget (USD)")).toHaveValue("5");
     expect(await screen.findByText(/Healthy \(v2\)/)).toBeInTheDocument();
     expect(screen.getByText("blocked git -c")).toBeInTheDocument();
 
