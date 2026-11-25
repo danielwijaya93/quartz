@@ -167,3 +167,32 @@ def test_webhook_hmac_verification_and_enqueue(tmp_path: Path) -> None:
         assert len(items) == 1
         assert items[0]["event_key"] == "webhook:deliv-123"
         assert items[0]["payload"]["issue"]["number"] == 42
+
+
+def test_bot_runner_spawns_real_web_session_and_runs_turn(tmp_path: Path) -> None:
+    import time
+
+    scripted = ScriptedTurn()
+    app = create_app(
+        build=lambda session_id, cwd=None: (make_runtime(tmp_path), True),
+        cwd=tmp_path,
+        runner=scripted,
+        bots_dir=tmp_path / "bots",
+        enable_bot_runner=True,
+    )
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/bots",
+            json={
+                "id": "cron-live",
+                "name": "Cron Live",
+                "watcherType": "cron",
+                "instruction": "Check git status",
+                "cron": {"expression": "* * * * *", "timezone": "UTC"},
+            },
+        )
+        assert res.status_code == 201
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and scripted.calls < 1:
+            time.sleep(0.05)
+        assert scripted.calls >= 1
