@@ -266,7 +266,7 @@ class BotPermissionPolicyPayload(_WireModel):
 
 
 class BotCreateRequest(_WireModel):
-    id: str
+    id: str | None = None
     name: str
     watcher_type: BotWatcherType = Field(alias="watcherType")
     instruction: str

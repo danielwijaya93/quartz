@@ -173,7 +173,7 @@ export interface ModelSelectRequest {
 }
 
 export interface BotCreateRequest {
-  id: string;
+  id?: string | null;
   name: string;
   watcherType: "cron" | "github_poll" | "webhook";
   instruction: string;
