@@ -70,3 +70,33 @@ export function hasOpenUILangSyntax(raw: string | null | undefined): boolean {
   }
   return false;
 }
+
+const OPENUI_MARKER_RE = /^\]\]>openui:([a-zA-Z0-9_-]+)(?:\s.*)?$/;
+
+/**
+ * Extract the human-readable text from a stored OpenUI action user message.
+ *
+ * `buildActionUserMessage` serializes `@ToAssistant(...)` clicks using
+ * `]]>openui:content` and `]]>openui:context` protocol markers for the model.
+ * User message bubbles should show only the plain content text, never the raw
+ * wire markers or JSON context payload.
+ */
+export function extractOpenUIUserText(raw: string): string {
+  if (!raw.includes("]]>openui:")) return raw;
+
+  let section: "before" | "content" | "other" = "before";
+  const contentLines: string[] = [];
+
+  for (const line of raw.split(/\r?\n/)) {
+    const match = OPENUI_MARKER_RE.exec(line);
+    if (match) {
+      section = match[1] === "content" ? "content" : "other";
+      continue;
+    }
+    if (section === "content" || section === "before") {
+      contentLines.push(line);
+    }
+  }
+
+  return contentLines.join("\n").trim();
+}

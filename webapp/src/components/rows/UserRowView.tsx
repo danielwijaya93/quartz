@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Card } from "@heroui/react";
 import { FileSpreadsheet, FileText } from "lucide-react";
+import { extractOpenUIUserText } from "@/lib/openui/lang-helpers";
 import type { UserRow } from "@/lib/transcript";
 
 interface ParsedAttachment {
@@ -21,7 +22,8 @@ function parseUserMessage(text: string): {
   attachments: ParsedAttachment[];
 } {
   const attachments: ParsedAttachment[] = [];
-  const body = text
+  const plainText = extractOpenUIUserText(text);
+  const body = plainText
     .replace(ATTACHED_FILE_RE, (_match, name: string, content: string) => {
       attachments.push({ name: name.trim(), lineCount: countLines(content) });
       return "";
