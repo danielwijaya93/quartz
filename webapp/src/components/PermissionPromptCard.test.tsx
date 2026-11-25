@@ -30,4 +30,28 @@ describe("PermissionPromptCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reject" }));
     expect(onRespond).toHaveBeenCalledWith("req-1", "reject");
   });
+
+  it("stacks content above action buttons on mobile and wraps long commands", () => {
+    render(
+      <PermissionPromptCard
+        permission={{
+          requestId: "req-2",
+          tool: "gh",
+          command: "gh pr create --title 'Fix mobile layout' --body 'Details'",
+          cwd: "/tmp/repo",
+          scope: "gh",
+        }}
+        onRespond={vi.fn()}
+      />,
+    );
+
+    const region = screen.getByRole("region", { name: "Permission request" });
+    const layoutRow = region.querySelector(".flex-col");
+    expect(layoutRow).not.toBeNull();
+    expect(layoutRow?.className).toContain("sm:flex-row");
+
+    const code = screen.getByText(/gh pr create/);
+    expect(code.className).toContain("break-all");
+    expect(code.className).not.toContain("truncate");
+  });
 });
