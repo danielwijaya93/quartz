@@ -602,6 +602,8 @@ class KernelWorker:
             self._send({"type": "helpers_result", "id": req_id, **self.list_helpers()})
         elif msg_type == "list_vars":
             self._send({"type": "vars_result", "id": req_id, "vars": self.list_vars()})
+        elif msg_type == "ping":
+            self._send({"type": "pong", "id": req_id, "pid": os.getpid()})
         elif msg_type == "running_bash":
             self._send({"type": "running_bash_result", "id": req_id, "count": sum(1 for h in self._handles if h.running)})
         elif msg_type == "bash_tail":
@@ -696,6 +698,9 @@ def _start_stdin_reader(
 
 
 async def _main() -> None:
+    from quartz.kernel.limits import apply_resource_limits
+
+    apply_resource_limits()
     worker = KernelWorker(isolate_stdio=True)
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
