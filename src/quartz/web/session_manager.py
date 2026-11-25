@@ -276,7 +276,15 @@ class SessionManager:
                 changed = True
             elif kind == "turn_end":
                 status = frame.get("status")
-                if status == "ok":
+                if status == "waiting_permission":
+                    if existing is None or existing["kind"] != "permission":
+                        perm = getattr(ws, "_pending_permission", None) or {}
+                        tool = str(perm.get("tool") or "").strip()
+                        command = str(perm.get("command") or "").strip()
+                        preview = f"{tool}: {command}" if tool and command else (command or tool or "Permission required")
+                        self._set_active_locked(sid, ws, "permission", preview)
+                        changed = True
+                elif status == "ok":
                     self._set_active_locked(sid, ws, "done")
                     changed = True
                 elif status == "error":
