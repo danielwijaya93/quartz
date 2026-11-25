@@ -51,7 +51,7 @@ function CwdChip({
   );
 
   return (
-    <li className="min-w-0 shrink">
+    <li className="min-w-0 shrink overflow-hidden">
       {onChangeFolder ? (
         <button
           type="button"
@@ -151,14 +151,14 @@ export function HeaderBar({
         <ul className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden sm:gap-1.5">
           <CwdChip cwd={session.cwd} onChangeFolder={onChangeFolder} />
           {session.gitBranch ? (
-            <li className="flex min-w-0 shrink sm:shrink-0">
+            <li className="flex min-w-0 shrink overflow-hidden sm:shrink-0">
               <Chip
                 size="sm"
                 variant="soft"
                 color="default"
                 title={`Git branch: ${session.gitBranch}`}
                 aria-label={`Git branch ${session.gitBranch}`}
-                className="max-w-20 overflow-hidden bg-surface-secondary/50 sm:max-w-36"
+                className="max-w-full overflow-hidden bg-surface-secondary/50 sm:max-w-36"
               >
                 <GitBranch aria-hidden="true" className="mr-1 size-3 shrink-0 text-muted" />
                 <span className="truncate font-mono text-[11px] font-medium text-foreground/85">

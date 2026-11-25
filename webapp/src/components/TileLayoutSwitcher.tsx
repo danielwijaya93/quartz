@@ -1,9 +1,15 @@
 import * as React from "react";
 import { cn } from "@heroui/react";
-import { ArrowUpDown, Plus } from "lucide-react";
+import { ArrowUpDown, Columns2, X } from "lucide-react";
 import type { ThreeTileOrientation, TileCount, TileDescriptor } from "@/lib/tiling";
 
-function LayoutGlyph({ count, orientation }: { count: TileCount; orientation: ThreeTileOrientation }): React.ReactElement {
+function LayoutGlyph({
+  count,
+  orientation,
+}: {
+  count: TileCount;
+  orientation: ThreeTileOrientation;
+}): React.ReactElement {
   if (count === 1) {
     return (
       <span aria-hidden="true" className="grid size-3 grid-cols-1 gap-[1.5px]">
@@ -56,81 +62,22 @@ const COUNT_LABELS: Record<TileCount, string> = {
   4: "4 windows (2x2 grid)",
 };
 
+/**
+ * Desktop 1-4 layout preset switcher for HeaderBar.
+ * Intentionally omits a separate '+' button so the header keeps a single '+ New' action.
+ */
 export function TileLayoutSwitcher({
   tiles,
-  focusedTileId,
   threeOrientation,
-  canAdd,
-  narrow,
   onSetCount,
-  onAddTile,
   onFlipThree,
-  onFocusTile,
 }: {
   tiles: readonly TileDescriptor[];
-  focusedTileId: string;
   threeOrientation: ThreeTileOrientation;
-  canAdd: boolean;
-  narrow: boolean;
   onSetCount: (count: TileCount) => void;
-  onAddTile: () => void;
   onFlipThree: () => void;
-  onFocusTile: (tileId: string) => void;
 }): React.ReactElement {
   const count = tiles.length as TileCount;
-
-  // On narrow screens with multiple tiles open, show a compact 1 | 2 | 3 | 4 switcher pill bar.
-  if (narrow) {
-    if (tiles.length <= 1) {
-      return (
-        <button
-          type="button"
-          onClick={onAddTile}
-          aria-label="Open a second tile"
-          title="Split into 2 tiles"
-          className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border border-border/80 bg-surface-secondary/40 px-2 text-xs font-medium text-muted transition-colors hover:bg-surface-secondary hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none"
-        >
-          <Plus aria-hidden="true" className="size-3" />
-          <span className="sr-only">Add tile</span>
-        </button>
-      );
-    }
-    return (
-      <div role="group" aria-label="Active tiles" className="inline-flex items-center gap-0.5 rounded-lg border border-border bg-surface-secondary/60 p-0.5">
-        {tiles.map((tile, idx) => {
-          const active = tile.id === focusedTileId;
-          return (
-            <button
-              key={tile.id}
-              type="button"
-              onClick={() => onFocusTile(tile.id)}
-              aria-pressed={active}
-              aria-label={`Switch to tile ${idx + 1}`}
-              className={cn(
-                "inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-1.5 text-[11px] font-semibold tabular-nums transition-colors focus-visible:ring-1 focus-visible:ring-focus focus-visible:outline-none",
-                active
-                  ? "bg-surface text-foreground shadow-xs"
-                  : "text-muted hover:text-foreground",
-              )}
-            >
-              {idx + 1}
-            </button>
-          );
-        })}
-        {canAdd ? (
-          <button
-            type="button"
-            onClick={onAddTile}
-            aria-label="Add tile"
-            title="Add tile (max 4)"
-            className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-md text-muted hover:text-foreground"
-          >
-            <Plus aria-hidden="true" className="size-3" />
-          </button>
-        ) : null}
-      </div>
-    );
-  }
 
   return (
     <div className="flex items-center gap-1.5">
@@ -179,22 +126,89 @@ export function TileLayoutSwitcher({
           <span className="hidden lg:inline">Flip</span>
         </button>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * Dedicated secondary strip shown below HeaderBar on narrow/mobile viewports
+ * whenever 2-4 tiles are open. Keeps the primary top bar spacious and uncluttered.
+ */
+export function MobileTileBar({
+  tiles,
+  focusedTileId,
+  focusedTitle,
+  canAdd,
+  onFocusTile,
+  onAddTile,
+  onCloseTile,
+}: {
+  tiles: readonly TileDescriptor[];
+  focusedTileId: string;
+  focusedTitle: string;
+  canAdd: boolean;
+  onFocusTile: (tileId: string) => void;
+  onAddTile: () => void;
+  onCloseTile: (tileId: string) => void;
+}): React.ReactElement | null {
+  if (tiles.length <= 1) return null;
+
+  return (
+    <div
+      role="region"
+      aria-label="Mobile tile switcher"
+      className="flex h-9 shrink-0 items-center gap-2 border-b border-separator/70 bg-surface/60 px-2.5"
+    >
+      <div
+        role="group"
+        aria-label="Open tiles"
+        className="inline-flex shrink-0 items-center gap-0.5 rounded-lg border border-border bg-surface-secondary/60 p-0.5"
+      >
+        {tiles.map((tile, idx) => {
+          const active = tile.id === focusedTileId;
+          return (
+            <button
+              key={tile.id}
+              type="button"
+              onClick={() => onFocusTile(tile.id)}
+              aria-pressed={active}
+              aria-label={`Switch to tile ${idx + 1}`}
+              className={cn(
+                "inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-1.5 text-[11px] font-semibold tabular-nums transition-colors focus-visible:ring-1 focus-visible:ring-focus focus-visible:outline-none",
+                active
+                  ? "bg-sky-500 text-zinc-950 shadow-xs"
+                  : "text-muted hover:text-foreground",
+              )}
+            >
+              {idx + 1}
+            </button>
+          );
+        })}
+        {canAdd ? (
+          <button
+            type="button"
+            onClick={onAddTile}
+            aria-label="Open another tile"
+            title="Open another tile (max 4)"
+            className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-md text-muted hover:bg-surface hover:text-foreground"
+          >
+            <Columns2 aria-hidden="true" className="size-3" />
+          </button>
+        ) : null}
+      </div>
+
+      <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground/90" title={focusedTitle}>
+        {focusedTitle}
+      </span>
 
       <button
         type="button"
-        disabled={!canAdd}
-        onClick={onAddTile}
-        aria-label={canAdd ? "Add tile" : "Maximum 4 tiles open"}
-        title={canAdd ? "Add a new tile (⌘\)" : "Max 4 tiles open"}
-        className={cn(
-          "inline-flex h-7 items-center gap-1 rounded-md border border-border/80 bg-surface-secondary/40 px-2 text-[11px] font-medium transition-colors focus-visible:ring-1 focus-visible:ring-focus focus-visible:outline-none",
-          canAdd
-            ? "cursor-pointer text-muted hover:bg-surface-secondary hover:text-foreground"
-            : "cursor-not-allowed text-meta opacity-50",
-        )}
+        onClick={() => onCloseTile(focusedTileId)}
+        aria-label="Close active tile"
+        title="Close this tile"
+        className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted hover:bg-surface-secondary hover:text-foreground"
       >
-        <Plus aria-hidden="true" className="size-3" />
-        <span className="hidden xl:inline">Tile</span>
+        <X aria-hidden="true" className="size-3.5" />
       </button>
     </div>
   );
