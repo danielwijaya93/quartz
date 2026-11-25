@@ -1,11 +1,14 @@
 import * as React from "react";
 import { cn } from "@heroui/react";
-import { Bot, Pencil, Plus, Trash2 } from "lucide-react";
+import { Bot, History, Pencil, Plus, Trash2 } from "lucide-react";
 import type { BotConfig, WatcherType } from "@/types/bots";
 
 export interface BotsSectionProps {
   bots: readonly BotConfig[];
+  togglingIds?: ReadonlySet<string>;
+  toggleError?: string | null;
   onCreateBot: () => void;
+  onOpenHistory?: () => void;
   onEditBot: (bot: BotConfig) => void;
   onToggleBot: (id: string, enabled: boolean) => void;
   onDeleteBot: (id: string) => void;
@@ -19,33 +22,57 @@ const WATCHER_LABELS: Record<WatcherType, string> = {
 
 export function BotsSection({
   bots,
+  togglingIds,
+  toggleError,
   onCreateBot,
+  onOpenHistory,
   onEditBot,
   onToggleBot,
   onDeleteBot,
 }: BotsSectionProps): React.ReactElement {
   return (
     <section aria-label="Bots" className="mb-2 border-b border-separator/70 pb-2">
-      <div className="flex h-6 items-center gap-1.5 px-1.5">
+      <div className="flex h-6 items-center gap-1 px-1.5">
         <Bot aria-hidden="true" className="size-3 shrink-0 text-muted" />
         <span className="min-w-0 truncate text-[11px] font-semibold uppercase tracking-wider text-foreground/90">
           Bots
         </span>
-        <button
-          type="button"
-          onClick={onCreateBot}
-          className="ml-auto inline-flex cursor-pointer items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-accent transition-colors hover:bg-accent-soft/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
-        >
-          <Plus aria-hidden="true" className="size-2.5" />
-          + Create Bot
-        </button>
+        <div className="ml-auto flex items-center gap-1">
+          {onOpenHistory ? (
+            <button
+              type="button"
+              onClick={onOpenHistory}
+              aria-label="Bots history"
+              title="Bots history"
+              className="inline-flex cursor-pointer items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-muted transition-colors hover:bg-surface-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
+            >
+              <History aria-hidden="true" className="size-2.5" />
+              History
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={onCreateBot}
+            className="inline-flex cursor-pointer items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-accent transition-colors hover:bg-accent-soft/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
+          >
+            <Plus aria-hidden="true" className="size-2.5" />
+            + Create Bot
+          </button>
+        </div>
       </div>
+      {toggleError ? (
+        <p role="alert" className="mt-1 px-2 text-[11px] text-danger-soft-foreground">
+          {toggleError}
+        </p>
+      ) : null}
 
       {bots.length === 0 ? (
         <p className="mt-1 px-2 py-1 text-[11px] text-meta">No bots configured</p>
       ) : (
         <ul aria-label="Bots list" className="mt-1 space-y-1">
-          {bots.map((bot) => (
+          {bots.map((bot) => {
+            const isToggling = Boolean(togglingIds?.has(bot.id));
+            return (
             <li
               key={bot.id}
               className="group flex items-center gap-1.5 rounded-md border border-separator/70 bg-surface-secondary/30 px-2 py-1.5 transition-colors hover:bg-surface-secondary/60"
@@ -57,10 +84,11 @@ export function BotsSection({
                   </span>
                   <button
                     type="button"
+                    disabled={isToggling}
                     onClick={() => onToggleBot(bot.id, !bot.enabled)}
                     title={bot.enabled ? "Pause bot" : "Enable bot"}
                     className={cn(
-                      "shrink-0 cursor-pointer rounded px-1.5 py-0.5 text-[10px] font-medium leading-none transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus",
+                      "shrink-0 cursor-pointer rounded px-1.5 py-0.5 text-[10px] font-medium leading-none transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus disabled:cursor-wait disabled:opacity-60",
                       bot.enabled
                         ? "bg-emerald-500/15 text-emerald-600 hover:bg-emerald-500/25 dark:text-emerald-400"
                         : "bg-surface-secondary text-muted hover:bg-surface-secondary/80",
@@ -81,9 +109,10 @@ export function BotsSection({
                   aria-checked={bot.enabled}
                   aria-label={`Toggle ${bot.name}`}
                   title={bot.enabled ? "Pause bot" : "Enable bot"}
+                  disabled={isToggling}
                   onClick={() => onToggleBot(bot.id, !bot.enabled)}
                   className={cn(
-                    "relative inline-flex h-4 w-7 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus",
+                    "relative inline-flex h-4 w-7 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus disabled:cursor-wait disabled:opacity-60",
                     bot.enabled ? "bg-emerald-500" : "bg-muted/40",
                   )}
                 >
@@ -117,7 +146,8 @@ export function BotsSection({
                 </button>
               </div>
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
     </section>

@@ -89,4 +89,30 @@ describe("BotsSection", () => {
     await user.click(screen.getByRole("button", { name: /Delete Issue Triager/i }));
     expect(onDeleteBot).toHaveBeenCalledWith("b1");
   });
+
+  it("renders History button, toggling disabled state, and toggleError", async () => {
+    const user = userEvent.setup();
+    const bot = makeBot({ id: "b1", name: "Issue Triager", enabled: true });
+    const onOpenHistory = vi.fn();
+
+    render(
+      <BotsSection
+        bots={[bot]}
+        togglingIds={new Set(["b1"])}
+        toggleError="Failed to toggle bot"
+        onCreateBot={vi.fn()}
+        onOpenHistory={onOpenHistory}
+        onEditBot={vi.fn()}
+        onToggleBot={vi.fn()}
+        onDeleteBot={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Failed to toggle bot");
+    expect(screen.getByRole("switch", { name: /Toggle Issue Triager/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Enabled" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /Bots history/i }));
+    expect(onOpenHistory).toHaveBeenCalledTimes(1);
+  });
 });

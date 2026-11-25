@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from quartz.bots import BotConfig, BotQueue, BotStore, QueuedTrigger
+from quartz.bots import BotConfig, BotHistoryStore, BotQueue, BotStore, QueuedTrigger
 from quartz.core.turn import TurnStatus, run_interactive_turn
 from quartz.web.auth import extract_request_token, verify_token
 from quartz.web.bot_permissions import evaluate_bot_command, notify_bot_parked
@@ -120,6 +120,7 @@ def create_app(
     manager = SessionManager(build, cwd=cwd, runner=runner)
     bot_store = BotStore(bots_dir)
     bot_queue = BotQueue(bots_dir)
+    bot_history = BotHistoryStore(bots_dir)
 
     async def _run_bot_trigger(bot: BotConfig, trigger: QueuedTrigger) -> TurnStatus:
         target_cwd = Path(bot.cwd) if bot.cwd else None
@@ -166,7 +167,12 @@ def create_app(
             return TurnStatus.WAITING_PERMISSION
         return TurnStatus.OK
 
-    bot_runner = BotRunner(bot_store, bot_queue, run_trigger=_run_bot_trigger)
+    bot_runner = BotRunner(
+        bot_store,
+        bot_queue,
+        run_trigger=_run_bot_trigger,
+        history=bot_history,
+    )
     should_run_bots = (
         enable_bot_runner
         if enable_bot_runner is not None
@@ -253,6 +259,7 @@ def create_app(
         auth_token=normalized_token,
         bot_store=bot_store,
         bot_queue=bot_queue,
+        bot_history=bot_history,
         bot_runner=bot_runner,
     )
     app.state.ctx = ctx

@@ -4,6 +4,7 @@ import { RefreshCw } from "lucide-react";
 import { ActionNotice, type Notice, type NoticeAction } from "./sidebar/ActionNotice";
 import { SidebarFooter } from "./sidebar/SidebarFooter";
 import { ActiveSessionsSection } from "./sidebar/ActiveSessionsSection";
+import { BotsHistoryModal } from "./BotsHistoryModal";
 import { BotsSection } from "./BotsSection";
 import { CreateBotModal } from "./CreateBotModal";
 import { EmptySidebar } from "./sidebar/EmptySidebar";
@@ -78,10 +79,13 @@ export interface FolderSidebarProps {
   onClearReadActiveSessions?: () => void;
   /** Configured autonomous bots. */
   bots?: readonly BotConfig[];
+  togglingBotIds?: ReadonlySet<string>;
+  botToggleError?: string | null;
   onCreateBot?: (payload: BotFormValues) => void | Promise<void>;
   onUpdateBot?: (id: string, payload: BotFormValues) => void | Promise<void>;
   onToggleBot?: (id: string, enabled: boolean) => void | Promise<void>;
   onDeleteBot?: (id: string) => void | Promise<void>;
+  onRestoreBot?: (id: string) => Promise<unknown>;
 }
 
 const EMPTY_STATE: SidebarState = EMPTY_SIDEBAR;
@@ -123,10 +127,13 @@ export function FolderSidebar({
   activeSessions: activeSessionItems = [],
   onDismissActiveSession,
   bots = [],
+  togglingBotIds,
+  botToggleError,
   onCreateBot,
   onUpdateBot,
   onToggleBot,
   onDeleteBot,
+  onRestoreBot,
 }: FolderSidebarProps): React.ReactElement {
   const [collapseState, setCollapseState] = React.useState<SidebarCollapseState>(() =>
     readSidebarCollapseState(),
@@ -181,6 +188,7 @@ export function FolderSidebar({
   const [noticeFocused, setNoticeFocused] = React.useState(false);
   const [botModalOpen, setBotModalOpen] = React.useState(false);
   const [editingBot, setEditingBot] = React.useState<BotConfig | null>(null);
+  const [historyModalOpen, setHistoryModalOpen] = React.useState(false);
 
   // A notice dismisses itself, and every new one restarts the clock: the person
   // acting twice gets the second confirmation, not a countdown inherited from the
@@ -322,10 +330,13 @@ export function FolderSidebar({
             />
             <BotsSection
               bots={bots}
+              togglingIds={togglingBotIds}
+              toggleError={botToggleError}
               onCreateBot={() => {
                 setEditingBot(null);
                 setBotModalOpen(true);
               }}
+              onOpenHistory={() => setHistoryModalOpen(true)}
               onEditBot={(bot) => {
                 setEditingBot(bot);
                 setBotModalOpen(true);
@@ -465,6 +476,14 @@ export function FolderSidebar({
             await onCreateBot?.(payload);
           }
         }}
+      />
+
+      <BotsHistoryModal
+        open={historyModalOpen}
+        bots={bots}
+        onClose={() => setHistoryModalOpen(false)}
+        onOpenSession={onSelectSession}
+        onRestoreBot={onRestoreBot}
       />
     </nav>
   );

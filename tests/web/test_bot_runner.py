@@ -218,3 +218,41 @@ async def test_worker_pool_respects_max_concurrent_and_releases_on_waiting_permi
     release_gate.set()
     await runner.stop()
     assert runner.active_count == 0
+
+
+@pytest.mark.asyncio
+async def test_bot_runner_records_run_history(tmp_path: Path) -> None:
+    from quartz.bots.history import BotHistoryStore
+
+    store = BotStore(tmp_path)
+    queue = BotQueue(tmp_path)
+    history = BotHistoryStore(tmp_path)
+
+    store.create_bot(_make_cron_bot("bot-ok", "* * * * *"))
+    store.create_bot(_make_cron_bot("bot-err", "* * * * *"))
+    queue.enqueue(QueuedTrigger(trigger_id="t-ok", bot_id="bot-ok", event_key="k1", source="cron"))
+    queue.enqueue(QueuedTrigger(trigger_id="t-err", bot_id="bot-err", event_key="k2", source="webhook"))
+
+    async def run_trigger(bot: BotConfig, trigger: QueuedTrigger) -> TurnStatus:
+        state = store.get_state(bot.id)
+        state.active_session_id = f"sess-{bot.id}"
+        store.save_state(state)
+        if bot.id == "bot-err":
+            raise RuntimeError("trigger exploded")
+        return TurnStatus.OK
+
+    runner = BotRunner(store, queue, run_trigger=run_trigger, history=history, max_concurrent=2)
+    await runner.dispatch_available()
+    for _ in range(50):
+        if len(history.list_runs()) == 2 and all(r.status != "running" for r in history.list_runs()):
+            break
+        await asyncio.sleep(0.02)
+
+    runs = history.list_runs()
+    assert len(runs) == 2
+    by_bot = {r.bot_id: r for r in runs}
+    assert by_bot["bot-ok"].status == "ok"
+    assert by_bot["bot-ok"].session_id == "sess-bot-ok"
+    assert by_bot["bot-ok"].duration_ms is not None
+    assert by_bot["bot-err"].status == "error"
+    assert by_bot["bot-err"].error == "trigger exploded"

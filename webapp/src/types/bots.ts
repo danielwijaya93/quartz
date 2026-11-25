@@ -42,3 +42,30 @@ export interface BotConfig {
 export type BotFormValues = Omit<BotConfig, "id" | "created_at" | "updated_at"> & {
   id?: string;
 };
+
+export type BotRunStatus = "running" | "ok" | "waiting_permission" | "error" | "cancelled";
+
+export interface BotRunRecord {
+  run_id: string;
+  bot_id: string;
+  bot_name: string;
+  trigger_id: string;
+  event_key: string;
+  source: string;
+  status: BotRunStatus | string;
+  started_at: number;
+  finished_at: number | null;
+  duration_ms: number | null;
+  session_id: string | null;
+  error: string | null;
+}
+
+export interface DeletedBotRecord {
+  bot: BotConfig;
+  deleted_at: number;
+}
+
+export interface BotsHistoryResponse {
+  runs: BotRunRecord[];
+  deletedBots: DeletedBotRecord[];
+}

@@ -442,10 +442,13 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     onDismissActiveSession: quartz.dismissActiveSession,
     onClearReadActiveSessions: quartz.clearReadActiveSessions,
     bots: bots.bots,
+    togglingBotIds: bots.togglingIds,
+    botToggleError: bots.toggleError,
     onCreateBot: bots.create,
     onUpdateBot: bots.update,
     onToggleBot: bots.toggle,
     onDeleteBot: bots.remove,
+    onRestoreBot: bots.restore,
   };
 
   return (

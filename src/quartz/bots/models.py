@@ -141,6 +141,73 @@ class QueuedTrigger:
         )
 
 
+RunStatus = Literal["running", "ok", "waiting_permission", "error", "cancelled"]
+
+
+@dataclass(slots=True)
+class BotRunRecord:
+    run_id: str
+    bot_id: str
+    bot_name: str
+    trigger_id: str
+    event_key: str
+    source: str
+    status: str
+    started_at: float
+    finished_at: float | None = None
+    duration_ms: int | None = None
+    session_id: str | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> BotRunRecord:
+        return cls(
+            run_id=str(raw["run_id"]),
+            bot_id=str(raw["bot_id"]),
+            bot_name=str(raw.get("bot_name") or raw["bot_id"]),
+            trigger_id=str(raw.get("trigger_id", "")),
+            event_key=str(raw.get("event_key", "")),
+            source=str(raw.get("source", "")),
+            status=str(raw.get("status", "unknown")),
+            started_at=float(raw.get("started_at", 0.0)),
+            finished_at=(
+                float(raw["finished_at"]) if raw.get("finished_at") is not None else None
+            ),
+            duration_ms=(
+                int(raw["duration_ms"]) if raw.get("duration_ms") is not None else None
+            ),
+            session_id=(
+                str(raw["session_id"]) if raw.get("session_id") is not None else None
+            ),
+            error=str(raw["error"]) if raw.get("error") is not None else None,
+        )
+
+
+@dataclass(slots=True)
+class DeletedBotRecord:
+    bot: BotConfig
+    deleted_at: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "bot": self.bot.to_dict(),
+            "deleted_at": self.deleted_at,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> DeletedBotRecord:
+        bot_raw = raw.get("bot")
+        if not isinstance(bot_raw, dict):
+            raise ValueError("DeletedBotRecord requires a 'bot' dict")
+        return cls(
+            bot=BotConfig.from_dict(bot_raw),
+            deleted_at=float(raw.get("deleted_at", 0.0)),
+        )
+
+
 def validate_bot_config(config: BotConfig) -> None:
     """Validate bot fields and watcher-specific configuration."""
     if not _BOT_ID_RE.match(config.id):

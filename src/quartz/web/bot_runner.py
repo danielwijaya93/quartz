@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from quartz.bots import BotConfig, BotQueue, BotStore, QueuedTrigger
+from quartz.bots import BotConfig, BotHistoryStore, BotQueue, BotRunRecord, BotStore, QueuedTrigger
 from quartz.core.turn import TurnStatus
 
 logger = logging.getLogger(__name__)
@@ -93,12 +93,14 @@ class BotRunner:
         queue: BotQueue,
         run_trigger: TriggerCallback | None = None,
         *,
+        history: BotHistoryStore | None = None,
         max_concurrent: int = 2,
         tick_interval_s: float = 15.0,
         gh_cmd: str = "gh",
     ) -> None:
         self._store = store
         self._queue = queue
+        self._history = history
         self._run_trigger: TriggerCallback = run_trigger or _default_run_trigger
         self._max_concurrent = max(1, int(max_concurrent))
         self._tick_interval_s = max(0.05, float(tick_interval_s))
@@ -297,24 +299,80 @@ class BotRunner:
 
     async def _execute_trigger(self, bot: BotConfig, trigger: QueuedTrigger) -> None:
         slot_released = False
+        run_id = uuid.uuid4().hex
+        if self._history is not None:
+            await asyncio.to_thread(
+                self._history.record_run_start,
+                BotRunRecord(
+                    run_id=run_id,
+                    bot_id=bot.id,
+                    bot_name=bot.name,
+                    trigger_id=trigger.trigger_id,
+                    event_key=trigger.event_key,
+                    source=trigger.source,
+                    status="running",
+                    started_at=time.time(),
+                ),
+            )
         try:
             outcome = await self._run_trigger(bot, trigger)
+            run_status = "ok"
             if outcome == TurnStatus.WAITING_PERMISSION or outcome == TurnStatus.WAITING_PERMISSION.value:
+                run_status = "waiting_permission"
                 self._active_slots = max(0, self._active_slots - 1)
                 slot_released = True
                 self._wake_event.set()
+            elif outcome == TurnStatus.ERROR or outcome == TurnStatus.ERROR.value:
+                run_status = "error"
+            elif outcome in (
+                TurnStatus.INTERRUPTED,
+                TurnStatus.INTERRUPTED.value,
+                TurnStatus.ABORTED,
+                TurnStatus.ABORTED.value,
+            ):
+                run_status = "cancelled"
+
+            finished_at = time.time()
             state = await asyncio.to_thread(self._store.get_state, bot.id)
-            state.last_run_at = time.time()
+            state.last_run_at = finished_at
             state.last_error = None
             await asyncio.to_thread(self._store.save_state, state)
+            if self._history is not None:
+                await asyncio.to_thread(
+                    self._history.record_run_finish,
+                    run_id,
+                    status=run_status,
+                    finished_at=finished_at,
+                    session_id=state.active_session_id,
+                )
         except asyncio.CancelledError:
+            if self._history is not None:
+                with contextlib.suppress(Exception):
+                    state = await asyncio.to_thread(self._store.get_state, bot.id)
+                    await asyncio.to_thread(
+                        self._history.record_run_finish,
+                        run_id,
+                        status="cancelled",
+                        finished_at=time.time(),
+                        session_id=state.active_session_id,
+                    )
             raise
         except Exception as exc:
             logger.warning("Bot %s trigger %s failed", bot.id, trigger.trigger_id, exc_info=True)
+            finished_at = time.time()
             state = await asyncio.to_thread(self._store.get_state, bot.id)
-            state.last_run_at = time.time()
+            state.last_run_at = finished_at
             state.last_error = str(exc)
             await asyncio.to_thread(self._store.save_state, state)
+            if self._history is not None:
+                await asyncio.to_thread(
+                    self._history.record_run_finish,
+                    run_id,
+                    status="error",
+                    finished_at=finished_at,
+                    session_id=state.active_session_id,
+                    error=str(exc),
+                )
         finally:
             if not slot_released:
                 self._active_slots = max(0, self._active_slots - 1)
