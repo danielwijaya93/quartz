@@ -306,7 +306,7 @@ def test_exec_bridge_sync_quartz_permissions_and_fallback(
         return next(decisions)
 
     kc = KernelClient(cwd=tmp_path, sandbox=False, host_bridge=True, permission_handler=handler)
-    monkeypatch.setattr("quartz.kernel.client.find_real_binary", lambda _tool: None)
+    monkeypatch.setattr("quartz.kernel.host_rpc.find_real_binary", lambda _tool: None)
 
     spawned_cmds: list[list[str]] = []
 
@@ -318,7 +318,7 @@ def test_exec_bridge_sync_quartz_permissions_and_fallback(
         def communicate(self, timeout: float | None = None) -> tuple[str, str]:
             return ("worker-ok\n", "")
 
-    monkeypatch.setattr("quartz.kernel.client.subprocess.Popen", _FakeProc)
+    monkeypatch.setattr("quartz.kernel.host_rpc.subprocess.Popen", _FakeProc)
 
     # 1. reject -> denied, does not spawn
     r1 = kc._exec_bridge_sync({"tool": "quartz", "argv": ["-p", "one"], "cwd": str(tmp_path)})
@@ -357,7 +357,7 @@ def test_exec_bridge_sync_quartz_cancel_terminates_subprocess(
         host_bridge=True,
         preapproved_scopes={"quartz_worker"},
     )
-    monkeypatch.setattr("quartz.kernel.client.find_real_binary", lambda _tool: "/usr/bin/quartz")
+    monkeypatch.setattr("quartz.kernel.host_rpc.find_real_binary", lambda _tool: "/usr/bin/quartz")
 
     cancel_ev = threading.Event()
     terminated = False
@@ -380,7 +380,7 @@ def test_exec_bridge_sync_quartz_cancel_terminates_subprocess(
             nonlocal terminated
             terminated = True
 
-    monkeypatch.setattr("quartz.kernel.client.subprocess.Popen", _SlowProc)
+    monkeypatch.setattr("quartz.kernel.host_rpc.subprocess.Popen", _SlowProc)
 
     res = kc._exec_bridge_sync(
         {"tool": "quartz", "argv": ["-p", "slow"], "cwd": str(tmp_path)},

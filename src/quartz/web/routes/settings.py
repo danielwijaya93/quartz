@@ -316,10 +316,14 @@ def _register_jobs_routes(router: APIRouter, ctx: AppContext) -> None:
         target = manager.get_session(session_id)
         if target is None or not target.built:
             return JSONResponse({"error": "No active runtime"}, status_code=404)
-        tail_fn = getattr(target.runtime.kernel, "bash_tail", None)
-        if not callable(tail_fn):
-            return JSONResponse({"error": "Job tail unavailable"}, status_code=404)
-        tail = await asyncio.to_thread(tail_fn, pid)
+        atail_fn = cast(Callable[[int], Awaitable[str | None]] | None, getattr(target.runtime.kernel, "abash_tail", None))
+        if callable(atail_fn):
+            tail = await atail_fn(pid)
+        else:
+            tail_fn = getattr(target.runtime.kernel, "bash_tail", None)
+            if not callable(tail_fn):
+                return JSONResponse({"error": "Job tail unavailable"}, status_code=404)
+            tail = await asyncio.to_thread(tail_fn, pid)
         if tail is None:
             return JSONResponse({"error": f"Job {pid} not found"}, status_code=404)
         return JSONResponse({"pid": pid, "tail": tail})
@@ -331,10 +335,14 @@ def _register_jobs_routes(router: APIRouter, ctx: AppContext) -> None:
         target = manager.get_session(session_id)
         if target is None or not target.built:
             return JSONResponse({"error": "No active runtime"}, status_code=404)
-        kill_fn = getattr(target.runtime.kernel, "kill_bash", None)
-        if not callable(kill_fn):
-            return JSONResponse({"error": "Job kill unavailable"}, status_code=404)
-        killed = bool(await asyncio.to_thread(kill_fn, pid))
+        akill_fn = cast(Callable[[int], Awaitable[bool]] | None, getattr(target.runtime.kernel, "akill_bash", None))
+        if callable(akill_fn):
+            killed = bool(await akill_fn(pid))
+        else:
+            kill_fn = getattr(target.runtime.kernel, "kill_bash", None)
+            if not callable(kill_fn):
+                return JSONResponse({"error": "Job kill unavailable"}, status_code=404)
+            killed = bool(await asyncio.to_thread(kill_fn, pid))
         if killed:
             manager.sync_session_background_jobs(target)
         return JSONResponse({"pid": pid, "killed": killed})

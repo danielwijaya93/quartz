@@ -1,16 +1,13 @@
-"""Host-side JSONL client managing the persistent Python REPL subprocess."""
+"""Host-side native async JSONL client managing the persistent Python REPL subprocess."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import contextvars
 import json
 import logging
 import os
-import queue
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -20,43 +17,78 @@ from pathlib import Path
 from typing import Any
 
 from quartz.kernel.base import BaseKernel, CellResult
-from quartz.kernel.bridge import (
-    BRIDGED_TOOLS,
-    PermissionHandler,
-    PermissionPolicy,
-    PermissionRequest,
-    classify_bridge_scope,
-    find_real_binary,
-    format_command_display,
-    validate_bridge_cwd,
+from quartz.kernel.bridge import PermissionHandler
+from quartz.kernel.host_rpc import (
+    _HOST_IMAGE_SINK,
+    HostRpcHandler,
+    _abort_bridge_proc,
+    _bridge_err,
 )
+from quartz.kernel.io_loop import get_kernel_io_loop, run_on_loop
 from quartz.kernel.sandbox import SandboxConfig, sandbox_env_overrides, wrap_command
-from quartz.settings import resolve_bridge_timeout
 
 logger = logging.getLogger(__name__)
 
-_HOST_IMAGE_SINK: contextvars.ContextVar[list[dict[str, str]] | None] = contextvars.ContextVar(
-    "quartz_host_image_sink", default=None
-)
+__all__ = ["_HOST_IMAGE_SINK", "KernelClient", "_abort_bridge_proc", "_bridge_err"]
+
+# Raised above asyncio's default 64 KiB StreamReader limit so large stdout dumps
+# and base64 image/file frames never fail with LimitOverrunError.
+_STREAM_READER_LIMIT = 64 * 1024 * 1024
 
 
-def _abort_bridge_proc(proc: subprocess.Popen[str], exit_code: int, suffix: str) -> dict[str, Any]:
-    """Terminate (or kill) a host-bridge subprocess and return a standardized error result."""
-    proc.terminate()
-    try:
-        stdout, stderr = proc.communicate(timeout=2.0)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        stdout, stderr = proc.communicate()
-    return {"exit_code": exit_code, "stdout": stdout or "", "stderr": (stderr or "") + suffix}
+class _AsyncProcHandle:
+    """Thin Popen-compatible facade over ``asyncio.subprocess.Process``."""
 
+    def __init__(
+        self,
+        proc: asyncio.subprocess.Process,
+        io_loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        self._proc = proc
+        self._io_loop = io_loop
+        self.pid = proc.pid
 
-def _bridge_err(code: int, msg: str) -> dict[str, Any]:
-    return {"exit_code": code, "stdout": "", "stderr": msg}
+    @property
+    def returncode(self) -> int | None:
+        return self._proc.returncode
+
+    def poll(self) -> int | None:
+        return self._proc.returncode
+
+    def send_signal(self, sig: int) -> None:
+        self._proc.send_signal(sig)
+
+    def terminate(self) -> None:
+        self._proc.terminate()
+
+    def kill(self) -> None:
+        self._proc.kill()
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self._proc.returncode is not None:
+            return self._proc.returncode
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is self._io_loop or self._io_loop.is_closed():
+            deadline = None if timeout is None else (time.monotonic() + timeout)
+            while self._proc.returncode is None:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError(f"Process {self.pid} did not exit within {timeout}s")
+                try:
+                    pid, status = os.waitpid(self.pid, os.WNOHANG)
+                    if pid == self.pid:
+                        return os.waitstatus_to_exitcode(status)
+                except ChildProcessError:
+                    return self._proc.returncode if self._proc.returncode is not None else 0
+                time.sleep(0.01)
+            return self._proc.returncode
+        return run_on_loop(self._io_loop, self._proc.wait(), timeout=timeout)
 
 
 class KernelClient(BaseKernel):
-    """Manages a persistent `kernel_worker` subprocess over JSONL."""
+    """Manages a persistent ``kernel_worker`` subprocess over native async JSONL IPC."""
 
     def __init__(
         self,
@@ -71,258 +103,97 @@ class KernelClient(BaseKernel):
         shared_host_mcp: bool = False,
     ) -> None:
         super().__init__(cwd)
-        self._proc: subprocess.Popen[str] | None = None
-        self._pending: dict[str, queue.Queue[dict[str, Any]]] = {}
-        self._pending_async: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Future[dict[str, Any]]]] = {}
+        self._raw_proc: asyncio.subprocess.Process | None = None
+        self._proc: _AsyncProcHandle | None = None
+        self._io_loop: asyncio.AbstractEventLoop | None = None
+        self._stdout_task: asyncio.Task[None] | None = None
+        self._stderr_task: asyncio.Task[None] | None = None
+        self._rpc_tasks: set[asyncio.Task[None]] = set()
+        self._ready_fut: asyncio.Future[bool] | None = None
+        self._pending_async: dict[
+            str, tuple[asyncio.AbstractEventLoop, asyncio.Future[dict[str, Any]]]
+        ] = {}
         self._pending_lock = threading.Lock()
         self._write_lock = threading.Lock()
-        self._ready_event = threading.Event()
         self._worker_exited = False
-        self._reader_thread: threading.Thread | None = None
-        self._stderr_thread: threading.Thread | None = None
         self._stderr_tail: deque[str] = deque(maxlen=200)
         self._sandbox_config: SandboxConfig = sandbox_config or SandboxConfig(enabled=sandbox)
         self._host_mcp_override = host_mcp
         self._host_bridge_override = host_bridge
-        self._permission_policy = PermissionPolicy(preapproved_scopes=preapproved_scopes)
-        self._permission_handler: PermissionHandler | None = permission_handler
-        self._permission_lock = threading.Lock()
-        self._permission_waiting_count = 0
-        self._permission_waiting_lock = threading.Lock()
-        self._host_cancel_events: dict[str, threading.Event] = {}
-        self._host_cancel_lock = threading.Lock()
-        self._shared_host_mcp = shared_host_mcp
-        self._host_mcp: Any = None
-        self._host_loop: asyncio.AbstractEventLoop | None = None
-        self._host_thread: threading.Thread | None = None
-        self._host_loop_lock = threading.Lock()
+        self._host_rpc = HostRpcHandler(
+            cwd=self.cwd,
+            permission_handler=permission_handler,
+            preapproved_scopes=preapproved_scopes,
+            shared_host_mcp=shared_host_mcp,
+        )
+
+    @property
+    def _permission_policy(self) -> Any:
+        return self._host_rpc.permission_policy
+
+    @property
+    def _permission_handler(self) -> PermissionHandler | None:
+        return self._host_rpc.permission_handler
+
+    @_permission_handler.setter
+    def _permission_handler(self, handler: PermissionHandler | None) -> None:
+        self._host_rpc.permission_handler = handler
 
     def _is_alive(self) -> bool:
-        return self._proc is not None and self._proc.poll() is None
+        return (
+            self._raw_proc is not None
+            and self._raw_proc.returncode is None
+            and self._io_loop is not None
+            and not self._io_loop.is_closed()
+        )
 
     def _is_wait_closed(self) -> bool:
         return self._worker_exited
 
     def _host_mcp_enabled(self) -> bool:
-        return self._sandbox_config.enabled if self._host_mcp_override is None else self._host_mcp_override
+        return (
+            self._sandbox_config.enabled
+            if self._host_mcp_override is None
+            else self._host_mcp_override
+        )
 
     def _host_bridge_enabled(self) -> bool:
-        return self._sandbox_config.enabled if self._host_bridge_override is None else self._host_bridge_override
+        return (
+            self._sandbox_config.enabled
+            if self._host_bridge_override is None
+            else self._host_bridge_override
+        )
 
     def enable_shared_host_mcp(self, enabled: bool = True) -> None:
-        """Opt into the process-wide shared host MCP pool and event loop."""
-        self._shared_host_mcp = bool(enabled)
+        """Opt into the process-wide shared host MCP pool."""
+        self._host_rpc.shared_host_mcp = bool(enabled)
 
     def set_permission_handler(self, handler: PermissionHandler | None) -> None:
         """Register (or clear) the interactive approval callback for host-bridged commands."""
-        self._permission_handler = handler
-
-    @staticmethod
-    def _dispatch_host_image(img: dict[str, str]) -> None:
-        sink = _HOST_IMAGE_SINK.get()
-        if sink is not None:
-            sink.append(img)
-
-    def _get_host_mcp(self) -> Any:
-        if self._host_mcp is None:
-            if self._shared_host_mcp:
-                from quartz.mcp.pool import get_shared_host_mcp_pool
-
-                self._host_mcp = get_shared_host_mcp_pool().get_manager(
-                    self.cwd, on_image=self._dispatch_host_image
-                )
-            else:
-                from quartz.mcp.client import MCPManager
-
-                self._host_mcp = MCPManager(cwd=self.cwd, on_image=self._dispatch_host_image)
-        return self._host_mcp
-
-    def _ensure_host_loop(self) -> asyncio.AbstractEventLoop:
-        if self._shared_host_mcp:
-            from quartz.mcp.pool import get_shared_host_mcp_pool
-
-            return get_shared_host_mcp_pool().ensure_loop()
-        with self._host_loop_lock:
-            if self._host_loop is not None and self._host_loop.is_running():
-                return self._host_loop
-            ready = threading.Event()
-            loop_holder: list[asyncio.AbstractEventLoop] = []
-
-            def _runner() -> None:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop_holder.append(loop)
-                ready.set()
-                try:
-                    loop.run_forever()
-                finally:
-                    loop.close()
-
-            self._host_thread = threading.Thread(target=_runner, daemon=True)
-            self._host_thread.start()
-            ready.wait(timeout=5.0)
-            self._host_loop = loop_holder[0]
-            return self._host_loop
-
-    def _write_frame(self, payload: dict[str, Any], *, best_effort: bool = False) -> None:
-        proc = self._proc
-        if proc is None or proc.stdin is None or (best_effort and proc.poll() is not None):
-            return
-        line = json.dumps(payload, ensure_ascii=False) + "\n"
-        try:
-            with self._write_lock:
-                proc.stdin.write(line)
-                proc.stdin.flush()
-        except Exception:
-            if not best_effort:
-                raise
-            logger.debug("Failed to write kernel host response", exc_info=True)
-
-    async def _handle_host_request(self, msg: dict[str, Any]) -> None:
-        req_id = msg.get("id", "")
-        method = msg.get("method", "")
-        params = msg.get("params") or {}
-        mgr = self._get_host_mcp()
-        images: list[dict[str, str]] = []
-        token = _HOST_IMAGE_SINK.set(images)
-        try:
-            if method == "mcp.list_tools":
-                result = await mgr.list_tools(server=params.get("server"), refresh=bool(params.get("refresh", False)))
-            elif method == "mcp.search_tools":
-                result = await mgr.search_tools(
-                    query=str(params.get("query", "")),
-                    limit=int(params.get("limit", 20)),
-                    refresh=bool(params.get("refresh", False)),
-                )
-            elif method == "mcp.call_tool":
-                result = await mgr.call_tool(
-                    str(params.get("server", "")),
-                    str(params.get("tool", "")),
-                    arguments=params.get("arguments"),
-                )
-            elif method == "bridge.exec":
-                cancel_ev = threading.Event()
-                if req_id:
-                    with self._host_cancel_lock:
-                        self._host_cancel_events[req_id] = cancel_ev
-                try:
-                    loop = asyncio.get_running_loop()
-                    result = await loop.run_in_executor(
-                        None, lambda: self._exec_bridge_sync(params, cancel_event=cancel_ev)
-                    )
-                finally:
-                    if req_id:
-                        with self._host_cancel_lock:
-                            self._host_cancel_events.pop(req_id, None)
-            else:
-                raise ValueError(f"Unknown host RPC method: {method!r}")
-
-            self._write_frame(
-                {"type": "host_response", "id": req_id, "ok": True, "result": result, "servers": mgr.list_servers(), "images": images},
-                best_effort=True,
-            )
-        except Exception as exc:
-            self._write_frame(
-                {"type": "host_response", "id": req_id, "ok": False, "error": str(exc), "error_type": type(exc).__name__, "servers": mgr.list_servers()},
-                best_effort=True,
-            )
-        finally:
-            _HOST_IMAGE_SINK.reset(token)
-
-    def _exec_bridge_sync(
-        self, params: dict[str, Any], *, cancel_event: threading.Event | None = None
-    ) -> dict[str, Any]:
-        tool = str(params.get("tool", ""))
-        if tool not in BRIDGED_TOOLS:
-            return _bridge_err(126, f"Unsupported bridge tool: {tool!r}\n")
-        if cancel_event is not None and cancel_event.is_set():
-            return _bridge_err(126, "Host bridge request cancelled.\n")
-        raw_argv = params.get("argv")
-        argv = [str(a) for a in raw_argv] if isinstance(raw_argv, list) else []
-        target_cwd = validate_bridge_cwd(params.get("cwd"), self.cwd)
-        scope = classify_bridge_scope(tool, argv)
-        req = PermissionRequest(
-            tool=tool,
-            argv=tuple(argv),
-            cwd=str(target_cwd),
-            scope=scope,
-            command_display=format_command_display(tool, argv),
-            cancel_event=cancel_event,
-        )
-
-        with self._permission_lock:
-            if cancel_event is not None and cancel_event.is_set():
-                return _bridge_err(126, "Host bridge request cancelled.\n")
-            allowed = self._permission_policy.is_allowed(scope)
-            if not allowed:
-                handler = self._permission_handler
-                if handler is None:
-                    return _bridge_err(
-                        126,
-                        f"Permission denied: '{req.command_display}' requires interactive user approval (none configured).\n",
-                    )
-                with self._permission_waiting_lock:
-                    self._permission_waiting_count += 1
-                try:
-                    decision = handler(req)
-                finally:
-                    with self._permission_waiting_lock:
-                        self._permission_waiting_count -= 1
-                if cancel_event is not None and cancel_event.is_set():
-                    return _bridge_err(126, "Host bridge request cancelled.\n")
-                allowed = self._permission_policy.record(scope, decision)
-
-        if not allowed:
-            return _bridge_err(126, f"Permission rejected by user: '{req.command_display}'\n")
-        if cancel_event is not None and cancel_event.is_set():
-            return _bridge_err(126, "Host bridge request cancelled.\n")
-
-        real_bin = find_real_binary(tool)
-        if real_bin:
-            cmd = [real_bin, *argv]
-        elif tool == "quartz":
-            cmd = [sys.executable, "-m", "quartz", *argv]
-        else:
-            return _bridge_err(127, f"{tool}: command not found on host\n")
-
-        timeout_s = resolve_bridge_timeout(tool)
-        proc = subprocess.Popen(
-            cmd, cwd=str(target_cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="replace",
-        )
-        deadline = time.monotonic() + timeout_s
-        while True:
-            if cancel_event is not None and cancel_event.is_set():
-                return _abort_bridge_proc(proc, 126, "Host bridge request cancelled.\n")
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return _abort_bridge_proc(proc, 124, f"Host bridge command timed out after {int(timeout_s)}s.\n")
-            try:
-                stdout, stderr = proc.communicate(timeout=min(0.1, remaining))
-                break
-            except subprocess.TimeoutExpired:
-                continue
-        return {"exit_code": proc.returncode if proc.returncode is not None else 1, "stdout": stdout or "", "stderr": stderr or ""}
-
-    def _dispatch_host_request(self, msg: dict[str, Any]) -> None:
-        asyncio.run_coroutine_threadsafe(self._handle_host_request(msg), self._ensure_host_loop())
+        self._host_rpc.permission_handler = handler
 
     def enable_sandbox(self, config: SandboxConfig | None = None) -> None:
         """Enable OS-level sandboxing for the kernel subprocess (must be called before start)."""
         self._sandbox_config = config or SandboxConfig(enabled=True)
 
-    def start(self, timeout: float = 10.0) -> None:
-        if self._is_alive():
-            return
-        # Detach any dead previous process BEFORE resetting readiness flags so its
-        # dying `_read_loop` thread cannot clobber `_worker_exited` / `_ready_event`.
-        self._proc = None
-        self._ready_event.clear()
-        self._worker_exited = False
-        self._running_bash_count = 0
-        self._running_bash_jobs.clear()
-        self._stderr_tail.clear()
+    def _get_host_mcp(self) -> Any:
+        return self._host_rpc.get_host_mcp()
 
+    def _ensure_host_loop(self) -> asyncio.AbstractEventLoop:
+        if self._host_rpc.shared_host_mcp:
+            from quartz.mcp.pool import get_shared_host_mcp_pool
+
+            return get_shared_host_mcp_pool().ensure_loop()
+        if self._io_loop is not None and self._io_loop.is_running() and not self._io_loop.is_closed():
+            return self._io_loop
+        return get_kernel_io_loop()
+
+    def _exec_bridge_sync(
+        self, params: dict[str, Any], *, cancel_event: threading.Event | None = None
+    ) -> dict[str, Any]:
+        return self._host_rpc.exec_bridge_sync(params, cancel_event=cancel_event)
+
+    def _build_spawn_cmd_and_env(self) -> tuple[list[str], dict[str, str]]:
         env = os.environ.copy()
         pkg_root = str(Path(__file__).resolve().parent.parent.parent)
         existing_pp = env.get("PYTHONPATH", "")
@@ -332,41 +203,207 @@ class KernelClient(BaseKernel):
         if self._sandbox_config.enabled:
             cmd = wrap_command(cmd, self.cwd, self._sandbox_config)
             env.update(sandbox_env_overrides())
-        for key, enabled in (("QUARTZ_HOST_MCP", self._host_mcp_enabled()), ("QUARTZ_HOST_BRIDGE", self._host_bridge_enabled())):
+        for key, enabled in (
+            ("QUARTZ_HOST_MCP", self._host_mcp_enabled()),
+            ("QUARTZ_HOST_BRIDGE", self._host_bridge_enabled()),
+        ):
             if enabled:
                 env[key] = "1"
             else:
                 env.pop(key, None)
+        return cmd, env
 
-        proc = subprocess.Popen(
-            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", bufsize=1, cwd=str(self.cwd), env=env, start_new_session=True,
+    def _write_frame_on_io_loop(
+        self, payload: dict[str, Any], *, best_effort: bool = False
+    ) -> None:
+        proc = self._raw_proc
+        if proc is None or proc.stdin is None or proc.stdin.is_closing():
+            if not best_effort:
+                raise BrokenPipeError("Kernel stdin is closed")
+            return
+        if best_effort and proc.returncode is not None:
+            return
+        raw = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+        try:
+            with self._write_lock:
+                proc.stdin.write(raw)
+        except Exception:
+            if not best_effort:
+                raise
+            logger.debug("Failed to write kernel frame", exc_info=True)
+
+    def _write_frame(self, payload: dict[str, Any], *, best_effort: bool = False) -> None:
+        loop = self._io_loop
+        if loop is None or loop.is_closed():
+            if not best_effort:
+                raise BrokenPipeError("Kernel I/O loop is closed")
+            return
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            self._write_frame_on_io_loop(payload, best_effort=best_effort)
+            return
+        try:
+            loop.call_soon_threadsafe(
+                lambda: self._write_frame_on_io_loop(payload, best_effort=best_effort)
+            )
+        except RuntimeError:
+            if not best_effort:
+                raise
+
+    async def _read_stderr_loop(self, stream: asyncio.StreamReader) -> None:
+        try:
+            while True:
+                raw = await stream.readline()
+                if not raw:
+                    break
+                self._stderr_tail.append(raw.decode("utf-8", errors="replace"))
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.debug("Kernel stderr reader stopped", exc_info=True)
+
+    def _dispatch_host_request(self, msg: dict[str, Any]) -> None:
+        loop = self._io_loop
+        if loop is None or loop.is_closed():
+            return
+        task = loop.create_task(
+            self._host_rpc.handle_request(
+                msg, lambda frame: self._write_frame(frame, best_effort=True)
+            ),
+            name="quartz-host-rpc",
         )
-        self._proc = proc
-        self._reader_thread = threading.Thread(target=self._read_loop, args=(proc,), daemon=True)
-        self._reader_thread.start()
+        self._rpc_tasks.add(task)
+        task.add_done_callback(self._rpc_tasks.discard)
+
+    async def _read_stdout_loop(
+        self, proc: asyncio.subprocess.Process, stream: asyncio.StreamReader
+    ) -> None:
+        try:
+            while True:
+                try:
+                    raw = await stream.readline()
+                except ValueError:
+                    # Single line exceeded _STREAM_READER_LIMIT; drain until newline.
+                    logger.warning("Dropping oversized kernel stdout frame")
+                    continue
+                if not raw:
+                    break
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                msg_type = msg.get("type")
+                if msg_type == "ready":
+                    if self._raw_proc is proc and self._ready_fut is not None and not self._ready_fut.done():
+                        self._ready_fut.set_result(True)
+                elif self._handle_common_proto_message(msg):
+                    continue
+                elif msg_type == "host_request":
+                    self._dispatch_host_request(msg)
+                elif msg_type == "host_cancel":
+                    self._host_rpc.cancel_request(str(msg.get("id") or ""))
+                else:
+                    req_id = msg.get("id")
+                    if isinstance(req_id, str) and req_id:
+                        with self._pending_lock:
+                            async_waiter = self._pending_async.get(req_id)
+                        if async_waiter is not None:
+                            self._resolve_async_future(async_waiter[0], async_waiter[1], msg)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.debug("Kernel stdout reader stopped", exc_info=True)
+
+        # Ignore EOF from a superseded worker so a dying reader cannot clobber a restarted one.
+        if self._raw_proc is not proc:
+            return
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(proc.wait(), timeout=0.5)
+        self._worker_exited = True
+        self._update_bg_count(0)
+        self._running_bash_jobs.clear()
+        if self._ready_fut is not None and not self._ready_fut.done():
+            self._ready_fut.set_result(False)
+        self.wake_event_waiters(result=False)
+        self._host_rpc.cancel_all()
+        err_msg = {"type": "error", "error": "Kernel process exited unexpectedly"}
+        with self._pending_lock:
+            async_waiters = list(self._pending_async.values())
+        for waiter_loop, fut in async_waiters:
+            self._resolve_async_future(waiter_loop, fut, err_msg)
+
+    async def astart(self, timeout: float = 10.0) -> None:
+        """Start the kernel subprocess natively on the current running event loop."""
+        if self._is_alive():
+            return
+        loop = asyncio.get_running_loop()
+        self._raw_proc = None
+        self._proc = None
+        self._io_loop = loop
+        self._worker_exited = False
+        self._running_bash_count = 0
+        self._running_bash_jobs.clear()
+        self._stderr_tail.clear()
+        ready_fut: asyncio.Future[bool] = loop.create_future()
+        self._ready_fut = ready_fut
+
+        cmd, env = self._build_spawn_cmd_and_env()
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(self.cwd),
+            env=env,
+            start_new_session=True,
+            limit=_STREAM_READER_LIMIT,
+        )
+        self._raw_proc = proc
+        self._proc = _AsyncProcHandle(proc, loop)
+        assert proc.stdout is not None
+        self._stdout_task = loop.create_task(
+            self._read_stdout_loop(proc, proc.stdout), name="quartz-kernel-stdout"
+        )
         if proc.stderr is not None:
-            self._stderr_thread = threading.Thread(target=self._read_stderr_loop, args=(proc.stderr,), daemon=True)
-            self._stderr_thread.start()
+            self._stderr_task = loop.create_task(
+                self._read_stderr_loop(proc.stderr), name="quartz-kernel-stderr"
+            )
         self._register_atexit()
 
-        ready = self._ready_event.wait(timeout=timeout)
-        rc = proc.poll()
-        if self._worker_exited or rc is not None:
-            self.close()
-            raise RuntimeError(f"Python kernel exited during startup (exit code {rc}). {''.join(self._stderr_tail)}")
-        if not ready:
-            self.close()
-            raise RuntimeError(f"Python kernel failed to start within {timeout}s. {''.join(self._stderr_tail)}")
+        try:
+            ready = await asyncio.wait_for(asyncio.shield(ready_fut), timeout=timeout)
+        except TimeoutError:
+            ready = False
+
+        rc = proc.returncode
+        if self._worker_exited or rc is not None or not ready:
+            stderr_text = "".join(self._stderr_tail)
+            await self.aclose()
+            if rc is not None or self._worker_exited:
+                raise RuntimeError(
+                    f"Python kernel exited during startup (exit code {rc}). {stderr_text}"
+                )
+            raise RuntimeError(
+                f"Python kernel failed to start within {timeout}s. {stderr_text}"
+            )
         if self._configured or self._host_mcp_enabled():
-            self._push_configure()
+            await self._apush_configure()
 
-    def configure(self, *, headless: bool | None = None, background_check_every: float | None = None) -> None:
-        """Push run options into the worker, now and after any later restart."""
-        self._apply_config_values(headless=headless, background_check_every=background_check_every)
-        self._push_configure()
+    def start(self, timeout: float = 10.0) -> None:
+        """Start the kernel subprocess synchronously on the shared background I/O loop."""
+        if self._is_alive():
+            return
+        io_loop = get_kernel_io_loop()
+        run_on_loop(io_loop, self.astart(timeout=timeout), timeout=timeout + 5.0)
 
-    def _push_configure(self) -> None:
+    async def _apush_configure(self) -> None:
         if not self._is_alive():
             return
         payload: dict[str, Any] = {
@@ -375,125 +412,63 @@ class KernelClient(BaseKernel):
             "background_check_every": self._background_check_every,
         }
         if self._host_mcp_enabled():
-            payload["mcp_servers"] = self._get_host_mcp().list_servers()
+            payload["mcp_servers"] = self._host_rpc.get_host_mcp().list_servers()
         try:
-            self._request(payload, timeout=5.0)
+            await self._request_async(payload, timeout=5.0)
         except Exception:
             logger.debug("Best-effort kernel configure failed", exc_info=True)
 
-    def _read_stderr_loop(self, stderr_pipe: Any) -> None:
-        try:
-            for line in stderr_pipe:
-                self._stderr_tail.append(line)
-        except Exception:
-            logger.debug("Kernel stderr reader stopped", exc_info=True)
+    async def aconfigure(
+        self, *, headless: bool | None = None, background_check_every: float | None = None
+    ) -> None:
+        self._apply_config_values(
+            headless=headless, background_check_every=background_check_every
+        )
+        await self._apush_configure()
 
-    def _read_loop(self, proc: subprocess.Popen[str]) -> None:
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                msg = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            msg_type = msg.get("type")
-            if msg_type == "ready":
-                if self._proc is proc:
-                    self._ready_event.set()
-            elif self._handle_common_proto_message(msg):
-                continue
-            elif msg_type == "host_request":
-                self._dispatch_host_request(msg)
-            elif msg_type == "host_cancel":
-                cancel_id = str(msg.get("id") or "")
-                if cancel_id:
-                    with self._host_cancel_lock:
-                        cancel_ev = self._host_cancel_events.get(cancel_id)
-                    if cancel_ev is not None:
-                        cancel_ev.set()
-            else:
-                req_id = msg.get("id")
-                if req_id:
-                    with self._pending_lock:
-                        q = self._pending.get(req_id)
-                        async_waiter = self._pending_async.get(req_id)
-                    if q is not None:
-                        q.put(msg)
-                    if async_waiter is not None:
-                        self._resolve_async_future(async_waiter[0], async_waiter[1], msg)
-
-        # Ignore EOF from a superseded worker so a dying reader thread can never clobber a restarted one.
-        if self._proc is not proc:
+    def configure(
+        self, *, headless: bool | None = None, background_check_every: float | None = None
+    ) -> None:
+        """Push run options into the worker, now and after any later restart."""
+        self._apply_config_values(
+            headless=headless, background_check_every=background_check_every
+        )
+        if not self._is_alive():
             return
-        self._worker_exited = True
-        self._update_bg_count(0)
-        self._running_bash_jobs.clear()
-        self._ready_event.set()
-        self.wake_event_waiters(result=False)
-        with self._host_cancel_lock:
-            for cancel_ev in self._host_cancel_events.values():
-                cancel_ev.set()
-        err_msg = {"type": "error", "error": "Kernel process exited unexpectedly"}
-        with self._pending_lock:
-            for q in self._pending.values():
-                q.put(err_msg)
-            async_waiters = list(self._pending_async.values())
-        for loop, fut in async_waiters:
-            self._resolve_async_future(loop, fut, err_msg)
+        assert self._io_loop is not None
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is not None and running is self._io_loop:
+            running.create_task(self._apush_configure())
+        else:
+            run_on_loop(self._io_loop, self._apush_configure(), timeout=10.0)
 
     def _note_unexpected_exit(self) -> None:
-        code = self._proc.poll() if self._proc is not None else None
+        code = self._raw_proc.returncode if self._raw_proc is not None else None
         tail = "".join(self._stderr_tail).strip()
         notice = f"[kernel exited unexpectedly (code {code}); restarted with a fresh namespace]"
         if tail:
             notice += "\n" + "\n".join(tail.splitlines()[-20:])
         self._restart_notice = notice
 
-    def _is_waiting_permission(self) -> bool:
-        with self._permission_waiting_lock:
-            return self._permission_waiting_count > 0
+    async def _ensure_started_async(self) -> None:
+        if self._is_alive():
+            return
+        if self._raw_proc is not None:
+            self._note_unexpected_exit()
+        io_loop = self._io_loop
+        running = asyncio.get_running_loop()
+        if io_loop is not None and io_loop.is_running() and not io_loop.is_closed() and io_loop is not running:
+            await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(self.astart(), io_loop))
+        else:
+            await self.astart()
 
-    def _request(self, payload: dict[str, Any], timeout: float | None) -> dict[str, Any]:
-        if not self._is_alive():
-            if self._proc is not None:
-                self._note_unexpected_exit()
-            self.start()
-        req_id = uuid.uuid4().hex
-        payload["id"] = req_id
-        q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
-        with self._pending_lock:
-            self._pending[req_id] = q
-        try:
-            self._write_frame(payload)
-            if timeout is None:
-                return q.get()
-            remaining, last = float(timeout), time.monotonic()
-            while True:
-                try:
-                    return q.get(timeout=min(0.25, max(0.01, remaining)))
-                except queue.Empty:
-                    now = time.monotonic()
-                    if not self._is_waiting_permission():
-                        remaining -= now - last
-                    last = now
-                    if remaining <= 0:
-                        if payload.get("type") == "exec":
-                            self.interrupt()
-                            with contextlib.suppress(queue.Empty):
-                                return q.get(timeout=3.0)
-                        raise TimeoutError(f"Kernel request timed out after {timeout}s") from None
-        finally:
-            with self._pending_lock:
-                self._pending.pop(req_id, None)
-
-    async def _request_async(self, payload: dict[str, Any], timeout: float | None) -> dict[str, Any]:
-        if not self._is_alive():
-            if self._proc is not None:
-                self._note_unexpected_exit()
-            await asyncio.to_thread(self.start)
+    async def _request_async(
+        self, payload: dict[str, Any], timeout: float | None
+    ) -> dict[str, Any]:
+        await self._ensure_started_async()
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[dict[str, Any]] = loop.create_future()
         req_id = uuid.uuid4().hex
@@ -507,10 +482,12 @@ class KernelClient(BaseKernel):
             remaining, last = float(timeout), time.monotonic()
             while True:
                 try:
-                    return await asyncio.wait_for(asyncio.shield(fut), timeout=min(0.25, max(0.01, remaining)))
+                    return await asyncio.wait_for(
+                        asyncio.shield(fut), timeout=min(0.25, max(0.01, remaining))
+                    )
                 except TimeoutError:
                     now = time.monotonic()
-                    if not self._is_waiting_permission():
+                    if not self._host_rpc.is_waiting_permission():
                         remaining -= now - last
                     last = now
                     if remaining <= 0:
@@ -518,7 +495,9 @@ class KernelClient(BaseKernel):
                             self.interrupt()
                             with contextlib.suppress(TimeoutError):
                                 return await asyncio.wait_for(asyncio.shield(fut), timeout=3.0)
-                        raise TimeoutError(f"Kernel request timed out after {timeout}s") from None
+                        raise TimeoutError(
+                            f"Kernel request timed out after {timeout}s"
+                        ) from None
         except asyncio.CancelledError:
             if payload.get("type") == "exec":
                 self.interrupt()
@@ -527,6 +506,17 @@ class KernelClient(BaseKernel):
             with self._pending_lock:
                 self._pending_async.pop(req_id, None)
 
+    def _request(self, payload: dict[str, Any], timeout: float | None) -> dict[str, Any]:
+        if not self._is_alive():
+            if self._raw_proc is not None:
+                self._note_unexpected_exit()
+            self.start()
+        assert self._io_loop is not None
+        wait_cap = None if timeout is None else (float(timeout) + 10.0)
+        return run_on_loop(
+            self._io_loop, self._request_async(payload, timeout=timeout), timeout=wait_cap
+        )
+
     async def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
         self.dirty = True
         if self._headless:
@@ -534,11 +524,29 @@ class KernelClient(BaseKernel):
         resp = await self._request_async({"type": "exec", "code": code}, timeout=timeout)
         return self._format_exec_response(resp, include_notice=True)
 
+    async def alist_helpers(self, timeout: float = 5.0) -> dict[str, Any]:
+        if not self._is_alive():
+            return {"helpers": [], "warnings": []}
+        resp = await self._request_async({"type": "list_helpers"}, timeout=timeout)
+        return {
+            "helpers": list(resp.get("helpers", [])),
+            "warnings": list(resp.get("warnings", [])),
+        }
+
     def list_helpers(self, timeout: float = 5.0) -> dict[str, Any]:
         if not self._is_alive():
             return {"helpers": [], "warnings": []}
         resp = self._request({"type": "list_helpers"}, timeout=timeout)
-        return {"helpers": list(resp.get("helpers", [])), "warnings": list(resp.get("warnings", []))}
+        return {
+            "helpers": list(resp.get("helpers", [])),
+            "warnings": list(resp.get("warnings", [])),
+        }
+
+    async def alist_vars(self, timeout: float = 5.0) -> dict[str, str]:
+        if not self._is_alive():
+            return {}
+        resp = await self._request_async({"type": "list_vars"}, timeout=timeout)
+        return resp.get("vars", {}) if isinstance(resp.get("vars"), dict) else {}
 
     def list_vars(self, timeout: float = 5.0) -> dict[str, str]:
         if not self._is_alive():
@@ -546,12 +554,34 @@ class KernelClient(BaseKernel):
         resp = self._request({"type": "list_vars"}, timeout=timeout)
         return resp.get("vars", {}) if isinstance(resp.get("vars"), dict) else {}
 
+    async def asnapshot(self, snapshot_dir: Path, timeout: float = 30.0) -> dict[str, Any]:
+        if not self._is_alive():
+            return {"saved": [], "skipped": []}
+        resp = await self._request_async(
+            {"type": "snapshot", "dir": str(snapshot_dir)}, timeout=timeout
+        )
+        self.dirty = False
+        return resp.get("manifest", {"saved": [], "skipped": []})
+
     def snapshot(self, snapshot_dir: Path, timeout: float = 30.0) -> dict[str, Any]:
         if not self._is_alive():
             return {"saved": [], "skipped": []}
         resp = self._request({"type": "snapshot", "dir": str(snapshot_dir)}, timeout=timeout)
         self.dirty = False
         return resp.get("manifest", {"saved": [], "skipped": []})
+
+    async def arestore(
+        self, snapshot_dir: Path, timeout: float = 30.0, root: Path | None = None
+    ) -> dict[str, list[str]]:
+        await self._ensure_started_async()
+        frame: dict[str, Any] = {"type": "restore", "dir": str(snapshot_dir)}
+        if root is not None:
+            frame["root"] = str(root)
+        resp = await self._request_async(frame, timeout=timeout)
+        return {
+            "restored": list(resp.get("restored", [])),
+            "skipped": list(resp.get("skipped", [])),
+        }
 
     def restore(
         self, snapshot_dir: Path, timeout: float = 30.0, root: Path | None = None
@@ -562,7 +592,10 @@ class KernelClient(BaseKernel):
         if root is not None:
             frame["root"] = str(root)
         resp = self._request(frame, timeout=timeout)
-        return {"restored": list(resp.get("restored", [])), "skipped": list(resp.get("skipped", []))}
+        return {
+            "restored": list(resp.get("restored", [])),
+            "skipped": list(resp.get("skipped", [])),
+        }
 
     def running_bash_count(self, timeout: float = 5.0) -> int:
         del timeout
@@ -572,11 +605,29 @@ class KernelClient(BaseKernel):
         """Return snapshots of currently running bash() jobs with live elapsed_s."""
         return self._live_bash_jobs() if self._is_alive() else []
 
+    async def abash_tail(
+        self, pid: int, lines: int = 50, timeout: float = 5.0
+    ) -> str | None:
+        if not self._is_alive():
+            return None
+        resp = await self._request_async(
+            {"type": "bash_tail", "pid": pid, "lines": lines}, timeout=timeout
+        )
+        return str(resp.get("tail", "")) if resp.get("found") else None
+
     def bash_tail(self, pid: int, lines: int = 50, timeout: float = 5.0) -> str | None:
         if not self._is_alive():
             return None
-        resp = self._request({"type": "bash_tail", "pid": pid, "lines": lines}, timeout=timeout)
+        resp = self._request(
+            {"type": "bash_tail", "pid": pid, "lines": lines}, timeout=timeout
+        )
         return str(resp.get("tail", "")) if resp.get("found") else None
+
+    async def akill_bash(self, pid: int, timeout: float = 5.0) -> bool:
+        if not self._is_alive():
+            return False
+        resp = await self._request_async({"type": "kill_bash", "pid": pid}, timeout=timeout)
+        return bool(resp.get("killed"))
 
     def kill_bash(self, pid: int, timeout: float = 5.0) -> bool:
         if not self._is_alive():
@@ -593,62 +644,125 @@ class KernelClient(BaseKernel):
         return events
 
     def interrupt(self) -> None:
-        if self._is_alive():
-            assert self._proc is not None
+        if self._is_alive() and self._raw_proc is not None:
             with contextlib.suppress(ProcessLookupError):
-                self._proc.send_signal(signal.SIGINT)
+                self._raw_proc.send_signal(signal.SIGINT)
 
-    def _send_shutdown(self, proc: subprocess.Popen[str]) -> None:
-        if proc.stdin is None or not self._write_lock.acquire(timeout=2.0):
+    def _send_shutdown_sync(self, proc: asyncio.subprocess.Process) -> None:
+        if proc.stdin is None or proc.stdin.is_closing() or not self._write_lock.acquire(timeout=2.0):
             return
         try:
-            proc.stdin.write(json.dumps({"type": "shutdown"}) + "\n")
-            proc.stdin.flush()
+            proc.stdin.write((json.dumps({"type": "shutdown"}) + "\n").encode("utf-8"))
             proc.stdin.close()
         finally:
             self._write_lock.release()
 
-    def close(self) -> None:
+    def _force_kill_process_group(self, proc: asyncio.subprocess.Process) -> None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGTERM)
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+
+    async def aclose(self) -> None:
+        """Gracefully shut down the worker subprocess, reader tasks, and host RPC."""
         self._unregister_atexit()
-        proc = self._proc
+        proc, self._raw_proc = self._raw_proc, None
         self._proc = None
+        stdout_task, self._stdout_task = self._stdout_task, None
+        stderr_task, self._stderr_task = self._stderr_task, None
+        rpc_tasks = list(self._rpc_tasks)
+        self._rpc_tasks.clear()
         self._running_bash_count = 0
         self._running_bash_jobs.clear()
         self.dirty = False
         self._worker_exited = True
         self.wake_event_waiters()
-        if proc is None:
+
+        if proc is not None:
+            if proc.returncode is None:
+                try:
+                    self._send_shutdown_sync(proc)
+                    await asyncio.wait_for(proc.wait(), timeout=1.0)
+                except Exception:
+                    logger.debug("Graceful async kernel shutdown failed", exc_info=True)
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(proc.pid, signal.SIGTERM)
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=1.0)
+                except Exception:
+                    self._force_kill_process_group(proc)
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(proc.wait(), timeout=1.0)
+
+        for task in (stdout_task, stderr_task, *rpc_tasks):
+            if task is not None and not task.done():
+                task.cancel()
+        tasks_to_await = [t for t in (stdout_task, stderr_task, *rpc_tasks) if t is not None]
+        if tasks_to_await:
+            with contextlib.suppress(Exception):
+                await asyncio.gather(*tasks_to_await, return_exceptions=True)
+
+        await self._host_rpc.aclose()
+
+    def close(self) -> None:
+        """Close the kernel synchronously, safe from any thread or running event loop."""
+        io_loop = self._io_loop
+        if (
+            self._raw_proc is None
+            and self._stdout_task is None
+            and self._stderr_task is None
+            and self._host_rpc._host_mcp is None
+        ):
+            self._unregister_atexit()
+            self._worker_exited = True
             return
-        if proc.poll() is None:
+
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+
+        if (
+            io_loop is not None
+            and io_loop.is_running()
+            and not io_loop.is_closed()
+            and running is not io_loop
+        ):
             try:
-                self._send_shutdown(proc)
-                if proc.stdin is not None and not proc.stdin.closed:
-                    with contextlib.suppress(OSError):
-                        proc.stdin.close()
-                proc.wait(timeout=1.0)
+                run_on_loop(io_loop, self.aclose(), timeout=5.0)
+                return
             except Exception:
-                logger.debug("Graceful kernel shutdown failed", exc_info=True)
-        if proc.poll() is None:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-                proc.wait(timeout=1.0)
-            except Exception:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(proc.pid, signal.SIGKILL)
-                with contextlib.suppress(OSError):
-                    proc.kill()
-                with contextlib.suppress(OSError, subprocess.SubprocessError):
-                    proc.wait(timeout=1.0)
-        if self._stderr_thread is not None:
-            self._stderr_thread.join(timeout=0.5)
-            self._stderr_thread = None
-        if not self._shared_host_mcp:
-            if self._host_mcp is not None and self._host_loop is not None and self._host_loop.is_running():
-                with contextlib.suppress(Exception):
-                    asyncio.run_coroutine_threadsafe(self._host_mcp.close(), self._host_loop).result(timeout=2.0)
-            if self._host_loop is not None and self._host_loop.is_running():
-                self._host_loop.call_soon_threadsafe(self._host_loop.stop)
-                if self._host_thread is not None:
-                    self._host_thread.join(timeout=1.0)
-                self._host_loop = self._host_thread = None
-        self._host_mcp = None
+                logger.debug("Kernel aclose via I/O loop failed; falling back to direct kill", exc_info=True)
+
+        # Same-loop or closed-loop fallback: tear down synchronously without deadlocking the loop.
+        self._unregister_atexit()
+        proc, self._raw_proc = self._raw_proc, None
+        self._proc = None
+        stdout_task, self._stdout_task = self._stdout_task, None
+        stderr_task, self._stderr_task = self._stderr_task, None
+        rpc_tasks = list(self._rpc_tasks)
+        self._rpc_tasks.clear()
+        self._running_bash_count = 0
+        self._running_bash_jobs.clear()
+        self.dirty = False
+        self._worker_exited = True
+        self.wake_event_waiters()
+
+        for task in (stdout_task, stderr_task, *rpc_tasks):
+            if task is not None and not task.done():
+                task.cancel()
+
+        if proc is not None and proc.returncode is None:
+            with contextlib.suppress(Exception):
+                self._send_shutdown_sync(proc)
+            self._force_kill_process_group(proc)
+            with contextlib.suppress(ChildProcessError, OSError):
+                os.waitpid(proc.pid, 0)
+
+        if running is not None and running.is_running() and not running.is_closed():
+            running.create_task(self._host_rpc.aclose())
+        else:
+            self._host_rpc.cancel_all()
