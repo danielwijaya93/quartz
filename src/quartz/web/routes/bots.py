@@ -25,6 +25,7 @@ from quartz.bots import (
     GitHubPollConfig,
     PermissionPolicy,
     QueuedTrigger,
+    SlidingWindowRateLimiter,
     WebhookConfig,
 )
 from quartz.web.context import AppContext, bad_request, json_body
@@ -66,6 +67,9 @@ def _config_from_create(req: BotCreateRequest) -> BotConfig:
         enabled=req.enabled,
         use_worktree=req.use_worktree,
         max_queue_depth=req.max_queue_depth,
+        max_usd_per_day=req.max_usd_per_day,
+        max_consecutive_errors=req.max_consecutive_errors,
+        webhook_rate_limit_per_minute=req.webhook_rate_limit_per_minute,
         github=(
             GitHubPollConfig(
                 repo=req.github.repo,
@@ -113,6 +117,19 @@ def _merge_update(existing: BotConfig, req: BotUpdateRequest) -> BotConfig:
         max_queue_depth=(
             req.max_queue_depth if req.max_queue_depth is not None else existing.max_queue_depth
         ),
+        max_usd_per_day=(
+            req.max_usd_per_day if "max_usd_per_day" in fields_set else existing.max_usd_per_day
+        ),
+        max_consecutive_errors=(
+            req.max_consecutive_errors
+            if req.max_consecutive_errors is not None
+            else existing.max_consecutive_errors
+        ),
+        webhook_rate_limit_per_minute=(
+            req.webhook_rate_limit_per_minute
+            if req.webhook_rate_limit_per_minute is not None
+            else existing.webhook_rate_limit_per_minute
+        ),
         github=(
             GitHubPollConfig(
                 repo=req.github.repo,
@@ -155,6 +172,7 @@ def _verify_github_signature(secret: str, raw_body: bytes, sig_header: str | Non
 
 def create_router(ctx: AppContext) -> APIRouter:
     router = APIRouter()
+    webhook_limiter = SlidingWindowRateLimiter(window_seconds=60.0)
 
     def _stores() -> tuple[BotStore, BotQueue]:
         store = ctx.bot_store or BotStore()
@@ -397,6 +415,16 @@ def create_router(ctx: AppContext) -> APIRouter:
 
         if not bot.enabled:
             return JSONResponse({"ok": True, "queued": False, "reason": "disabled"})
+
+        allowed, retry_after = webhook_limiter.check_and_record(
+            bot.id, bot.webhook_rate_limit_per_minute
+        )
+        if not allowed:
+            return JSONResponse(
+                {"error": "Webhook rate limit exceeded"},
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            )
 
         event_name = request.headers.get("x-github-event", "").strip()
         if bot.webhook.event_filter:

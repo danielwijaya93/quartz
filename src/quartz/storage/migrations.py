@@ -142,13 +142,59 @@ _V1_CORE_SCHEMA_STATEMENTS: tuple[str, ...] = (
 )
 
 
+_V2_GOVERNANCE_SCHEMA_STATEMENTS: tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS usage_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts REAL NOT NULL,
+        session_id TEXT,
+        bot_id TEXT,
+        run_id TEXT,
+        provider TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL NOT NULL DEFAULT 0.0
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_usage_events_ts ON usage_events (ts DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_usage_events_bot_ts ON usage_events (bot_id, ts DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts REAL NOT NULL,
+        event_type TEXT NOT NULL,
+        actor TEXT NOT NULL DEFAULT 'system',
+        session_id TEXT,
+        bot_id TEXT,
+        turn_id TEXT,
+        run_id TEXT,
+        decision TEXT NOT NULL DEFAULT '',
+        summary TEXT NOT NULL DEFAULT '',
+        details_json TEXT NOT NULL DEFAULT '{}'
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log (ts DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_log_event_ts ON audit_log (event_type, ts DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_log_bot_ts ON audit_log (bot_id, ts DESC)",
+)
+
+
 def _apply_v1_core_schema(conn: sqlite3.Connection) -> None:
     for stmt in _V1_CORE_SCHEMA_STATEMENTS:
         conn.execute(stmt)
 
 
+def _apply_v2_governance_schema(conn: sqlite3.Connection) -> None:
+    for stmt in _V2_GOVERNANCE_SCHEMA_STATEMENTS:
+        conn.execute(stmt)
+
+
 CORE_MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=1, name="core_operational_schema", up=_apply_v1_core_schema),
+    Migration(version=2, name="governance_usage_and_audit", up=_apply_v2_governance_schema),
 )
 
 

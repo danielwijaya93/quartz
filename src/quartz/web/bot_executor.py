@@ -9,7 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from quartz.bots import BotConfig, BotStore, QueuedTrigger
+from quartz.bots import BotConfig, BotStore, QueuedTrigger, UsageStore
 from quartz.core.session import ORIGIN_BOT
 from quartz.core.turn import TurnStatus
 from quartz.web.bot_permissions import evaluate_bot_command, notify_bot_parked
@@ -100,6 +100,7 @@ async def run_bot_trigger(
     bot_store: BotStore,
     get_sidebar: Callable[[], SidebarStore],
     get_push_store: Callable[[], PushStore | None] | None = None,
+    usage_store: UsageStore | None = None,
 ) -> TurnStatus:
     """Spawn an isolated session off the event loop and execute one queued bot trigger."""
     target_cwd = Path(bot.cwd) if bot.cwd else None
@@ -123,4 +124,18 @@ async def run_bot_trigger(
     if ws.has_pending_permission:
         await asyncio.to_thread(_maybe_notify_parked, ws, rt, bot, get_push_store)
         return TurnStatus.WAITING_PERMISSION
+    if usage_store is not None:
+        usage = getattr(rt, "last_usage", None)
+        if usage is not None:
+            await asyncio.to_thread(
+                usage_store.record_usage,
+                str(getattr(rt, "provider_name", "") or ""),
+                str(getattr(rt, "model", "") or ""),
+                int(getattr(usage, "input_tokens", 0) or 0),
+                int(getattr(usage, "output_tokens", 0) or 0),
+                cache_read_tokens=int(getattr(usage, "cache_read_tokens", 0) or 0),
+                cache_write_tokens=int(getattr(usage, "cache_write_tokens", 0) or 0),
+                session_id=rt.active_session.id,
+                bot_id=bot.id,
+            )
     return TurnStatus.OK

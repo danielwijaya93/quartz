@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from quartz.bots import BotConfig, BotHistoryStore, BotQueue, BotStore, QueuedTrigger
+from quartz.bots import BotConfig, BotHistoryStore, BotQueue, BotStore, QueuedTrigger, UsageStore
 from quartz.core.turn import TurnStatus, run_interactive_turn
 from quartz.web.auth import extract_request_token, verify_token
 from quartz.web.bot_executor import run_bot_trigger
@@ -121,6 +121,8 @@ def create_app(
     bot_queue = BotQueue(bots_dir)
     bot_history = BotHistoryStore(bots_dir, max_runs_per_bot=50, max_age_seconds=7 * 24 * 3600)
 
+    usage_store = UsageStore()
+
     async def _run_bot_trigger(bot: BotConfig, trigger: QueuedTrigger) -> TurnStatus:
         return await run_bot_trigger(
             bot,
@@ -129,6 +131,7 @@ def create_app(
             bot_store=bot_store,
             get_sidebar=store,
             get_push_store=lambda: push_store() if push_ref is not None or default_push_path().is_file() else None,
+            usage_store=usage_store,
         )
 
     bot_runner = BotRunner(
@@ -136,6 +139,7 @@ def create_app(
         bot_queue,
         run_trigger=_run_bot_trigger,
         history=bot_history,
+        usage_store=usage_store,
     )
     should_run_bots = (
         enable_bot_runner

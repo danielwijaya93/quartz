@@ -626,6 +626,26 @@ class KernelClient(BaseKernel):
             "skipped": list(resp.get("skipped", [])),
         }
 
+    async def ahealth_check(self, timeout: float = 5.0) -> bool:
+        """Send a lightweight ping to the kernel worker; returns False when dead or hung."""
+        if not self._is_alive():
+            return False
+        try:
+            resp = await self._request_async({"type": "ping"}, timeout=timeout)
+            return resp.get("type") == "pong"
+        except Exception:
+            return False
+
+    def health_check(self, timeout: float = 5.0) -> bool:
+        """Synchronous ping health check for CLI/TUI callers."""
+        if not self._is_alive():
+            return False
+        try:
+            resp = self._request({"type": "ping"}, timeout=timeout)
+            return resp.get("type") == "pong"
+        except Exception:
+            return False
+
     def running_bash_count(self, timeout: float = 5.0) -> int:
         del timeout
         return self._running_bash_count if self._is_alive() else 0

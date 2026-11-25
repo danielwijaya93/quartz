@@ -13,12 +13,21 @@ from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from quartz.bots import BotConfig, BotHistoryStore, BotQueue, BotRunRecord, BotStore, QueuedTrigger
+from quartz.bots import (
+    BotConfig,
+    BotHistoryStore,
+    BotQueue,
+    BotRunRecord,
+    BotStore,
+    QueuedTrigger,
+    UsageStore,
+)
 from quartz.core.turn import TurnStatus
 
 logger = logging.getLogger(__name__)
 
 TriggerCallback = Callable[[BotConfig, QueuedTrigger], Awaitable[TurnStatus | str | None]]
+CircuitBreakCallback = Callable[[BotConfig, str], Awaitable[None] | None]
 
 _FIELD_RANGES: tuple[tuple[int, int], ...] = (
     (0, 59),  # minute
@@ -94,6 +103,8 @@ class BotRunner:
         run_trigger: TriggerCallback | None = None,
         *,
         history: BotHistoryStore | None = None,
+        usage_store: UsageStore | None = None,
+        on_circuit_break: CircuitBreakCallback | None = None,
         max_concurrent: int = 2,
         tick_interval_s: float = 15.0,
         gh_cmd: str = "gh",
@@ -101,6 +112,8 @@ class BotRunner:
         self._store = store
         self._queue = queue
         self._history = history
+        self._usage_store = usage_store
+        self._on_circuit_break = on_circuit_break
         self._run_trigger: TriggerCallback = run_trigger or _default_run_trigger
         self._max_concurrent = max(1, int(max_concurrent))
         self._tick_interval_s = max(0.05, float(tick_interval_s))
@@ -286,20 +299,70 @@ class BotRunner:
             if bot is not None and bot.enabled:
                 return bot, trigger
 
+    def _pause_bot_for_circuit_break(self, bot: BotConfig, reason: str, finished_at: float) -> None:
+        fresh = self._store.get_bot(bot.id)
+        if fresh is not None and fresh.enabled:
+            self._store.set_enabled(bot.id, False)
+        state = self._store.get_state(bot.id)
+        state.last_run_at = finished_at
+        state.last_error = reason
+        self._store.save_state(state)
+
+    async def _notify_circuit_break(self, bot: BotConfig, reason: str) -> None:
+        if self._on_circuit_break is None:
+            return
+        try:
+            maybe_coro = self._on_circuit_break(bot, reason)
+            if maybe_coro is not None:
+                await maybe_coro
+        except Exception:
+            logger.debug("on_circuit_break callback failed for bot %s", bot.id, exc_info=True)
+
+    def _check_budget_exceeded(self, bot: BotConfig) -> str | None:
+        if self._usage_store is None or bot.max_usd_per_day is None or bot.max_usd_per_day <= 0:
+            return None
+        spent = self._usage_store.daily_bot_spend_usd(bot.id)
+        if spent >= bot.max_usd_per_day:
+            return (
+                f"Daily budget exceeded (${spent:.4f} >= ${bot.max_usd_per_day:.2f}/day); "
+                "bot auto-paused"
+            )
+        return None
+
     def _finalize_run_state(
         self,
-        bot_id: str,
+        bot: BotConfig,
         run_id: str,
         *,
         status: str,
         finished_at: float,
         error: str | None = None,
         update_bot_state: bool = True,
-    ) -> None:
-        state = self._store.get_state(bot_id)
+    ) -> str | None:
+        state = self._store.get_state(bot.id)
+        circuit_reason: str | None = None
         if update_bot_state:
             state.last_run_at = finished_at
-            state.last_error = error
+            if status == "ok":
+                state.consecutive_errors = 0
+                state.last_error = None
+            elif status == "error":
+                state.consecutive_errors += 1
+                state.last_error = error or "Bot run ended with error"
+                if (
+                    bot.max_consecutive_errors > 0
+                    and state.consecutive_errors >= bot.max_consecutive_errors
+                ):
+                    circuit_reason = (
+                        f"Circuit breaker tripped after {state.consecutive_errors} consecutive errors; "
+                        "bot auto-paused"
+                    )
+                    state.last_error = circuit_reason
+                    fresh = self._store.get_bot(bot.id)
+                    if fresh is not None and fresh.enabled:
+                        self._store.set_enabled(bot.id, False)
+            else:
+                state.last_error = error
             self._store.save_state(state)
         if self._history is not None:
             self._history.record_run_finish(
@@ -307,8 +370,9 @@ class BotRunner:
                 status=status,
                 finished_at=finished_at,
                 session_id=state.active_session_id,
-                error=error,
+                error=circuit_reason or error,
             )
+        return circuit_reason
 
     async def dispatch_available(self) -> int:
         """Dequeue and start worker tasks up to ``max_concurrent``."""
@@ -347,6 +411,21 @@ class BotRunner:
                 ),
             )
         try:
+            budget_reason = await asyncio.to_thread(self._check_budget_exceeded, bot)
+            if budget_reason is not None:
+                now_ts = time.time()
+                await asyncio.to_thread(self._pause_bot_for_circuit_break, bot, budget_reason, now_ts)
+                if self._history is not None:
+                    await asyncio.to_thread(
+                        self._history.record_run_finish,
+                        run_id,
+                        status="budget_exceeded",
+                        finished_at=now_ts,
+                        error=budget_reason,
+                    )
+                await self._notify_circuit_break(bot, budget_reason)
+                return
+
             outcome = await self._run_trigger(bot, trigger)
             run_status = "ok"
             if outcome == TurnStatus.WAITING_PERMISSION or outcome == TurnStatus.WAITING_PERMISSION.value:
@@ -364,19 +443,21 @@ class BotRunner:
             ):
                 run_status = "cancelled"
 
-            await asyncio.to_thread(
+            circuit_reason = await asyncio.to_thread(
                 self._finalize_run_state,
-                bot.id,
+                bot,
                 run_id,
                 status=run_status,
                 finished_at=time.time(),
             )
+            if circuit_reason is not None:
+                await self._notify_circuit_break(bot, circuit_reason)
         except asyncio.CancelledError:
             if self._history is not None:
                 with contextlib.suppress(Exception):
                     await asyncio.to_thread(
                         self._finalize_run_state,
-                        bot.id,
+                        bot,
                         run_id,
                         status="cancelled",
                         finished_at=time.time(),
@@ -385,14 +466,16 @@ class BotRunner:
             raise
         except Exception as exc:
             logger.warning("Bot %s trigger %s failed", bot.id, trigger.trigger_id, exc_info=True)
-            await asyncio.to_thread(
+            circuit_reason = await asyncio.to_thread(
                 self._finalize_run_state,
-                bot.id,
+                bot,
                 run_id,
                 status="error",
                 finished_at=time.time(),
                 error=str(exc),
             )
+            if circuit_reason is not None:
+                await self._notify_circuit_break(bot, circuit_reason)
         finally:
             if not slot_released:
                 self._active_slots = max(0, self._active_slots - 1)
