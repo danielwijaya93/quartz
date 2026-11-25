@@ -7,6 +7,7 @@ import {
   compactNotificationBody,
   detectNotificationEnvironment,
   formatNotificationForFrame,
+  readNotificationPreferences,
   readNotificationsEnabled,
   registerNotificationServiceWorker,
   requestNotificationPermission,
@@ -16,17 +17,22 @@ import {
   showBrowserNotification,
   subscribeToWebPush,
   unsubscribeFromWebPush,
+  writeNotificationPreferences,
   writeNotificationsEnabled,
   type BrowserNotificationPayload,
+  type NotificationCategory,
   type NotificationEnvironment,
+  type NotificationPreferences,
 } from "./notifications";
 
 export interface NotificationsController {
   enabled: boolean;
+  prefs: NotificationPreferences;
   env: NotificationEnvironment;
   notifyFromFrame: (message: ServerMessage) => void;
   setEnabled: (next: boolean) => Promise<void>;
-  applySyncedEnabled: (next: boolean) => Promise<void>;
+  setCategoryEnabled: (category: NotificationCategory, next: boolean) => void;
+  applySyncedEnabled: (next: boolean, syncedPrefs?: Partial<NotificationPreferences>) => Promise<void>;
   clearDelivered: () => void;
   sendTest: () => Promise<boolean>;
 }
@@ -35,29 +41,45 @@ export interface UseNotificationsOptions {
   onNotificationsRead?: () => void;
 }
 
-function persistNotificationsToServer(enabled: boolean): void {
+const CATEGORY_SETTING_KEYS: Record<NotificationCategory, string> = {
+  turn: "notifyTurn",
+  approval: "notifyApproval",
+  background: "notifyBackground",
+  error: "notifyError",
+};
+
+function persistSettingToServer(key: string, enabled: boolean): void {
   void authFetch(apiUrl("/api/settings"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ key: "notifications", value: enabled ? "on" : "off" }),
+    body: JSON.stringify({ key, value: enabled ? "on" : "off" }),
   }).catch(() => {
     /* Offline or test environment: localStorage still holds the choice. */
   });
 }
 
+function persistNotificationsToServer(enabled: boolean): void {
+  persistSettingToServer("notifications", enabled);
+}
+
 export function useNotifications(options?: UseNotificationsOptions): NotificationsController {
   const [enabled, setEnabledState] = React.useState<boolean>(() => readNotificationsEnabled());
+  const [prefs, setPrefsState] = React.useState<NotificationPreferences>(() =>
+    readNotificationPreferences(),
+  );
   const [env, setEnv] = React.useState<NotificationEnvironment>(() =>
     detectNotificationEnvironment(),
   );
   const unreadRef = React.useRef(0);
   const enabledRef = React.useRef(enabled);
+  const prefsRef = React.useRef(prefs);
   const pushEndpointRef = React.useRef<string | null>(null);
   const notifiedKeysRef = React.useRef<Set<string>>(new Set());
   const activeSeededRef = React.useRef(false);
   const onReadRef = React.useRef(options?.onNotificationsRead);
   onReadRef.current = options?.onNotificationsRead;
   enabledRef.current = enabled;
+  prefsRef.current = prefs;
 
   const clearDelivered = React.useCallback(() => {
     unreadRef.current = 0;
@@ -141,6 +163,8 @@ export function useNotifications(options?: UseNotificationsOptions): Notificatio
         for (const item of message.items) {
           if (item.read) continue;
           if (item.kind !== "done" && item.kind !== "error" && item.kind !== "permission") continue;
+          if (item.kind === "permission" && !prefsRef.current.approval) continue;
+          if ((item.kind === "done" || item.kind === "error") && !prefsRef.current.turn) continue;
           const key = `${item.sessionId}:${item.kind}:${item.updatedAt}`;
           if (notifiedKeysRef.current.has(key)) continue;
           notifiedKeysRef.current.add(key);
@@ -163,7 +187,7 @@ export function useNotifications(options?: UseNotificationsOptions): Notificatio
       }
 
       if (message.type === "session_state" && message.pendingPermission) {
-        if (!shouldNotifyInBackground()) return;
+        if (!prefsRef.current.approval || !shouldNotifyInBackground()) return;
         const perm = message.pendingPermission;
         const key = `perm:${perm.requestId}`;
         if (notifiedKeysRef.current.has(key)) return;
@@ -176,7 +200,7 @@ export function useNotifications(options?: UseNotificationsOptions): Notificatio
         return;
       }
 
-      const payload = formatNotificationForFrame(message);
+      const payload = formatNotificationForFrame(message, prefsRef.current);
       if (!payload) return;
       if (!isNativeCapacitor() && !shouldNotifyInBackground()) return;
       if (message.type === "permission_request") {
@@ -187,25 +211,47 @@ export function useNotifications(options?: UseNotificationsOptions): Notificatio
     [clearDelivered, deliverPayload],
   );
 
-  const applySyncedEnabled = React.useCallback(async (next: boolean) => {
-    if (!next) {
-      writeNotificationsEnabled(false);
-      setEnabledState(false);
-      pushEndpointRef.current = null;
-      await unsubscribeFromWebPush();
-      return;
-    }
-    const refreshed = detectNotificationEnvironment();
-    setEnv(refreshed);
-    writeNotificationsEnabled(true);
-    setEnabledState(true);
-    if (isNativeCapacitor()) {
-      pushEndpointRef.current = null;
-      return;
-    }
-    if (refreshed.supported && refreshed.permission === "granted" && !pushEndpointRef.current) {
-      pushEndpointRef.current = await subscribeToWebPush();
-    }
+  const applySyncedEnabled = React.useCallback(
+    async (next: boolean, syncedPrefs?: Partial<NotificationPreferences>) => {
+      if (syncedPrefs) {
+        const merged: NotificationPreferences = {
+          turn: syncedPrefs.turn ?? prefsRef.current.turn,
+          approval: syncedPrefs.approval ?? prefsRef.current.approval,
+          background: syncedPrefs.background ?? prefsRef.current.background,
+          error: syncedPrefs.error ?? prefsRef.current.error,
+        };
+        prefsRef.current = merged;
+        writeNotificationPreferences(merged);
+        setPrefsState(merged);
+      }
+      if (!next) {
+        writeNotificationsEnabled(false);
+        setEnabledState(false);
+        pushEndpointRef.current = null;
+        await unsubscribeFromWebPush();
+        return;
+      }
+      const refreshed = detectNotificationEnvironment();
+      setEnv(refreshed);
+      writeNotificationsEnabled(true);
+      setEnabledState(true);
+      if (isNativeCapacitor()) {
+        pushEndpointRef.current = null;
+        return;
+      }
+      if (refreshed.supported && refreshed.permission === "granted" && !pushEndpointRef.current) {
+        pushEndpointRef.current = await subscribeToWebPush();
+      }
+    },
+    [],
+  );
+
+  const setCategoryEnabled = React.useCallback((category: NotificationCategory, next: boolean) => {
+    const updated: NotificationPreferences = { ...prefsRef.current, [category]: next };
+    prefsRef.current = updated;
+    writeNotificationPreferences(updated);
+    setPrefsState(updated);
+    persistSettingToServer(CATEGORY_SETTING_KEYS[category], next);
   }, []);
 
   const setEnabled = React.useCallback(async (next: boolean) => {
@@ -269,9 +315,11 @@ export function useNotifications(options?: UseNotificationsOptions): Notificatio
 
   return {
     enabled,
+    prefs,
     env,
     notifyFromFrame,
     setEnabled,
+    setCategoryEnabled,
     applySyncedEnabled,
     clearDelivered,
     sendTest,

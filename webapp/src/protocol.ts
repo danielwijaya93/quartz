@@ -162,7 +162,14 @@ export interface SessionStateMessage {
   gitBranch?: string | null;
   sandboxed?: boolean;
   pendingPermission?: PendingPermission | null;
-  settings?: { notifications: boolean; richUi: boolean };
+  settings?: {
+    notifications: boolean;
+    notifyTurn?: boolean;
+    notifyApproval?: boolean;
+    notifyBackground?: boolean;
+    notifyError?: boolean;
+    richUi: boolean;
+  };
 }
 
 export type ServerMessage =
@@ -220,7 +227,15 @@ export type ServerMessage =
     }
   | { type: "idle_session_resolved"; sessionId: string; action: "keep" | "close" }
   | { type: "active_sessions_state"; items: ActiveSessionItem[] }
-  | { type: "settings_state"; notifications: boolean; richUi: boolean }
+  | {
+      type: "settings_state";
+      notifications: boolean;
+      notifyTurn?: boolean;
+      notifyApproval?: boolean;
+      notifyBackground?: boolean;
+      notifyError?: boolean;
+      richUi: boolean;
+    }
   | { type: "notifications_cleared" }
   | { type: "error"; message: string; fatal: boolean }
   | { type: "command_result"; name: string; ok: boolean; result: CommandResult };

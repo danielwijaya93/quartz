@@ -39,13 +39,21 @@ def test_settings_api_exposes_and_broadcasts_rich_ui_and_notifications(
             ws1.send_json({"type": "hello", "clientVersion": 1})
             snap1 = ws1.receive_json()
             assert snap1["type"] == "session_state"
-            assert snap1["settings"] == {"notifications": True, "richUi": False}
+            expected_base = {
+                "notifications": True,
+                "notifyTurn": True,
+                "notifyApproval": True,
+                "notifyBackground": True,
+                "notifyError": True,
+                "richUi": False,
+            }
+            assert snap1["settings"] == expected_base
             assert ws1.receive_json()["type"] == "active_sessions_state"
 
             ws2.send_json({"type": "hello", "clientVersion": 1})
             snap2 = ws2.receive_json()
             assert snap2["type"] == "session_state"
-            assert snap2["settings"] == {"notifications": True, "richUi": False}
+            assert snap2["settings"] == expected_base
             assert ws2.receive_json()["type"] == "active_sessions_state"
 
             # Toggle rich_ui on via REST (like Android or Web UI) -> both WS clients receive settings_state
@@ -55,8 +63,9 @@ def test_settings_api_exposes_and_broadcasts_rich_ui_and_notifications(
 
             b1 = ws1.receive_json()
             b2 = ws2.receive_json()
-            assert b1 == {"type": "settings_state", "notifications": True, "richUi": True}
-            assert b2 == {"type": "settings_state", "notifications": True, "richUi": True}
+            expected_rich = {"type": "settings_state", **expected_base, "richUi": True}
+            assert b1 == expected_rich
+            assert b2 == expected_rich
 
             # Toggle notifications off -> both WS clients receive settings_state
             r2 = client.post("/api/settings", json={"key": "notifications", "value": "off"})
@@ -65,8 +74,17 @@ def test_settings_api_exposes_and_broadcasts_rich_ui_and_notifications(
 
             b3 = ws1.receive_json()
             b4 = ws2.receive_json()
-            assert b3 == {"type": "settings_state", "notifications": False, "richUi": True}
-            assert b4 == {"type": "settings_state", "notifications": False, "richUi": True}
+            expected_off = {**expected_rich, "notifications": False}
+            assert b3 == expected_off
+            assert b4 == expected_off
+
+            # Toggle notifyBackground off -> both WS clients receive settings_state
+            r3 = client.post("/api/settings", json={"key": "notifyBackground", "value": "off"})
+            assert r3.status_code == 200
+            assert r3.json()["values"]["notifyBackground"] is False
+            expected_bg_off = {**expected_off, "notifyBackground": False}
+            assert ws1.receive_json() == expected_bg_off
+            assert ws2.receive_json() == expected_bg_off
 
 
 def test_notifications_read_broadcasts_notifications_cleared(
@@ -93,7 +111,15 @@ def test_ws_notifications_streams_settings_and_alerts(
     app = _make_app(tmp_path, monkeypatch, runtime)
     with TestClient(app) as client, client.websocket_connect("/ws/notifications") as nws:
         initial = nws.receive_json()
-        assert initial == {"type": "settings_state", "notifications": True, "richUi": False}
+        assert initial == {
+            "type": "settings_state",
+            "notifications": True,
+            "notifyTurn": True,
+            "notifyApproval": True,
+            "notifyBackground": True,
+            "notifyError": True,
+            "richUi": False,
+        }
 
         # Updating settings via REST pushes to /ws/notifications
         res = client.post("/api/settings", json={"key": "notifications", "value": "off"})
@@ -101,6 +127,10 @@ def test_ws_notifications_streams_settings_and_alerts(
         assert nws.receive_json() == {
             "type": "settings_state",
             "notifications": False,
+            "notifyTurn": True,
+            "notifyApproval": True,
+            "notifyBackground": True,
+            "notifyError": True,
             "richUi": False,
         }
 

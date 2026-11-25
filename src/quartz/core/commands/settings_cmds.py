@@ -36,6 +36,10 @@ _SETTING_ALIASES: dict[str, str] = {
     "bg": "bg", "background": "bg", "background_check_every": "bg",
     "idle": "idle", "web_idle_hours": "idle",
     "notifications": "notifications", "notify": "notifications", "notification": "notifications",
+    "notify_turn": "notify_turn", "notifyTurn": "notify_turn", "notifyturn": "notify_turn", "notify-turn": "notify_turn",
+    "notify_approval": "notify_approval", "notifyApproval": "notify_approval", "notifyapproval": "notify_approval", "notify-approval": "notify_approval",
+    "notify_background": "notify_background", "notifyBackground": "notify_background", "notifybackground": "notify_background", "notify-background": "notify_background",
+    "notify_error": "notify_error", "notifyError": "notify_error", "notifyerror": "notify_error", "notify-error": "notify_error",
     "rich_ui": "rich_ui", "richui": "rich_ui", "rich-ui": "rich_ui",
 }
 
@@ -94,6 +98,10 @@ _INT_SETTINGS: dict[str, _IntSettingSpec] = {
 
 _BOOL_SETTINGS: dict[str, tuple[str, str | None]] = {
     "notifications": ("notifications", "notifications"),
+    "notify_turn": ("notify_turn", None),
+    "notify_approval": ("notify_approval", None),
+    "notify_background": ("notify_background", None),
+    "notify_error": ("notify_error", None),
     "rich_ui": ("rich_ui", None),
 }
 
@@ -117,6 +125,10 @@ def cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
         web_idle_hours=stored_settings.web_idle_hours,
         web_max_live_sessions=stored_settings.web_max_live_sessions,
         notifications=getattr(rt, "notifications", stored_settings.notifications),
+        notify_turn=stored_settings.notify_turn,
+        notify_approval=stored_settings.notify_approval,
+        notify_background=stored_settings.notify_background,
+        notify_error=stored_settings.notify_error,
         rich_ui=stored_settings.rich_ui,
     )
     parts = (arg or "").split()

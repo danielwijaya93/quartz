@@ -21,6 +21,10 @@ def _settings_values(loaded: Any, rt: Any | None = None) -> dict[str, Any]:
         "bg": src.background_check_every,
         "idle": loaded.web_idle_hours,
         "notifications": loaded.notifications,
+        "notifyTurn": loaded.notify_turn,
+        "notifyApproval": loaded.notify_approval,
+        "notifyBackground": loaded.notify_background,
+        "notifyError": loaded.notify_error,
         "richUi": loaded.rich_ui,
     }
 
@@ -62,6 +66,10 @@ def create_router(ctx: AppContext) -> APIRouter:
             DEFAULT_COMPACT_RESERVE_TOKENS,
             DEFAULT_KEEP_RECENT_TOKENS,
             DEFAULT_NOTIFICATIONS_ENABLED,
+            DEFAULT_NOTIFY_APPROVAL,
+            DEFAULT_NOTIFY_BACKGROUND,
+            DEFAULT_NOTIFY_ERROR,
+            DEFAULT_NOTIFY_TURN,
             DEFAULT_PROGRESS_EVERY,
             DEFAULT_RICH_UI,
             DEFAULT_WEB_IDLE_HOURS,
@@ -79,6 +87,10 @@ def create_router(ctx: AppContext) -> APIRouter:
                 "bg": DEFAULT_BACKGROUND_CHECK_EVERY,
                 "idle": DEFAULT_WEB_IDLE_HOURS,
                 "notifications": DEFAULT_NOTIFICATIONS_ENABLED,
+                "notifyTurn": DEFAULT_NOTIFY_TURN,
+                "notifyApproval": DEFAULT_NOTIFY_APPROVAL,
+                "notifyBackground": DEFAULT_NOTIFY_BACKGROUND,
+                "notifyError": DEFAULT_NOTIFY_ERROR,
                 "richUi": DEFAULT_RICH_UI,
             },
             "configPath": str(config_file_path()),
@@ -104,7 +116,14 @@ def create_router(ctx: AppContext) -> APIRouter:
         if not ok:
             return _fail(getattr(result, "message", None) or "Invalid setting")
         loaded = await asyncio.to_thread(load_settings)
-        manager.broadcast_settings_state(notifications=loaded.notifications, rich_ui=loaded.rich_ui)
+        manager.broadcast_settings_state(
+            notifications=loaded.notifications,
+            rich_ui=loaded.rich_ui,
+            notify_turn=loaded.notify_turn,
+            notify_approval=loaded.notify_approval,
+            notify_background=loaded.notify_background,
+            notify_error=loaded.notify_error,
+        )
         return JSONResponse({
             "ok": True,
             "message": getattr(result, "body", "Saved."),

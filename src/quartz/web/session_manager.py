@@ -257,8 +257,25 @@ class SessionManager:
     def _broadcast_active_sessions(self) -> None:
         self._broadcast({"type": "active_sessions_state", "items": self.active_sessions_items()})
 
-    def broadcast_settings_state(self, *, notifications: bool, rich_ui: bool) -> None:
-        frame: Frame = {"type": "settings_state", "notifications": notifications, "richUi": rich_ui}
+    def broadcast_settings_state(
+        self,
+        *,
+        notifications: bool,
+        rich_ui: bool,
+        notify_turn: bool = True,
+        notify_approval: bool = True,
+        notify_background: bool = True,
+        notify_error: bool = True,
+    ) -> None:
+        frame: Frame = {
+            "type": "settings_state",
+            "notifications": notifications,
+            "notifyTurn": notify_turn,
+            "notifyApproval": notify_approval,
+            "notifyBackground": notify_background,
+            "notifyError": notify_error,
+            "richUi": rich_ui,
+        }
         self._broadcast(frame)
         self._broadcast_notification(frame)
 

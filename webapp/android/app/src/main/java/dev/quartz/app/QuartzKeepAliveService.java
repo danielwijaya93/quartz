@@ -57,6 +57,10 @@ public class QuartzKeepAliveService extends Service {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private volatile boolean destroyed = false;
     private volatile boolean notificationsEnabled = true;
+    private volatile boolean notifyTurn = true;
+    private volatile boolean notifyApproval = true;
+    private volatile boolean notifyBackground = true;
+    private volatile boolean notifyError = true;
     private String currentServerUrl = "";
     private String currentToken = "";
     private int reconnectAttempt = 0;
@@ -102,6 +106,10 @@ public class QuartzKeepAliveService extends Service {
         notificationsEnabled = intent != null && intent.hasExtra(KEY_ENABLED)
             ? intent.getBooleanExtra(KEY_ENABLED, true)
             : prefs.getBoolean(KEY_ENABLED, true);
+        notifyTurn = prefs.getBoolean("notifyTurn", true);
+        notifyApproval = prefs.getBoolean("notifyApproval", true);
+        notifyBackground = prefs.getBoolean("notifyBackground", true);
+        notifyError = prefs.getBoolean("notifyError", true);
 
         if (nextUrl == null) nextUrl = "";
         if (nextToken == null) nextToken = "";
@@ -223,7 +231,18 @@ public class QuartzKeepAliveService extends Service {
             String type = obj.optString("type", "");
             if ("settings_state".equals(type)) {
                 notificationsEnabled = obj.optBoolean("notifications", true);
+                notifyTurn = obj.optBoolean("notifyTurn", true);
+                notifyApproval = obj.optBoolean("notifyApproval", true);
+                notifyBackground = obj.optBoolean("notifyBackground", true);
+                notifyError = obj.optBoolean("notifyError", true);
                 saveConfig(this, null, null, notificationsEnabled);
+                getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean("notifyTurn", notifyTurn)
+                    .putBoolean("notifyApproval", notifyApproval)
+                    .putBoolean("notifyBackground", notifyBackground)
+                    .putBoolean("notifyError", notifyError)
+                    .apply();
                 return;
             }
             if ("notifications_cleared".equals(type)) {
@@ -237,6 +256,7 @@ public class QuartzKeepAliveService extends Service {
             String body = null;
             String tag = null;
             if ("turn_end".equals(type)) {
+                if (!notifyTurn) return;
                 String status = obj.optString("status", "");
                 String sessionTitle = obj.optString("sessionTitle", "");
                 String prefix = sessionTitle.isEmpty() ? "Quartz" : sessionTitle;
@@ -252,17 +272,20 @@ public class QuartzKeepAliveService extends Service {
                     tag = "quartz-turn-" + obj.optString("sessionId", "default");
                 }
             } else if ("permission_request".equals(type)) {
+                if (!notifyApproval) return;
                 String cmd = obj.optString("command", "");
                 if (cmd.isEmpty()) cmd = obj.optString("tool", "action");
                 title = "Quartz: Approval needed";
                 body = compactBody("Allow " + cmd + "?");
                 tag = "quartz-permission-" + obj.optString("requestId", "0");
             } else if ("bash_notice".equals(type)) {
+                if (!notifyBackground) return;
                 title = "Quartz: Background job finished";
                 String text = compactBody(obj.optString("text", ""));
                 body = text.isEmpty() ? "A background job finished." : text;
                 tag = "quartz-bash";
             } else if ("error".equals(type)) {
+                if (!notifyError) return;
                 title = "Quartz: Error";
                 String msg = compactBody(obj.optString("message", ""));
                 body = msg.isEmpty() ? "An error occurred." : msg;
