@@ -40,27 +40,40 @@ export function ActiveSessionsSection({
               renames[item.sessionId] ?? session?.title ?? item.title ?? "New session";
             const isCurrent = item.sessionId === currentSessionId;
             const isWorking = item.kind === "working";
+            const isWaiting = item.kind === "waiting";
             const isNeedsYou = item.kind === "permission" || item.kind === "error";
             const canDismiss = (item.kind === "done" || item.kind === "error") && Boolean(onDismiss);
 
-            const statusLabel = isNeedsYou ? "Needs you" : isWorking ? "Working" : "Done";
+            const statusLabel = isNeedsYou
+              ? "Needs you"
+              : isWorking
+                ? "Working"
+                : isWaiting
+                  ? "Waiting"
+                  : "Done";
             const dotClass = isNeedsYou
               ? "bg-orange-500"
               : isWorking
                 ? "bg-blue-500 motion-safe:animate-pulse"
-                : "bg-emerald-500";
+                : isWaiting
+                  ? "bg-amber-500"
+                  : "bg-emerald-500";
             const badgeClass = isNeedsYou
               ? "bg-orange-500/15 text-orange-600 dark:text-orange-400"
               : isWorking
                 ? "bg-blue-500/15 text-blue-600 dark:text-blue-400"
-                : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400";
+                : isWaiting
+                  ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                  : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400";
             const rowStyle = isCurrent
               ? "border-accent/40 bg-accent-soft/60"
               : isNeedsYou
                 ? "border-orange-500/30 bg-orange-500/5 hover:bg-orange-500/10"
                 : isWorking
                   ? "border-blue-500/25 bg-blue-500/5 hover:bg-blue-500/10"
-                  : "border-emerald-500/25 bg-emerald-500/5 hover:bg-emerald-500/10";
+                  : isWaiting
+                    ? "border-amber-500/25 bg-amber-500/5 hover:bg-amber-500/10"
+                    : "border-emerald-500/25 bg-emerald-500/5 hover:bg-emerald-500/10";
 
             return (
               <li

@@ -579,6 +579,13 @@ describe("FolderSidebar's undo notice", () => {
           kind: "working",
           updatedAt: new Date().toISOString(),
         },
+        {
+          sessionId: "s4",
+          cwd: "/work/web",
+          title: "Bg job",
+          kind: "waiting",
+          updatedAt: new Date().toISOString(),
+        },
       ],
     });
 
@@ -588,6 +595,8 @@ describe("FolderSidebar's undo notice", () => {
     expect(within(activeRegion).getByText("Needs you")).toBeInTheDocument();
     expect(within(activeRegion).getByText("Build UI")).toBeInTheDocument();
     expect(within(activeRegion).getByText("Working")).toBeInTheDocument();
+    expect(within(activeRegion).getByText("Bg job")).toBeInTheDocument();
+    expect(within(activeRegion).getByText("Waiting")).toBeInTheDocument();
     expect(within(activeRegion).getByText("Renamed tests")).toBeInTheDocument();
     expect(within(activeRegion).getByText("Done")).toBeInTheDocument();
     // Folder name is not shown on Active Session rows.
@@ -648,12 +657,21 @@ describe("FolderSidebar's undo notice", () => {
           read: false,
           updatedAt: new Date().toISOString(),
         },
+        {
+          sessionId: "s5",
+          cwd: "/work/web",
+          title: "Waiting task",
+          kind: "waiting",
+          read: false,
+          updatedAt: new Date().toISOString(),
+        },
       ],
     });
 
     const activeRegion = screen.getByRole("region", { name: "Active Sessions" });
     expect(within(activeRegion).queryByRole("button", { name: "Dismiss Fix auth" })).not.toBeInTheDocument();
     expect(within(activeRegion).queryByRole("button", { name: "Dismiss Running task" })).not.toBeInTheDocument();
+    expect(within(activeRegion).queryByRole("button", { name: "Dismiss Waiting task" })).not.toBeInTheDocument();
     await user.click(within(activeRegion).getByRole("button", { name: "Dismiss Unread task" }));
     expect(onDismissActiveSession).toHaveBeenCalledWith("s3");
     await user.click(within(activeRegion).getByRole("button", { name: "Dismiss Write tests" }));

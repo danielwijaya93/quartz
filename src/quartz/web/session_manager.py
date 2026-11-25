@@ -19,7 +19,7 @@ _validate_session_id = validate_session_id
 
 __all__ = ["SessionManager"]
 
-_KIND_PRIORITY = {"permission": 0, "error": 0, "working": 1}
+_KIND_PRIORITY = {"permission": 0, "error": 0, "working": 1, "waiting": 1}
 
 
 def _clip(text: str, limit: int) -> str:
@@ -192,10 +192,13 @@ class SessionManager:
         with self._lock:
             by_id = dict(self._active_sessions)
             for ws in self._sessions.values():
-                if ws.built and ws.turn_running:
+                if ws.built:
                     sid = ws.runtime.active_session.id
                     if sid not in by_id:
-                        by_id[sid] = self._make_active_entry(sid, ws, "working", seq=self._active_sessions_seq)
+                        if ws.turn_running:
+                            by_id[sid] = self._make_active_entry(sid, ws, "working", seq=self._active_sessions_seq)
+                        elif ws.has_running_background_jobs:
+                            by_id[sid] = self._make_active_entry(sid, ws, "waiting", seq=self._active_sessions_seq)
             items = list(by_id.values())
 
         items.sort(key=lambda item: (_KIND_PRIORITY.get(str(item.get("kind", "")), 2), -int(item.get("_seq", 0))))
@@ -215,7 +218,7 @@ class SessionManager:
     def dismiss_active_session(self, session_id: str) -> bool:
         with self._lock:
             existing = self._active_sessions.get(session_id)
-            if existing is None or existing["kind"] in ("permission", "working"):
+            if existing is None or existing["kind"] in ("permission", "working", "waiting"):
                 return False
             self._active_sessions.pop(session_id, None)
         self._broadcast_active_sessions()
@@ -225,13 +228,31 @@ class SessionManager:
         with self._lock:
             to_remove = [
                 sid for sid, item in self._active_sessions.items()
-                if item["kind"] != "permission" and item.get("read")
+                if item["kind"] not in ("permission", "working", "waiting") and item.get("read")
             ]
             for sid in to_remove:
                 self._active_sessions.pop(sid, None)
         if to_remove:
             self._broadcast_active_sessions()
         return len(to_remove)
+
+    def sync_session_background_jobs(self, ws: WebSession) -> None:
+        if not ws.built:
+            return
+        sid = ws.runtime.active_session.id
+        changed = False
+        with self._lock:
+            existing = self._active_sessions.get(sid)
+            if (
+                existing is not None
+                and existing["kind"] == "waiting"
+                and not ws.turn_running
+                and not ws.has_running_background_jobs
+            ):
+                self._set_active_locked(sid, ws, "done")
+                changed = True
+        if changed:
+            self._broadcast_active_sessions()
 
     def _broadcast_active_sessions(self) -> None:
         self._broadcast({"type": "active_sessions_state", "items": self.active_sessions_items()})
@@ -271,6 +292,8 @@ class SessionManager:
             elif kind == "permission_resolved" and existing is not None and existing["kind"] == "permission":
                 if ws.turn_running:
                     self._set_active_locked(sid, ws, "working")
+                elif ws.has_running_background_jobs:
+                    self._set_active_locked(sid, ws, "waiting")
                 else:
                     self._active_sessions.pop(sid, None)
                 changed = True
@@ -285,7 +308,8 @@ class SessionManager:
                         self._set_active_locked(sid, ws, "permission", preview)
                         changed = True
                 elif status == "ok":
-                    self._set_active_locked(sid, ws, "done")
+                    next_kind = "waiting" if ws.has_running_background_jobs else "done"
+                    self._set_active_locked(sid, ws, next_kind)
                     changed = True
                 elif status == "error":
                     self._set_active_locked(sid, ws, "error", str(frame.get("error") or "").strip() or "Turn failed")
