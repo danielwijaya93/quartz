@@ -46,6 +46,12 @@ def _generate_bot_id(name: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:6]}"
 
 
+def _default_bot_settings() -> Any:
+    from quartz.settings import load_settings
+
+    return load_settings()
+
+
 def _normalize_optional_str(value: str | None) -> str | None:
     if value is None:
         return None
@@ -67,9 +73,21 @@ def _config_from_create(req: BotCreateRequest) -> BotConfig:
         enabled=req.enabled,
         use_worktree=req.use_worktree,
         max_queue_depth=req.max_queue_depth,
-        max_usd_per_day=req.max_usd_per_day,
-        max_consecutive_errors=req.max_consecutive_errors,
-        webhook_rate_limit_per_minute=req.webhook_rate_limit_per_minute,
+        max_usd_per_day=(
+            req.max_usd_per_day
+            if "max_usd_per_day" in req.model_fields_set
+            else _default_bot_settings().bot_max_usd_per_day
+        ),
+        max_consecutive_errors=(
+            req.max_consecutive_errors
+            if req.max_consecutive_errors is not None
+            else _default_bot_settings().bot_max_consecutive_errors
+        ),
+        webhook_rate_limit_per_minute=(
+            req.webhook_rate_limit_per_minute
+            if req.webhook_rate_limit_per_minute is not None
+            else _default_bot_settings().bot_webhook_rate_limit
+        ),
         github=(
             GitHubPollConfig(
                 repo=req.github.repo,

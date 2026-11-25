@@ -34,6 +34,9 @@ export interface BotConfig {
   enabled: boolean;
   use_worktree: boolean;
   max_queue_depth: number;
+  max_usd_per_day?: number | null;
+  max_consecutive_errors?: number;
+  webhook_rate_limit_per_minute?: number;
   github?: GitHubPollConfig | null;
   cron?: CronConfig | null;
   webhook?: WebhookConfig | null;

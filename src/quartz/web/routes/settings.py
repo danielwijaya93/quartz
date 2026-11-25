@@ -28,6 +28,14 @@ def _settings_values(loaded: Any, rt: Any | None = None) -> dict[str, Any]:
         "notifyBackground": loaded.notify_background,
         "notifyError": loaded.notify_error,
         "richUi": loaded.rich_ui,
+        "kernelMemMb": loaded.kernel_max_mem_mb,
+        "kernelMaxOpenFiles": loaded.kernel_max_open_files,
+        "kernelMaxProcesses": loaded.kernel_max_processes,
+        "strictSnapshots": loaded.strict_snapshots,
+        "sandboxEnvPassthrough": ", ".join(loaded.sandbox_env_passthrough),
+        "botMaxUsdPerDay": loaded.bot_max_usd_per_day,
+        "botMaxConsecutiveErrors": loaded.bot_max_consecutive_errors,
+        "botWebhookRateLimit": loaded.bot_webhook_rate_limit,
     }
 
 
@@ -89,8 +97,13 @@ def _register_settings_routes(router: APIRouter, ctx: AppContext) -> None:
         from quartz.providers.registry import config_file_path
         from quartz.settings import (
             DEFAULT_BACKGROUND_CHECK_EVERY,
+            DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS,
+            DEFAULT_BOT_WEBHOOK_RATE_LIMIT,
             DEFAULT_COMPACT_RESERVE_TOKENS,
             DEFAULT_KEEP_RECENT_TOKENS,
+            DEFAULT_KERNEL_MAX_MEM_MB,
+            DEFAULT_KERNEL_MAX_OPEN_FILES,
+            DEFAULT_KERNEL_MAX_PROCESSES,
             DEFAULT_NOTIFICATIONS_ENABLED,
             DEFAULT_NOTIFY_APPROVAL,
             DEFAULT_NOTIFY_BACKGROUND,
@@ -98,6 +111,7 @@ def _register_settings_routes(router: APIRouter, ctx: AppContext) -> None:
             DEFAULT_NOTIFY_TURN,
             DEFAULT_PROGRESS_EVERY,
             DEFAULT_RICH_UI,
+            DEFAULT_STRICT_SNAPSHOTS,
             DEFAULT_WEB_IDLE_HOURS,
             load_settings,
         )
@@ -118,6 +132,14 @@ def _register_settings_routes(router: APIRouter, ctx: AppContext) -> None:
                 "notifyBackground": DEFAULT_NOTIFY_BACKGROUND,
                 "notifyError": DEFAULT_NOTIFY_ERROR,
                 "richUi": DEFAULT_RICH_UI,
+                "kernelMemMb": DEFAULT_KERNEL_MAX_MEM_MB,
+                "kernelMaxOpenFiles": DEFAULT_KERNEL_MAX_OPEN_FILES,
+                "kernelMaxProcesses": DEFAULT_KERNEL_MAX_PROCESSES,
+                "strictSnapshots": DEFAULT_STRICT_SNAPSHOTS,
+                "sandboxEnvPassthrough": "",
+                "botMaxUsdPerDay": None,
+                "botMaxConsecutiveErrors": DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS,
+                "botWebhookRateLimit": DEFAULT_BOT_WEBHOOK_RATE_LIMIT,
             },
             "configPath": str(config_file_path()),
         })
@@ -136,11 +158,33 @@ def _register_settings_routes(router: APIRouter, ctx: AppContext) -> None:
         arg = "reset" if key == "reset" else f"{key} {value}".strip()
         if not arg:
             return JSONResponse({"error": "Missing setting key"}, status_code=400)
-        current = await manager.aensure_default_session()
-        request.app.state.session = current
-        ok, result = await current.run_command_async("settings", arg)
-        if not ok:
-            return _fail(getattr(result, "message", None) or "Invalid setting")
+        current = manager.current_session
+        if current.built:
+            request.app.state.session = current
+            ok, result = await current.run_command_async("settings", arg)
+            if not ok:
+                return _fail(getattr(result, "message", None) or "Invalid setting")
+        else:
+            from types import SimpleNamespace
+
+            from quartz.core.commands.settings_cmds import cmd_settings
+
+            def _apply_without_session() -> Any:
+                cur = load_settings()
+                stub = SimpleNamespace(
+                    compact_reserve_tokens=cur.compact_reserve_tokens,
+                    keep_recent_tokens=cur.keep_recent_tokens,
+                    progress_every=cur.progress_every,
+                    background_check_every=cur.background_check_every,
+                    notifications=cur.notifications,
+                    kernel=SimpleNamespace(configure=lambda **_kw: None),
+                )
+                return cmd_settings(cast(Any, stub), arg)
+
+            result = await asyncio.to_thread(_apply_without_session)
+            if result is None or getattr(result, "kind", None) == "error":
+                return _fail(getattr(result, "message", None) or "Invalid setting")
+
         loaded = await asyncio.to_thread(load_settings)
         manager.broadcast_settings_state(
             notifications=loaded.notifications,
@@ -153,7 +197,7 @@ def _register_settings_routes(router: APIRouter, ctx: AppContext) -> None:
         return JSONResponse({
             "ok": True,
             "message": getattr(result, "body", "Saved."),
-            "values": _settings_values(loaded, current.runtime),
+            "values": _settings_values(loaded, current.runtime if current.built else None),
         })
 
 

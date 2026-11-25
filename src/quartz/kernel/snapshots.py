@@ -163,10 +163,13 @@ def verify_manifest_hmac(manifest: dict[str, Any], key: bytes) -> bool:
 
 
 def _allow_unsigned_snapshots() -> bool:
-    return (
-        os.environ.get("QUARTZ_ALLOW_UNSIGNED_SNAPSHOTS") == "1"
-        and os.environ.get("QUARTZ_STRICT_SNAPSHOTS") != "1"
-    )
+    if os.environ.get("QUARTZ_STRICT_SNAPSHOTS") == "1":
+        return False
+    if os.environ.get("QUARTZ_ALLOW_UNSIGNED_SNAPSHOTS") == "1":
+        return True
+    from quartz.settings import load_settings
+
+    return not load_settings().strict_snapshots
 
 
 def _write_manifest_atomic(manifest_path: Path, manifest: dict[str, Any]) -> None:
