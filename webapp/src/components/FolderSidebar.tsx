@@ -4,6 +4,8 @@ import { RefreshCw } from "lucide-react";
 import { ActionNotice, type Notice, type NoticeAction } from "./sidebar/ActionNotice";
 import { SidebarFooter } from "./sidebar/SidebarFooter";
 import { ActiveSessionsSection } from "./sidebar/ActiveSessionsSection";
+import { BotsSection } from "./BotsSection";
+import { CreateBotModal } from "./CreateBotModal";
 import { EmptySidebar } from "./sidebar/EmptySidebar";
 import { SessionRow } from "./sidebar/SessionRow";
 import { SidebarHeader } from "./sidebar/SidebarHeader";
@@ -26,6 +28,7 @@ import {
   type SidebarState,
 } from "@/lib/sidebar";
 import type { ActiveSessionItem } from "@/protocol";
+import type { BotConfig, BotFormValues } from "@/types/bots";
 
 export interface FolderSidebarProps {
   /** The last good payload, or null before the first load succeeds. */
@@ -73,6 +76,12 @@ export interface FolderSidebarProps {
   onDismissActiveSession?: (sessionId: string) => void;
   /** Clear all read non-permission items from Active Sessions. */
   onClearReadActiveSessions?: () => void;
+  /** Configured autonomous bots. */
+  bots?: readonly BotConfig[];
+  onCreateBot?: (payload: BotFormValues) => void | Promise<void>;
+  onUpdateBot?: (id: string, payload: BotFormValues) => void | Promise<void>;
+  onToggleBot?: (id: string, enabled: boolean) => void | Promise<void>;
+  onDeleteBot?: (id: string) => void | Promise<void>;
 }
 
 const EMPTY_STATE: SidebarState = EMPTY_SIDEBAR;
@@ -113,6 +122,11 @@ export function FolderSidebar({
   sessionActivity = {},
   activeSessions: activeSessionItems = [],
   onDismissActiveSession,
+  bots = [],
+  onCreateBot,
+  onUpdateBot,
+  onToggleBot,
+  onDeleteBot,
 }: FolderSidebarProps): React.ReactElement {
   const [collapseState, setCollapseState] = React.useState<SidebarCollapseState>(() =>
     readSidebarCollapseState(),
@@ -165,6 +179,8 @@ export function FolderSidebar({
   const [notice, setNotice] = React.useState<Notice | null>(null);
   const [undoing, setUndoing] = React.useState(false);
   const [noticeFocused, setNoticeFocused] = React.useState(false);
+  const [botModalOpen, setBotModalOpen] = React.useState(false);
+  const [editingBot, setEditingBot] = React.useState<BotConfig | null>(null);
 
   // A notice dismisses itself, and every new one restarts the clock: the person
   // acting twice gets the second confirmation, not a countdown inherited from the
@@ -295,14 +311,33 @@ export function FolderSidebar({
         ) : null}
 
         {error === null ? (
-          <ActiveSessionsSection
-            items={activeSessions}
-            currentSessionId={currentSessionId}
-            sessionById={sessionById}
-            renames={sidebarState.renames}
-            onSelectSession={onSelectSession}
-            onDismiss={onDismissActiveSession}
-          />
+          <>
+            <ActiveSessionsSection
+              items={activeSessions}
+              currentSessionId={currentSessionId}
+              sessionById={sessionById}
+              renames={sidebarState.renames}
+              onSelectSession={onSelectSession}
+              onDismiss={onDismissActiveSession}
+            />
+            <BotsSection
+              bots={bots}
+              onCreateBot={() => {
+                setEditingBot(null);
+                setBotModalOpen(true);
+              }}
+              onEditBot={(bot) => {
+                setEditingBot(bot);
+                setBotModalOpen(true);
+              }}
+              onToggleBot={(id, enabled) => {
+                void onToggleBot?.(id, enabled);
+              }}
+              onDeleteBot={(id) => {
+                void onDeleteBot?.(id);
+              }}
+            />
+          </>
         ) : null}
 
         {error === null && data !== null
@@ -413,6 +448,23 @@ export function FolderSidebar({
         onOpenArchive={onOpenArchive}
         onOpenMcp={onOpenMcp}
         onOpenSettings={onOpenSettings}
+      />
+
+      <CreateBotModal
+        open={botModalOpen}
+        initialBot={editingBot}
+        defaultCwd={currentCwd}
+        onClose={() => {
+          setBotModalOpen(false);
+          setEditingBot(null);
+        }}
+        onSubmit={async (payload) => {
+          if (editingBot) {
+            await onUpdateBot?.(editingBot.id, payload);
+          } else {
+            await onCreateBot?.(payload);
+          }
+        }}
       />
     </nav>
   );

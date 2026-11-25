@@ -22,6 +22,7 @@ import { useCommandPalette } from "./lib/useCommandPalette";
 import { useOpenUISystemPrompt, useRichUiMode } from "./lib/useRichUi";
 import { useNotifications } from "./lib/useNotifications";
 import { useSidebar } from "./lib/useSidebar";
+import { useBots } from "./lib/useBots";
 import type { SessionActivity } from "./lib/sidebar";
 import { useMediaQuery } from "./lib/useMediaQuery";
 import { useOpenUIThemeMirror } from "./lib/theme";
@@ -109,6 +110,7 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
   );
   markNotificationsReadRef.current = quartz.markNotificationsRead;
   const sidebar = useSidebar();
+  const bots = useBots();
 
   const composerRef = React.useRef<HTMLTextAreaElement | null>(null);
   const palette = useCommandPalette(composerRef);
@@ -422,6 +424,11 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     activeSessions: mergedActiveSessions,
     onDismissActiveSession: quartz.dismissActiveSession,
     onClearReadActiveSessions: quartz.clearReadActiveSessions,
+    bots: bots.bots,
+    onCreateBot: bots.create,
+    onUpdateBot: bots.update,
+    onToggleBot: bots.toggle,
+    onDeleteBot: bots.remove,
   };
 
   return (
