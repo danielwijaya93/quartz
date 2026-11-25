@@ -91,12 +91,22 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     (message: ServerMessage) => {
       if (message.type === "settings_state") {
         richUi.applySyncedMode(message.richUi ? "rich" : "markdown");
-        void notifications.applySyncedEnabled(message.notifications);
+        void notifications.applySyncedEnabled(message.notifications, {
+          turn: message.notifyTurn,
+          approval: message.notifyApproval,
+          background: message.notifyBackground,
+          error: message.notifyError,
+        });
         return;
       }
       if (message.type === "session_state" && message.settings) {
         richUi.applySyncedMode(message.settings.richUi ? "rich" : "markdown");
-        void notifications.applySyncedEnabled(message.settings.notifications);
+        void notifications.applySyncedEnabled(message.settings.notifications, {
+          turn: message.settings.notifyTurn,
+          approval: message.settings.notifyApproval,
+          background: message.settings.notifyBackground,
+          error: message.settings.notifyError,
+        });
       }
       notifications.notifyFromFrame(message);
     },

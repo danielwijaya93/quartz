@@ -132,6 +132,33 @@ describe("formatNotificationForFrame", () => {
       formatNotificationForFrame({ type: "text_delta", text: "hello" }),
     ).toBeNull();
   });
+
+  it("filters notifications by category preferences", () => {
+    expect(
+      formatNotificationForFrame(
+        { type: "bash_notice", text: "Job finished" },
+        { turn: true, approval: true, background: false, error: true },
+      ),
+    ).toBeNull();
+    expect(
+      formatNotificationForFrame(
+        { type: "turn_end", status: "ok", tokens: 0, elapsedMs: 1000 },
+        { turn: false, approval: true, background: true, error: true },
+      ),
+    ).toBeNull();
+    expect(
+      formatNotificationForFrame(
+        { type: "permission_request", requestId: "r1", tool: "bash", command: "ls", cwd: "/tmp", scope: "turn" },
+        { turn: true, approval: false, background: true, error: true },
+      ),
+    ).toBeNull();
+    expect(
+      formatNotificationForFrame(
+        { type: "error", message: "boom", fatal: false },
+        { turn: true, approval: true, background: true, error: false },
+      ),
+    ).toBeNull();
+  });
 });
 
 describe("notification preferences and badge", () => {

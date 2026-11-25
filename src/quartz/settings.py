@@ -25,6 +25,10 @@ DEFAULT_SANDBOX_ENABLED = True
 DEFAULT_WEB_IDLE_HOURS = 2
 DEFAULT_WEB_MAX_LIVE_SESSIONS = 4
 DEFAULT_NOTIFICATIONS_ENABLED = True
+DEFAULT_NOTIFY_TURN = True
+DEFAULT_NOTIFY_APPROVAL = True
+DEFAULT_NOTIFY_BACKGROUND = True
+DEFAULT_NOTIFY_ERROR = True
 DEFAULT_RICH_UI = False
 DEFAULT_BRIDGE_TIMEOUT_S = 290
 DEFAULT_BRIDGE_WORKER_TIMEOUT_S = 1800
@@ -45,6 +49,10 @@ _PERSISTED_FIELDS = (
     "web_idle_hours",
     "web_max_live_sessions",
     "notifications",
+    "notify_turn",
+    "notify_approval",
+    "notify_background",
+    "notify_error",
     "rich_ui",
 )
 _OPTIONAL_FIELDS = ("bridge_timeout_s", "bridge_worker_timeout_s")
@@ -63,6 +71,10 @@ class Settings:
     web_idle_hours: int = DEFAULT_WEB_IDLE_HOURS
     web_max_live_sessions: int = DEFAULT_WEB_MAX_LIVE_SESSIONS
     notifications: bool = DEFAULT_NOTIFICATIONS_ENABLED
+    notify_turn: bool = DEFAULT_NOTIFY_TURN
+    notify_approval: bool = DEFAULT_NOTIFY_APPROVAL
+    notify_background: bool = DEFAULT_NOTIFY_BACKGROUND
+    notify_error: bool = DEFAULT_NOTIFY_ERROR
     rich_ui: bool = DEFAULT_RICH_UI
     bridge_timeout_s: int | None = None
     bridge_worker_timeout_s: int | None = None
@@ -139,6 +151,10 @@ def load_settings(path: Path | None = None) -> Settings:
         web_idle_hours=_coerce_int_range(raw.get("web_idle_hours"), DEFAULT_WEB_IDLE_HOURS, 0, _MAX_WEB_IDLE_HOURS),
         web_max_live_sessions=_coerce_int_range(raw.get("web_max_live_sessions"), DEFAULT_WEB_MAX_LIVE_SESSIONS, 0, _MAX_WEB_MAX_LIVE_SESSIONS),
         notifications=_coerce_bool(raw.get("notifications"), DEFAULT_NOTIFICATIONS_ENABLED),
+        notify_turn=_coerce_bool(raw.get("notify_turn"), DEFAULT_NOTIFY_TURN),
+        notify_approval=_coerce_bool(raw.get("notify_approval"), DEFAULT_NOTIFY_APPROVAL),
+        notify_background=_coerce_bool(raw.get("notify_background"), DEFAULT_NOTIFY_BACKGROUND),
+        notify_error=_coerce_bool(raw.get("notify_error"), DEFAULT_NOTIFY_ERROR),
         rich_ui=_coerce_bool(raw.get("rich_ui"), DEFAULT_RICH_UI),
         bridge_timeout_s=_coerce_bridge_timeout(raw.get("bridge_timeout_s")),
         bridge_worker_timeout_s=_coerce_bridge_timeout(raw.get("bridge_worker_timeout_s")),

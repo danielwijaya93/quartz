@@ -126,3 +126,15 @@ def test_push_api_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     res = client.post("/api/push/unsubscribe", json={"endpoint": sub["endpoint"]})
     assert res.status_code == 200
     assert res.json() == {"ok": True, "removed": True}
+
+
+def test_should_send_push_respects_category_toggles() -> None:
+    from quartz.settings import Settings
+    from quartz.web.push import should_send_push
+
+    assert should_send_push(Settings(notifications=False), {"type": "bash_notice"}) is False
+    assert should_send_push(Settings(notify_background=False), {"type": "bash_notice"}) is False
+    assert should_send_push(Settings(notify_background=False), {"type": "turn_end"}) is True
+    assert should_send_push(Settings(notify_turn=False), {"type": "turn_end"}) is False
+    assert should_send_push(Settings(notify_approval=False), {"type": "permission_request"}) is False
+    assert should_send_push(Settings(notify_error=False), {"type": "error"}) is False

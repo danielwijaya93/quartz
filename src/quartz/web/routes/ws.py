@@ -132,7 +132,14 @@ async def _dispatch(
 
             loaded = await asyncio.to_thread(load_settings)
             snapshot = session.snapshot()
-            snapshot["settings"] = {"notifications": loaded.notifications, "richUi": loaded.rich_ui}
+            snapshot["settings"] = {
+                "notifications": loaded.notifications,
+                "notifyTurn": loaded.notify_turn,
+                "notifyApproval": loaded.notify_approval,
+                "notifyBackground": loaded.notify_background,
+                "notifyError": loaded.notify_error,
+                "richUi": loaded.rich_ui,
+            }
             push(snapshot)
             _replay_live_turn(session, snapshot, push)
             for idle_frame in manager.pending_idle_prompts():
@@ -319,7 +326,15 @@ def create_router(ctx: AppContext) -> APIRouter:
                 from quartz.settings import load_settings
 
                 loaded = await asyncio.to_thread(load_settings)
-                push({"type": "settings_state", "notifications": loaded.notifications, "richUi": loaded.rich_ui})
+                push({
+                    "type": "settings_state",
+                    "notifications": loaded.notifications,
+                    "notifyTurn": loaded.notify_turn,
+                    "notifyApproval": loaded.notify_approval,
+                    "notifyBackground": loaded.notify_background,
+                    "notifyError": loaded.notify_error,
+                    "richUi": loaded.rich_ui,
+                })
                 while True:
                     await socket.receive_text()
             except WebSocketDisconnect:

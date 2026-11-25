@@ -16,6 +16,22 @@ export interface NotificationEnvironment {
   permission: NotificationPermissionState;
 }
 
+export type NotificationCategory = "turn" | "approval" | "background" | "error";
+
+export interface NotificationPreferences {
+  turn: boolean;
+  approval: boolean;
+  background: boolean;
+  error: boolean;
+}
+
+export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
+  turn: true,
+  approval: true,
+  background: true,
+  error: true,
+};
+
 export interface BrowserNotificationPayload {
   title: string;
   body: string;
@@ -23,6 +39,7 @@ export interface BrowserNotificationPayload {
 }
 
 const STORAGE_KEY = "quartz-web-notifications";
+const PREFS_STORAGE_KEY = "quartz-web-notification-prefs";
 const DEFAULT_TITLE = "Quartz";
 
 export function readNotificationsEnabled(): boolean {
@@ -38,6 +55,31 @@ export function readNotificationsEnabled(): boolean {
 export function writeNotificationsEnabled(enabled: boolean): void {
   try {
     window.localStorage.setItem(STORAGE_KEY, enabled ? "true" : "false");
+  } catch {
+    /* Private mode or blocked storage. */
+  }
+}
+
+export function readNotificationPreferences(): NotificationPreferences {
+  try {
+    const raw = window.localStorage.getItem(PREFS_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_NOTIFICATION_PREFERENCES };
+    const parsed = JSON.parse(raw) as Partial<Record<NotificationCategory, unknown>>;
+    if (!parsed || typeof parsed !== "object") return { ...DEFAULT_NOTIFICATION_PREFERENCES };
+    return {
+      turn: parsed.turn !== false,
+      approval: parsed.approval !== false,
+      background: parsed.background !== false,
+      error: parsed.error !== false,
+    };
+  } catch {
+    return { ...DEFAULT_NOTIFICATION_PREFERENCES };
+  }
+}
+
+export function writeNotificationPreferences(prefs: NotificationPreferences): void {
+  try {
+    window.localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(prefs));
   } catch {
     /* Private mode or blocked storage. */
   }
@@ -288,9 +330,11 @@ export function compactNotificationBody(
 
 export function formatNotificationForFrame(
   message: ServerMessage,
+  prefs: NotificationPreferences = DEFAULT_NOTIFICATION_PREFERENCES,
 ): BrowserNotificationPayload | null {
   switch (message.type) {
     case "turn_end": {
+      if (!prefs.turn) return null;
       if (message.status === "ok") {
         const secs = (message.elapsedMs / 1000).toFixed(1);
         return {
@@ -310,18 +354,21 @@ export function formatNotificationForFrame(
       return null;
     }
     case "permission_request":
+      if (!prefs.approval) return null;
       return {
         title: "Quartz: Approval needed",
         body: compactNotificationBody(`Allow ${message.command || message.tool || "action"}?`),
         tag: `quartz-permission-${message.requestId}`,
       };
     case "bash_notice":
+      if (!prefs.background) return null;
       return {
         title: "Quartz: Background job finished",
         body: compactNotificationBody(message.text || "") || "A background job finished.",
         tag: "quartz-bash",
       };
     case "error":
+      if (!prefs.error) return null;
       return {
         title: "Quartz: Error",
         body: compactNotificationBody(message.message || "") || "An error occurred.",

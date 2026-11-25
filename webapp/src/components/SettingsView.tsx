@@ -6,8 +6,20 @@ import { BiometricLockCard } from "./BiometricLockCard";
 import { authFetch } from "../lib/authToken";
 import { Button, Input } from "@heroui/react";
 import { Bell, RotateCcw } from "lucide-react";
+import type { NotificationCategory } from "../lib/notifications";
 import { useNotifications, type NotificationsController } from "../lib/useNotifications";
 import { CanvasPage } from "./CanvasPage";
+
+const NOTIFICATION_CATEGORIES: readonly {
+  key: NotificationCategory;
+  label: string;
+  description: string;
+}[] = [
+  { key: "turn", label: "Turn updates", description: "Notify when a turn finishes or fails." },
+  { key: "approval", label: "Approval requests", description: "Notify when a command or bot needs approval." },
+  { key: "background", label: "Background jobs", description: "Notify when a background job finishes." },
+  { key: "error", label: "Errors", description: "Notify on session or runtime errors." },
+];
 
 interface SettingsValues {
   reserve: number;
@@ -237,17 +249,20 @@ export function SettingsView({
       ) : null}
 
       <section
-        aria-label={isNative ? "App notifications" : "Browser notifications"}
+        aria-label="Notifications"
         className="rounded-xl border border-border bg-surface/50 px-4 py-3"
       >
+        <div className="mb-3 flex items-center gap-1.5 border-b border-separator pb-2">
+          <Bell aria-hidden="true" className="size-3.5 text-muted" />
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">
+            Notifications
+          </h2>
+        </div>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <Bell aria-hidden="true" className="size-3.5 text-muted" />
-              <p className="text-sm font-medium text-foreground">
-                {isNative ? "App notifications" : "Browser notifications"}
-              </p>
-            </div>
+            <p className="text-sm font-medium text-foreground">
+              {isNative ? "App notifications" : "Browser notifications"}
+            </p>
             <p className="mt-0.5 text-xs text-muted">
               {notificationStatusText(notifications, isNative)}
             </p>
@@ -279,6 +294,35 @@ export function SettingsView({
               {notifActive ? "Disable" : "Enable"}
             </Button>
           </div>
+        </div>
+        <div className={`mt-3 space-y-2 border-t border-separator pt-3 ${notifActive ? "" : "opacity-60"}`}>
+          {NOTIFICATION_CATEGORIES.map((item) => {
+            const checked = notifications.prefs[item.key];
+            return (
+              <div
+                key={item.key}
+                className="flex items-center justify-between gap-3 py-1"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-foreground">{item.label}</p>
+                  <p className="text-xs text-muted">{item.description}</p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={checked}
+                  aria-label={item.label}
+                  disabled={!notifications.env.supported || notifications.env.permission === "denied"}
+                  onClick={() => notifications.setCategoryEnabled(item.key, !checked)}
+                  className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                    checked ? "bg-accent text-white" : "border border-border text-foreground"
+                  } disabled:opacity-50`}
+                >
+                  {checked ? "On" : "Off"}
+                </button>
+              </div>
+            );
+          })}
         </div>
         {isNative && batteryUnrestricted === false ? (
           <div className="mt-3 flex flex-col gap-2 border-t border-separator pt-3 sm:flex-row sm:items-center sm:justify-between">

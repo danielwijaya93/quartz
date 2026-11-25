@@ -63,6 +63,22 @@ def _compact_push_body(text: str, max_length: int = _MAX_PUSH_BODY_LENGTH) -> st
     return collapsed[: max(0, max_length - 3)].rstrip() + "..."
 
 
+def should_send_push(settings: Any, frame: dict[str, Any]) -> bool:
+    """Return whether ``frame`` is allowed by the user's notification toggles."""
+    if not getattr(settings, "notifications", True):
+        return False
+    kind = frame.get("type")
+    if kind == "turn_end":
+        return bool(getattr(settings, "notify_turn", True))
+    if kind == "permission_request":
+        return bool(getattr(settings, "notify_approval", True))
+    if kind == "bash_notice":
+        return bool(getattr(settings, "notify_background", True))
+    if kind == "error":
+        return bool(getattr(settings, "notify_error", True))
+    return True
+
+
 def format_push_payload(frame: dict[str, Any]) -> dict[str, Any] | None:
     """Build a Web Push notification payload for a server frame, or ``None``."""
     kind = frame.get("type")

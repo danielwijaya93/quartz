@@ -29,7 +29,7 @@ from quartz.web.context import (
 from quartz.web.context import (
     is_allowed_origin as _is_allowed_origin,
 )
-from quartz.web.push import PushStore, default_push_path, format_push_payload
+from quartz.web.push import PushStore, default_push_path, format_push_payload, should_send_push
 from quartz.web.routes import auth, bots, files, push, sessions, settings, ws
 from quartz.web.session import BuildRuntime, SessionManager, TurnRunner, WebSession
 from quartz.web.sidebar import SidebarStore, default_sidebar_path
@@ -146,7 +146,14 @@ def create_app(
         while ws.turn_running:
             if ws.has_pending_permission:
                 pending = ws._pending_permission or {}
-                if push_ref is not None or default_push_path().is_file():
+                from quartz.settings import load_settings as _load_settings
+
+                _bot_notif_settings = _load_settings()
+                if (
+                    _bot_notif_settings.notifications
+                    and _bot_notif_settings.notify_approval
+                    and (push_ref is not None or default_push_path().is_file())
+                ):
                     notify_bot_parked(
                         push_store(),
                         bot,
@@ -157,7 +164,14 @@ def create_app(
             await asyncio.sleep(0.2)
         if ws.has_pending_permission:
             pending = ws._pending_permission or {}
-            if push_ref is not None or default_push_path().is_file():
+            from quartz.settings import load_settings as _load_settings
+
+            _bot_notif_settings = _load_settings()
+            if (
+                _bot_notif_settings.notifications
+                and _bot_notif_settings.notify_approval
+                and (push_ref is not None or default_push_path().is_file())
+            ):
                 notify_bot_parked(
                     push_store(),
                     bot,
@@ -227,7 +241,8 @@ def create_app(
     def _on_push_event(_ws: WebSession, frame: dict[str, Any]) -> None:
         from quartz.settings import load_settings
 
-        if not load_settings().notifications:
+        loaded = load_settings()
+        if not should_send_push(loaded, frame):
             return
         payload = format_push_payload(frame)
         if payload is None:
