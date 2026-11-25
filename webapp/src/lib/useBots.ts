@@ -4,6 +4,7 @@ import {
   deleteBot,
   fetchBots,
   restoreDeletedBot,
+  runBotNow,
   toggleBot,
   updateBot,
 } from "./botsApi";
@@ -13,11 +14,13 @@ export interface UseBotsResult {
   bots: BotConfig[];
   loading: boolean;
   togglingIds: ReadonlySet<string>;
+  runningIds: ReadonlySet<string>;
   toggleError: string | null;
   reload: () => Promise<void>;
   create: (payload: BotFormValues) => Promise<void>;
   update: (id: string, payload: BotFormValues) => Promise<void>;
   toggle: (id: string, enabled: boolean) => Promise<void>;
+  runNow: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
   restore: (id: string) => Promise<BotConfig>;
 }
@@ -26,6 +29,7 @@ export function useBots(): UseBotsResult {
   const [bots, setBots] = React.useState<BotConfig[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [togglingIds, setTogglingIds] = React.useState<Set<string>>(() => new Set());
+  const [runningIds, setRunningIds] = React.useState<Set<string>>(() => new Set());
   const [toggleError, setToggleError] = React.useState<string | null>(null);
 
   const reload = React.useCallback(async () => {
@@ -87,6 +91,26 @@ export function useBots(): UseBotsResult {
     }
   }, []);
 
+  const runNow = React.useCallback(async (id: string) => {
+    setToggleError(null);
+    setRunningIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+    try {
+      await runBotNow(id);
+    } catch (err) {
+      setToggleError(err instanceof Error ? err.message : "Failed to run bot.");
+    } finally {
+      setRunningIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  }, []);
+
   const remove = React.useCallback(async (id: string) => {
     await deleteBot(id);
     setBots((prev) => prev.filter((b) => b.id !== id));
@@ -102,11 +126,13 @@ export function useBots(): UseBotsResult {
     bots,
     loading,
     togglingIds,
+    runningIds,
     toggleError,
     reload,
     create,
     update,
     toggle,
+    runNow,
     remove,
     restore,
   };

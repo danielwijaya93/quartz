@@ -1,16 +1,18 @@
 import * as React from "react";
 import { cn } from "@heroui/react";
-import { Bot, History, Pencil, Plus, Trash2 } from "lucide-react";
+import { Bot, History, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import type { BotConfig, WatcherType } from "@/types/bots";
 
 export interface BotsSectionProps {
   bots: readonly BotConfig[];
   togglingIds?: ReadonlySet<string>;
+  runningIds?: ReadonlySet<string>;
   toggleError?: string | null;
   onCreateBot: () => void;
   onOpenHistory?: () => void;
   onEditBot: (bot: BotConfig) => void;
   onToggleBot: (id: string, enabled: boolean) => void;
+  onRunBot?: (id: string) => void;
   onDeleteBot: (id: string) => void;
 }
 
@@ -20,14 +22,30 @@ const WATCHER_LABELS: Record<WatcherType, string> = {
   webhook: "Webhook",
 };
 
+function formatBotSubtitle(bot: BotConfig): string {
+  const base = WATCHER_LABELS[bot.watcher_type];
+  if (bot.watcher_type === "cron" && bot.cron?.expression) {
+    return `${base} · ${bot.cron.expression}`;
+  }
+  if (bot.watcher_type === "github_poll" && bot.github?.repo) {
+    return `${base} · ${bot.github.repo}`;
+  }
+  if (bot.watcher_type === "webhook" && bot.webhook?.event_filter) {
+    return `${base} · ${bot.webhook.event_filter}`;
+  }
+  return base;
+}
+
 export function BotsSection({
   bots,
   togglingIds,
+  runningIds,
   toggleError,
   onCreateBot,
   onOpenHistory,
   onEditBot,
   onToggleBot,
+  onRunBot,
   onDeleteBot,
 }: BotsSectionProps): React.ReactElement {
   return (
@@ -56,7 +74,7 @@ export function BotsSection({
             className="inline-flex cursor-pointer items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-accent transition-colors hover:bg-accent-soft/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
           >
             <Plus aria-hidden="true" className="size-2.5" />
-            + Create Bot
+            Create Bot
           </button>
         </div>
       </div>
@@ -72,80 +90,91 @@ export function BotsSection({
         <ul aria-label="Bots list" className="mt-1 space-y-1">
           {bots.map((bot) => {
             const isToggling = Boolean(togglingIds?.has(bot.id));
+            const isRunning = Boolean(runningIds?.has(bot.id));
+            const subtitle = formatBotSubtitle(bot);
             return (
-            <li
-              key={bot.id}
-              className="group flex items-center gap-1.5 rounded-md border border-separator/70 bg-surface-secondary/30 px-2 py-1.5 transition-colors hover:bg-surface-secondary/60"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5">
-                  <span className="min-w-0 truncate text-[12px] font-medium text-foreground">
-                    {bot.name}
+              <li
+                key={bot.id}
+                className="group flex items-center gap-1.5 rounded-md border border-separator/70 bg-surface-secondary/30 px-2 py-1.5 transition-colors hover:bg-surface-secondary/60"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        "size-1.5 shrink-0 rounded-full",
+                        bot.enabled ? "bg-emerald-500" : "bg-muted/50",
+                      )}
+                    />
+                    <span
+                      title={bot.name}
+                      className="min-w-0 truncate text-[12px] font-medium text-foreground"
+                    >
+                      {bot.name}
+                    </span>
+                  </div>
+                  <span title={subtitle} className="block truncate pl-3 text-[10px] text-meta">
+                    {subtitle}
                   </span>
+                </div>
+
+                <div className="flex shrink-0 items-center gap-0.5">
+                  {onRunBot ? (
+                    <button
+                      type="button"
+                      aria-label={`Run ${bot.name} now`}
+                      title="Run bot now"
+                      disabled={isRunning}
+                      onClick={() => onRunBot(bot.id)}
+                      className="flex size-5 cursor-pointer items-center justify-center rounded text-muted transition-all hover:bg-surface-secondary hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus disabled:cursor-wait disabled:opacity-50 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+                    >
+                      <Play aria-hidden="true" className="size-3" />
+                    </button>
+                  ) : null}
+
                   <button
                     type="button"
+                    aria-label={`Edit ${bot.name}`}
+                    title="Edit bot"
+                    onClick={() => onEditBot(bot)}
+                    className="flex size-5 cursor-pointer items-center justify-center rounded text-muted transition-all hover:bg-surface-secondary hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+                  >
+                    <Pencil aria-hidden="true" className="size-3" />
+                  </button>
+
+                  <button
+                    type="button"
+                    aria-label={`Delete ${bot.name}`}
+                    title="Delete bot"
+                    onClick={() => onDeleteBot(bot.id)}
+                    className="flex size-5 cursor-pointer items-center justify-center rounded text-muted transition-all hover:bg-danger-soft hover:text-danger-soft-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+                  >
+                    <Trash2 aria-hidden="true" className="size-3" />
+                  </button>
+
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={bot.enabled}
+                    aria-label={`Toggle ${bot.name}`}
+                    title={bot.enabled ? "Pause bot" : "Enable bot"}
                     disabled={isToggling}
                     onClick={() => onToggleBot(bot.id, !bot.enabled)}
-                    title={bot.enabled ? "Pause bot" : "Enable bot"}
                     className={cn(
-                      "shrink-0 cursor-pointer rounded px-1.5 py-0.5 text-[10px] font-medium leading-none transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus disabled:cursor-wait disabled:opacity-60",
-                      bot.enabled
-                        ? "bg-emerald-500/15 text-emerald-600 hover:bg-emerald-500/25 dark:text-emerald-400"
-                        : "bg-surface-secondary text-muted hover:bg-surface-secondary/80",
+                      "relative ml-0.5 inline-flex h-4 w-7 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus disabled:cursor-wait disabled:opacity-60",
+                      bot.enabled ? "bg-emerald-500" : "bg-muted/40",
                     )}
                   >
-                    {bot.enabled ? "Enabled" : "Paused"}
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        "pointer-events-none inline-block size-3 rounded-full bg-white shadow-xs transition-transform",
+                        bot.enabled ? "translate-x-3.5" : "translate-x-0.5",
+                      )}
+                    />
                   </button>
                 </div>
-                <span className="block truncate text-[10px] text-meta">
-                  {WATCHER_LABELS[bot.watcher_type]}
-                </span>
-              </div>
-
-              <div className="flex shrink-0 items-center gap-1">
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={bot.enabled}
-                  aria-label={`Toggle ${bot.name}`}
-                  title={bot.enabled ? "Pause bot" : "Enable bot"}
-                  disabled={isToggling}
-                  onClick={() => onToggleBot(bot.id, !bot.enabled)}
-                  className={cn(
-                    "relative inline-flex h-4 w-7 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus disabled:cursor-wait disabled:opacity-60",
-                    bot.enabled ? "bg-emerald-500" : "bg-muted/40",
-                  )}
-                >
-                  <span
-                    aria-hidden="true"
-                    className={cn(
-                      "pointer-events-none inline-block size-3 rounded-full bg-white shadow-xs transition-transform",
-                      bot.enabled ? "translate-x-3.5" : "translate-x-0.5",
-                    )}
-                  />
-                </button>
-
-                <button
-                  type="button"
-                  aria-label={`Edit ${bot.name}`}
-                  title="Edit bot"
-                  onClick={() => onEditBot(bot)}
-                  className="flex size-5 cursor-pointer items-center justify-center rounded text-muted transition-colors hover:bg-surface-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
-                >
-                  <Pencil aria-hidden="true" className="size-3" />
-                </button>
-
-                <button
-                  type="button"
-                  aria-label={`Delete ${bot.name}`}
-                  title="Delete bot"
-                  onClick={() => onDeleteBot(bot.id)}
-                  className="flex size-5 cursor-pointer items-center justify-center rounded text-muted transition-colors hover:bg-danger-soft hover:text-danger-soft-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
-                >
-                  <Trash2 aria-hidden="true" className="size-3" />
-                </button>
-              </div>
-            </li>
+              </li>
             );
           })}
         </ul>
