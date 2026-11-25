@@ -162,6 +162,102 @@ def verify_manifest_hmac(manifest: dict[str, Any], key: bytes) -> bool:
     return hmac.compare_digest(sig, expected)
 
 
+def _allow_unsigned_snapshots() -> bool:
+    return (
+        os.environ.get("QUARTZ_ALLOW_UNSIGNED_SNAPSHOTS") == "1"
+        and os.environ.get("QUARTZ_STRICT_SNAPSHOTS") != "1"
+    )
+
+
+def _write_manifest_atomic(manifest_path: Path, manifest: dict[str, Any]) -> None:
+    fd, tmp_name = tempfile.mkstemp(prefix=".manifest.", dir=str(manifest_path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(manifest, indent=2))
+        os.replace(tmp_name, manifest_path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
+
+
+def _verify_file_hashes(target: Path, manifest: dict[str, Any], *, non_json_only: bool = False) -> bool:
+    hashes = manifest.get("hashes")
+    files = manifest.get("files")
+    if not isinstance(hashes, dict) or not isinstance(files, dict):
+        return False
+    checked: set[str] = set()
+    for fname in files.values():
+        if not isinstance(fname, str) or fname in checked:
+            continue
+        if non_json_only and fname.endswith(".json"):
+            continue
+        checked.add(fname)
+        expected = hashes.get(fname)
+        var_file = target / fname
+        if not isinstance(expected, str) or not var_file.is_file():
+            return False
+        if sha256_hex(var_file.read_bytes()) != expected:
+            return False
+    return True
+
+
+def sign_snapshot_dir(
+    snapshot_dir: str | Path,
+    *,
+    key: bytes | None = None,
+) -> dict[str, Any] | None:
+    """Host-side: verify file hashes in ``snapshot_dir`` and write an HMAC-signed manifest."""
+    target = Path(snapshot_dir)
+    manifest_path = target / "manifest.json"
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    if not _verify_file_hashes(target, manifest):
+        return manifest
+    hmac_key = key if key is not None else load_or_create_snapshot_key()
+    if hmac_key is None:
+        return manifest
+    manifest["hmac"] = sign_manifest(manifest, hmac_key)
+    _write_manifest_atomic(manifest_path, manifest)
+    return manifest
+
+
+def verify_snapshot_dir(
+    snapshot_dir: str | Path,
+    *,
+    key: bytes | None = None,
+) -> tuple[bool, str | None]:
+    """Host-side: verify a snapshot's HMAC and file hashes before allowing unpickling."""
+    target = Path(snapshot_dir)
+    manifest_path = target / "manifest.json"
+    if not manifest_path.is_file():
+        return False, "missing manifest"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False, "tampered snapshot"
+    if not isinstance(manifest, dict):
+        return False, "tampered snapshot"
+
+    if "hmac" in manifest:
+        hmac_key = key if key is not None else load_snapshot_key()
+        if hmac_key is None or not verify_manifest_hmac(manifest, hmac_key):
+            return False, "tampered snapshot"
+        if not _verify_file_hashes(target, manifest, non_json_only=True):
+            return False, "tampered snapshot"
+        return True, None
+
+    if _allow_unsigned_snapshots():
+        return True, None
+    return False, "unsigned snapshot rejected"
+
+
 class _UnpickleFailed:
     """Sentinel cached for a snapshot file that failed verification or unpickling."""
 
@@ -212,6 +308,7 @@ def snapshot_namespace(
     reserved_names: set[str],
     default_bindings: dict[str, Any],
     auto_imported: dict[str, Any],
+    sign: bool = True,
 ) -> dict[str, Any]:
     """Serialize user-defined variables to ``snapshot_dir`` (JSON-first, then pickle/dill) with SHA-256 + HMAC."""
     import pickle
@@ -302,9 +399,10 @@ def snapshot_namespace(
             "hashes": hashes,
             "cwd": os.getcwd(),
         }
-        hmac_key = load_or_create_snapshot_key()
-        if hmac_key is not None:
-            manifest["hmac"] = sign_manifest(manifest, hmac_key)
+        if sign:
+            hmac_key = load_or_create_snapshot_key()
+            if hmac_key is not None:
+                manifest["hmac"] = sign_manifest(manifest, hmac_key)
         (tmp_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         backup_dir: Path | None = None
         if target.exists():
@@ -350,6 +448,8 @@ def restore_namespace(
     *,
     default_bindings: dict[str, Any],
     root: str | None = None,
+    allow_pickle: bool | None = None,
+    pickle_reject_reason: str | None = None,
 ) -> dict[str, Any]:
     """Restore variables from ``snapshot_dir`` into ``namespace``."""
     import pickle
@@ -370,14 +470,16 @@ def restore_namespace(
     skipped: list[str] = list(manifest.get("skipped", []))
     _reimport_modules(namespace, manifest.get("modules", {}), restored, skipped)
 
-    hmac_rejected = False
-    strict_unsigned = False
-    if "hmac" in manifest:
-        hmac_key = load_snapshot_key()
-        if hmac_key is None or not verify_manifest_hmac(manifest, hmac_key):
-            hmac_rejected = True
-    elif os.environ.get("QUARTZ_STRICT_SNAPSHOTS") == "1":
-        strict_unsigned = True
+    pickle_rejection: str | None = None
+    if allow_pickle is False:
+        pickle_rejection = pickle_reject_reason or "unsigned snapshot rejected"
+    elif allow_pickle is None:
+        if "hmac" in manifest:
+            hmac_key = load_snapshot_key()
+            if hmac_key is None or not verify_manifest_hmac(manifest, hmac_key):
+                pickle_rejection = "tampered snapshot"
+        elif not _allow_unsigned_snapshots():
+            pickle_rejection = "unsigned snapshot rejected"
 
     has_hashes = "hashes" in manifest and isinstance(manifest.get("hashes"), dict)
     hashes: dict[str, Any] = manifest.get("hashes") if has_hashes else {}
@@ -388,13 +490,9 @@ def restore_namespace(
     for name in manifest.get("saved", []):
         fname = files.get(name) or f"{name}.dill"
         is_json = fname.endswith(".json")
-        if not is_json:
-            if hmac_rejected:
-                skipped.append(f"{name} (tampered snapshot)")
-                continue
-            if strict_unsigned:
-                skipped.append(f"{name} (unsigned snapshot rejected)")
-                continue
+        if not is_json and pickle_rejection is not None:
+            skipped.append(f"{name} ({pickle_rejection})")
+            continue
         var_file = target / fname
         if not var_file.is_file():
             skipped.append(f"{name} (missing)")

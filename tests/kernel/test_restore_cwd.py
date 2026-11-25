@@ -130,7 +130,7 @@ def test_restore_vars_unpickle_failed_sentinel_skips_aliases(tmp_path: Path) -> 
     worker = object.__new__(KernelWorker)
     worker._namespace = {}
     worker._default_bindings = {}
-    res = worker.restore_vars(str(snapshot))
+    res = worker.restore_vars(str(snapshot), allow_pickle=True)
     assert res["restored"] == []
     assert res["skipped"] == ["alias_a (unpickle error)", "alias_b (unpickle error)"]
     assert "alias_a" not in worker._namespace

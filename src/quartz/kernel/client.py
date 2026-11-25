@@ -31,6 +31,7 @@ from quartz.kernel.sandbox import (
     sandbox_env_overrides,
     wrap_command,
 )
+from quartz.kernel.snapshots import sign_snapshot_dir, verify_snapshot_dir
 
 logger = logging.getLogger(__name__)
 
@@ -568,23 +569,34 @@ class KernelClient(BaseKernel):
         if not self._is_alive():
             return {"saved": [], "skipped": []}
         resp = await self._request_async(
-            {"type": "snapshot", "dir": str(snapshot_dir)}, timeout=timeout
+            {"type": "snapshot", "dir": str(snapshot_dir), "sign": False}, timeout=timeout
         )
         self.dirty = False
-        return resp.get("manifest", {"saved": [], "skipped": []})
+        signed = await asyncio.to_thread(sign_snapshot_dir, snapshot_dir)
+        return signed if signed is not None else resp.get("manifest", {"saved": [], "skipped": []})
 
     def snapshot(self, snapshot_dir: Path, timeout: float = 30.0) -> dict[str, Any]:
         if not self._is_alive():
             return {"saved": [], "skipped": []}
-        resp = self._request({"type": "snapshot", "dir": str(snapshot_dir)}, timeout=timeout)
+        resp = self._request(
+            {"type": "snapshot", "dir": str(snapshot_dir), "sign": False}, timeout=timeout
+        )
         self.dirty = False
-        return resp.get("manifest", {"saved": [], "skipped": []})
+        signed = sign_snapshot_dir(snapshot_dir)
+        return signed if signed is not None else resp.get("manifest", {"saved": [], "skipped": []})
 
     async def arestore(
         self, snapshot_dir: Path, timeout: float = 30.0, root: Path | None = None
     ) -> dict[str, list[str]]:
         await self._ensure_started_async()
-        frame: dict[str, Any] = {"type": "restore", "dir": str(snapshot_dir)}
+        allow_pickle, reject_reason = await asyncio.to_thread(verify_snapshot_dir, snapshot_dir)
+        frame: dict[str, Any] = {
+            "type": "restore",
+            "dir": str(snapshot_dir),
+            "allow_pickle": allow_pickle,
+        }
+        if reject_reason is not None:
+            frame["pickle_reject_reason"] = reject_reason
         if root is not None:
             frame["root"] = str(root)
         resp = await self._request_async(frame, timeout=timeout)
@@ -598,7 +610,14 @@ class KernelClient(BaseKernel):
     ) -> dict[str, list[str]]:
         if not self._is_alive():
             self.start()
-        frame: dict[str, Any] = {"type": "restore", "dir": str(snapshot_dir)}
+        allow_pickle, reject_reason = verify_snapshot_dir(snapshot_dir)
+        frame: dict[str, Any] = {
+            "type": "restore",
+            "dir": str(snapshot_dir),
+            "allow_pickle": allow_pickle,
+        }
+        if reject_reason is not None:
+            frame["pickle_reject_reason"] = reject_reason
         if root is not None:
             frame["root"] = str(root)
         resp = self._request(frame, timeout=timeout)
