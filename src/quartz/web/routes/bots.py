@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from quartz.bots import (
     BotConfig,
+    BotHistoryStore,
     BotQueue,
     BotState,
     BotStore,
@@ -142,6 +143,69 @@ def create_router(ctx: AppContext) -> APIRouter:
         queue = ctx.bot_queue or BotQueue()
         return store, queue
 
+    def _history_store(store: BotStore) -> BotHistoryStore:
+        return ctx.bot_history or BotHistoryStore(store.root_dir)
+
+    @router.get("/api/bots/history")
+    async def get_bots_history(
+        bot_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> JSONResponse:
+        store, _queue = _stores()
+        history = _history_store(store)
+        bounded_limit = max(1, min(limit, 500))
+
+        def _read() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+            runs = [
+                r.to_dict()
+                for r in history.list_runs(bot_id=bot_id, status=status, limit=bounded_limit)
+            ]
+            deleted = [d.to_dict() for d in history.list_deleted_bots()]
+            return runs, deleted
+
+        runs, deleted = await asyncio.to_thread(_read)
+        return JSONResponse({"runs": runs, "deletedBots": deleted})
+
+    @router.post("/api/bots/history/{bot_id}/restore")
+    async def restore_deleted_bot(bot_id: str) -> JSONResponse:
+        store, queue = _stores()
+        history = _history_store(store)
+
+        def _restore() -> dict[str, Any] | None:
+            record = history.pop_deleted_bot(bot_id)
+            if record is None:
+                return None
+            cfg = record.bot
+            if store.get_bot(cfg.id) is not None:
+                cfg = BotConfig(
+                    id=_generate_bot_id(cfg.name),
+                    name=cfg.name,
+                    watcher_type=cfg.watcher_type,
+                    instruction=cfg.instruction,
+                    cwd=cfg.cwd,
+                    enabled=cfg.enabled,
+                    use_worktree=cfg.use_worktree,
+                    max_queue_depth=cfg.max_queue_depth,
+                    github=cfg.github,
+                    cron=cfg.cron,
+                    webhook=cfg.webhook,
+                    permissions=cfg.permissions,
+                    created_at=time.time(),
+                    updated_at=time.time(),
+                )
+            created = store.create_bot(cfg)
+            return _serialize_bot(
+                created,
+                store.get_state(created.id),
+                queue.peek_bot_queue(created.id),
+            )
+
+        restored = await asyncio.to_thread(_restore)
+        if restored is None:
+            return JSONResponse({"error": f"Deleted bot {bot_id!r} not found"}, status_code=404)
+        return JSONResponse({"bot": restored})
+
     @router.get("/api/bots")
     async def list_bots() -> JSONResponse:
         def _load() -> list[dict[str, Any]]:
@@ -206,7 +270,16 @@ def create_router(ctx: AppContext) -> APIRouter:
     @router.delete("/api/bots/{bot_id}")
     async def delete_bot(bot_id: str) -> JSONResponse:
         store, queue = _stores()
-        deleted = await asyncio.to_thread(store.delete_bot, bot_id)
+        history = _history_store(store)
+
+        def _archive_and_delete() -> bool:
+            existing = store.get_bot(bot_id)
+            if existing is None:
+                return False
+            history.archive_deleted_bot(existing)
+            return store.delete_bot(bot_id)
+
+        deleted = await asyncio.to_thread(_archive_and_delete)
         if not deleted:
             return JSONResponse({"error": f"Bot {bot_id!r} not found"}, status_code=404)
         await asyncio.to_thread(queue.clear_bot, bot_id)

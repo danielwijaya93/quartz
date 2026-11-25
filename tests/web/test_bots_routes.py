@@ -196,3 +196,53 @@ def test_bot_runner_spawns_real_web_session_and_runs_turn(tmp_path: Path) -> Non
         while time.monotonic() < deadline and scripted.calls < 1:
             time.sleep(0.05)
         assert scripted.calls >= 1
+
+        runs: list[dict[str, object]] = []
+        while time.monotonic() < deadline:
+            hist_res = client.get("/api/bots/history")
+            assert hist_res.status_code == 200
+            runs = hist_res.json()["runs"]
+            if runs and runs[0]["status"] != "running":
+                break
+            time.sleep(0.05)
+        assert len(runs) >= 1
+        assert runs[0]["bot_id"] == "cron-live"
+        assert runs[0]["status"] == "ok"
+        assert runs[0]["session_id"]
+
+
+def test_bots_history_archive_and_restore(tmp_path: Path) -> None:
+    with _make_client(tmp_path) as client:
+        create_res = client.post(
+            "/api/bots",
+            json={
+                "id": "nightly",
+                "name": "Nightly Check",
+                "watcherType": "cron",
+                "instruction": "Check repo health",
+                "cron": {"expression": "0 2 * * *", "timezone": "UTC"},
+            },
+        )
+        assert create_res.status_code == 201
+
+        del_res = client.delete("/api/bots/nightly")
+        assert del_res.status_code == 200
+        assert client.get("/api/bots").json() == {"bots": []}
+
+        hist_res = client.get("/api/bots/history")
+        assert hist_res.status_code == 200
+        deleted = hist_res.json()["deletedBots"]
+        assert len(deleted) == 1
+        assert deleted[0]["bot"]["id"] == "nightly"
+        assert deleted[0]["bot"]["name"] == "Nightly Check"
+
+        # Restore deleted bot
+        restore_res = client.post("/api/bots/history/nightly/restore", json={})
+        assert restore_res.status_code == 200
+        restored = restore_res.json()["bot"]
+        assert restored["id"] == "nightly"
+        assert restored["name"] == "Nightly Check"
+        assert len(client.get("/api/bots").json()["bots"]) == 1
+
+        # Restoring again returns 404
+        assert client.post("/api/bots/history/nightly/restore", json={}).status_code == 404
