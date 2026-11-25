@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Bot, X } from "lucide-react";
+import { fetchModels, type ModelProvider, type ModelsPayload } from "@/lib/modelsApi";
 import type { BotConfig, BotFormValues, WatcherType } from "@/types/bots";
 
 export interface CreateBotModalProps {
@@ -41,6 +42,9 @@ export function CreateBotModal({
   const timezoneId = React.useId();
   const secretId = React.useId();
   const filterId = React.useId();
+  const providerId = React.useId();
+  const modelId = React.useId();
+  const effortId = React.useId();
   const worktreeId = React.useId();
 
   const dialogRef = React.useRef<HTMLDialogElement | null>(null);
@@ -49,6 +53,10 @@ export function CreateBotModal({
   const [name, setName] = React.useState("");
   const [watcherType, setWatcherType] = React.useState<WatcherType>("github_poll");
   const [cwd, setCwd] = React.useState("");
+  const [provider, setProvider] = React.useState("");
+  const [model, setModel] = React.useState("");
+  const [effort, setEffort] = React.useState("");
+  const [modelsData, setModelsData] = React.useState<ModelsPayload | null>(null);
   const [instruction, setInstruction] = React.useState("");
   const [autoAllowText, setAutoAllowText] = React.useState("");
   const [enabled, setEnabled] = React.useState(true);
@@ -78,6 +86,9 @@ export function CreateBotModal({
       setName(initialBot.name);
       setWatcherType(initialBot.watcher_type);
       setCwd(initialBot.cwd ?? "");
+      setProvider(initialBot.provider ?? "");
+      setModel(initialBot.model ?? "");
+      setEffort(initialBot.effort ?? "");
       setInstruction(initialBot.instruction);
       setAutoAllowText(initialBot.permissions.auto_allow.join(", "));
       setEnabled(initialBot.enabled);
@@ -93,6 +104,9 @@ export function CreateBotModal({
       setName("");
       setWatcherType("github_poll");
       setCwd(defaultCwd);
+      setProvider("");
+      setModel("");
+      setEffort("");
       setInstruction("");
       setAutoAllowText("");
       setEnabled(true);
@@ -106,6 +120,43 @@ export function CreateBotModal({
       setWebhookFilter("");
     }
   }, [open, initialBot, defaultCwd]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void fetchModels()
+      .then((payload) => {
+        if (!cancelled) setModelsData(payload);
+      })
+      .catch(() => {
+        // Best-effort: modal remains functional with Default (inherit) when offline.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  const providers = modelsData?.providers ?? [];
+  const activeProvider: ModelProvider | undefined = React.useMemo(
+    () => providers.find((p) => p.id === provider),
+    [providers, provider],
+  );
+  const availableModels: string[] = React.useMemo(() => {
+    const base = activeProvider?.models ?? [];
+    if (model && !base.includes(model)) return [model, ...base];
+    return base;
+  }, [activeProvider, model]);
+  const availableEfforts: string[] = React.useMemo(() => {
+    const fallbackProvider =
+      activeProvider ?? providers.find((p) => p.id === modelsData?.current?.provider);
+    const perModel = model ? fallbackProvider?.modelEfforts?.[model] : undefined;
+    const base =
+      perModel && perModel.length > 0
+        ? perModel
+        : (fallbackProvider?.efforts ?? ["low", "medium", "high"]);
+    if (effort && !base.includes(effort)) return [effort, ...base];
+    return base;
+  }, [activeProvider, providers, modelsData, model, effort]);
 
   React.useEffect(() => {
     const dialog = dialogRef.current;
@@ -177,6 +228,9 @@ export function CreateBotModal({
       watcher_type: watcherType,
       instruction: trimmedInstruction,
       cwd: cwd.trim() ? cwd.trim() : null,
+      provider: provider.trim() ? provider.trim() : null,
+      model: model.trim() ? model.trim() : null,
+      effort: effort.trim() ? effort.trim() : null,
       enabled,
       use_worktree: useWorktree,
       max_queue_depth: initialBot?.max_queue_depth ?? 20,
@@ -409,6 +463,91 @@ export function CreateBotModal({
             placeholder="/path/to/repo"
             className={INPUT_CLASS}
           />
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div>
+            <label htmlFor={providerId} className={LABEL_CLASS}>
+              Provider
+            </label>
+            <select
+              id={providerId}
+              value={provider}
+              onChange={(e) => {
+                const next = e.target.value;
+                setProvider(next);
+                if (!next) {
+                  setModel("");
+                  setEffort("");
+                } else {
+                  const nextProv = providers.find((p) => p.id === next);
+                  if (nextProv && model && !nextProv.models.includes(model)) {
+                    setModel("");
+                  }
+                  if (nextProv && effort && !nextProv.efforts.includes(effort)) {
+                    setEffort("");
+                  }
+                }
+              }}
+              className={INPUT_CLASS}
+            >
+              <option value="">Default (inherit)</option>
+              {provider && !providers.some((p) => p.id === provider) ? (
+                <option value={provider}>{provider}</option>
+              ) : null}
+              {providers.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label || p.id}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label htmlFor={modelId} className={LABEL_CLASS}>
+              Model
+            </label>
+            <select
+              id={modelId}
+              value={model}
+              disabled={!provider && !model}
+              onChange={(e) => {
+                const nextModel = e.target.value;
+                setModel(nextModel);
+                const perModel = nextModel ? activeProvider?.modelEfforts?.[nextModel] : undefined;
+                const nextEfforts =
+                  perModel && perModel.length > 0 ? perModel : activeProvider?.efforts;
+                if (nextEfforts && effort && !nextEfforts.includes(effort)) {
+                  setEffort("");
+                }
+              }}
+              className={`${INPUT_CLASS} disabled:opacity-50`}
+            >
+              <option value="">Default</option>
+              {availableModels.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label htmlFor={effortId} className={LABEL_CLASS}>
+              Effort
+            </label>
+            <select
+              id={effortId}
+              value={effort}
+              onChange={(e) => setEffort(e.target.value)}
+              className={INPUT_CLASS}
+            >
+              <option value="">Default</option>
+              {availableEfforts.map((level) => (
+                <option key={level} value={level}>
+                  {level}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         <div>

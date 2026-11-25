@@ -271,6 +271,9 @@ class BotCreateRequest(_WireModel):
     watcher_type: BotWatcherType = Field(alias="watcherType")
     instruction: str
     cwd: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    effort: str | None = None
     enabled: bool = True
     use_worktree: bool = Field(default=False, alias="useWorktree")
     max_queue_depth: int = Field(default=20, alias="maxQueueDepth")
@@ -285,6 +288,9 @@ class BotUpdateRequest(_WireModel):
     watcher_type: BotWatcherType | None = Field(default=None, alias="watcherType")
     instruction: str | None = None
     cwd: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    effort: str | None = None
     enabled: bool | None = None
     use_worktree: bool | None = Field(default=None, alias="useWorktree")
     max_queue_depth: int | None = Field(default=None, alias="maxQueueDepth")

@@ -276,3 +276,146 @@ def test_run_bot_now_enqueues_manual_trigger(tmp_path: Path) -> None:
         assert items[0]["source"] == "manual"
 
         assert client.post("/api/bots/missing-bot/run", json={}).status_code == 404
+
+
+def test_bot_provider_model_effort_create_update_and_clear(tmp_path: Path) -> None:
+    with _make_client(tmp_path) as client:
+        # Create with explicit provider, model, effort
+        res = client.post(
+            "/api/bots",
+            json={
+                "id": "custom-model-bot",
+                "name": "Custom Model Bot",
+                "watcherType": "cron",
+                "instruction": "Check repo",
+                "cron": {"expression": "0 2 * * *", "timezone": "UTC"},
+                "provider": "google",
+                "model": "gemini-2.5-pro",
+                "effort": "high",
+            },
+        )
+        assert res.status_code == 201
+        bot = res.json()["bot"]
+        assert bot["provider"] == "google"
+        assert bot["model"] == "gemini-2.5-pro"
+        assert bot["effort"] == "high"
+
+        # Invalid provider is rejected with 400
+        bad_res = client.post(
+            "/api/bots",
+            json={
+                "id": "bad-provider-bot",
+                "name": "Bad Provider",
+                "watcherType": "cron",
+                "instruction": "Check repo",
+                "cron": {"expression": "0 2 * * *", "timezone": "UTC"},
+                "provider": "does-not-exist",
+            },
+        )
+        assert bad_res.status_code == 400
+
+        # Omitting provider/model/effort on PUT preserves existing values
+        keep_res = client.put("/api/bots/custom-model-bot", json={"name": "Renamed Bot"})
+        assert keep_res.status_code == 200
+        kept = keep_res.json()["bot"]
+        assert kept["provider"] == "google"
+        assert kept["model"] == "gemini-2.5-pro"
+        assert kept["effort"] == "high"
+
+        # Updating provider/model/effort changes them
+        upd_res = client.put(
+            "/api/bots/custom-model-bot",
+            json={"provider": "openai", "model": "gpt-4o", "effort": "low"},
+        )
+        assert upd_res.status_code == 200
+        updated = upd_res.json()["bot"]
+        assert updated["provider"] == "openai"
+        assert updated["model"] == "gpt-4o"
+        assert updated["effort"] == "low"
+
+        # Explicitly passing null resets them back to None (Default)
+        clr_res = client.put(
+            "/api/bots/custom-model-bot",
+            json={"provider": None, "model": None, "effort": None},
+        )
+        assert clr_res.status_code == 200
+        cleared = clr_res.json()["bot"]
+        assert cleared["provider"] is None
+        assert cleared["model"] is None
+        assert cleared["effort"] is None
+
+
+def test_run_bot_trigger_applies_model_override_without_saving_global_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from types import SimpleNamespace
+
+    captured_calls: list[dict[str, object]] = []
+    saved_calls: list[object] = []
+
+    def fake_build_provider(
+        provider: str = "auto",
+        model_override: str | None = None,
+        effort_override: str | None = None,
+        *,
+        shared_http: bool = False,
+    ) -> tuple[object, str, str, str]:
+        captured_calls.append({
+            "provider": provider,
+            "model_override": model_override,
+            "effort_override": effort_override,
+        })
+        return (
+            SimpleNamespace(close=lambda: None),
+            "openai" if provider == "auto" else provider,
+            model_override or "gpt-4o",
+            effort_override or "medium",
+        )
+
+    monkeypatch.setattr("quartz.providers.selection.build_provider", fake_build_provider)
+    monkeypatch.setattr(
+        "quartz.providers.registry.save_model_config",
+        lambda *a, **kw: saved_calls.append((a, kw)),
+    )
+
+    app = create_app(
+        build=lambda session_id, cwd=None: (make_runtime(tmp_path), True),
+        cwd=tmp_path,
+        runner=ScriptedTurn(),
+        bots_dir=tmp_path / "bots",
+        enable_bot_runner=True,
+    )
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/bots",
+            json={
+                "id": "override-bot",
+                "name": "Override Bot",
+                "watcherType": "cron",
+                "instruction": "Run with custom model",
+                "cron": {"expression": "0 2 * * *", "timezone": "UTC"},
+                "provider": "openai",
+                "model": "gpt-4o",
+                "effort": "high",
+            },
+        )
+        assert res.status_code == 201
+        assert client.post("/api/bots/override-bot/run", json={}).status_code == 200
+
+        import time
+
+        deadline = time.monotonic() + 5.0
+        runs: list[dict[str, object]] = []
+        while time.monotonic() < deadline:
+            hist_res = client.get("/api/bots/history?bot_id=override-bot")
+            runs = hist_res.json()["runs"]
+            if runs and runs[0]["status"] != "running":
+                break
+            time.sleep(0.05)
+
+        assert len(runs) == 1
+        assert runs[0]["status"] == "ok"
+        assert captured_calls == [
+            {"provider": "openai", "model_override": "gpt-4o", "effort_override": "high"}
+        ]
+        assert saved_calls == []

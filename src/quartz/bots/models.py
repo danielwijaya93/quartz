@@ -46,6 +46,9 @@ class BotConfig:
     watcher_type: WatcherType
     instruction: str
     cwd: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    effort: str | None = None
     enabled: bool = True
     use_worktree: bool = False
     max_queue_depth: int = 20
@@ -71,6 +74,9 @@ class BotConfig:
             watcher_type=raw["watcher_type"],
             instruction=str(raw["instruction"]),
             cwd=str(raw["cwd"]) if raw.get("cwd") is not None else None,
+            provider=str(raw["provider"]) if raw.get("provider") is not None else None,
+            model=str(raw["model"]) if raw.get("model") is not None else None,
+            effort=str(raw["effort"]) if raw.get("effort") is not None else None,
             enabled=bool(raw.get("enabled", True)),
             use_worktree=bool(raw.get("use_worktree", False)),
             max_queue_depth=int(raw.get("max_queue_depth", 20)),
@@ -222,6 +228,15 @@ def validate_bot_config(config: BotConfig) -> None:
         raise ValueError("max_queue_depth must be >= 1")
     if config.cwd is not None and not Path(config.cwd).is_absolute():
         raise ValueError(f"cwd must be an absolute path: {config.cwd!r}")
+    if config.provider is not None:
+        from quartz.providers.registry import PROVIDERS
+
+        if not config.provider.strip() or config.provider not in PROVIDERS:
+            raise ValueError(f"Unknown provider: {config.provider!r}")
+    if config.model is not None and not config.model.strip():
+        raise ValueError("Bot model must not be empty")
+    if config.effort is not None and not config.effort.strip():
+        raise ValueError("Bot effort must not be empty")
 
     if config.watcher_type == "github_poll":
         if config.github is None:

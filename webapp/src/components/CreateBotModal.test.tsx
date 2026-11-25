@@ -1,8 +1,48 @@
-import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CreateBotModal } from "./CreateBotModal";
 import type { BotConfig } from "@/types/bots";
+import * as modelsApi from "@/lib/modelsApi";
+
+vi.mock("@/lib/modelsApi", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/modelsApi")>();
+  return {
+    ...actual,
+    fetchModels: vi.fn(),
+  };
+});
+
+const MOCK_MODELS: modelsApi.ModelsPayload = {
+  current: { provider: "google", model: "gemini-2.5-flash", effort: "medium" },
+  providers: [
+    {
+      id: "google",
+      label: "Google Gemini",
+      ready: true,
+      status: "Ready",
+      models: ["gemini-2.5-flash", "gemini-2.5-pro"],
+      efforts: ["low", "medium", "high"],
+      defaultModel: "gemini-2.5-flash",
+      defaultEffort: "medium",
+    },
+    {
+      id: "openai",
+      label: "OpenAI",
+      ready: true,
+      status: "Ready",
+      models: ["gpt-4o", "o3"],
+      efforts: ["low", "medium", "high"],
+      modelEfforts: { o3: ["medium", "high"] },
+      defaultModel: "gpt-4o",
+      defaultEffort: "medium",
+    },
+  ],
+};
+
+beforeEach(() => {
+  vi.mocked(modelsApi.fetchModels).mockResolvedValue(MOCK_MODELS);
+});
 
 describe("CreateBotModal", () => {
   it("conditionally renders watcher-specific fields when watcher type changes", async () => {
@@ -111,6 +151,74 @@ describe("CreateBotModal", () => {
         enabled: false,
         use_worktree: true,
         cron: { expression: "0 9 * * *", timezone: "America/New_York" },
+      }),
+    );
+  });
+
+  it("allows selecting provider, model, and effort on create and resetting on edit", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+
+    const { rerender } = render(
+      <CreateBotModal open={true} defaultCwd="/tmp/repo" onClose={vi.fn()} onSubmit={onSubmit} />,
+    );
+
+    const providerSelect = await screen.findByLabelText(/Provider/i);
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: /OpenAI/i })).toBeInTheDocument();
+    });
+
+    await user.selectOptions(providerSelect, "openai");
+    await user.selectOptions(screen.getByLabelText(/^Model$/i), "o3");
+    await user.selectOptions(screen.getByLabelText(/Effort/i), "high");
+
+    await user.type(screen.getByLabelText(/Bot Name/i), "Model Bot");
+    await user.type(screen.getByLabelText(/GitHub Repo/i), "danielwijaya93/quartz");
+    await user.type(screen.getByLabelText(/Instruction/i), "Check PRs");
+    await user.click(screen.getByRole("button", { name: /Create Bot/i }));
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "openai",
+        model: "o3",
+        effort: "high",
+      }),
+    );
+
+    onSubmit.mockClear();
+    const existing: BotConfig = {
+      id: "bot-model",
+      name: "Model Bot",
+      watcher_type: "cron",
+      instruction: "Check repo",
+      cwd: "/tmp/repo",
+      provider: "openai",
+      model: "o3",
+      effort: "high",
+      enabled: true,
+      use_worktree: false,
+      max_queue_depth: 20,
+      cron: { expression: "0 9 * * *", timezone: "UTC" },
+      permissions: { auto_allow: [], require_approval: ["git push"], grace_seconds: 15 },
+    };
+
+    rerender(
+      <CreateBotModal open={true} initialBot={existing} onClose={vi.fn()} onSubmit={onSubmit} />,
+    );
+
+    expect(screen.getByLabelText(/Provider/i)).toHaveValue("openai");
+    expect(screen.getByLabelText(/^Model$/i)).toHaveValue("o3");
+    expect(screen.getByLabelText(/Effort/i)).toHaveValue("high");
+
+    // Reset provider back to Default (inherit)
+    await user.selectOptions(screen.getByLabelText(/Provider/i), "");
+    await user.click(screen.getByRole("button", { name: /Save Changes/i }));
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: null,
+        model: null,
+        effort: null,
       }),
     );
   });

@@ -28,6 +28,9 @@ export interface BotConfig {
   watcher_type: WatcherType;
   instruction: string;
   cwd?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  effort?: string | null;
   enabled: boolean;
   use_worktree: boolean;
   max_queue_depth: number;

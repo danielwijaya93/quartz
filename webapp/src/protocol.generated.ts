@@ -178,6 +178,9 @@ export interface BotCreateRequest {
   watcherType: "cron" | "github_poll" | "webhook";
   instruction: string;
   cwd?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  effort?: string | null;
   enabled?: boolean;
   useWorktree?: boolean;
   maxQueueDepth?: number;
@@ -192,6 +195,9 @@ export interface BotUpdateRequest {
   watcherType?: "cron" | "github_poll" | "webhook" | null;
   instruction?: string | null;
   cwd?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  effort?: string | null;
   enabled?: boolean | null;
   useWorktree?: boolean | null;
   maxQueueDepth?: number | null;
