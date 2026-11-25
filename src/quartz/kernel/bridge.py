@@ -89,6 +89,103 @@ def is_quartz_local_only(argv: list[str] | tuple[str, ...]) -> bool:
     return bool(argv) and all(arg in QUARTZ_LOCAL_ONLY_FLAGS for arg in argv)
 
 
+_FORBIDDEN_GIT_FLAGS: frozenset[str] = frozenset(
+    {
+        "-c",
+        "--config-env",
+        "--exec-path",
+        "--git-dir",
+        "--work-tree",
+        "--upload-pack",
+        "--receive-pack",
+        "--template",
+        "--paginate",
+        "--pager",
+    }
+)
+_FORBIDDEN_GIT_PROTOCOLS: tuple[str, ...] = ("ext::", "fd::")
+_FORBIDDEN_QUARTZ_FLAGS: frozenset[str] = frozenset({"--sandbox-off", "--no-sandbox", "--trust"})
+_FORBIDDEN_QUARTZ_SUBCOMMANDS: frozenset[str] = frozenset({"web", "auth", "mcp"})
+_FORBIDDEN_GH_TOP_SUBCOMMANDS: frozenset[str] = frozenset(
+    {"extension", "alias", "ssh-key", "gpg-key"}
+)
+_FORBIDDEN_GH_AUTH_SUBCOMMANDS: frozenset[str] = frozenset(
+    {"token", "login", "logout", "setup-git", "refresh"}
+)
+
+
+def _validate_git_bridge_argv(argv: list[str] | tuple[str, ...]) -> str | None:
+    for arg in argv:
+        if arg == "--":
+            break
+        flag = arg.split("=", 1)[0]
+        if flag in _FORBIDDEN_GIT_FLAGS or (arg.startswith("-c") and len(arg) > 2):
+            return f"Host bridge rejected forbidden git flag: {flag!r}"
+    for arg in argv:
+        lower = arg.lower()
+        if any(lower.startswith(proto) for proto in _FORBIDDEN_GIT_PROTOCOLS):
+            return f"Host bridge rejected forbidden git remote protocol: {arg!r}"
+    sub = extract_git_subcommand(argv)
+    if sub not in REMOTE_GIT_SUBCOMMANDS:
+        return (
+            f"Host bridge only allows remote git subcommands "
+            f"({', '.join(sorted(REMOTE_GIT_SUBCOMMANDS))}); got {sub!r}"
+        )
+    # `-u` means `--set-upstream` on `git push`, but `--upload-pack` on `git clone`.
+    if sub == "clone" and any(a == "-u" or a.startswith("-u") for a in argv if a != "--"):
+        return "Host bridge rejected forbidden git clone flag: '-u' (--upload-pack)"
+    return None
+
+
+def _validate_quartz_bridge_argv(argv: list[str] | tuple[str, ...]) -> str | None:
+    first_positional: str | None = None
+    skip_next = False
+    for arg in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--":
+            break
+        flag = arg.split("=", 1)[0]
+        if flag in _FORBIDDEN_QUARTZ_FLAGS:
+            return f"Host bridge rejected forbidden quartz flag: {flag!r}"
+        if arg in ("-p", "--prompt", "--cwd", "--provider", "--model", "--effort", "-r", "--resume"):
+            skip_next = True
+            continue
+        if not arg.startswith("-") and first_positional is None:
+            first_positional = arg
+    if first_positional in _FORBIDDEN_QUARTZ_SUBCOMMANDS:
+        return f"Host bridge rejected forbidden quartz subcommand: {first_positional!r}"
+    return None
+
+
+def _validate_gh_bridge_argv(argv: list[str] | tuple[str, ...]) -> str | None:
+    positionals = [a for a in argv if not a.startswith("-")]
+    if not positionals:
+        return None
+    top = positionals[0]
+    if top in _FORBIDDEN_GH_TOP_SUBCOMMANDS:
+        return f"Host bridge rejected forbidden gh subcommand: 'gh {top}'"
+    if top == "auth" and len(positionals) >= 2 and positionals[1] in _FORBIDDEN_GH_AUTH_SUBCOMMANDS:
+        return f"Host bridge rejected forbidden gh auth subcommand: 'gh auth {positionals[1]}'"
+    if top == "config" and len(positionals) >= 2 and positionals[1] == "set":
+        return "Host bridge rejected forbidden gh subcommand: 'gh config set'"
+    return None
+
+
+def validate_bridge_command(tool: str, argv: list[str] | tuple[str, ...]) -> str | None:
+    """Server-side validation of host-bridged commands. Returns an error message or ``None``."""
+    if tool not in BRIDGED_TOOLS:
+        return f"Unsupported bridge tool: {tool!r}"
+    if tool == "git":
+        return _validate_git_bridge_argv(argv)
+    if tool == "quartz":
+        return _validate_quartz_bridge_argv(argv)
+    if tool == "gh":
+        return _validate_gh_bridge_argv(argv)
+    return None
+
+
 def classify_bridge_scope(tool: str, argv: list[str] | tuple[str, ...]) -> str:
     """Return the permission scope key for a host-bridged command."""
     if tool == "git":

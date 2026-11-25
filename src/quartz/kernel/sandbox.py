@@ -15,7 +15,7 @@ import dataclasses
 import os
 import shutil
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from quartz.errors import AgentError
@@ -24,22 +24,101 @@ DEFAULT_DENY_WRITE: tuple[str, ...] = (
     ".git/hooks",
     ".git/config",
     ".mcp.json",
+    ".quartz/mcp.json",
+    ".quartz/helpers.py",
     ".claude/commands",
     ".claude/agents",
 )
 
 DEFAULT_MASK_DIRS: tuple[str, ...] = (
+    "~/.quartz",
     "~/.ssh",
     "~/.aws",
     "~/.config/gcloud",
     "~/.kube",
     "~/.pki",
     "~/.config/gh",
+    "~/.gnupg",
+    "~/.docker",
+    "~/.config/npm",
+    "~/.config/pip",
+)
+
+# Non-secret files/directories under masked dirs (specifically ~/.quartz) that
+# remain readable inside the sandbox so project instructions, custom helpers,
+# and skills keep working while web-token, auth.json, snapshot-key, quartz.db,
+# bots, and sessions stay completely invisible.
+DEFAULT_ALLOW_RO_PATHS: tuple[str, ...] = (
+    "~/.quartz/AGENTS.md",
+    "~/.quartz/helpers.py",
+    "~/.quartz/skills",
 )
 
 DEFAULT_MASK_FILES: tuple[str, ...] = (
     "~/.quartz/auth.json",
     "~/.claude.json",
+    "~/.netrc",
+    "~/.git-credentials",
+    "~/.npmrc",
+    "~/.pypirc",
+)
+
+DEFAULT_SANDBOX_ENV_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TERM",
+        "COLORTERM",
+        "LANG",
+        "TZ",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "PWD",
+        "NO_COLOR",
+        "FORCE_COLOR",
+        "EDITOR",
+        "VISUAL",
+        "VIRTUAL_ENV",
+        "CONDA_PREFIX",
+        "UV_PYTHON",
+        "PYTHONUTF8",
+        "PYTHONIOENCODING",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTHONPATH",
+        "NODE_PATH",
+        "NVM_DIR",
+        "GOPATH",
+        "GOROOT",
+        "CARGO_HOME",
+        "RUSTUP_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_RUNTIME_DIR",
+        "QUARTZ_SANDBOXED",
+        "QUARTZ_HOST_MCP",
+        "QUARTZ_HOST_BRIDGE",
+        "QUARTZ_WORKER_HEADLESS",
+        "QUARTZ_GLOBAL_HELPERS",
+        "QUARTZ_SKILLS_DIR",
+        "QUARTZ_TRUSTED_PROJECT",
+    }
+)
+
+# Host-only Quartz secrets that must NEVER be forwarded into a sandboxed worker,
+# even if listed in QUARTZ_SANDBOX_ENV_PASSTHROUGH.
+NEVER_PASSTHROUGH_ENV: frozenset[str] = frozenset(
+    {
+        "QUARTZ_WEB_TOKEN",
+        "QUARTZ_WEB_TOKEN_FILE",
+        "QUARTZ_SNAPSHOT_KEY",
+        "QUARTZ_SNAPSHOT_KEY_FILE",
+        "QUARTZ_DB_PATH",
+    }
 )
 
 
@@ -55,7 +134,9 @@ class SandboxConfig:
     network: bool = True
     deny_write: tuple[str, ...] = DEFAULT_DENY_WRITE
     mask_dirs: tuple[str, ...] = DEFAULT_MASK_DIRS
+    allow_ro_paths: tuple[str, ...] = DEFAULT_ALLOW_RO_PATHS
     mask_files: tuple[str, ...] = DEFAULT_MASK_FILES
+    env_passthrough: tuple[str, ...] = ()
 
 
 def _expand_home(raw: str, home: Path) -> Path:
@@ -64,6 +145,37 @@ def _expand_home(raw: str, home: Path) -> Path:
     if raw.startswith("~/"):
         return home / raw[2:]
     return Path(raw)
+
+
+def _is_safe_env_key(key: str, extra_allowed: set[str]) -> bool:
+    if key in NEVER_PASSTHROUGH_ENV:
+        return False
+    if key in DEFAULT_SANDBOX_ENV_ALLOWLIST:
+        return True
+    if key.startswith("LC_"):
+        return True
+    return key in extra_allowed
+
+
+def build_sandbox_env(
+    host_env: Mapping[str, str],
+    *,
+    passthrough: tuple[str, ...] = (),
+) -> dict[str, str]:
+    """Return a scrubbed environment dict safe to pass to a sandboxed worker."""
+    extra_allowed: set[str] = {k.strip() for k in passthrough if k.strip()}
+    raw_extra = host_env.get("QUARTZ_SANDBOX_ENV_PASSTHROUGH", "")
+    if raw_extra:
+        for item in raw_extra.split(","):
+            cleaned = item.strip()
+            if cleaned:
+                extra_allowed.add(cleaned)
+    extra_allowed.difference_update(NEVER_PASSTHROUGH_ENV)
+    return {
+        key: val
+        for key, val in host_env.items()
+        if _is_safe_env_key(key, extra_allowed)
+    }
 
 
 def detect_sandbox_backend(
@@ -142,15 +254,30 @@ def build_bwrap_command(
         if target.exists():
             args.extend(["--ro-bind", str(target), str(target)])
 
+    masked_roots: list[Path] = []
     for raw_dir in cfg.mask_dirs:
         target = _expand_home(raw_dir, resolved_home)
-        if target.is_dir() and target.resolve() != resolved_cwd:
-            args.extend(["--tmpfs", str(target)])
+        if not target.is_dir():
+            continue
+        resolved_target = target.resolve()
+        # Never mask cwd itself (or an ancestor of cwd) with an empty tmpfs.
+        if resolved_cwd.is_relative_to(resolved_target):
+            continue
+        args.extend(["--tmpfs", str(resolved_target)])
+        masked_roots.append(resolved_target)
+
+    for raw_allow in cfg.allow_ro_paths:
+        target = _expand_home(raw_allow, resolved_home)
+        if not target.exists():
+            continue
+        resolved_target = target.resolve()
+        if any(resolved_target.is_relative_to(root) for root in masked_roots):
+            args.extend(["--ro-bind", str(resolved_target), str(resolved_target)])
 
     for raw_file in cfg.mask_files:
         target = _expand_home(raw_file, resolved_home)
         if target.is_file():
-            args.extend(["--ro-bind", "/dev/null", str(target)])
+            args.extend(["--ro-bind", "/dev/null", str(target.resolve())])
 
     if not cfg.network:
         args.append("--unshare-net")
@@ -184,21 +311,30 @@ def build_seatbelt_profile(
     lines: list[str] = [
         "(version 1)",
         "(allow default)",
-        "(deny file-write* (subpath \"/\"))",
+        '(deny file-write* (subpath "/"))',
         f"(allow file-write* (subpath {_seatbelt_quote(str(resolved_cwd))}))",
-        "(allow file-write* (subpath \"/tmp\"))",
-        "(allow file-write* (subpath \"/private/tmp\"))",
-        "(allow file-write* (subpath \"/private/var/folders\"))",
-        "(allow file-write* (literal \"/dev/null\"))",
+        '(allow file-write* (subpath "/tmp"))',
+        '(allow file-write* (subpath "/private/tmp"))',
+        '(allow file-write* (subpath "/private/var/folders"))',
+        '(allow file-write* (literal "/dev/null"))',
     ]
     for rel in cfg.deny_write:
         target = resolved_cwd / rel
         lines.append(f"(deny file-write* (subpath {_seatbelt_quote(str(target))}))")
     for raw_dir in cfg.mask_dirs:
-        target = _expand_home(raw_dir, resolved_home)
+        target = _expand_home(raw_dir, resolved_home).resolve()
+        if resolved_cwd.is_relative_to(target):
+            continue
         lines.append(f"(deny file-read* file-write* (subpath {_seatbelt_quote(str(target))}))")
+    for raw_allow in cfg.allow_ro_paths:
+        target = _expand_home(raw_allow, resolved_home)
+        if not target.exists():
+            continue
+        resolved_target = target.resolve()
+        op = "subpath" if resolved_target.is_dir() else "literal"
+        lines.append(f"(allow file-read* ({op} {_seatbelt_quote(str(resolved_target))}))")
     for raw_file in cfg.mask_files:
-        target = _expand_home(raw_file, resolved_home)
+        target = _expand_home(raw_file, resolved_home).resolve()
         lines.append(f"(deny file-read* file-write* (literal {_seatbelt_quote(str(target))}))")
     if not cfg.network:
         lines.append("(deny network*)")
