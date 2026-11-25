@@ -45,6 +45,13 @@ def _generate_bot_id(name: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:6]}"
 
 
+def _normalize_optional_str(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
 def _config_from_create(req: BotCreateRequest) -> BotConfig:
     bot_id = req.id.strip() if req.id and req.id.strip() else _generate_bot_id(req.name)
     return BotConfig(
@@ -53,6 +60,9 @@ def _config_from_create(req: BotCreateRequest) -> BotConfig:
         watcher_type=req.watcher_type,
         instruction=req.instruction,
         cwd=req.cwd,
+        provider=_normalize_optional_str(req.provider),
+        model=_normalize_optional_str(req.model),
+        effort=_normalize_optional_str(req.effort),
         enabled=req.enabled,
         use_worktree=req.use_worktree,
         max_queue_depth=req.max_queue_depth,
@@ -84,12 +94,20 @@ def _config_from_create(req: BotCreateRequest) -> BotConfig:
 
 
 def _merge_update(existing: BotConfig, req: BotUpdateRequest) -> BotConfig:
+    fields_set = req.model_fields_set
     return BotConfig(
         id=existing.id,
         name=req.name if req.name is not None else existing.name,
         watcher_type=req.watcher_type if req.watcher_type is not None else existing.watcher_type,
         instruction=req.instruction if req.instruction is not None else existing.instruction,
         cwd=req.cwd if req.cwd is not None else existing.cwd,
+        provider=(
+            _normalize_optional_str(req.provider)
+            if "provider" in fields_set
+            else existing.provider
+        ),
+        model=_normalize_optional_str(req.model) if "model" in fields_set else existing.model,
+        effort=_normalize_optional_str(req.effort) if "effort" in fields_set else existing.effort,
         enabled=req.enabled if req.enabled is not None else existing.enabled,
         use_worktree=req.use_worktree if req.use_worktree is not None else existing.use_worktree,
         max_queue_depth=(
@@ -187,6 +205,9 @@ def create_router(ctx: AppContext) -> APIRouter:
                     watcher_type=cfg.watcher_type,
                     instruction=cfg.instruction,
                     cwd=cfg.cwd,
+                    provider=cfg.provider,
+                    model=cfg.model,
+                    effort=cfg.effort,
                     enabled=cfg.enabled,
                     use_worktree=cfg.use_worktree,
                     max_queue_depth=cfg.max_queue_depth,

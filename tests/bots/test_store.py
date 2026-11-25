@@ -112,3 +112,32 @@ def test_mark_seen_dedupes_and_caps(tmp_path: Path) -> None:
     assert state.seen_event_keys == ["issue#2", "issue#3", "issue#4"]
     raw = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     assert "b1" in raw
+
+
+def test_bot_model_config_roundtrip_and_validation(tmp_path: Path) -> None:
+    store = BotStore(tmp_path)
+    bot = _make_github_bot(
+        "model-bot",
+        provider="google",
+        model="gemini-2.5-pro",
+        effort="high",
+    )
+    created = store.create_bot(bot)
+    assert created.provider == "google"
+    assert created.model == "gemini-2.5-pro"
+    assert created.effort == "high"
+
+    fetched = store.get_bot("model-bot")
+    assert fetched is not None
+    assert fetched.provider == "google"
+    assert fetched.model == "gemini-2.5-pro"
+    assert fetched.effort == "high"
+
+    with pytest.raises(ValueError, match="provider"):
+        validate_bot_config(_make_github_bot(provider="unknown-provider"))
+
+    with pytest.raises(ValueError, match="model"):
+        validate_bot_config(_make_github_bot(model="   "))
+
+    with pytest.raises(ValueError, match="effort"):
+        validate_bot_config(_make_github_bot(effort="   "))

@@ -130,6 +130,30 @@ def create_app(
             == "allow"
         )
         rt = await asyncio.to_thread(ws.ensure_runtime, target_cwd)
+        if bot.provider or bot.model or bot.effort:
+            def _apply_bot_model() -> None:
+                from quartz.providers.registry import resolve_context_tokens
+                from quartz.providers.selection import build_provider
+
+                old_client = rt.client
+                new_client, pname, new_model, new_effort = build_provider(
+                    provider=bot.provider or "auto",
+                    model_override=bot.model,
+                    effort_override=bot.effort,
+                )
+                rt.client = new_client
+                rt.provider_name = pname
+                rt.model = new_model
+                rt.effort = new_effort
+                if old_client is not None and old_client is not rt.client:
+                    close_fn = getattr(old_client, "close", None)
+                    if callable(close_fn):
+                        with contextlib.suppress(Exception):
+                            close_fn()
+                with contextlib.suppress(Exception):
+                    rt.max_context_tokens = resolve_context_tokens(pname, new_model, new_client)
+
+            await asyncio.to_thread(_apply_bot_model)
         from quartz.core.session import ORIGIN_BOT
 
         await asyncio.to_thread(rt.active_session.set_origin, ORIGIN_BOT)
