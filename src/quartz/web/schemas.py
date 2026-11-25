@@ -21,6 +21,7 @@ def _coerce_optional_str(value: Any) -> str | None:
 PermissionDecision = Literal["allow_once", "allow_session", "reject"]
 IdleSessionAction = Literal["keep", "close"]
 CommandResultKind = Literal["text", "list", "error", "needs_terminal"]
+BotWatcherType = Literal["cron", "github_poll", "webhook"]
 
 
 class ImageAttachmentPayload(_WireModel):
@@ -239,6 +240,64 @@ class ModelSelectRequest(_WireModel):
     session_id: str | None = Field(default=None, alias="sessionId")
 
 
+class BotGitHubPollPayload(_WireModel):
+    repo: str
+    events: list[str] = Field(default_factory=lambda: ["issues"])
+    interval_seconds: int = Field(default=900, alias="intervalSeconds")
+
+
+class BotCronPayload(_WireModel):
+    expression: str
+    timezone: str = "UTC"
+
+
+class BotWebhookPayload(_WireModel):
+    secret: str
+    event_filter: str = Field(default="", alias="eventFilter")
+
+
+class BotPermissionPolicyPayload(_WireModel):
+    auto_allow: list[str] = Field(default_factory=list, alias="autoAllow")
+    require_approval: list[str] = Field(
+        default_factory=lambda: ["git push", "gh pr create"],
+        alias="requireApproval",
+    )
+    grace_seconds: int = Field(default=15, alias="graceSeconds")
+
+
+class BotCreateRequest(_WireModel):
+    id: str
+    name: str
+    watcher_type: BotWatcherType = Field(alias="watcherType")
+    instruction: str
+    cwd: str | None = None
+    enabled: bool = True
+    use_worktree: bool = Field(default=False, alias="useWorktree")
+    max_queue_depth: int = Field(default=20, alias="maxQueueDepth")
+    github: BotGitHubPollPayload | None = None
+    cron: BotCronPayload | None = None
+    webhook: BotWebhookPayload | None = None
+    permissions: BotPermissionPolicyPayload = Field(default_factory=BotPermissionPolicyPayload)
+
+
+class BotUpdateRequest(_WireModel):
+    name: str | None = None
+    watcher_type: BotWatcherType | None = Field(default=None, alias="watcherType")
+    instruction: str | None = None
+    cwd: str | None = None
+    enabled: bool | None = None
+    use_worktree: bool | None = Field(default=None, alias="useWorktree")
+    max_queue_depth: int | None = Field(default=None, alias="maxQueueDepth")
+    github: BotGitHubPollPayload | None = None
+    cron: BotCronPayload | None = None
+    webhook: BotWebhookPayload | None = None
+    permissions: BotPermissionPolicyPayload | None = None
+
+
+class BotToggleRequest(_WireModel):
+    enabled: StrictBool | None = None
+
+
 REST_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     AuthLoginRequest,
     SettingsUpdateRequest,
@@ -250,4 +309,7 @@ REST_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     WorkspacePathRequest,
     MkdirRequest,
     ModelSelectRequest,
+    BotCreateRequest,
+    BotUpdateRequest,
+    BotToggleRequest,
 )

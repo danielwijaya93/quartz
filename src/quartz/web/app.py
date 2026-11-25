@@ -15,8 +15,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from quartz.bots import BotQueue, BotStore
 from quartz.core.turn import run_interactive_turn
 from quartz.web.auth import extract_request_token, verify_token
+from quartz.web.bot_runner import BotRunner
 from quartz.web.context import (
     MAX_FRAME_BYTES,
     AppContext,
@@ -26,7 +28,7 @@ from quartz.web.context import (
     is_allowed_origin as _is_allowed_origin,
 )
 from quartz.web.push import PushStore, default_push_path, format_push_payload
-from quartz.web.routes import auth, files, push, sessions, settings, ws
+from quartz.web.routes import auth, bots, files, push, sessions, settings, ws
 from quartz.web.session import BuildRuntime, SessionManager, TurnRunner, WebSession
 from quartz.web.sidebar import SidebarStore, default_sidebar_path
 
@@ -92,6 +94,15 @@ _PUBLIC_API_PATHS = frozenset(
 )
 
 
+def _is_bot_webhook_path(method: str, path: str) -> bool:
+    return (
+        method == "POST"
+        and path.startswith("/api/bots/")
+        and path.endswith("/webhook")
+        and path.count("/") == 4
+    )
+
+
 def create_app(
     *,
     build: BuildRuntime,
@@ -100,17 +111,31 @@ def create_app(
     dev: bool = False,
     runner: TurnRunner = run_interactive_turn,
     auth_token: str | None = None,
+    bots_dir: Path | None = None,
+    enable_bot_runner: bool | None = None,
 ) -> FastAPI:
     """Build the app around one `WebSession`."""
     manager = SessionManager(build, cwd=cwd, runner=runner)
+    bot_store = BotStore(bots_dir)
+    bot_queue = BotQueue(bots_dir)
+    bot_runner = BotRunner(bot_store, bot_queue)
+    should_run_bots = (
+        enable_bot_runner
+        if enable_bot_runner is not None
+        else not os.environ.get("PYTEST_CURRENT_TEST")
+    )
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        """Start the idle watcher and close every live kernel on shutdown."""
+        """Start watchers on boot and close every live kernel on shutdown."""
         manager.start_watcher()
+        if should_run_bots:
+            bot_runner.start()
         try:
             yield
         finally:
+            with contextlib.suppress(Exception):
+                await bot_runner.stop()
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(manager.close_all)
             with contextlib.suppress(Exception):
@@ -178,6 +203,9 @@ def create_app(
         static_dir=static_dir,
         dev=dev,
         auth_token=normalized_token,
+        bot_store=bot_store,
+        bot_queue=bot_queue,
+        bot_runner=bot_runner,
     )
     app.state.ctx = ctx
 
@@ -185,25 +213,27 @@ def create_app(
     async def _security_middleware(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        if request.method == "POST" and request.url.path.startswith("/api/"):
+        if request.method in ("POST", "PUT", "DELETE") and request.url.path.startswith("/api/"):
             if not _is_allowed_origin(
                 request.headers.get("origin"),
                 request.headers.get("host"),
                 dev=dev,
             ):
                 return JSONResponse({"error": "Forbidden origin"}, status_code=403)
-            content_type = request.headers.get("content-type", "")
-            media_type = content_type.split(";", 1)[0].strip().lower()
-            if media_type != "application/json":
-                return JSONResponse(
-                    {"error": "Content-Type must be application/json"},
-                    status_code=415,
-                )
+            if request.method in ("POST", "PUT"):
+                content_type = request.headers.get("content-type", "")
+                media_type = content_type.split(";", 1)[0].strip().lower()
+                if media_type != "application/json":
+                    return JSONResponse(
+                        {"error": "Content-Type must be application/json"},
+                        status_code=415,
+                    )
         if (
             ctx.auth_token is not None
             and request.method != "OPTIONS"
             and request.url.path.startswith("/api/")
             and request.url.path not in _PUBLIC_API_PATHS
+            and not _is_bot_webhook_path(request.method, request.url.path)
         ):
             candidate = extract_request_token(
                 request,
@@ -214,6 +244,7 @@ def create_app(
         return await call_next(request)
 
     app.include_router(auth.create_router(ctx))
+    app.include_router(bots.create_router(ctx))
     app.include_router(push.create_router(ctx))
     app.include_router(settings.create_router(ctx))
     app.include_router(sessions.create_router(ctx))
@@ -224,7 +255,7 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization"],
         allow_credentials=True,
         max_age=600,
