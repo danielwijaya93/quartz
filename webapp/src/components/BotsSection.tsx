@@ -55,16 +55,19 @@ export function BotsSection({
                   <span className="min-w-0 truncate text-[12px] font-medium text-foreground">
                     {bot.name}
                   </span>
-                  <span
+                  <button
+                    type="button"
+                    onClick={() => onToggleBot(bot.id, !bot.enabled)}
+                    title={bot.enabled ? "Pause bot" : "Enable bot"}
                     className={cn(
-                      "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none",
+                      "shrink-0 cursor-pointer rounded px-1.5 py-0.5 text-[10px] font-medium leading-none transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus",
                       bot.enabled
-                        ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                        : "bg-surface-secondary text-muted",
+                        ? "bg-emerald-500/15 text-emerald-600 hover:bg-emerald-500/25 dark:text-emerald-400"
+                        : "bg-surface-secondary text-muted hover:bg-surface-secondary/80",
                     )}
                   >
                     {bot.enabled ? "Enabled" : "Paused"}
-                  </span>
+                  </button>
                 </div>
                 <span className="block truncate text-[10px] text-meta">
                   {WATCHER_LABELS[bot.watcher_type]}

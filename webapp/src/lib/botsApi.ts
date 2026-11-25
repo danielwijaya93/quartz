@@ -69,9 +69,25 @@ export async function createBot(payload: BotFormValues): Promise<BotConfig> {
 
 export async function updateBot(id: string, payload: Partial<BotFormValues>): Promise<BotConfig> {
   const response = await authFetch(apiUrl(`/api/bots/${encodeURIComponent(id)}`), {
-    method: "PATCH",
+    method: "PUT",
     headers: JSON_HEADERS,
     body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new BotsApiError(await readErrorMessage(response), response.status);
+  }
+  const body: unknown = await response.json();
+  if (typeof body === "object" && body !== null && "bot" in body) {
+    return (body as { bot: BotConfig }).bot;
+  }
+  return body as BotConfig;
+}
+
+export async function toggleBot(id: string, enabled: boolean): Promise<BotConfig> {
+  const response = await authFetch(apiUrl(`/api/bots/${encodeURIComponent(id)}/toggle`), {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ enabled }),
   });
   if (!response.ok) {
     throw new BotsApiError(await readErrorMessage(response), response.status);

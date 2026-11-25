@@ -1,5 +1,5 @@
 import * as React from "react";
-import { createBot, deleteBot, fetchBots, updateBot } from "./botsApi";
+import { createBot, deleteBot, fetchBots, toggleBot, updateBot } from "./botsApi";
 import type { BotConfig, BotFormValues } from "@/types/bots";
 
 export interface UseBotsResult {
@@ -55,7 +55,7 @@ export function useBots(): UseBotsResult {
   }, []);
 
   const toggle = React.useCallback(async (id: string, enabled: boolean) => {
-    const updated = await updateBot(id, { enabled });
+    const updated = await toggleBot(id, enabled);
     setBots((prev) => prev.map((b) => (b.id === id ? updated : b)));
   }, []);
 
