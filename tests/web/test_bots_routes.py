@@ -7,10 +7,10 @@ import hmac
 import json
 from pathlib import Path
 
+from conftest import ScriptedTurn, make_runtime  # type: ignore[import-not-found]
 from fastapi.testclient import TestClient
 
 from quartz.web.app import create_app
-from conftest import ScriptedTurn, make_runtime  # type: ignore[import-not-found]
 
 
 def _sign_payload(secret: str, body: bytes) -> str:
@@ -20,7 +20,7 @@ def _sign_payload(secret: str, body: bytes) -> str:
 
 def _make_client(tmp_path: Path, *, auth_token: str | None = None) -> TestClient:
     app = create_app(
-        build=lambda _cwd: make_runtime(tmp_path),
+        build=lambda _sid, _cwd=None: (make_runtime(tmp_path), True),
         cwd=tmp_path,
         runner=ScriptedTurn(),
         auth_token=auth_token,
