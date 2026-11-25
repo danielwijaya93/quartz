@@ -28,7 +28,7 @@
 3. **Version & Commit**: For `feat/`, `fix/`, `perf/`, `refactor/`, bump version via `uv run python scripts/bump_version.py <X.Y.Z>` (minor for `feat`, patch for `fix`/`perf`/`refactor`; skip for `chore/` or docs). Use Conventional Commits (`feat: ...`, `fix: ...`, `perf: ...`, `refactor: ...`).
 4. **PR & CI**: `git push -u origin <branch>` -> `gh pr create --title "..." --body "..."` -> `gh pr checks --watch`.
 5. **Merge & Post-merge**: `gh pr merge --squash --delete-branch && git checkout main && git pull`.
-   - If `webapp/` changed: `cd webapp && npm run build && npm run android:apk`; offer to send `webapp/android/app/build/outputs/apk/debug/quartz-v*.apk` via `tg-send`.
+   - If `webapp/` changed: `cd webapp && npm run build && npm run android:apk`; attach `webapp/android/app/build/outputs/apk/debug/quartz-v*.apk` using `attach_file(...)`.
    - If `src/quartz/` changed: remind user to run `systemctl --user restart quartz-web`.
 - **Docs-only fast track**: Direct commits + push to `main` are allowed for `AGENTS.md` / `README.md` / prompt templates.
 
