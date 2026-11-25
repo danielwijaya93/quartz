@@ -11,7 +11,7 @@ import { SettingsView } from "./components/SettingsView";
 import { McpView } from "./components/McpView";
 import { AuthGate } from "./components/AuthGate";
 import { TileGrid } from "./components/TileGrid";
-import { TileLayoutSwitcher } from "./components/TileLayoutSwitcher";
+import { MobileTileBar, TileLayoutSwitcher } from "./components/TileLayoutSwitcher";
 import { SessionTile, type SessionTileHandle } from "./components/SessionTile";
 import { WorkerTailTile } from "./components/WorkerTailTile";
 import { GlobalJobsButton } from "./components/GlobalJobsButton";
@@ -393,6 +393,19 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
   const showFullWidthHeader =
     multiTileActive && !narrow && tiling.state.maximizedTileId === null;
 
+  const focusedTileDescriptor = React.useMemo(
+    () => tiling.state.tiles.find((t) => t.id === tiling.state.focusedTileId) ?? tiling.state.tiles[0],
+    [tiling.state.tiles, tiling.state.focusedTileId],
+  );
+  const focusedTileTitle = React.useMemo(() => {
+    if (!focusedTileDescriptor) return "Session";
+    if (focusedTileDescriptor.kind === "worker") {
+      return `${focusedTileDescriptor.label} (pid ${focusedTileDescriptor.pid})`;
+    }
+    const sid = focusedTileDescriptor.sessionId ?? activeSession.sessionId;
+    return (sid && titleBySessionId.get(sid)) || "New session";
+  }, [focusedTileDescriptor, activeSession.sessionId, titleBySessionId]);
+
   const tileControls = (
     <div className="flex items-center gap-1.5">
       <GlobalJobsButton
@@ -403,25 +416,18 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
           tiling.openWorkerInTile(job);
         }}
       />
-      <TileLayoutSwitcher
-        tiles={tiling.state.tiles}
-        focusedTileId={tiling.state.focusedTileId}
-        threeOrientation={tiling.state.threeOrientation}
-        canAdd={tiling.canAdd}
-        narrow={narrow}
-        onSetCount={(count) => {
-          setSettingsOpen(false);
-          setMcpOpen(false);
-          tiling.setTileCount(count, activeSession.cwd || undefined);
-        }}
-        onAddTile={() => {
-          setSettingsOpen(false);
-          setMcpOpen(false);
-          tiling.openNewTile(activeSession.cwd || undefined);
-        }}
-        onFlipThree={tiling.flipThreeOrientation}
-        onFocusTile={tiling.focusTile}
-      />
+      {!narrow ? (
+        <TileLayoutSwitcher
+          tiles={tiling.state.tiles}
+          threeOrientation={tiling.state.threeOrientation}
+          onSetCount={(count) => {
+            setSettingsOpen(false);
+            setMcpOpen(false);
+            tiling.setTileCount(count, activeSession.cwd || undefined);
+          }}
+          onFlipThree={tiling.flipThreeOrientation}
+        />
+      ) : null}
     </div>
   );
 
@@ -456,6 +462,18 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
           fullWidth={showFullWidthHeader}
           tileControls={tileControls}
         />
+
+        {narrow && !settingsOpen && !mcpOpen ? (
+          <MobileTileBar
+            tiles={tiling.state.tiles}
+            focusedTileId={tiling.state.focusedTileId}
+            focusedTitle={focusedTileTitle}
+            canAdd={tiling.canAdd}
+            onFocusTile={tiling.focusTile}
+            onAddTile={() => tiling.openNewTile(activeSession.cwd || undefined)}
+            onCloseTile={tiling.closeTile}
+          />
+        ) : null}
 
         {settingsOpen ? (
           <SettingsView
@@ -507,7 +525,7 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
                 <SessionTile
                   tileId={tile.id}
                   tileNumber={tileNumber}
-                  multiTile={multiTileActive}
+                  multiTile={multiTileActive && !narrow}
                   focused={focused}
                   maximized={maximized}
                   canClose={canClose}
