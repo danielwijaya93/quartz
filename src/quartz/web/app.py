@@ -130,6 +130,7 @@ def create_app(
             == "allow"
         )
         rt = await asyncio.to_thread(ws.ensure_runtime, target_cwd)
+        await asyncio.to_thread(store().rename, rt.active_session.id, f"[Bot] {bot.name}")
         state = await asyncio.to_thread(bot_store.get_state, bot.id)
         state.active_session_id = rt.active_session.id
         await asyncio.to_thread(bot_store.save_state, state)

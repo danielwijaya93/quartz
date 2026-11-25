@@ -80,10 +80,12 @@ export interface FolderSidebarProps {
   /** Configured autonomous bots. */
   bots?: readonly BotConfig[];
   togglingBotIds?: ReadonlySet<string>;
+  runningBotIds?: ReadonlySet<string>;
   botToggleError?: string | null;
   onCreateBot?: (payload: BotFormValues) => void | Promise<void>;
   onUpdateBot?: (id: string, payload: BotFormValues) => void | Promise<void>;
   onToggleBot?: (id: string, enabled: boolean) => void | Promise<void>;
+  onRunBot?: (id: string) => void | Promise<void>;
   onDeleteBot?: (id: string) => void | Promise<void>;
   onRestoreBot?: (id: string) => Promise<unknown>;
 }
@@ -128,10 +130,12 @@ export function FolderSidebar({
   onDismissActiveSession,
   bots = [],
   togglingBotIds,
+  runningBotIds,
   botToggleError,
   onCreateBot,
   onUpdateBot,
   onToggleBot,
+  onRunBot,
   onDeleteBot,
   onRestoreBot,
 }: FolderSidebarProps): React.ReactElement {
@@ -331,6 +335,7 @@ export function FolderSidebar({
             <BotsSection
               bots={bots}
               togglingIds={togglingBotIds}
+              runningIds={runningBotIds}
               toggleError={botToggleError}
               onCreateBot={() => {
                 setEditingBot(null);
@@ -344,6 +349,13 @@ export function FolderSidebar({
               onToggleBot={(id, enabled) => {
                 void onToggleBot?.(id, enabled);
               }}
+              onRunBot={
+                onRunBot
+                  ? (id) => {
+                      void onRunBot(id);
+                    }
+                  : undefined
+              }
               onDeleteBot={(id) => {
                 void onDeleteBot?.(id);
               }}

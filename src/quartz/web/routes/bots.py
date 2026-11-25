@@ -306,6 +306,25 @@ def create_router(ctx: AppContext) -> APIRouter:
             {"bot": _serialize_bot(updated, state, queued), "enabled": updated.enabled}
         )
 
+    @router.post("/api/bots/{bot_id}/run")
+    async def run_bot_now(bot_id: str) -> JSONResponse:
+        store, queue = _stores()
+        bot = await asyncio.to_thread(store.get_bot, bot_id)
+        if bot is None:
+            return JSONResponse({"error": f"Bot {bot_id!r} not found"}, status_code=404)
+        trigger = QueuedTrigger(
+            trigger_id=uuid.uuid4().hex,
+            bot_id=bot.id,
+            event_key=f"manual:{int(time.time())}:{uuid.uuid4().hex[:6]}",
+            source="manual",
+            payload={},
+            enqueued_at=time.time(),
+        )
+        enqueued = await asyncio.to_thread(queue.enqueue, trigger, bot.max_queue_depth)
+        if enqueued and ctx.bot_runner is not None:
+            ctx.bot_runner.notify_queue()
+        return JSONResponse({"ok": True, "queued": enqueued, "triggerId": trigger.trigger_id})
+
     @router.get("/api/bots/{bot_id}/queue")
     async def get_bot_queue(bot_id: str) -> JSONResponse:
         store, queue = _stores()

@@ -246,3 +246,33 @@ def test_bots_history_archive_and_restore(tmp_path: Path) -> None:
 
         # Restoring again returns 404
         assert client.post("/api/bots/history/nightly/restore", json={}).status_code == 404
+
+
+def test_run_bot_now_enqueues_manual_trigger(tmp_path: Path) -> None:
+    with _make_client(tmp_path) as client:
+        create_res = client.post(
+            "/api/bots",
+            json={
+                "id": "manual-cron",
+                "name": "Manual Cron",
+                "watcherType": "cron",
+                "instruction": "Check status",
+                "cron": {"expression": "*/5 * * * *", "timezone": "UTC"},
+            },
+        )
+        assert create_res.status_code == 201
+
+        run_res = client.post("/api/bots/manual-cron/run", json={})
+        assert run_res.status_code == 200
+        body = run_res.json()
+        assert body["ok"] is True
+        assert body["queued"] is True
+        assert body["triggerId"]
+
+        queue_res = client.get("/api/bots/manual-cron/queue")
+        assert queue_res.status_code == 200
+        items = queue_res.json()["items"]
+        assert len(items) == 1
+        assert items[0]["source"] == "manual"
+
+        assert client.post("/api/bots/missing-bot/run", json={}).status_code == 404

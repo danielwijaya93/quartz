@@ -36,17 +36,25 @@ describe("BotsSection", () => {
     );
 
     expect(screen.getByText("No bots configured")).toBeInTheDocument();
-    const createBtn = screen.getByRole("button", { name: /\+ Create Bot/i });
+    const createBtn = screen.getByRole("button", { name: /Create Bot/i });
+    expect(createBtn.textContent?.trim()).toBe("Create Bot");
     await user.click(createBtn);
     expect(onCreateBot).toHaveBeenCalledTimes(1);
   });
 
-  it("renders bot list with enabled/paused status badges", () => {
+  it("renders bot list with watcher metadata and switch state", () => {
     render(
       <BotsSection
         bots={[
           makeBot({ id: "b1", name: "Issue Triager", enabled: true }),
-          makeBot({ id: "b2", name: "Nightly Cron", watcher_type: "cron", enabled: false }),
+          makeBot({
+            id: "b2",
+            name: "Nightly Cron",
+            watcher_type: "cron",
+            github: null,
+            cron: { expression: "*/5 * * * *", timezone: "UTC" },
+            enabled: false,
+          }),
         ]}
         onCreateBot={vi.fn()}
         onEditBot={vi.fn()}
@@ -56,15 +64,18 @@ describe("BotsSection", () => {
     );
 
     expect(screen.getByText("Issue Triager")).toBeInTheDocument();
-    expect(screen.getByText("Enabled")).toBeInTheDocument();
+    expect(screen.getByText("GitHub · owner/repo")).toBeInTheDocument();
     expect(screen.getByText("Nightly Cron")).toBeInTheDocument();
-    expect(screen.getByText("Paused")).toBeInTheDocument();
+    expect(screen.getByText("Cron · */5 * * * *")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: /Toggle Issue Triager/i })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("switch", { name: /Toggle Nightly Cron/i })).toHaveAttribute("aria-checked", "false");
   });
 
-  it("invokes toggle, edit, and delete callbacks", async () => {
+  it("invokes toggle, run, edit, and delete callbacks", async () => {
     const user = userEvent.setup();
     const bot = makeBot({ id: "b1", name: "Issue Triager", enabled: true });
     const onToggleBot = vi.fn();
+    const onRunBot = vi.fn();
     const onEditBot = vi.fn();
     const onDeleteBot = vi.fn();
 
@@ -74,6 +85,7 @@ describe("BotsSection", () => {
         onCreateBot={vi.fn()}
         onEditBot={onEditBot}
         onToggleBot={onToggleBot}
+        onRunBot={onRunBot}
         onDeleteBot={onDeleteBot}
       />,
     );
@@ -83,6 +95,9 @@ describe("BotsSection", () => {
     await user.click(toggle);
     expect(onToggleBot).toHaveBeenCalledWith("b1", false);
 
+    await user.click(screen.getByRole("button", { name: /Run Issue Triager now/i }));
+    expect(onRunBot).toHaveBeenCalledWith("b1");
+
     await user.click(screen.getByRole("button", { name: /Edit Issue Triager/i }));
     expect(onEditBot).toHaveBeenCalledWith(bot);
 
@@ -90,7 +105,7 @@ describe("BotsSection", () => {
     expect(onDeleteBot).toHaveBeenCalledWith("b1");
   });
 
-  it("renders History button, toggling disabled state, and toggleError", async () => {
+  it("renders History button, toggling/running disabled state, and toggleError", async () => {
     const user = userEvent.setup();
     const bot = makeBot({ id: "b1", name: "Issue Triager", enabled: true });
     const onOpenHistory = vi.fn();
@@ -99,18 +114,20 @@ describe("BotsSection", () => {
       <BotsSection
         bots={[bot]}
         togglingIds={new Set(["b1"])}
+        runningIds={new Set(["b1"])}
         toggleError="Failed to toggle bot"
         onCreateBot={vi.fn()}
         onOpenHistory={onOpenHistory}
         onEditBot={vi.fn()}
         onToggleBot={vi.fn()}
+        onRunBot={vi.fn()}
         onDeleteBot={vi.fn()}
       />,
     );
 
     expect(screen.getByRole("alert")).toHaveTextContent("Failed to toggle bot");
     expect(screen.getByRole("switch", { name: /Toggle Issue Triager/i })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Enabled" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Run Issue Triager now/i })).toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: /Bots history/i }));
     expect(onOpenHistory).toHaveBeenCalledTimes(1);

@@ -99,6 +99,20 @@ export async function toggleBot(id: string, enabled: boolean): Promise<BotConfig
   return body as BotConfig;
 }
 
+export async function runBotNow(
+  id: string,
+): Promise<{ ok: boolean; queued: boolean; triggerId: string }> {
+  const response = await authFetch(apiUrl(`/api/bots/${encodeURIComponent(id)}/run`), {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: "{}",
+  });
+  if (!response.ok) {
+    throw new BotsApiError(await readErrorMessage(response), response.status);
+  }
+  return (await response.json()) as { ok: boolean; queued: boolean; triggerId: string };
+}
+
 export async function deleteBot(id: string): Promise<void> {
   const response = await authFetch(apiUrl(`/api/bots/${encodeURIComponent(id)}`), {
     method: "DELETE",

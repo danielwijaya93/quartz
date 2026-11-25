@@ -245,8 +245,11 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
    * `session_state`, so this is the one place that has to re-read them.
    */
   React.useEffect(() => {
-    if (sessionId) sidebar.reload();
-  }, [sessionId, sidebar.reload]);
+    if (sessionId) {
+      sidebar.reload();
+      void bots.reload();
+    }
+  }, [sessionId, sidebar.reload, bots.reload]);
 
   const [sessionActivity, setSessionActivity] = React.useState<
     Readonly<Record<string, SessionActivity>>
@@ -453,10 +456,12 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     onClearReadActiveSessions: quartz.clearReadActiveSessions,
     bots: bots.bots,
     togglingBotIds: bots.togglingIds,
+    runningBotIds: bots.runningIds,
     botToggleError: bots.toggleError,
     onCreateBot: bots.create,
     onUpdateBot: bots.update,
     onToggleBot: bots.toggle,
+    onRunBot: bots.runNow,
     onDeleteBot: bots.remove,
     onRestoreBot: bots.restore,
   };
