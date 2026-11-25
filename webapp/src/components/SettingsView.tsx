@@ -3,9 +3,10 @@ import { ServerUrlCard } from "./ServerUrlCard";
 import { apiUrl, isNativeCapacitor } from "../lib/serverUrl";
 import { NativePlugin } from "../lib/nativeBridge";
 import { BiometricLockCard } from "./BiometricLockCard";
+import { SystemDiagnosticsCard } from "./SystemDiagnosticsCard";
 import { authFetch } from "../lib/authToken";
 import { Button, Input } from "@heroui/react";
-import { Bell, RotateCcw } from "lucide-react";
+import { Bell, Bot, Cpu, RotateCcw, Shield } from "lucide-react";
 import type { NotificationCategory } from "../lib/notifications";
 import { useNotifications, type NotificationsController } from "../lib/useNotifications";
 import { CanvasPage } from "./CanvasPage";
@@ -27,6 +28,14 @@ interface SettingsValues {
   progress: number;
   bg: number;
   idle?: number;
+  kernelMemMb?: number;
+  kernelMaxOpenFiles?: number;
+  kernelMaxProcesses?: number;
+  strictSnapshots?: boolean;
+  sandboxEnvPassthrough?: string;
+  botMaxUsdPerDay?: number | null;
+  botMaxConsecutiveErrors?: number;
+  botWebhookRateLimit?: number;
 }
 
 interface SettingsPayload {
@@ -35,44 +44,107 @@ interface SettingsPayload {
   configPath: string;
 }
 
-const SETTING_FIELDS: readonly {
-  key: keyof SettingsValues;
+interface SettingFieldDef {
+  apiKey: string;
+  valueKey: keyof SettingsValues;
   label: string;
-  hint: (def: number) => string;
-}[] = [
-  { key: "reserve", label: "Reserve tokens", hint: (def) => `Default ${def.toLocaleString()}` },
-  { key: "keep", label: "Keep recent tokens", hint: (def) => `Default ${def.toLocaleString()}` },
-  { key: "progress", label: "Progress update interval (turns)", hint: (def) => `Default ${def}, 0 disables` },
-  { key: "bg", label: "Background check interval (seconds)", hint: (def) => `Default ${def}s, 0 disables` },
-  { key: "idle", label: "Idle session check interval (hours)", hint: (def) => `Default ${def}h, 0 disables` },
+  hint: (defaults: SettingsValues) => string;
+  placeholder?: string;
+  allowEmpty?: boolean;
+  emptySubmitValue?: string;
+  inputWidth?: string;
+}
+
+const SESSION_FIELDS: readonly SettingFieldDef[] = [
+  { apiKey: "reserve", valueKey: "reserve", label: "Reserve tokens", hint: (d) => `Default ${(d.reserve ?? 16384).toLocaleString()}` },
+  { apiKey: "keep", valueKey: "keep", label: "Keep recent tokens", hint: (d) => `Default ${(d.keep ?? 32000).toLocaleString()}` },
+  { apiKey: "progress", valueKey: "progress", label: "Progress update every (calls)", hint: (d) => `Default ${d.progress ?? 5} · 0 disables` },
+  { apiKey: "bg", valueKey: "bg", label: "Background job check (seconds)", hint: (d) => `Default ${d.bg ?? 300}s · 0 disables` },
+  { apiKey: "idle", valueKey: "idle", label: "Idle session reminder (hours)", hint: (d) => `Default ${d.idle ?? 2}h · 0 disables` },
 ];
 
-function draftsFromValues(values: SettingsValues, fallbackIdle?: number): Record<string, string> {
+const KERNEL_QUOTA_FIELDS: readonly SettingFieldDef[] = [
+  {
+    apiKey: "kernel_mem",
+    valueKey: "kernelMemMb",
+    label: "Kernel memory cap (MiB)",
+    hint: (d) => `Default ${d.kernelMemMb ? `${d.kernelMemMb.toLocaleString()} MiB` : "0 (unlimited)"} · opt-in RLIMIT_AS (next kernel start)`,
+  },
+  {
+    apiKey: "kernel_files",
+    valueKey: "kernelMaxOpenFiles",
+    label: "Max open files (NOFILE)",
+    hint: (d) => `Default ${(d.kernelMaxOpenFiles ?? 4096).toLocaleString()} · 0 = unlimited`,
+  },
+  {
+    apiKey: "kernel_procs",
+    valueKey: "kernelMaxProcesses",
+    label: "Max processes (NPROC)",
+    hint: (d) => `Default ${d.kernelMaxProcesses ? d.kernelMaxProcesses : "0 (unlimited)"} · opt-in per-UID RLIMIT_NPROC`,
+  },
+];
+
+const BOT_GOVERNANCE_FIELDS: readonly SettingFieldDef[] = [
+  {
+    apiKey: "bot_budget",
+    valueKey: "botMaxUsdPerDay",
+    label: "Default daily budget (USD)",
+    hint: () => "Applied to new bots · 0 or blank = unlimited",
+    placeholder: "unlimited",
+    allowEmpty: true,
+    emptySubmitValue: "0",
+  },
+  {
+    apiKey: "bot_errors",
+    valueKey: "botMaxConsecutiveErrors",
+    label: "Default max consecutive errors",
+    hint: (d) => `Default ${d.botMaxConsecutiveErrors ?? 5} · auto-pauses bot (0 disables)`,
+  },
+  {
+    apiKey: "bot_rate",
+    valueKey: "botWebhookRateLimit",
+    label: "Default webhook rate limit (/min)",
+    hint: (d) => `Default ${d.botWebhookRateLimit ?? 30}/min · returns HTTP 429 on bursts (0 = unlimited)`,
+  },
+];
+
+function formatValueForDraft(val: unknown, fallback: unknown): string {
+  const effective = val === undefined ? fallback : val;
+  if (effective === null || effective === undefined) return "";
+  return String(effective);
+}
+
+function draftsFromValues(values: SettingsValues, defaults: SettingsValues): Record<string, string> {
   return {
-    reserve: String(values.reserve),
-    keep: String(values.keep),
-    progress: String(values.progress),
-    bg: String(values.bg),
-    idle: String(values.idle ?? fallbackIdle ?? 2),
+    reserve: formatValueForDraft(values.reserve, defaults.reserve ?? 16384),
+    keep: formatValueForDraft(values.keep, defaults.keep ?? 32000),
+    progress: formatValueForDraft(values.progress, defaults.progress ?? 5),
+    bg: formatValueForDraft(values.bg, defaults.bg ?? 300),
+    idle: formatValueForDraft(values.idle, defaults.idle ?? 2),
+    kernel_mem: formatValueForDraft(values.kernelMemMb, defaults.kernelMemMb ?? 0),
+    kernel_files: formatValueForDraft(values.kernelMaxOpenFiles, defaults.kernelMaxOpenFiles ?? 4096),
+    kernel_procs: formatValueForDraft(values.kernelMaxProcesses, defaults.kernelMaxProcesses ?? 0),
+    sandbox_env: formatValueForDraft(values.sandboxEnvPassthrough, defaults.sandboxEnvPassthrough ?? ""),
+    bot_budget: formatValueForDraft(values.botMaxUsdPerDay, ""),
+    bot_errors: formatValueForDraft(values.botMaxConsecutiveErrors, defaults.botMaxConsecutiveErrors ?? 5),
+    bot_rate: formatValueForDraft(values.botWebhookRateLimit, defaults.botWebhookRateLimit ?? 30),
   };
 }
 
 function notificationStatusText(notifications: NotificationsController, isNative: boolean): string {
   const { env, enabled } = notifications;
-  if (env.needsHttps) return "Requires HTTPS (for example via Tailscale Serve) or localhost.";
-  if (env.needsHomeScreen) {
-    return "On iPhone or iPad, tap Share → Add to Home Screen, then open Quartz from your Home Screen.";
+  if (!env.supported) {
+    return "Notifications are not supported in this browser.";
   }
   if (env.permission === "denied") {
     return isNative
-      ? "Blocked in Android app settings. Allow notifications for Quartz to enable them."
-      : "Blocked in browser settings. Allow notifications for this site to enable them.";
+      ? "Blocked in Android settings. Re-enable notifications for Quartz in system settings."
+      : "Blocked in browser settings. Re-enable notifications for this site to receive alerts.";
   }
-  if (!env.supported) return "Not supported in this browser.";
-  if (env.permission === "granted" && enabled) {
+  if (enabled && env.permission === "granted") {
     return isNative
-      ? "Enabled — alerts when a turn finishes, needs approval, or a background job ends."
-      : "Enabled — alerts when a turn finishes, needs approval, or a background job ends while inactive.";
+      ? "Active on this device when Quartz is in the background."
+      : "Active for this browser when Quartz is in the background.";
   }
   if (env.permission === "default") {
     return "Allow notifications to get alerts when Quartz is in the background.";
@@ -113,7 +185,7 @@ export function SettingsView({
       if (!resp.ok) throw new Error("Failed to load settings");
       const payload = (await resp.json()) as SettingsPayload;
       setData(payload);
-      setDrafts(draftsFromValues(payload.values, payload.defaults.idle));
+      setDrafts(draftsFromValues(payload.values, payload.defaults));
     } catch {
       setStatus({ ok: false, text: "Could not load settings." });
     } finally {
@@ -158,7 +230,7 @@ export function SettingsView({
       }
       if (body.values) {
         setData((prev) => (prev ? { ...prev, values: body.values! } : prev));
-        setDrafts(draftsFromValues(body.values, data?.defaults.idle));
+        setDrafts(draftsFromValues(body.values, data?.defaults ?? body.values));
       }
       setStatus({ ok: true, text: body.message || "Saved." });
     } catch {
@@ -168,7 +240,60 @@ export function SettingsView({
     }
   };
 
+  const renderFieldRows = (fields: readonly SettingFieldDef[]): React.ReactElement | null => {
+    if (!data) return null;
+    return (
+      <div className="divide-y divide-separator">
+        {fields.map((field) => {
+          const current = formatValueForDraft(data.values[field.valueKey], data.defaults[field.valueKey]);
+          const val = drafts[field.apiKey] ?? current;
+          const dirty = val.trim() !== current;
+          const submitVal = val.trim() === "" && field.allowEmpty ? (field.emptySubmitValue ?? "none") : val.trim();
+          const canSubmit = savingKey === null && (field.allowEmpty || val.trim() !== "");
+          return (
+            <div
+              key={field.apiKey}
+              className="flex flex-col gap-2 py-3 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-foreground">{field.label}</p>
+                <p className="text-xs text-muted">{field.hint(data.defaults)}</p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Input
+                  aria-label={field.label}
+                  value={val}
+                  placeholder={field.placeholder}
+                  onChange={(e) => setDrafts((prev) => ({ ...prev, [field.apiKey]: e.target.value }))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && canSubmit) {
+                      e.preventDefault();
+                      void saveKey(field.apiKey, submitVal);
+                    }
+                  }}
+                  className={`${field.inputWidth ?? "w-28"} font-mono text-xs`}
+                />
+                <Button
+                  size="sm"
+                  variant={dirty ? "primary" : "outline"}
+                  isDisabled={!canSubmit}
+                  onPress={() => void saveKey(field.apiKey, submitVal)}
+                >
+                  Save
+                </Button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
   const notifActive = notifications.enabled && notifications.env.permission === "granted";
+  const strictSnapshots = data?.values.strictSnapshots ?? true;
+  const sandboxEnvCurrent = data?.values.sandboxEnvPassthrough ?? "";
+  const sandboxEnvDraft = drafts.sandbox_env ?? sandboxEnvCurrent;
+  const sandboxEnvDirty = sandboxEnvDraft.trim() !== sandboxEnvCurrent;
 
   return (
     <CanvasPage
@@ -194,7 +319,7 @@ export function SettingsView({
       <div>
         <h1 className="text-lg font-semibold tracking-tight text-foreground">Settings</h1>
         <p className="mt-0.5 text-xs text-muted">
-          Session compaction and background check defaults.
+          Session compaction, kernel quotas, sandbox security, and autonomous bot defaults.
         </p>
         <p className="mt-1 text-xs text-muted/80">
           App v{import.meta.env.VITE_APP_VERSION || "0.1.0"} (build{" "}
@@ -206,46 +331,106 @@ export function SettingsView({
       {loading && !data ? (
         <p className="text-sm text-muted">Loading settings…</p>
       ) : data ? (
-        <div className="divide-y divide-separator rounded-xl border border-border bg-surface/50">
-          {SETTING_FIELDS.map((field) => {
-            const current = String(data.values[field.key] ?? data.defaults[field.key] ?? 0);
-            const val = drafts[field.key] ?? current;
-            const dirty = val.trim() !== current;
-            return (
-              <div
-                key={field.key}
-                className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
-              >
+        <>
+          <section
+            aria-label="Session and Compaction"
+            className="rounded-xl border border-border bg-surface/50 px-4 py-3"
+          >
+            {renderFieldRows(SESSION_FIELDS)}
+          </section>
+
+          <section
+            aria-label="Kernel Resource Quotas"
+            className="rounded-xl border border-border bg-surface/50 px-4 py-3"
+          >
+            <div className="mb-3 flex items-center gap-1.5 border-b border-separator pb-2">
+              <Cpu aria-hidden="true" className="size-3.5 text-muted" />
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">
+                Kernel Resource Quotas
+              </h2>
+            </div>
+            {renderFieldRows(KERNEL_QUOTA_FIELDS)}
+          </section>
+
+          <section
+            aria-label="Security and Sandbox"
+            className="rounded-xl border border-border bg-surface/50 px-4 py-3"
+          >
+            <div className="mb-3 flex items-center gap-1.5 border-b border-separator pb-2">
+              <Shield aria-hidden="true" className="size-3.5 text-muted" />
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">
+                Security &amp; Sandbox
+              </h2>
+            </div>
+            <div className="divide-y divide-separator">
+              <div className="flex items-center justify-between gap-3 pb-3">
                 <div className="min-w-0">
-                  <p className="text-sm font-medium text-foreground">{field.label}</p>
-                  <p className="text-xs text-muted">{field.hint(data.defaults[field.key] ?? 0)}</p>
+                  <p className="text-sm font-medium text-foreground">Strict snapshot verification</p>
+                  <p className="text-xs text-muted">
+                    Reject unsigned pickle/dill snapshots by default (JSON variables always restore safely).
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={strictSnapshots}
+                  aria-label="Strict snapshot verification"
+                  disabled={savingKey !== null}
+                  onClick={() => void saveKey("strict_snapshots", strictSnapshots ? "off" : "on")}
+                  className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                    strictSnapshots ? "bg-accent text-white" : "border border-border text-foreground"
+                  } disabled:opacity-50`}
+                >
+                  {strictSnapshots ? "On" : "Off"}
+                </button>
+              </div>
+              <div className="flex flex-col gap-2 pt-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-foreground">Sandbox env passthrough</p>
+                  <p className="text-xs text-muted">
+                    Comma-separated env var names forwarded to sandboxed kernels. Host secrets are always blocked.
+                  </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <Input
-                    aria-label={field.label}
-                    value={val}
-                    onChange={(e) => setDrafts((prev) => ({ ...prev, [field.key]: e.target.value }))}
+                    aria-label="Sandbox env passthrough"
+                    value={sandboxEnvDraft}
+                    placeholder="MY_VAR, OTHER_VAR"
+                    onChange={(e) => setDrafts((prev) => ({ ...prev, sandbox_env: e.target.value }))}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") {
+                      if (e.key === "Enter" && savingKey === null) {
                         e.preventDefault();
-                        void saveKey(field.key, val.trim());
+                        void saveKey("sandbox_env", sandboxEnvDraft.trim() || "none");
                       }
                     }}
-                    className="w-28 font-mono text-xs"
+                    className="w-44 font-mono text-xs"
                   />
                   <Button
                     size="sm"
-                    variant={dirty ? "primary" : "outline"}
-                    isDisabled={savingKey !== null || val.trim() === ""}
-                    onPress={() => void saveKey(field.key, val.trim())}
+                    variant={sandboxEnvDirty ? "primary" : "outline"}
+                    isDisabled={savingKey !== null}
+                    onPress={() => void saveKey("sandbox_env", sandboxEnvDraft.trim() || "none")}
                   >
                     Save
                   </Button>
                 </div>
               </div>
-            );
-          })}
-        </div>
+            </div>
+          </section>
+
+          <section
+            aria-label="Bot Governance Defaults"
+            className="rounded-xl border border-border bg-surface/50 px-4 py-3"
+          >
+            <div className="mb-3 flex items-center gap-1.5 border-b border-separator pb-2">
+              <Bot aria-hidden="true" className="size-3.5 text-muted" />
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">
+                Bot Governance Defaults
+              </h2>
+            </div>
+            {renderFieldRows(BOT_GOVERNANCE_FIELDS)}
+          </section>
+        </>
       ) : null}
 
       <section
@@ -344,6 +529,8 @@ export function SettingsView({
           </div>
         ) : null}
       </section>
+
+      <SystemDiagnosticsCard />
     </CanvasPage>
   );
 }

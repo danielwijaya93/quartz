@@ -103,6 +103,13 @@ def test_settings_as_dict() -> None:
         "notify_background": True,
         "notify_error": True,
         "rich_ui": False,
+        "kernel_max_mem_mb": 0,
+        "kernel_max_open_files": 4096,
+        "kernel_max_processes": 0,
+        "strict_snapshots": True,
+        "sandbox_env_passthrough": [],
+        "bot_max_consecutive_errors": 5,
+        "bot_webhook_rate_limit": 30,
     }
 
 

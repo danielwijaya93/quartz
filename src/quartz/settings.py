@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import os
+import re
 import stat
 import tempfile
 from collections.abc import Callable
@@ -32,6 +33,22 @@ DEFAULT_NOTIFY_ERROR = True
 DEFAULT_RICH_UI = False
 DEFAULT_BRIDGE_TIMEOUT_S = 290
 DEFAULT_BRIDGE_WORKER_TIMEOUT_S = 1800
+DEFAULT_KERNEL_MAX_MEM_MB = 0
+DEFAULT_KERNEL_MAX_OPEN_FILES = 4096
+DEFAULT_KERNEL_MAX_PROCESSES = 0
+DEFAULT_STRICT_SNAPSHOTS = True
+DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS = 5
+DEFAULT_BOT_WEBHOOK_RATE_LIMIT = 30
+
+FORBIDDEN_PASSTHROUGH_ENV: frozenset[str] = frozenset(
+    {
+        "QUARTZ_WEB_TOKEN",
+        "QUARTZ_WEB_TOKEN_FILE",
+        "QUARTZ_SNAPSHOT_KEY",
+        "QUARTZ_SNAPSHOT_KEY_FILE",
+        "QUARTZ_DB_PATH",
+    }
+)
 
 _MIN_TOKENS = 256
 _MAX_TOKENS = 10_000_000
@@ -40,6 +57,13 @@ _MAX_BACKGROUND_CHECK_EVERY = 86_400
 _MAX_RETENTION_DAYS = 3_650
 _MAX_WEB_IDLE_HOURS = 8_760
 _MAX_WEB_MAX_LIVE_SESSIONS = 100
+_MAX_KERNEL_MEM_MB = 1_048_576
+_MAX_KERNEL_OPEN_FILES = 1_048_576
+_MAX_KERNEL_PROCESSES = 65_536
+_MAX_BOT_USD_PER_DAY = 10_000.0
+_MAX_BOT_CONSECUTIVE_ERRORS = 1_000
+_MAX_BOT_WEBHOOK_RATE_LIMIT = 10_000
+_ENV_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 _PERSISTED_FIELDS = (
     "compact_reserve_tokens",
@@ -54,13 +78,20 @@ _PERSISTED_FIELDS = (
     "notify_background",
     "notify_error",
     "rich_ui",
+    "kernel_max_mem_mb",
+    "kernel_max_open_files",
+    "kernel_max_processes",
+    "strict_snapshots",
+    "sandbox_env_passthrough",
+    "bot_max_consecutive_errors",
+    "bot_webhook_rate_limit",
 )
-_OPTIONAL_FIELDS = ("bridge_timeout_s", "bridge_worker_timeout_s")
+_OPTIONAL_FIELDS = ("bridge_timeout_s", "bridge_worker_timeout_s", "bot_max_usd_per_day")
 
 
 @dataclasses.dataclass(frozen=True)
 class Settings:
-    """User-tunable compaction and progress preferences."""
+    """User-tunable compaction, security, resource quota, and bot governance preferences."""
 
     compact_reserve_tokens: int = DEFAULT_COMPACT_RESERVE_TOKENS
     keep_recent_tokens: int = DEFAULT_KEEP_RECENT_TOKENS
@@ -78,6 +109,14 @@ class Settings:
     rich_ui: bool = DEFAULT_RICH_UI
     bridge_timeout_s: int | None = None
     bridge_worker_timeout_s: int | None = None
+    kernel_max_mem_mb: int = DEFAULT_KERNEL_MAX_MEM_MB
+    kernel_max_open_files: int = DEFAULT_KERNEL_MAX_OPEN_FILES
+    kernel_max_processes: int = DEFAULT_KERNEL_MAX_PROCESSES
+    strict_snapshots: bool = DEFAULT_STRICT_SNAPSHOTS
+    sandbox_env_passthrough: tuple[str, ...] = ()
+    bot_max_usd_per_day: float | None = None
+    bot_max_consecutive_errors: int = DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS
+    bot_webhook_rate_limit: int = DEFAULT_BOT_WEBHOOK_RATE_LIMIT
 
 
 def _config_path(path: Path | None = None) -> Path:
@@ -138,6 +177,60 @@ def _coerce_bridge_timeout(value: Any) -> int | None:
     return None
 
 
+def _coerce_optional_usd(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        fval = float(value)
+        return round(fval, 4) if math.isfinite(fval) and 0 < fval <= _MAX_BOT_USD_PER_DAY else None
+    if isinstance(value, str) and value.strip():
+        try:
+            fval = float(value.strip())
+        except ValueError:
+            return None
+        return round(fval, 4) if math.isfinite(fval) and 0 < fval <= _MAX_BOT_USD_PER_DAY else None
+    return None
+
+
+def _coerce_env_passthrough(value: Any) -> tuple[str, ...]:
+    items: list[str] = []
+    if isinstance(value, str):
+        raw_items = value.split(",")
+    elif isinstance(value, (list, tuple)):
+        raw_items = [str(x) for x in value if isinstance(x, str)]
+    else:
+        return ()
+    seen: set[str] = set()
+    for raw in raw_items:
+        name = raw.strip()
+        if not name or name in seen or name in FORBIDDEN_PASSTHROUGH_ENV or not _ENV_VAR_RE.match(name):
+            continue
+        seen.add(name)
+        items.append(name)
+    return tuple(items)
+
+
+def parse_sandbox_env_passthrough(raw: str) -> tuple[tuple[str, ...] | None, str | None]:
+    """Parse and validate a comma-separated list of sandbox env passthrough variable names."""
+    cleaned = raw.strip()
+    if not cleaned or cleaned.lower() in {"none", "off", "clear", "-"}:
+        return (), None
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in cleaned.split(","):
+        name = token.strip()
+        if not name:
+            continue
+        if name in FORBIDDEN_PASSTHROUGH_ENV:
+            return None, f"{name} is a host-only secret and cannot be forwarded into the sandbox."
+        if not _ENV_VAR_RE.match(name):
+            return None, f"Invalid environment variable name: {name!r}."
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return tuple(out), None
+
+
 def load_settings(path: Path | None = None) -> Settings:
     """Load settings from config.json, falling back to defaults (never raises)."""
     raw = _read_raw(path)
@@ -158,6 +251,14 @@ def load_settings(path: Path | None = None) -> Settings:
         rich_ui=_coerce_bool(raw.get("rich_ui"), DEFAULT_RICH_UI),
         bridge_timeout_s=_coerce_bridge_timeout(raw.get("bridge_timeout_s")),
         bridge_worker_timeout_s=_coerce_bridge_timeout(raw.get("bridge_worker_timeout_s")),
+        kernel_max_mem_mb=_coerce_int_range(raw.get("kernel_max_mem_mb"), DEFAULT_KERNEL_MAX_MEM_MB, 0, _MAX_KERNEL_MEM_MB),
+        kernel_max_open_files=_coerce_int_range(raw.get("kernel_max_open_files"), DEFAULT_KERNEL_MAX_OPEN_FILES, 0, _MAX_KERNEL_OPEN_FILES),
+        kernel_max_processes=_coerce_int_range(raw.get("kernel_max_processes"), DEFAULT_KERNEL_MAX_PROCESSES, 0, _MAX_KERNEL_PROCESSES),
+        strict_snapshots=_coerce_bool(raw.get("strict_snapshots"), DEFAULT_STRICT_SNAPSHOTS),
+        sandbox_env_passthrough=_coerce_env_passthrough(raw.get("sandbox_env_passthrough")),
+        bot_max_usd_per_day=_coerce_optional_usd(raw.get("bot_max_usd_per_day")),
+        bot_max_consecutive_errors=_coerce_int_range(raw.get("bot_max_consecutive_errors"), DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS, 0, _MAX_BOT_CONSECUTIVE_ERRORS),
+        bot_webhook_rate_limit=_coerce_int_range(raw.get("bot_webhook_rate_limit"), DEFAULT_BOT_WEBHOOK_RATE_LIMIT, 0, _MAX_BOT_WEBHOOK_RATE_LIMIT),
     )
 
 
@@ -187,6 +288,30 @@ def validate_web_max_live_sessions(value: int) -> bool:
 
 def validate_bridge_timeout(value: int | float) -> bool:
     return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+
+
+def validate_kernel_max_mem_mb(value: int) -> bool:
+    return _valid_int_range(value, 0, _MAX_KERNEL_MEM_MB)
+
+
+def validate_kernel_max_open_files(value: int) -> bool:
+    return _valid_int_range(value, 0, _MAX_KERNEL_OPEN_FILES)
+
+
+def validate_kernel_max_processes(value: int) -> bool:
+    return _valid_int_range(value, 0, _MAX_KERNEL_PROCESSES)
+
+
+def validate_bot_max_usd_per_day(value: float) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value) and 0.0 <= value <= _MAX_BOT_USD_PER_DAY
+
+
+def validate_bot_max_consecutive_errors(value: int) -> bool:
+    return _valid_int_range(value, 0, _MAX_BOT_CONSECUTIVE_ERRORS)
+
+
+def validate_bot_webhook_rate_limit(value: int) -> bool:
+    return _valid_int_range(value, 0, _MAX_BOT_WEBHOOK_RATE_LIMIT)
 
 
 def resolve_bridge_timeout(tool: str) -> float:
@@ -307,9 +432,12 @@ def project_trust_status(cwd: Path | str, path: Path | None = None) -> dict[str,
     return {"cwd": str(target), "trusted": trusted, "files": files, "needsTrust": bool(files) and not trusted}
 
 
-def settings_as_dict(settings: Settings) -> dict[str, int | bool]:
+def settings_as_dict(settings: Settings) -> dict[str, Any]:
     """Return the JSON-serialisable preference mapping for ``/settings list``."""
-    out: dict[str, int | bool] = {k: getattr(settings, k) for k in _PERSISTED_FIELDS}
+    out: dict[str, Any] = {}
+    for k in _PERSISTED_FIELDS:
+        val = getattr(settings, k)
+        out[k] = list(val) if isinstance(val, tuple) else val
     for key in _OPTIONAL_FIELDS:
         val = getattr(settings, key)
         if val is not None:

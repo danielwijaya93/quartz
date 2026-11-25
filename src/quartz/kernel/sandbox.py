@@ -106,6 +106,9 @@ DEFAULT_SANDBOX_ENV_ALLOWLIST: frozenset[str] = frozenset(
         "QUARTZ_GLOBAL_HELPERS",
         "QUARTZ_SKILLS_DIR",
         "QUARTZ_TRUSTED_PROJECT",
+        "QUARTZ_KERNEL_MAX_MEM_MB",
+        "QUARTZ_KERNEL_MAX_NOFILE",
+        "QUARTZ_KERNEL_MAX_NPROC",
     }
 )
 
@@ -163,7 +166,12 @@ def build_sandbox_env(
     passthrough: tuple[str, ...] = (),
 ) -> dict[str, str]:
     """Return a scrubbed environment dict safe to pass to a sandboxed worker."""
+    from quartz.settings import load_settings
+
     extra_allowed: set[str] = {k.strip() for k in passthrough if k.strip()}
+    for name in load_settings().sandbox_env_passthrough:
+        if name.strip():
+            extra_allowed.add(name.strip())
     raw_extra = host_env.get("QUARTZ_SANDBOX_ENV_PASSTHROUGH", "")
     if raw_extra:
         for item in raw_extra.split(","):

@@ -17,9 +17,13 @@ __all__ = [
     "apply_resource_limits",
 ]
 
-DEFAULT_MAX_MEMORY_MB = 4096
+# RLIMIT_AS counts virtual address-space reservations (Node/V8, Rust/Rayon, JVM,
+# and PyTorch reserve multi-GiB PROT_NONE mappings while using small RSS), and
+# Linux RLIMIT_NPROC is enforced per-UID across the entire host. Both default to
+# 0 (opt-in via /settings or env vars) while RLIMIT_NOFILE is safely bounded per-process.
+DEFAULT_MAX_MEMORY_MB = 0
 DEFAULT_MAX_OPEN_FILES = 4096
-DEFAULT_MAX_PROCESSES = 256
+DEFAULT_MAX_PROCESSES = 0
 
 
 def _env_nonneg_int(name: str, default: int) -> int:
@@ -43,10 +47,13 @@ class ResourceLimits:
 
     @classmethod
     def from_env(cls) -> ResourceLimits:
+        from quartz.settings import load_settings
+
+        cfg = load_settings()
         return cls(
-            max_memory_mb=_env_nonneg_int("QUARTZ_KERNEL_MAX_MEM_MB", DEFAULT_MAX_MEMORY_MB),
-            max_open_files=_env_nonneg_int("QUARTZ_KERNEL_MAX_NOFILE", DEFAULT_MAX_OPEN_FILES),
-            max_processes=_env_nonneg_int("QUARTZ_KERNEL_MAX_NPROC", DEFAULT_MAX_PROCESSES),
+            max_memory_mb=_env_nonneg_int("QUARTZ_KERNEL_MAX_MEM_MB", cfg.kernel_max_mem_mb),
+            max_open_files=_env_nonneg_int("QUARTZ_KERNEL_MAX_NOFILE", cfg.kernel_max_open_files),
+            max_processes=_env_nonneg_int("QUARTZ_KERNEL_MAX_NPROC", cfg.kernel_max_processes),
         )
 
 

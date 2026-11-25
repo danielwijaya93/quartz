@@ -185,8 +185,8 @@ export interface BotCreateRequest {
   useWorktree?: boolean;
   maxQueueDepth?: number;
   maxUsdPerDay?: number | null;
-  maxConsecutiveErrors?: number;
-  webhookRateLimitPerMinute?: number;
+  maxConsecutiveErrors?: number | null;
+  webhookRateLimitPerMinute?: number | null;
   github?: BotGitHubPollPayload | null;
   cron?: BotCronPayload | null;
   webhook?: BotWebhookPayload | null;

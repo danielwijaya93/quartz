@@ -222,4 +222,29 @@ describe("CreateBotModal", () => {
       }),
     );
   });
+
+  it("submits per-bot governance guardrails (budget, max errors, webhook rate limit)", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(<CreateBotModal open={true} onClose={vi.fn()} onSubmit={onSubmit} />);
+
+    await user.type(screen.getByLabelText(/Bot Name/i), "Guarded Bot");
+    await user.selectOptions(screen.getByLabelText(/Watcher Type/i), "cron");
+    await user.type(screen.getByLabelText(/Cron Expression/i), "0 * * * *");
+    await user.type(screen.getByLabelText(/Instruction/i), "check health");
+    await user.type(screen.getByLabelText(/Daily USD Budget/i), "2.5");
+    await user.type(screen.getByLabelText(/Max Errors/i), "3");
+    await user.type(screen.getByLabelText(/Rate Limit/i), "20");
+
+    await user.click(screen.getByRole("button", { name: /Create Bot/i }));
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Guarded Bot",
+        max_usd_per_day: 2.5,
+        max_consecutive_errors: 3,
+        webhook_rate_limit_per_minute: 20,
+      }),
+    );
+  });
 });
