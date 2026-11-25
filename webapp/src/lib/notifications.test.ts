@@ -43,6 +43,15 @@ describe("formatNotificationForFrame", () => {
         elapsedMs: 100,
       }),
     ).toBeNull();
+
+    expect(
+      formatNotificationForFrame({
+        type: "turn_end",
+        status: "waiting_permission",
+        tokens: 0,
+        elapsedMs: 0,
+      }),
+    ).toBeNull();
   });
 
   it("formats permission_request, bash_notice, and error", () => {

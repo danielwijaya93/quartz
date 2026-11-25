@@ -146,6 +146,9 @@ async def _dispatch(
                 _err(push, "Empty prompt.")
                 return
             session = await _ensure_conn_session(manager, conn, push, app)
+            if session.has_pending_permission:
+                _err(push, "Waiting for permission approval. Allow or reject the pending request first.")
+                return
             if session.turn_running:
                 _err(push, "A turn is already running. Press Esc to abort it.")
                 return

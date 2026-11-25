@@ -42,6 +42,7 @@ class _Turn:
     thread: threading.Thread | None = None
     task: asyncio.Task[None] | None = None
     loop: asyncio.AbstractEventLoop | None = None
+    parked: bool = False
 
 
 class TurnCoordinator:
@@ -80,7 +81,7 @@ class TurnCoordinator:
     @property
     def turn_running(self) -> bool:
         with self._lock:
-            return self._turn is not None
+            return self._turn is not None and not self._turn.parked
 
     def bind_loop(
         self, loop: asyncio.AbstractEventLoop | None = None
@@ -227,19 +228,7 @@ class TurnCoordinator:
                 if self._turn is turn:
                     self._turn = None
                     cleared = True
-            self._sink_hub.mark_active()
-            rt = self._require_runtime()
-            max_ctx = rt.max_context_tokens
-            ctx_pct = round(rt.usage_stats.context_pct(max_ctx), 1) if max_ctx > 0 else 0.0
-            cache_hit_pct = round(float(getattr(rt.usage_stats, "cache_hit_rate", 0.0)) * 100.0, 1)
-            self._emit(
-                _turn_end_frame(
-                    outcome,
-                    context_pct=ctx_pct,
-                    max_context_tokens=max_ctx,
-                    cache_hit_pct=cache_hit_pct,
-                )
-            )
+            self._emit_turn_end(outcome)
         finally:
             with self._lock:
                 if self._turn is turn:
@@ -249,6 +238,43 @@ class TurnCoordinator:
             # `turn_start` is strictly ordered after this turn's `turn_end`.
             if cleared:
                 self._bg_watcher.mark_turn_done()
+
+    def _emit_turn_end(self, outcome: TurnOutcome) -> None:
+        self._sink_hub.mark_active()
+        rt = self._require_runtime()
+        max_ctx = rt.max_context_tokens
+        ctx_pct = round(rt.usage_stats.context_pct(max_ctx), 1) if max_ctx > 0 else 0.0
+        cache_hit_pct = round(float(getattr(rt.usage_stats, "cache_hit_rate", 0.0)) * 100.0, 1)
+        self._emit(
+            _turn_end_frame(
+                outcome,
+                context_pct=ctx_pct,
+                max_context_tokens=max_ctx,
+                cache_hit_pct=cache_hit_pct,
+            )
+        )
+
+    def park_turn(self) -> None:
+        """Pause turn status as waiting_permission when approval takes too long."""
+        with self._lock:
+            turn = self._turn
+            if turn is None or turn.parked or turn.abort_event.is_set():
+                return
+            turn.parked = True
+        self._emit_turn_end(TurnOutcome(TurnStatus.WAITING_PERMISSION))
+
+    def wake_turn(self) -> None:
+        """Resume a parked turn once the user responds to the permission prompt."""
+        with self._lock:
+            turn = self._turn
+            if turn is None or not turn.parked:
+                return
+            turn.parked = False
+            if turn.abort_event.is_set():
+                return
+            turn_id = turn.id
+        self._sink_hub.mark_active()
+        self._emit({"type": "turn_start", "turnId": turn_id})
 
     def _settle_streamed_text(self, outcome: TurnOutcome) -> None:
         """Keep what the turn wrote when stopped before it can save itself."""

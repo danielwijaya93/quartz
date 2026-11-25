@@ -88,7 +88,7 @@ export interface CommandResult {
   message?: string;
 }
 
-export type TurnEndStatus = "ok" | "aborted" | "interrupted" | "error";
+export type TurnEndStatus = "ok" | "aborted" | "interrupted" | "waiting_permission" | "error";
 
 /* ------------------------------------------------------- client -> server */
 
