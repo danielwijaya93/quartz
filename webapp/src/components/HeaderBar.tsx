@@ -72,7 +72,7 @@ function CwdChip({
 /**
  * The app bar.
  */
-export function HeaderBar({
+export const HeaderBar = React.memo(function HeaderBar({
   session,
   status,
   richUiMode,
@@ -249,4 +249,4 @@ export function HeaderBar({
       </div>
     </header>
   );
-}
+});

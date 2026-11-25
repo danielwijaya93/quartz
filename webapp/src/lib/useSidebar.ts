@@ -54,13 +54,18 @@ export function useSidebar(): SidebarApi {
   // Monotonic request id: a slow load must never overwrite a newer mutation's
   // snapshot, which is what a plain "ignore the error" guard would do.
   const sequence = React.useRef(0);
+  const hasDataRef = React.useRef(false);
+  const reloadTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = React.useCallback(async () => {
     const id = ++sequence.current;
-    setLoading(true);
+    // Only show the loading state before the first snapshot arrives so background
+    // sidebar refreshes on session switches don't trigger an extra full-app render.
+    if (!hasDataRef.current) setLoading(true);
     try {
       const next = await fetchSidebar();
       if (id !== sequence.current) return;
+      hasDataRef.current = true;
       setData(next);
       setError(null);
     } catch (cause) {
@@ -77,6 +82,7 @@ export function useSidebar(): SidebarApi {
       try {
         const next = await action();
         sequence.current += 1;
+        hasDataRef.current = true;
         setData(next);
         setError(null);
         setLoading(false);
@@ -93,26 +99,75 @@ export function useSidebar(): SidebarApi {
     void load();
   }, [load]);
 
+  // Coalesce bursty reload triggers (e.g. multiple tiles binding or turns finishing
+  // simultaneously) into a single network fetch while keeping retry immediate.
   const reload = React.useCallback(() => {
-    void load();
+    if (!hasDataRef.current) {
+      void load();
+      return;
+    }
+    if (reloadTimerRef.current !== null) return;
+    reloadTimerRef.current = setTimeout(() => {
+      reloadTimerRef.current = null;
+      void load();
+    }, 120);
   }, [load]);
 
-  return {
-    data,
-    loading,
-    error,
-    actionError,
-    reload,
-    hide: React.useCallback((id: string) => run(() => hideSession(id)), [run]),
-    restore: React.useCallback((id: string) => run(() => restoreSession(id)), [run]),
-    importSession: React.useCallback((id: string) => run(() => importSession(id)), [run]),
-    pin: React.useCallback((id: string) => run(() => pinSession(id)), [run]),
-    unpin: React.useCallback((id: string) => run(() => unpinSession(id)), [run]),
-    rename: React.useCallback(
-      (id: string, title: string) => run(() => renameSession(id, title)),
-      [run],
-    ),
-    addWorkspace: React.useCallback((cwd: string) => run(() => addWorkspace(cwd)), [run]),
-    removeWorkspace: React.useCallback((cwd: string) => run(() => removeWorkspace(cwd)), [run]),
-  };
+  React.useEffect(
+    () => () => {
+      if (reloadTimerRef.current !== null) {
+        clearTimeout(reloadTimerRef.current);
+        reloadTimerRef.current = null;
+      }
+    },
+    [],
+  );
+
+  const hide = React.useCallback((id: string) => run(() => hideSession(id)), [run]);
+  const restore = React.useCallback((id: string) => run(() => restoreSession(id)), [run]);
+  const importSessionCb = React.useCallback((id: string) => run(() => importSession(id)), [run]);
+  const pin = React.useCallback((id: string) => run(() => pinSession(id)), [run]);
+  const unpin = React.useCallback((id: string) => run(() => unpinSession(id)), [run]);
+  const rename = React.useCallback(
+    (id: string, title: string) => run(() => renameSession(id, title)),
+    [run],
+  );
+  const addWorkspaceCb = React.useCallback((cwd: string) => run(() => addWorkspace(cwd)), [run]);
+  const removeWorkspaceCb = React.useCallback(
+    (cwd: string) => run(() => removeWorkspace(cwd)),
+    [run],
+  );
+
+  return React.useMemo(
+    () => ({
+      data,
+      loading,
+      error,
+      actionError,
+      reload,
+      hide,
+      restore,
+      importSession: importSessionCb,
+      pin,
+      unpin,
+      rename,
+      addWorkspace: addWorkspaceCb,
+      removeWorkspace: removeWorkspaceCb,
+    }),
+    [
+      data,
+      loading,
+      error,
+      actionError,
+      reload,
+      hide,
+      restore,
+      importSessionCb,
+      pin,
+      unpin,
+      rename,
+      addWorkspaceCb,
+      removeWorkspaceCb,
+    ],
+  );
 }

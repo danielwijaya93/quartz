@@ -25,6 +25,8 @@ import {
   type WorkerTileDescriptor,
 } from "./tiling";
 
+const RATIO_PERSIST_DEBOUNCE_MS = 200;
+
 export interface UseTilingApi {
   state: TilingState;
   canAdd: boolean;
@@ -48,17 +50,63 @@ export interface UseTilingApi {
 export function useTiling({
   hotkeysEnabled = true,
   defaultCwd,
+  onKeyboardFocusTile,
 }: {
   hotkeysEnabled?: boolean;
   defaultCwd?: string;
+  /** Fired only when a tile is focused via Cmd/Ctrl+1..4 (so mouse clicks don't steal focus). */
+  onKeyboardFocusTile?: (tileId: string) => void;
 } = {}): UseTilingApi {
   const [state, setState] = React.useState<TilingState>(() => readPersistedTilingState());
   const defaultCwdRef = React.useRef(defaultCwd);
   defaultCwdRef.current = defaultCwd;
+  const onKeyboardFocusRef = React.useRef(onKeyboardFocusTile);
+  onKeyboardFocusRef.current = onKeyboardFocusTile;
+
+  // Persist structural changes immediately, but debounce ratio-only updates so
+  // dragging a split divider doesn't serialize to localStorage on every frame.
+  const prevPersistedRef = React.useRef<TilingState | null>(null);
+  const latestStateRef = React.useRef<TilingState>(state);
+  latestStateRef.current = state;
+  const persistTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   React.useEffect(() => {
+    const prev = prevPersistedRef.current;
+    const ratiosOnlyChange =
+      prev !== null &&
+      prev.tiles === state.tiles &&
+      prev.focusedTileId === state.focusedTileId &&
+      prev.threeOrientation === state.threeOrientation &&
+      prev.ratios !== state.ratios;
+
+    if (persistTimerRef.current !== null) {
+      clearTimeout(persistTimerRef.current);
+      persistTimerRef.current = null;
+    }
+
+    if (ratiosOnlyChange) {
+      persistTimerRef.current = setTimeout(() => {
+        persistTimerRef.current = null;
+        prevPersistedRef.current = latestStateRef.current;
+        writePersistedTilingState(latestStateRef.current);
+      }, RATIO_PERSIST_DEBOUNCE_MS);
+      return;
+    }
+
+    prevPersistedRef.current = state;
     writePersistedTilingState(state);
   }, [state]);
+
+  React.useEffect(
+    () => () => {
+      if (persistTimerRef.current !== null) {
+        clearTimeout(persistTimerRef.current);
+        persistTimerRef.current = null;
+        writePersistedTilingState(latestStateRef.current);
+      }
+    },
+    [],
+  );
 
   const selectSession = React.useCallback((sessionId: string) => {
     setState((prev) => selectSessionInFocusedTile(prev, sessionId));
@@ -127,11 +175,11 @@ export function useTiling({
       if (!mod || event.altKey) return;
       if (!event.shiftKey && event.key >= "1" && event.key <= "4") {
         const index = Number(event.key) - 1;
-        setState((prev) => {
-          if (index >= prev.tiles.length) return prev;
-          event.preventDefault();
-          return focusTileByIndex(prev, index);
-        });
+        const target = latestStateRef.current.tiles[index];
+        if (!target) return;
+        event.preventDefault();
+        setState((prev) => focusTileByIndex(prev, index));
+        onKeyboardFocusRef.current?.(target.id);
         return;
       }
       if (event.shiftKey && event.key.toLowerCase() === "m") {
@@ -155,24 +203,46 @@ export function useTiling({
   }, [hotkeysEnabled]);
 
   const tileBadges = React.useMemo(() => tileBadgesBySessionId(state), [state]);
+  const canAdd = canAddTile(state);
 
-  return {
-    state,
-    canAdd: canAddTile(state),
-    tileBadges,
-    selectSession,
-    openSessionInNewTile: openSessionInNewTileCb,
-    openNewTile,
-    openWorkerInTile,
-    setTileCount: setTileCountCb,
-    closeTile: closeTileCb,
-    focusTile: focusTileCb,
-    focusTileByIndex: focusTileByIndexCb,
-    promoteTile,
-    toggleMaximize,
-    flipThreeOrientation: flipThreeOrientationCb,
-    setRatio,
-    resetRatios,
-    bindSessionId,
-  };
+  return React.useMemo(
+    () => ({
+      state,
+      canAdd,
+      tileBadges,
+      selectSession,
+      openSessionInNewTile: openSessionInNewTileCb,
+      openNewTile,
+      openWorkerInTile,
+      setTileCount: setTileCountCb,
+      closeTile: closeTileCb,
+      focusTile: focusTileCb,
+      focusTileByIndex: focusTileByIndexCb,
+      promoteTile,
+      toggleMaximize,
+      flipThreeOrientation: flipThreeOrientationCb,
+      setRatio,
+      resetRatios,
+      bindSessionId,
+    }),
+    [
+      state,
+      canAdd,
+      tileBadges,
+      selectSession,
+      openSessionInNewTileCb,
+      openNewTile,
+      openWorkerInTile,
+      setTileCountCb,
+      closeTileCb,
+      focusTileCb,
+      focusTileByIndexCb,
+      promoteTile,
+      toggleMaximize,
+      flipThreeOrientationCb,
+      setRatio,
+      resetRatios,
+      bindSessionId,
+    ],
+  );
 }

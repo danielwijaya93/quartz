@@ -47,7 +47,7 @@ function statusLabel(step: TurnStep, failed: number): string {
  * once it settles it is the work that came of it ("Thought, 4 tools"), never a
  * count of the rows inside it.
  */
-export function TurnTray({
+export const TurnTray = React.memo(function TurnTray({
   turn,
   richUi,
   onPrompt,
@@ -194,7 +194,7 @@ export function TurnTray({
       ) : null}
     </>
   );
-}
+});
 
 /**
  * One step in the list.

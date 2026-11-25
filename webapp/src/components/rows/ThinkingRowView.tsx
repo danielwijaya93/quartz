@@ -20,7 +20,7 @@ export interface ThinkingRowViewProps {
  * Thinking is present but quiet: one collapsed line that says how much there is,
  * expandable on demand. It never competes with the answer for attention.
  */
-export function ThinkingRowView({
+export const ThinkingRowView = React.memo(function ThinkingRowView({
   row,
   isExpanded,
   onExpandedChange,
@@ -58,4 +58,4 @@ export function ThinkingRowView({
       </Disclosure.Content>
     </Disclosure>
   );
-}
+});

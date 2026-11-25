@@ -33,7 +33,7 @@ export interface WorkerTailTileProps {
 
 type WorkerState = "running" | "exited" | "stopped";
 
-export function WorkerTailTile({
+export const WorkerTailTile = React.memo(function WorkerTailTile({
   tileNumber,
   focused,
   maximized,
@@ -254,4 +254,4 @@ export function WorkerTailTile({
       </pre>
     </section>
   );
-}
+});

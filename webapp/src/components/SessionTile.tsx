@@ -69,10 +69,10 @@ export interface SessionTileProps {
   onHandleUpdate: (tileId: string, handle: SessionTileHandle) => void;
   onHandleUnmount: (tileId: string) => void;
   onReloadSidebar: () => void;
-  onFocus: () => void;
-  onClose: () => void;
-  onToggleMaximize: () => void;
-  onPromote: () => void;
+  onFocus: (tileId: string) => void;
+  onClose: (tileId: string) => void;
+  onToggleMaximize: (tileId: string) => void;
+  onPromote: (tileId: string) => void;
   onOpenSettings: () => void;
   onOpenMcp: () => void;
   onOpenPalette: () => void;
@@ -87,7 +87,7 @@ export interface SessionTileProps {
   }) => void;
 }
 
-export function SessionTile({
+export const SessionTile = React.memo(function SessionTile({
   tileId,
   tileNumber,
   multiTile,
@@ -133,7 +133,10 @@ export function SessionTile({
 
   const onMessage = React.useCallback(
     (msg: ServerMessage) => {
-      if (isPrimary) {
+      // Forward active_sessions_state from every tile so closing tile 1 never
+      // loses the app-level Active Sessions list; all other global frames stay
+      // owned by the primary tile to avoid N× duplicate notifications.
+      if (isPrimary || msg.type === "active_sessions_state") {
         onGlobalServerMessage?.(msg);
       }
     },
@@ -151,7 +154,27 @@ export function SessionTile({
     },
   );
 
-  const sessionId = quartz.state.session.sessionId;
+  const {
+    state: qState,
+    status: qStatus,
+    prompt: qPrompt,
+    steer: qSteer,
+    cancel: qCancel,
+    runCommand: qRunCommand,
+    newSession: qNewSession,
+    loadSession: qLoadSession,
+    trustProject: qTrustProject,
+    setSandbox: qSetSandbox,
+    respondPermission: qRespondPermission,
+    respondIdleSession: qRespondIdleSession,
+    setFormState: qSetFormState,
+    clearBgFailed: qClearBgFailed,
+    dismissActiveSession: qDismissActiveSession,
+    clearReadActiveSessions: qClearReadActiveSessions,
+    markNotificationsRead: qMarkNotificationsRead,
+  } = quartz;
+
+  const sessionId = qState.session.sessionId;
   const lastRequestedRef = React.useRef<string | null>(requestedSessionId);
 
   // When the user selects a different session in the sidebar for this tile, load it.
@@ -162,11 +185,11 @@ export function SessionTile({
       requestedSessionId !== sessionId
     ) {
       lastRequestedRef.current = requestedSessionId;
-      quartz.loadSession(requestedSessionId);
+      qLoadSession(requestedSessionId);
     } else if (requestedSessionId === null) {
       lastRequestedRef.current = null;
     }
-  }, [requestedSessionId, sessionId, quartz]);
+  }, [requestedSessionId, sessionId, qLoadSession]);
 
   // Report the bound sessionId back to the tiling store once `session_state` arrives.
   React.useEffect(() => {
@@ -180,19 +203,11 @@ export function SessionTile({
   // Reload sidebar on turn start/end transitions.
   const wasRunning = React.useRef(false);
   React.useEffect(() => {
-    if (wasRunning.current !== quartz.state.turnRunning) {
+    if (wasRunning.current !== qState.turnRunning) {
       onReloadSidebar();
     }
-    wasRunning.current = quartz.state.turnRunning;
-  }, [quartz.state.turnRunning, onReloadSidebar]);
-
-  // Focus composer when tile becomes focused via shortcut (avoid stealing from inputs).
-  React.useEffect(() => {
-    if (!focused || !multiTile) return;
-    const active = document.activeElement;
-    if (active && active !== document.body && active.tagName === "INPUT") return;
-    composerRef.current?.focus();
-  }, [focused, multiTile]);
+    wasRunning.current = qState.turnRunning;
+  }, [qState.turnRunning, onReloadSidebar]);
 
   const activeBotRun = React.useMemo(
     () => (sessionId ? botRuns.find((r) => r.session_id === sessionId) : undefined),
@@ -210,16 +225,16 @@ export function SessionTile({
 
   const onSubmit = React.useCallback(
     (text: string, images: ImageAttachment[]) => {
-      quartz.prompt(text, images);
+      qPrompt(text, images);
     },
-    [quartz],
+    [qPrompt],
   );
 
   const onPrompt = React.useCallback(
     (text: string) => {
-      quartz.prompt(text, []);
+      qPrompt(text, []);
     },
-    [quartz],
+    [qPrompt],
   );
 
   const handleRunCommand = React.useCallback(
@@ -238,38 +253,73 @@ export function SessionTile({
         return;
       }
       if (cleaned === "jobs" && (!arg || arg.trim() === "")) {
-        quartz.clearBgFailed();
+        qClearBgFailed();
         setJobsOpen(true);
         return;
       }
-      quartz.runCommand(name, arg);
+      qRunCommand(name, arg);
     },
-    [quartz, onOpenSettings, onOpenMcp],
+    [qClearBgFailed, qRunCommand, onOpenSettings, onOpenMcp],
   );
 
+  // Depend ONLY on coarse session metadata and stable callbacks — never on
+  // `qState.rows` or the full `quartz` object — so streaming tokens in one tile
+  // never bubble state updates up to App and re-render sibling tiles or sidebar.
   const handle = React.useMemo<SessionTileHandle>(
     () => ({
       tileId,
-      session: quartz.state.session,
-      status: quartz.status,
-      turnRunning: quartz.state.turnRunning,
-      activeSessions: quartz.state.activeSessions,
-      loadSession: quartz.loadSession,
-      newSession: quartz.newSession,
-      setSandbox: quartz.setSandbox,
+      session: qState.session,
+      status: qStatus,
+      turnRunning: qState.turnRunning,
+      activeSessions: qState.activeSessions,
+      loadSession: qLoadSession,
+      newSession: qNewSession,
+      setSandbox: qSetSandbox,
       runCommand: handleRunCommand,
-      dismissActiveSession: quartz.dismissActiveSession,
-      clearReadActiveSessions: quartz.clearReadActiveSessions,
-      markNotificationsRead: quartz.markNotificationsRead,
+      dismissActiveSession: qDismissActiveSession,
+      clearReadActiveSessions: qClearReadActiveSessions,
+      markNotificationsRead: qMarkNotificationsRead,
       focusComposer: () => composerRef.current?.focus(),
       openJobs: () => {
-        quartz.clearBgFailed();
+        qClearBgFailed();
         setJobsOpen(true);
       },
       openModelPicker: () => setModelPickerOpen(true),
     }),
-    [tileId, quartz, handleRunCommand],
+    [
+      tileId,
+      qState.session,
+      qStatus,
+      qState.turnRunning,
+      qState.activeSessions,
+      qLoadSession,
+      qNewSession,
+      qSetSandbox,
+      handleRunCommand,
+      qDismissActiveSession,
+      qClearReadActiveSessions,
+      qMarkNotificationsRead,
+      qClearBgFailed,
+    ],
   );
+
+  const handleMouseDown = React.useCallback(() => {
+    if (!focused) onFocus(tileId);
+  }, [focused, onFocus, tileId]);
+
+  const handleClose = React.useCallback(() => onClose(tileId), [onClose, tileId]);
+  const handleToggleMaximize = React.useCallback(
+    () => onToggleMaximize(tileId),
+    [onToggleMaximize, tileId],
+  );
+  const handlePromote = React.useCallback(() => onPromote(tileId), [onPromote, tileId]);
+  const handleToggleJobs = React.useCallback(() => {
+    qClearBgFailed();
+    setJobsOpen((prev) => !prev);
+  }, [qClearBgFailed]);
+  const handleCloseJobs = React.useCallback(() => setJobsOpen(false), []);
+  const handleOpenModelPicker = React.useCallback(() => setModelPickerOpen(true), []);
+  const handleTrustProject = React.useCallback(() => qTrustProject(), [qTrustProject]);
 
   React.useEffect(() => {
     onHandleUpdate(tileId, handle);
@@ -299,7 +349,7 @@ export function SessionTile({
   return (
     <section
       aria-label={multiTile ? `Tile ${tileNumber}: ${displayTileTitle}` : "Session workspace"}
-      onMouseDown={onFocus}
+      onMouseDown={handleMouseDown}
       className={cn(
         "flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-background",
         multiTile && "rounded-xl border transition-colors",
@@ -368,7 +418,7 @@ export function SessionTile({
             ) : null}
             <button
               type="button"
-              onClick={onPromote}
+              onClick={handlePromote}
               aria-label={`Promote tile ${tileNumber} to primary slot`}
               title="Swap into primary slot"
               className="inline-flex size-6 cursor-pointer items-center justify-center rounded text-muted hover:bg-surface-secondary hover:text-foreground"
@@ -377,7 +427,7 @@ export function SessionTile({
             </button>
             <button
               type="button"
-              onClick={onToggleMaximize}
+              onClick={handleToggleMaximize}
               aria-label={maximized ? "Restore tile layout" : `Maximize tile ${tileNumber}`}
               title={maximized ? "Restore split (⌘⇧M)" : "Maximize tile (⌘⇧M)"}
               className="inline-flex size-6 cursor-pointer items-center justify-center rounded text-muted hover:bg-surface-secondary hover:text-foreground"
@@ -391,7 +441,7 @@ export function SessionTile({
             {canClose ? (
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleClose}
                 aria-label={`Close tile ${tileNumber}`}
                 title="Close tile"
                 className="inline-flex size-6 cursor-pointer items-center justify-center rounded text-muted hover:bg-surface-secondary hover:text-foreground"
@@ -415,12 +465,12 @@ export function SessionTile({
       ) : null}
 
       <Transcript
-        rows={quartz.state.rows}
-        turnRunning={quartz.state.turnRunning}
-        cwd={quartz.state.session.cwd}
+        rows={qState.rows}
+        turnRunning={qState.turnRunning}
+        cwd={qState.session.cwd}
         richUi={richUi}
         onPrompt={onPrompt}
-        onFormState={quartz.setFormState}
+        onFormState={qSetFormState}
         onRunCommand={handleRunCommand}
       />
 
@@ -441,7 +491,7 @@ export function SessionTile({
               }
             : undefined
         }
-        onClose={() => setJobsOpen(false)}
+        onClose={handleCloseJobs}
       />
 
       {(quartz.state.idlePrompts ?? []).map((prompt) => {
@@ -462,14 +512,14 @@ export function SessionTile({
               <button
                 type="button"
                 className="rounded border border-border px-2.5 py-1 text-xs font-medium hover:bg-content2"
-                onClick={() => quartz.respondIdleSession(prompt.sessionId, "keep")}
+                onClick={() => qRespondIdleSession(prompt.sessionId, "keep")}
               >
                 Keep alive
               </button>
               <button
                 type="button"
                 className="rounded bg-danger/15 px-2.5 py-1 text-xs font-medium text-danger hover:bg-danger/25"
-                onClick={() => quartz.respondIdleSession(prompt.sessionId, "close")}
+                onClick={() => qRespondIdleSession(prompt.sessionId, "close")}
               >
                 Close session
               </button>
@@ -481,7 +531,7 @@ export function SessionTile({
       {quartz.state.session.pendingPermission ? (
         <PermissionPromptCard
           permission={quartz.state.session.pendingPermission}
-          onRespond={quartz.respondPermission}
+          onRespond={qRespondPermission}
         />
       ) : null}
 
@@ -498,14 +548,11 @@ export function SessionTile({
         cacheHitPct={quartz.state.session.cacheHitPct}
         bgCount={quartz.state.session.bgCount}
         bgFailed={quartz.state.session.bgFailed}
-        onOpenJobs={() => {
-          quartz.clearBgFailed();
-          setJobsOpen((prev) => !prev);
-        }}
-        onOpenModelPicker={() => setModelPickerOpen(true)}
+        onOpenJobs={handleToggleJobs}
+        onOpenModelPicker={handleOpenModelPicker}
         onSubmit={onSubmit}
-        onSteer={quartz.steer}
-        onCancel={quartz.cancel}
+        onSteer={qSteer}
+        onCancel={qCancel}
         onRunCommand={handleRunCommand}
         onOpenPalette={onOpenPalette}
         sharedText={focused ? sharedText : null}
@@ -517,7 +564,7 @@ export function SessionTile({
         open={trustPromptOpen}
         cwd={projectTrust?.cwd ?? ""}
         files={projectTrust?.files ?? []}
-        onTrust={() => quartz.trustProject()}
+        onTrust={handleTrustProject}
         onDismiss={() => {
           if (!projectTrust) return;
           setDismissedTrustCwds((prev) => new Set(prev).add(projectTrust.cwd));
@@ -527,9 +574,9 @@ export function SessionTile({
       <ModelPickerDialog
         open={modelPickerOpen}
         onOpenChange={setModelPickerOpen}
-        currentModel={quartz.state.session.model}
-        currentEffort={quartz.state.session.effort}
+        currentModel={qState.session.model}
+        currentEffort={qState.session.effort}
       />
     </section>
   );
-}
+});

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { cn } from "@heroui/react";
 import { HeaderBar } from "./components/HeaderBar";
 import { BotsHistoryModal } from "./components/BotsHistoryModal";
 import { CreateBotModal } from "./components/CreateBotModal";
@@ -34,6 +35,29 @@ import type { BotConfig } from "./types/bots";
 
 /** What the folder picker is being opened for. */
 type PickerMode = "session" | "workspace";
+
+function sameActiveSessions(
+  a: readonly ActiveSessionItem[],
+  b: readonly ActiveSessionItem[],
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (
+      x.sessionId !== y.sessionId ||
+      x.kind !== y.kind ||
+      x.read !== y.read ||
+      x.title !== y.title ||
+      x.preview !== y.preview ||
+      x.isBot !== y.isBot
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 export function App(): React.ReactElement {
   const [authState, setAuthState] = React.useState<"checking" | "required" | "ok">("checking");
@@ -88,31 +112,44 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     onNotificationsRead: () => markNotificationsReadRef.current(),
   });
 
-  const handleGlobalServerMessage = React.useCallback(
-    (message: ServerMessage) => {
-      if (message.type === "settings_state") {
-        richUi.applySyncedMode(message.richUi ? "rich" : "markdown");
-        void notifications.applySyncedEnabled(message.notifications, {
-          turn: message.notifyTurn,
-          approval: message.notifyApproval,
-          background: message.notifyBackground,
-          error: message.notifyError,
-        });
-        return;
-      }
-      if (message.type === "session_state" && message.settings) {
-        richUi.applySyncedMode(message.settings.richUi ? "rich" : "markdown");
-        void notifications.applySyncedEnabled(message.settings.notifications, {
-          turn: message.settings.notifyTurn,
-          approval: message.settings.notifyApproval,
-          background: message.settings.notifyBackground,
-          error: message.settings.notifyError,
-        });
-      }
-      notifications.notifyFromFrame(message);
-    },
-    [richUi, notifications],
-  );
+  // Hold server-pushed Active Sessions at the app level so closing or reordering
+  // tiles never temporarily zeroes out Active Sessions while handles settle.
+  const [serverActiveSessions, setServerActiveSessions] = React.useState<
+    readonly ActiveSessionItem[]
+  >([]);
+
+  const richUiRef = React.useRef(richUi);
+  richUiRef.current = richUi;
+  const notificationsRef = React.useRef(notifications);
+  notificationsRef.current = notifications;
+
+  const handleGlobalServerMessage = React.useCallback((message: ServerMessage) => {
+    if (message.type === "active_sessions_state") {
+      setServerActiveSessions((prev) =>
+        sameActiveSessions(prev, message.items) ? prev : message.items,
+      );
+    }
+    if (message.type === "settings_state") {
+      richUiRef.current.applySyncedMode(message.richUi ? "rich" : "markdown");
+      void notificationsRef.current.applySyncedEnabled(message.notifications, {
+        turn: message.notifyTurn,
+        approval: message.notifyApproval,
+        background: message.notifyBackground,
+        error: message.notifyError,
+      });
+      return;
+    }
+    if (message.type === "session_state" && message.settings) {
+      richUiRef.current.applySyncedMode(message.settings.richUi ? "rich" : "markdown");
+      void notificationsRef.current.applySyncedEnabled(message.settings.notifications, {
+        turn: message.settings.notifyTurn,
+        approval: message.settings.notifyApproval,
+        background: message.settings.notifyBackground,
+        error: message.settings.notifyError,
+      });
+    }
+    notificationsRef.current.notifyFromFrame(message);
+  }, []);
 
   const sidebar = useSidebar();
   const bots = useBots();
@@ -120,6 +157,8 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
   const [bannerEditBot, setBannerEditBot] = React.useState<BotConfig | null>(null);
 
   const [handles, setHandles] = React.useState<Readonly<Record<string, SessionTileHandle>>>({});
+  const handlesRef = React.useRef(handles);
+  handlesRef.current = handles;
   const onHandleUpdate = React.useCallback((tileId: string, handle: SessionTileHandle) => {
     setHandles((prev) => (prev[tileId] === handle ? prev : { ...prev, [tileId]: handle }));
   }, []);
@@ -130,6 +169,9 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
       delete next[tileId];
       return next;
     });
+  }, []);
+  const handleKeyboardFocusTile = React.useCallback((tileId: string) => {
+    handlesRef.current[tileId]?.focusComposer();
   }, []);
 
   const [picker, setPicker] = React.useState<PickerMode | null>(null);
@@ -161,6 +203,7 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
   const tiling = useTiling({
     hotkeysEnabled: !overlayOpen,
     defaultCwd: focusedHandleGuess?.session.cwd || undefined,
+    onKeyboardFocusTile: handleKeyboardFocusTile,
   });
 
   // First session tile owns global settings/notifications frames to prevent N× duplicates.
@@ -193,13 +236,30 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     return sum;
   }, [handles]);
 
-  const rawActiveSessions = primaryHandle?.activeSessions;
+  const rawActiveSessions =
+    serverActiveSessions.length > 0
+      ? serverActiveSessions
+      : (primaryHandle?.activeSessions ?? serverActiveSessions);
+
+  // Only refresh bot run history when bot-tagged active sessions change, instead
+  // of re-fetching /api/bots/history on every unrelated session switch.
+  const botActiveSignature = React.useMemo(
+    () =>
+      rawActiveSessions
+        .filter((item) => item.isBot || item.title?.startsWith("[Bot]"))
+        .map((item) => `${item.sessionId}:${item.kind}`)
+        .join("|"),
+    [rawActiveSessions],
+  );
+  const lastBotSigRef = React.useRef<string>("");
   React.useEffect(() => {
+    if (botActiveSignature === lastBotSigRef.current) return;
+    lastBotSigRef.current = botActiveSignature;
     void bots.reloadRuns();
-  }, [rawActiveSessions, bots.reloadRuns]);
+  }, [botActiveSignature, bots.reloadRuns]);
 
   const mergedActiveSessions = React.useMemo<readonly ActiveSessionItem[]>(() => {
-    const base = [...(rawActiveSessions ?? [])];
+    const base = [...rawActiveSessions];
     const seen = new Set(base.map((item) => item.sessionId));
     for (const h of Object.values(handles)) {
       const sid = h.session.sessionId;
@@ -325,22 +385,43 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     [tiling, handles, primaryHandle, narrow, closeSidebar],
   );
 
+  const openSettings = React.useCallback(() => {
+    setMcpOpen(false);
+    setSettingsOpen(true);
+  }, []);
+
+  const openMcp = React.useCallback(() => {
+    setSettingsOpen(false);
+    setMcpOpen(true);
+  }, []);
+
+  const openWorkspacePicker = React.useCallback(() => setPicker("workspace"), []);
+  const openSessionPicker = React.useCallback(() => setPicker("session"), []);
+  const toggleSidebar = React.useCallback(() => setSidebarOpen((open) => !open), []);
+  const consumeSharedText = React.useCallback(() => setSharedText(null), []);
+  const openBotHistory = React.useCallback((botId: string) => setBannerHistoryBotId(botId), []);
+  const editBannerBot = React.useCallback((bot: BotConfig) => setBannerEditBot(bot), []);
+  const rerunBannerBot = React.useCallback(
+    (botId: string) => {
+      void bots.runNow(botId);
+    },
+    [bots.runNow],
+  );
+
   const handlePaletteRun = React.useCallback(
     (name: string, arg?: string) => {
       const cleaned = name.trim().toLowerCase();
       if (cleaned === "settings" && (!arg || arg.trim() === "")) {
-        setMcpOpen(false);
-        setSettingsOpen(true);
+        openSettings();
         return;
       }
       if (cleaned === "mcp" && (!arg || arg.trim() === "")) {
-        setSettingsOpen(false);
-        setMcpOpen(true);
+        openMcp();
         return;
       }
       focusedHandle?.runCommand(name, arg);
     },
-    [focusedHandle],
+    [focusedHandle, openSettings, openMcp],
   );
 
   const sidebarProps = {
@@ -357,21 +438,15 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     tileBadges: tiling.tileBadges,
     canAddTile: tiling.canAdd,
     onNewSession: newSessionIn,
-    onNewFolder: () => setPicker("workspace"),
+    onNewFolder: openWorkspacePicker,
     onRemoveFolder: sidebar.removeWorkspace,
-    onOpenFolder: () => setPicker("session"),
+    onOpenFolder: openSessionPicker,
     onRename: sidebar.rename,
     onHide: sidebar.hide,
     onRestore: sidebar.restore,
     onOpenArchive: openArchive,
-    onOpenSettings: () => {
-      setMcpOpen(false);
-      setSettingsOpen(true);
-    },
-    onOpenMcp: () => {
-      setSettingsOpen(false);
-      setMcpOpen(true);
-    },
+    onOpenSettings: openSettings,
+    onOpenMcp: openMcp,
     sessionActivity: mergedSessionActivity,
     activeSessions: mergedActiveSessions,
     onDismissActiveSession: primaryHandle?.dismissActiveSession,
@@ -406,29 +481,63 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     return (sid && titleBySessionId.get(sid)) || "New session";
   }, [focusedTileDescriptor, activeSession.sessionId, titleBySessionId]);
 
-  const tileControls = (
-    <div className="flex items-center gap-1.5">
-      <GlobalJobsButton
-        bgCountHint={totalBgCount}
-        onOpenWorkerTile={(job) => {
-          setSettingsOpen(false);
-          setMcpOpen(false);
-          tiling.openWorkerInTile(job);
-        }}
-      />
-      {!narrow ? (
-        <TileLayoutSwitcher
-          tiles={tiling.state.tiles}
-          threeOrientation={tiling.state.threeOrientation}
-          onSetCount={(count) => {
-            setSettingsOpen(false);
-            setMcpOpen(false);
-            tiling.setTileCount(count, activeSession.cwd || undefined);
-          }}
-          onFlipThree={tiling.flipThreeOrientation}
+  const handleOpenWorkerFromHeader = React.useCallback(
+    (job: { sessionId: string; pid: string; label: string; command: string }) => {
+      setSettingsOpen(false);
+      setMcpOpen(false);
+      tiling.openWorkerInTile(job);
+    },
+    [tiling.openWorkerInTile],
+  );
+
+  const handleSetTileCount = React.useCallback(
+    (count: 1 | 2 | 3 | 4) => {
+      setSettingsOpen(false);
+      setMcpOpen(false);
+      tiling.setTileCount(count, activeSession.cwd || undefined);
+    },
+    [tiling.setTileCount, activeSession.cwd],
+  );
+
+  const handleHeaderNewSession = React.useCallback(() => {
+    if (activeSession.cwd) newSessionIn(activeSession.cwd);
+    else setPicker("session");
+  }, [activeSession.cwd, newSessionIn]);
+
+  const handleToggleSandbox = React.useMemo(
+    () =>
+      focusedHandle
+        ? () => focusedHandle.setSandbox(!activeSession.sandboxed)
+        : undefined,
+    [focusedHandle, activeSession.sandboxed],
+  );
+
+  const tileControls = React.useMemo(
+    () => (
+      <div className="flex items-center gap-1.5">
+        <GlobalJobsButton
+          bgCountHint={totalBgCount}
+          onOpenWorkerTile={handleOpenWorkerFromHeader}
         />
-      ) : null}
-    </div>
+        {!narrow ? (
+          <TileLayoutSwitcher
+            tiles={tiling.state.tiles}
+            threeOrientation={tiling.state.threeOrientation}
+            onSetCount={handleSetTileCount}
+            onFlipThree={tiling.flipThreeOrientation}
+          />
+        ) : null}
+      </div>
+    ),
+    [
+      totalBgCount,
+      handleOpenWorkerFromHeader,
+      narrow,
+      tiling.state.tiles,
+      tiling.state.threeOrientation,
+      handleSetTileCount,
+      tiling.flipThreeOrientation,
+    ],
   );
 
   return (
@@ -446,19 +555,12 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
           status={activeStatus}
           richUiMode={richUi.mode}
           onRichUiModeChange={richUi.setMode}
-          onNewSession={() => {
-            if (activeSession.cwd) newSessionIn(activeSession.cwd);
-            else setPicker("session");
-          }}
-          onChangeFolder={() => setPicker("session")}
-          onToggleSandbox={
-            focusedHandle
-              ? () => focusedHandle.setSandbox(!activeSession.sandboxed)
-              : undefined
-          }
+          onNewSession={handleHeaderNewSession}
+          onChangeFolder={openSessionPicker}
+          onToggleSandbox={handleToggleSandbox}
           turnRunning={focusedHandle?.turnRunning ?? false}
           sidebarOpen={sidebarOpen}
-          onToggleSidebar={() => setSidebarOpen((open) => !open)}
+          onToggleSidebar={toggleSidebar}
           fullWidth={showFullWidthHeader}
           tileControls={tileControls}
         />
@@ -482,7 +584,15 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
           />
         ) : mcpOpen ? (
           <McpView onBack={() => setMcpOpen(false)} />
-        ) : (
+        ) : null}
+
+        {/* Keep TileGrid mounted while Settings/MCP overlays are open so tiles and WebSockets never reset. */}
+        <div
+          className={cn(
+            "flex min-h-0 flex-1 flex-col",
+            (settingsOpen || mcpOpen) && "hidden",
+          )}
+        >
           <TileGrid
             tiles={tiling.state.tiles}
             focusedTileId={tiling.state.focusedTileId}
@@ -513,7 +623,7 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
                     onClose={() => tiling.closeTile(tile.id)}
                     onToggleMaximize={() => tiling.toggleMaximize(tile.id)}
                     onPromote={() => tiling.promoteTile(tile.id)}
-                    onOpenParentSession={(sid) => tiling.openSessionInNewTile(sid)}
+                    onOpenParentSession={tiling.openSessionInNewTile}
                   />
                 );
               }
@@ -539,38 +649,30 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
                   bots={bots.bots}
                   botRuns={bots.runs}
                   runningBotIds={bots.runningIds}
-                  sharedText={sharedText}
-                  onSharedTextConsumed={() => setSharedText(null)}
+                  sharedText={focused ? sharedText : null}
+                  onSharedTextConsumed={consumeSharedText}
                   onAuthError={onAuthError}
                   onGlobalServerMessage={handleGlobalServerMessage}
                   onSessionBound={tiling.bindSessionId}
                   onHandleUpdate={onHandleUpdate}
                   onHandleUnmount={onHandleUnmount}
                   onReloadSidebar={sidebar.reload}
-                  onFocus={() => tiling.focusTile(tile.id)}
-                  onClose={() => tiling.closeTile(tile.id)}
-                  onToggleMaximize={() => tiling.toggleMaximize(tile.id)}
-                  onPromote={() => tiling.promoteTile(tile.id)}
-                  onOpenSettings={() => {
-                    setMcpOpen(false);
-                    setSettingsOpen(true);
-                  }}
-                  onOpenMcp={() => {
-                    setSettingsOpen(false);
-                    setMcpOpen(true);
-                  }}
+                  onFocus={tiling.focusTile}
+                  onClose={tiling.closeTile}
+                  onToggleMaximize={tiling.toggleMaximize}
+                  onPromote={tiling.promoteTile}
+                  onOpenSettings={openSettings}
+                  onOpenMcp={openMcp}
                   onOpenPalette={palette.openPalette}
-                  onOpenBotHistory={(botId) => setBannerHistoryBotId(botId)}
-                  onEditBot={(bot) => setBannerEditBot(bot)}
-                  onRerunBot={(botId) => {
-                    void bots.runNow(botId);
-                  }}
-                  onOpenWorkerTile={(job) => tiling.openWorkerInTile(job)}
+                  onOpenBotHistory={openBotHistory}
+                  onEditBot={editBannerBot}
+                  onRerunBot={rerunBannerBot}
+                  onOpenWorkerTile={tiling.openWorkerInTile}
                 />
               );
             }}
           />
-        )}
+        </div>
       </div>
 
       <CommandPalette

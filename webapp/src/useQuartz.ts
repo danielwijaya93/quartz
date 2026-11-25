@@ -93,7 +93,46 @@ export function useQuartz(
         connection.sendNewSession(createFreshCwdRef.current || undefined);
       }
     });
+    // Coalesce rapid streaming deltas per animation frame so high-frequency
+    // token streams render at display refresh rate instead of re-rendering per
+    // WebSocket packet. Non-delta messages flush queued deltas first so ordering
+    // is strictly preserved.
+    let pendingDeltas: ServerMessage[] = [];
+    let deltaFrame: number | null = null;
+
+    const flushPendingDeltas = (): void => {
+      if (deltaFrame !== null && typeof window !== "undefined") {
+        window.cancelAnimationFrame(deltaFrame);
+      }
+      deltaFrame = null;
+      if (pendingDeltas.length === 0) return;
+      const batch = pendingDeltas;
+      pendingDeltas = [];
+      setState((prev) => {
+        let next = prev;
+        for (const frame of batch) {
+          next = reduce(next, frame);
+        }
+        return next;
+      });
+    };
+
     const offMessage = connection.on("message", (message) => {
+      if (
+        (message.type === "text_delta" || message.type === "thinking_delta") &&
+        typeof window !== "undefined" &&
+        typeof window.requestAnimationFrame === "function"
+      ) {
+        pendingDeltas.push(message);
+        if (deltaFrame === null) {
+          deltaFrame = window.requestAnimationFrame(flushPendingDeltas);
+        }
+        onMessageRef.current?.(message);
+        return;
+      }
+      if (pendingDeltas.length > 0) {
+        flushPendingDeltas();
+      }
       setState((prev) => reduce(prev, message));
       onMessageRef.current?.(message);
     });
@@ -105,6 +144,11 @@ export function useQuartz(
     connection.connect();
 
     return () => {
+      if (deltaFrame !== null && typeof window !== "undefined") {
+        window.cancelAnimationFrame(deltaFrame);
+        deltaFrame = null;
+      }
+      pendingDeltas = [];
       offOpen();
       offMessage();
       offStatus();
@@ -208,23 +252,44 @@ export function useQuartz(
     connectionRef.current?.sendNotificationsRead();
   }, []);
 
-  return {
-    state,
-    status,
-    prompt,
-    steer,
-    cancel,
-    runCommand,
-    newSession,
-    loadSession,
-    trustProject,
-    setSandbox,
-    respondPermission,
-    respondIdleSession,
-    setFormState,
-    clearBgFailed,
-    dismissActiveSession,
-    clearReadActiveSessions,
-    markNotificationsRead,
-  };
+  return React.useMemo(
+    () => ({
+      state,
+      status,
+      prompt,
+      steer,
+      cancel,
+      runCommand,
+      newSession,
+      loadSession,
+      trustProject,
+      setSandbox,
+      respondPermission,
+      respondIdleSession,
+      setFormState,
+      clearBgFailed,
+      dismissActiveSession,
+      clearReadActiveSessions,
+      markNotificationsRead,
+    }),
+    [
+      state,
+      status,
+      prompt,
+      steer,
+      cancel,
+      runCommand,
+      newSession,
+      loadSession,
+      trustProject,
+      setSandbox,
+      respondPermission,
+      respondIdleSession,
+      setFormState,
+      clearBgFailed,
+      dismissActiveSession,
+      clearReadActiveSessions,
+      markNotificationsRead,
+    ],
+  );
 }

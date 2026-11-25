@@ -133,6 +133,17 @@ const COMPONENTS: Components = {
   pre: CodeBlock,
 };
 
+const REMARK_PLUGINS = [remarkGfm];
+// Highlighting with language auto-detection runs all bundled grammars on every
+// untagged code block. Keep auto-detect for settled markdown, but skip it while
+// tokens are actively streaming (explicitly tagged fences still highlight).
+const REHYPE_PLUGINS_SETTLED: [typeof rehypeHighlight, { detect: boolean; ignoreMissing: boolean }][] = [
+  [rehypeHighlight, { detect: true, ignoreMissing: true }],
+];
+const REHYPE_PLUGINS_STREAMING: [typeof rehypeHighlight, { detect: boolean; ignoreMissing: boolean }][] = [
+  [rehypeHighlight, { detect: false, ignoreMissing: true }],
+];
+
 export interface MarkdownProps {
   children: string;
   /** True while deltas are still arriving; enables fence closure. */
@@ -140,7 +151,7 @@ export interface MarkdownProps {
   className?: string;
 }
 
-export function Markdown({
+export const Markdown = React.memo(function Markdown({
   children,
   streaming = false,
   className,
@@ -149,12 +160,12 @@ export function Markdown({
   return (
     <div className={cn("transcript-prose", className)}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+        remarkPlugins={REMARK_PLUGINS}
+        rehypePlugins={streaming ? REHYPE_PLUGINS_STREAMING : REHYPE_PLUGINS_SETTLED}
         components={COMPONENTS}
       >
         {source}
       </ReactMarkdown>
     </div>
   );
-}
+});

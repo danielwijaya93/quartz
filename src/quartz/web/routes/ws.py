@@ -131,7 +131,7 @@ async def _dispatch(
             from quartz.settings import load_settings
 
             loaded = await asyncio.to_thread(load_settings)
-            snapshot = session.snapshot()
+            snapshot = await asyncio.to_thread(session.snapshot)
             snapshot["settings"] = {
                 "notifications": loaded.notifications,
                 "notifyTurn": loaded.notify_turn,
@@ -182,7 +182,7 @@ async def _dispatch(
             session = await asyncio.to_thread(manager.create_session, resolved_cwd)
             _switch_connection(conn, session, push, app)
             await asyncio.to_thread(remember_workspace, sidebar, session)
-            push(session.snapshot())
+            push(await asyncio.to_thread(session.snapshot))
             push({"type": "active_sessions_state", "items": manager.active_sessions_items()})
 
         elif isinstance(frame, LoadSessionFrame):
@@ -192,7 +192,7 @@ async def _dispatch(
                 return
             session = await asyncio.to_thread(manager.get_or_load_session, session_id)
             _switch_connection(conn, session, push, app)
-            snapshot = session.snapshot()
+            snapshot = await asyncio.to_thread(session.snapshot)
             push(snapshot)
             _replay_live_turn(session, snapshot, push)
             push({"type": "active_sessions_state", "items": manager.active_sessions_items()})

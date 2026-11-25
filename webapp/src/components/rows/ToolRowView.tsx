@@ -78,7 +78,7 @@ function DiffOutput({ text }: { text: string }): React.ReactElement {
   );
 }
 
-export function ToolRowView({ row }: { row: ToolRow }): React.ReactElement {
+export const ToolRowView = React.memo(function ToolRowView({ row }: { row: ToolRow }): React.ReactElement {
   const chips = actionChips(row.actions);
   const hasFiles = (row.files?.length ?? 0) > 0;
   const hasBody = row.code !== "" || row.output !== "" || row.images.length > 0 || hasFiles;
@@ -188,4 +188,4 @@ export function ToolRowView({ row }: { row: ToolRow }): React.ReactElement {
       </Disclosure>
     </Card>
   );
-}
+});

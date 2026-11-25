@@ -15,7 +15,7 @@ import { trayOwnsStatus } from "@/lib/transcript";
  * turns doing two things, so a label the tray already covers is not repeated here.
  * Anything the tray cannot know still shows, unchanged.
  */
-export function StatusLine({
+export const StatusLine = React.memo(function StatusLine({
   label,
   status,
   turnRunning,
@@ -39,4 +39,4 @@ export function StatusLine({
       <span>{label}</span>
     </div>
   );
-}
+});

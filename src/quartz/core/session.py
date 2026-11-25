@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 import warnings
@@ -174,6 +175,11 @@ class _SessionFacts:
     cwd: str | None
     origin: str
     preview: str = ""
+
+
+_SESSION_FACTS_LOCK = threading.Lock()
+_SESSION_FACTS_CACHE: dict[str, tuple[int, int, _SessionFacts]] = {}
+_SESSION_FACTS_MAX = 4096
 
 
 def _safe_mtime(path: Path) -> float | None:
@@ -354,8 +360,8 @@ class Session:
                 raise
 
     @classmethod
-    def _inspect_session(cls, jsonl_path: Path) -> _SessionFacts:
-        """Read what a listing needs from a session JSONL file in a single pass."""
+    def _read_session_facts(cls, jsonl_path: Path) -> _SessionFacts:
+        """Parse session metadata and preview from *jsonl_path* in a single pass."""
         has_msgs = False
         session_cwd: str | None = None
         origin = ORIGIN_CLI
@@ -390,6 +396,26 @@ class Session:
         except (OSError, json.JSONDecodeError):
             return _SessionFacts(False, None, ORIGIN_CLI, "")
         return _SessionFacts(has_msgs, session_cwd, origin, preview)
+
+    @classmethod
+    def _inspect_session(cls, jsonl_path: Path) -> _SessionFacts:
+        """Read what a listing needs, reusing cached facts when (mtime_ns, size) is unchanged."""
+        key = str(jsonl_path)
+        try:
+            st = jsonl_path.stat()
+        except OSError:
+            return _SessionFacts(False, None, ORIGIN_CLI, "")
+        sig = (st.st_mtime_ns, st.st_size)
+        with _SESSION_FACTS_LOCK:
+            cached = _SESSION_FACTS_CACHE.get(key)
+            if cached is not None and cached[0] == sig[0] and cached[1] == sig[1]:
+                return cached[2]
+        facts = cls._read_session_facts(jsonl_path)
+        with _SESSION_FACTS_LOCK:
+            if len(_SESSION_FACTS_CACHE) >= _SESSION_FACTS_MAX:
+                _SESSION_FACTS_CACHE.clear()
+            _SESSION_FACTS_CACHE[key] = (sig[0], sig[1], facts)
+        return facts
 
     @classmethod
     def recorded_cwd(cls, session_id: str, sessions_dir: Path | None = None) -> str | None:
@@ -511,6 +537,7 @@ class Session:
             return [], None
         target_cwd = str(cwd.resolve()) if cwd is not None else None
         results: list[dict[str, Any]] = []
+        cwd_exists_cache: dict[str, bool] = {}
         seen_cursor = cursor is None
         next_cursor: str | None = None
         for f, mtime in _sorted_jsonl_files(root):
@@ -528,7 +555,7 @@ class Session:
                 "cwd": facts.cwd,
                 "updatedAt": datetime.fromtimestamp(mtime, tz=UTC).isoformat(),
                 "origin": facts.origin,
-                "cwdExists": _is_dir(facts.cwd),
+                "cwdExists": cwd_exists_cache.setdefault(facts.cwd, _is_dir(facts.cwd)),
             }
             if facts.preview:
                 entry["title"] = facts.preview
