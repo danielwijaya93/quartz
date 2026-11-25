@@ -59,29 +59,21 @@ async def test_fake_kernel_lifecycle(tmp_path: Path) -> None:
 def test_kernel_client_start_distinguishes_early_exit_from_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import io
-    import subprocess
+    import os
+    import sys
 
     import pytest
 
     from quartz.kernel.client import KernelClient
 
-    class _DeadProc:
-        pid = 99999
-        stdin = io.StringIO()
-        stdout = io.StringIO("")
-        stderr = io.StringIO("ImportError: broken\n")
-
-        def poll(self) -> int:
-            return 1
-
-        def terminate(self) -> None:
-            pass
-
-        def wait(self, timeout: float | None = None) -> int:
-            return 1
-
-    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: _DeadProc())
     client = KernelClient(cwd=tmp_path)
-    with pytest.raises(RuntimeError, match=r"exited during startup \(exit code 1\)"):
-        client.start(timeout=1.0)
+    monkeypatch.setattr(
+        client,
+        "_build_spawn_cmd_and_env",
+        lambda: (
+            [sys.executable, "-c", "import sys; print('ImportError: broken', file=sys.stderr); sys.exit(1)"],
+            os.environ.copy(),
+        ),
+    )
+    with pytest.raises(RuntimeError, match=r"exited during startup \(exit code 1\).*ImportError: broken"):
+        client.start(timeout=5.0)
