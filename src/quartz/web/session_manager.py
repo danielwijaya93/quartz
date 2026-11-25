@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -18,6 +20,8 @@ from quartz.web.web_session import BuildRuntime, TurnRunner, WebSession, validat
 _validate_session_id = validate_session_id
 
 __all__ = ["SessionManager"]
+
+logger = logging.getLogger(__name__)
 
 _KIND_PRIORITY = {"permission": 0, "error": 0, "working": 1, "waiting": 1}
 
@@ -54,10 +58,45 @@ class SessionManager:
         self._idle_hours_override = idle_hours
         self._max_live_sessions_override = max_live_sessions
         self._check_interval_s = max(0.05, float(check_interval_s))
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._watcher_timer: threading.Timer | None = None
+        self._watcher_task: asyncio.Task[None] | None = None
+        self._watcher_loop: asyncio.AbstractEventLoop | None = None
+        self._load_inflight: dict[tuple[int, str], asyncio.Future[WebSession]] = {}
         self._closed = False
         self._push_hook: Callable[[WebSession, Frame], None] | None = None
         self.file_registry = AttachedFileRegistry()
+
+    def bind_loop(
+        self, loop: asyncio.AbstractEventLoop | None = None
+    ) -> asyncio.AbstractEventLoop | None:
+        """Bind an asyncio event loop to this manager and all live sessions."""
+        if loop is None:
+            with contextlib.suppress(RuntimeError):
+                loop = asyncio.get_running_loop()
+        if loop is None or loop.is_closed():
+            return self._loop
+        with self._lock:
+            self._loop = loop
+            targets = list(self._sessions.values()) + (
+                [self._placeholder] if self._placeholder is not None else []
+            )
+        for ws in targets:
+            ws.bind_loop(loop)
+        return loop
+
+    def _active_loop(self) -> asyncio.AbstractEventLoop | None:
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is not None and running.is_running() and not running.is_closed():
+            self._loop = running
+            return running
+        loop = self._loop
+        if loop is not None and loop.is_running() and not loop.is_closed():
+            return loop
+        return None
 
     def set_push_hook(self, hook: Callable[[WebSession, Frame], None] | None) -> None:
         self._push_hook = hook
@@ -150,11 +189,103 @@ class SessionManager:
         self.evict_lru_sessions(keep_id=cleaned)
         return ws
 
+    async def _aregister_session(self, ws: WebSession, cwd: Path | None) -> WebSession:
+        await ws.aensure_runtime(cwd)
+        sid = ws.runtime.active_session.id
+        with self._lock:
+            self._sessions[sid] = ws
+            self._current_id = sid
+        await self.aevict_lru_sessions(keep_id=sid)
+        return ws
+
+    async def aensure_default_session(self, cwd: Path | None = None) -> WebSession:
+        self.bind_loop(asyncio.get_running_loop())
+        with self._lock:
+            if self._current_id and self._current_id in self._sessions and self._sessions[self._current_id].built:
+                return self._sessions[self._current_id]
+            if self._sessions:
+                sid, ws = next(iter(self._sessions.items()))
+                self._current_id = sid
+                return ws
+            ws = self._placeholder or self._new_web_session()
+            self._placeholder = None
+            ws.set_system_prompt_append(self._system_prompt_append)
+        return await self._aregister_session(ws, cwd)
+
+    async def acreate_session(self, cwd: Path | None = None) -> WebSession:
+        self.bind_loop(asyncio.get_running_loop())
+        ws = self._new_web_session()
+        with self._lock:
+            ws.set_system_prompt_append(self._system_prompt_append)
+        return await self._aregister_session(ws, cwd)
+
+    async def aget_or_load_session(self, session_id: str) -> WebSession:
+        """Load or return a live session, coalescing concurrent loads for the same ID."""
+        cleaned = validate_session_id(session_id)
+        loop = asyncio.get_running_loop()
+        self.bind_loop(loop)
+        key = (id(loop), cleaned)
+
+        with self._lock:
+            existing = self._sessions.get(cleaned)
+            if existing is not None and existing.built:
+                self._current_id = cleaned
+                existing.mark_active()
+                return existing
+            inflight = self._load_inflight.get(key)
+            if inflight is None:
+                inflight = loop.create_future()
+                self._load_inflight[key] = inflight
+                owner = True
+            else:
+                owner = False
+            append = self._system_prompt_append
+
+        if not owner:
+            return await asyncio.shield(inflight)
+
+        ws = self._new_web_session()
+        ws.set_system_prompt_append(append)
+        try:
+            await ws.aload_session(cleaned)
+            with self._lock:
+                race = self._sessions.get(cleaned)
+                if race is not None and race.built:
+                    winner = race
+                    close_dup = True
+                else:
+                    self._sessions[cleaned] = ws
+                    self._current_id = cleaned
+                    winner = ws
+                    close_dup = False
+            if close_dup:
+                await ws.aclose()
+                winner.mark_active()
+            else:
+                await self.aevict_lru_sessions(keep_id=cleaned)
+            if not inflight.done():
+                inflight.set_result(winner)
+            return winner
+        except BaseException as exc:
+            with contextlib.suppress(Exception):
+                await ws.aclose()
+            if not inflight.done():
+                inflight.set_exception(exc)
+            raise
+        finally:
+            with self._lock:
+                if self._load_inflight.get(key) is inflight:
+                    self._load_inflight.pop(key, None)
+
     def _new_web_session(self) -> WebSession:
-        return WebSession(
+        ws = WebSession(
             self._build, cwd=self._cwd, runner=self._runner,
             on_event=self._on_session_event, file_registry=self.file_registry,
         )
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            ws.bind_loop(loop)
+        return ws
 
     @staticmethod
     def _session_title(ws: WebSession) -> str | None:
@@ -419,10 +550,58 @@ class SessionManager:
                     self._sessions.setdefault(sid, ws)
         return hibernated
 
+    async def aevict_lru_sessions(self, *, keep_id: str | None = None) -> list[str]:
+        return await asyncio.to_thread(self.evict_lru_sessions, keep_id=keep_id)
+
+    async def _async_watcher_loop(self) -> None:
+        try:
+            while not self._closed:
+                await asyncio.sleep(self._check_interval_s)
+                if self._closed:
+                    break
+                try:
+                    await asyncio.to_thread(self.check_idle_sessions)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.debug("Idle session watcher tick failed", exc_info=True)
+        except asyncio.CancelledError:
+            return
+
     def start_watcher(self) -> None:
+        loop = self._active_loop()
         with self._lock:
-            if not self._closed:
-                self._schedule_watcher_locked()
+            if self._closed:
+                return
+            if loop is not None:
+                if self._watcher_timer is not None:
+                    self._watcher_timer.cancel()
+                    self._watcher_timer = None
+                if self._watcher_task is not None and not self._watcher_task.done():
+                    return
+                self._watcher_loop = loop
+                try:
+                    running = asyncio.get_running_loop()
+                except RuntimeError:
+                    running = None
+                if running is loop:
+                    self._watcher_task = loop.create_task(
+                        self._async_watcher_loop(), name="quartz-idle-watcher"
+                    )
+                else:
+                    def _spawn() -> None:
+                        with self._lock:
+                            if self._closed or (
+                                self._watcher_task is not None and not self._watcher_task.done()
+                            ):
+                                return
+                            self._watcher_task = loop.create_task(
+                                self._async_watcher_loop(), name="quartz-idle-watcher"
+                            )
+
+                    loop.call_soon_threadsafe(_spawn)
+                return
+            self._schedule_watcher_locked()
 
     def _schedule_watcher_locked(self) -> None:
         if self._watcher_timer is not None:
@@ -445,8 +624,23 @@ class SessionManager:
     def stop_watcher(self) -> None:
         with self._lock:
             timer, self._watcher_timer = self._watcher_timer, None
+            task, self._watcher_task = self._watcher_task, None
+            watcher_loop, self._watcher_loop = self._watcher_loop, None
         if timer is not None:
             timer.cancel()
+        if task is not None and not task.done():
+            if watcher_loop is not None and not watcher_loop.is_closed():
+                try:
+                    running = asyncio.get_running_loop()
+                except RuntimeError:
+                    running = None
+                if running is watcher_loop:
+                    task.cancel()
+                else:
+                    with contextlib.suppress(RuntimeError):
+                        watcher_loop.call_soon_threadsafe(task.cancel)
+            else:
+                task.cancel()
 
     @staticmethod
     def _idle_frame(sid: str, ws: WebSession, idle_seconds: int) -> Frame:
@@ -510,6 +704,9 @@ class SessionManager:
         self._broadcast({"type": "idle_session_resolved", "sessionId": session_id, "action": action})
         return True
 
+    async def aresolve_idle_prompt(self, session_id: str, action: str) -> bool:
+        return await asyncio.to_thread(self.resolve_idle_prompt, session_id, action)
+
     def close_all(self) -> None:
         with self._lock:
             self._closed = True
@@ -521,3 +718,24 @@ class SessionManager:
         for ws in sessions + ([placeholder] if placeholder is not None else []):
             with contextlib.suppress(Exception):
                 ws.close()
+
+    async def aclose_all(self) -> None:
+        with self._lock:
+            self._closed = True
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+            placeholder, self._placeholder = self._placeholder, None
+            self._current_id = None
+            task, self._watcher_task = self._watcher_task, None
+            timer, self._watcher_timer = self._watcher_timer, None
+            self._watcher_loop = None
+        if timer is not None:
+            timer.cancel()
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        targets = sessions + ([placeholder] if placeholder is not None else [])
+        for ws in targets:
+            with contextlib.suppress(Exception):
+                await ws.aclose()

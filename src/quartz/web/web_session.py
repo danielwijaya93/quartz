@@ -121,6 +121,7 @@ class WebSession:
         self._sinks = SinkHub(
             on_event=self._notify_event,
             on_grace_expired=self._on_reconnect_grace_expired,
+            resolve_loop=lambda: self._turns.resolve_async_loop(),
         )
         self._perm_gate = PermissionGate(
             self.emit,
@@ -171,14 +172,29 @@ class WebSession:
             self._swap(*self._build(None, cwd))
         return self.runtime
 
+    async def aensure_runtime(self, cwd: Path | None = None) -> AgentRuntime:
+        """Build the runtime off the event loop if not yet built, binding the active loop."""
+        self.bind_loop(asyncio.get_running_loop())
+        if self._runtime is not None:
+            return self.runtime
+        return await asyncio.to_thread(self.ensure_runtime, cwd)
+
     def new_session(self, cwd: Path | None = None) -> None:
         self._retire()
         self._swap(*self._build(None, cwd))
+
+    async def anew_session(self, cwd: Path | None = None) -> None:
+        self.bind_loop(asyncio.get_running_loop())
+        await asyncio.to_thread(self.new_session, cwd)
 
     def load_session(self, session_id: str) -> None:
         cleaned = validate_session_id(session_id)
         self._retire()
         self._swap(*self._build(cleaned, self._resume_cwd(cleaned)))
+
+    async def aload_session(self, session_id: str) -> None:
+        self.bind_loop(asyncio.get_running_loop())
+        await asyncio.to_thread(self.load_session, session_id)
 
     def _call_build(
         self, session_id: str | None, cwd: Path | None = None, *, sandbox: bool | None = None
@@ -211,6 +227,10 @@ class WebSession:
         """Persist trust for the active session's cwd and rebuild the runtime."""
         self._rebuild_active(busy_msg="Cannot trust and reload while a turn is running.", before_retire=trust_project)
 
+    async def atrust_current_project(self) -> None:
+        self.bind_loop(asyncio.get_running_loop())
+        await asyncio.to_thread(self.trust_current_project)
+
     def set_sandbox(self, enabled: bool) -> None:
         """Rebuild the active session's runtime with sandboxing enabled or disabled."""
         if self.turn_running:
@@ -219,6 +239,10 @@ class WebSession:
             self._sandbox_override = enabled
             return
         self._rebuild_active(busy_msg="Cannot toggle sandbox while a turn is running.", sandbox=enabled)
+
+    async def aset_sandbox(self, enabled: bool) -> None:
+        self.bind_loop(asyncio.get_running_loop())
+        await asyncio.to_thread(self.set_sandbox, enabled)
 
     def _resume_cwd(self, session_id: str) -> Path:
         recorded = Session.recorded_cwd(session_id)
@@ -341,8 +365,14 @@ class WebSession:
         self._retire(notify_closed=False)
         return True
 
+    async def ahibernate(self) -> bool:
+        return await asyncio.to_thread(self.hibernate)
+
     def close(self) -> None:
         self._retire()
+
+    async def aclose(self) -> None:
+        await asyncio.to_thread(self.close)
 
     # -- sinks & turns -----------------------------------------------------
 
@@ -456,3 +486,6 @@ class WebSession:
             commands=self.commands(),
             pending_permission=self._pending_permission,
         )
+
+    async def asnapshot(self) -> Frame:
+        return await asyncio.to_thread(self.snapshot)

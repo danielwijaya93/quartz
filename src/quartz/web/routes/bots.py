@@ -251,8 +251,13 @@ def create_router(ctx: AppContext) -> APIRouter:
 
         config = _config_from_create(req)
         store, _ = _stores()
+
+        def _create() -> dict[str, Any]:
+            created = store.create_bot(config)
+            return _serialize_bot(created, store.get_state(created.id), [])
+
         try:
-            created = await asyncio.to_thread(store.create_bot, config)
+            serialized = await asyncio.to_thread(_create)
         except ValueError as exc:
             msg = str(exc)
             status = 409 if "already exists" in msg else 400
@@ -260,8 +265,7 @@ def create_router(ctx: AppContext) -> APIRouter:
 
         if ctx.bot_runner is not None:
             ctx.bot_runner.notify_queue()
-        state = await asyncio.to_thread(store.get_state, created.id)
-        return JSONResponse({"bot": _serialize_bot(created, state, [])}, status_code=201)
+        return JSONResponse({"bot": serialized}, status_code=201)
 
     @router.put("/api/bots/{bot_id}")
     async def update_bot(bot_id: str, request: Request) -> JSONResponse:
@@ -301,62 +305,81 @@ def create_router(ctx: AppContext) -> APIRouter:
             if existing is None:
                 return False
             history.archive_deleted_bot(existing)
-            return store.delete_bot(bot_id)
+            deleted = store.delete_bot(bot_id)
+            if deleted:
+                queue.clear_bot(bot_id)
+            return deleted
 
         deleted = await asyncio.to_thread(_archive_and_delete)
         if not deleted:
             return JSONResponse({"error": f"Bot {bot_id!r} not found"}, status_code=404)
-        await asyncio.to_thread(queue.clear_bot, bot_id)
         return JSONResponse({"ok": True, "deleted": bot_id})
 
     @router.post("/api/bots/{bot_id}/toggle")
     async def toggle_bot(bot_id: str, request: Request) -> JSONResponse:
         store, queue = _stores()
-        existing = await asyncio.to_thread(store.get_bot, bot_id)
-        if existing is None:
-            return JSONResponse({"error": f"Bot {bot_id!r} not found"}, status_code=404)
-
         raw = await json_body(request)
         try:
             req = BotToggleRequest.model_validate(raw)
         except ValidationError as exc:
             return bad_request(str(exc))
 
-        target_enabled = req.enabled if req.enabled is not None else (not existing.enabled)
-        updated = await asyncio.to_thread(store.set_enabled, bot_id, target_enabled)
-        state = await asyncio.to_thread(store.get_state, bot_id)
-        queued = await asyncio.to_thread(queue.peek_bot_queue, bot_id)
-        return JSONResponse(
-            {"bot": _serialize_bot(updated, state, queued), "enabled": updated.enabled}
-        )
+        def _toggle() -> tuple[dict[str, Any], bool] | None:
+            existing = store.get_bot(bot_id)
+            if existing is None:
+                return None
+            target_enabled = req.enabled if req.enabled is not None else (not existing.enabled)
+            updated = store.set_enabled(bot_id, target_enabled)
+            return (
+                _serialize_bot(updated, store.get_state(bot_id), queue.peek_bot_queue(bot_id)),
+                updated.enabled,
+            )
+
+        res = await asyncio.to_thread(_toggle)
+        if res is None:
+            return JSONResponse({"error": f"Bot {bot_id!r} not found"}, status_code=404)
+        serialized, enabled = res
+        return JSONResponse({"bot": serialized, "enabled": enabled})
 
     @router.post("/api/bots/{bot_id}/run")
     async def run_bot_now(bot_id: str) -> JSONResponse:
         store, queue = _stores()
-        bot = await asyncio.to_thread(store.get_bot, bot_id)
-        if bot is None:
+
+        def _enqueue_manual() -> tuple[bool, str] | None:
+            bot = store.get_bot(bot_id)
+            if bot is None:
+                return None
+            trigger = QueuedTrigger(
+                trigger_id=uuid.uuid4().hex,
+                bot_id=bot.id,
+                event_key=f"manual:{int(time.time())}:{uuid.uuid4().hex[:6]}",
+                source="manual",
+                payload={},
+                enqueued_at=time.time(),
+            )
+            return queue.enqueue(trigger, bot.max_queue_depth), trigger.trigger_id
+
+        res = await asyncio.to_thread(_enqueue_manual)
+        if res is None:
             return JSONResponse({"error": f"Bot {bot_id!r} not found"}, status_code=404)
-        trigger = QueuedTrigger(
-            trigger_id=uuid.uuid4().hex,
-            bot_id=bot.id,
-            event_key=f"manual:{int(time.time())}:{uuid.uuid4().hex[:6]}",
-            source="manual",
-            payload={},
-            enqueued_at=time.time(),
-        )
-        enqueued = await asyncio.to_thread(queue.enqueue, trigger, bot.max_queue_depth)
+        enqueued, trigger_id = res
         if enqueued and ctx.bot_runner is not None:
             ctx.bot_runner.notify_queue()
-        return JSONResponse({"ok": True, "queued": enqueued, "triggerId": trigger.trigger_id})
+        return JSONResponse({"ok": True, "queued": enqueued, "triggerId": trigger_id})
 
     @router.get("/api/bots/{bot_id}/queue")
     async def get_bot_queue(bot_id: str) -> JSONResponse:
         store, queue = _stores()
-        existing = await asyncio.to_thread(store.get_bot, bot_id)
-        if existing is None:
+
+        def _peek() -> list[dict[str, Any]] | None:
+            if store.get_bot(bot_id) is None:
+                return None
+            return [item.to_dict() for item in queue.peek_bot_queue(bot_id)]
+
+        items = await asyncio.to_thread(_peek)
+        if items is None:
             return JSONResponse({"error": f"Bot {bot_id!r} not found"}, status_code=404)
-        items = await asyncio.to_thread(queue.peek_bot_queue, bot_id)
-        return JSONResponse({"botId": bot_id, "items": [item.to_dict() for item in items]})
+        return JSONResponse({"botId": bot_id, "items": items})
 
     @router.post("/api/bots/{bot_id}/webhook")
     async def receive_webhook(bot_id: str, request: Request) -> JSONResponse:

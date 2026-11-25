@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import os
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -19,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from quartz.bots import BotConfig, BotHistoryStore, BotQueue, BotStore, QueuedTrigger
 from quartz.core.turn import TurnStatus, run_interactive_turn
 from quartz.web.auth import extract_request_token, verify_token
-from quartz.web.bot_permissions import evaluate_bot_command, notify_bot_parked
+from quartz.web.bot_executor import run_bot_trigger
 from quartz.web.bot_runner import BotRunner
 from quartz.web.context import (
     MAX_FRAME_BYTES,
@@ -123,91 +122,14 @@ def create_app(
     bot_history = BotHistoryStore(bots_dir, max_runs_per_bot=50, max_age_seconds=7 * 24 * 3600)
 
     async def _run_bot_trigger(bot: BotConfig, trigger: QueuedTrigger) -> TurnStatus:
-        target_cwd = Path(bot.cwd) if bot.cwd else None
-        ws = manager.create_session(cwd=target_cwd)
-        ws.set_auto_allow_check(
-            lambda req: evaluate_bot_command(bot.permissions, getattr(req, "command_display", ""))
-            == "allow"
+        return await run_bot_trigger(
+            bot,
+            trigger,
+            manager=manager,
+            bot_store=bot_store,
+            get_sidebar=store,
+            get_push_store=lambda: push_store() if push_ref is not None or default_push_path().is_file() else None,
         )
-        rt = await asyncio.to_thread(ws.ensure_runtime, target_cwd)
-        if bot.provider or bot.model or bot.effort:
-            def _apply_bot_model() -> None:
-                from quartz.providers.registry import resolve_context_tokens
-                from quartz.providers.selection import build_provider
-
-                old_client = rt.client
-                new_client, pname, new_model, new_effort = build_provider(
-                    provider=bot.provider or "auto",
-                    model_override=bot.model,
-                    effort_override=bot.effort,
-                )
-                rt.client = new_client
-                rt.provider_name = pname
-                rt.model = new_model
-                rt.effort = new_effort
-                if old_client is not None and old_client is not rt.client:
-                    close_fn = getattr(old_client, "close", None)
-                    if callable(close_fn):
-                        with contextlib.suppress(Exception):
-                            close_fn()
-                with contextlib.suppress(Exception):
-                    rt.max_context_tokens = resolve_context_tokens(pname, new_model, new_client)
-
-            await asyncio.to_thread(_apply_bot_model)
-        from quartz.core.session import ORIGIN_BOT
-
-        await asyncio.to_thread(rt.active_session.set_origin, ORIGIN_BOT)
-        await asyncio.to_thread(store().rename, rt.active_session.id, f"[Bot] {bot.name}")
-        state = await asyncio.to_thread(bot_store.get_state, bot.id)
-        state.active_session_id = rt.active_session.id
-        await asyncio.to_thread(bot_store.save_state, state)
-
-        payload_text = json.dumps(trigger.payload, indent=2) if trigger.payload else ""
-        prompt = (
-            f"[Bot: {bot.name}] Triggered by {trigger.source} ({trigger.event_key})\n\n"
-            f"{bot.instruction}"
-        )
-        if payload_text:
-            prompt = f"{prompt}\n\nTrigger payload:\n{payload_text}"
-
-        ws.start_turn(prompt, [])
-        while ws.turn_running:
-            if ws.has_pending_permission:
-                pending = ws._pending_permission or {}
-                from quartz.settings import load_settings as _load_settings
-
-                _bot_notif_settings = _load_settings()
-                if (
-                    _bot_notif_settings.notifications
-                    and _bot_notif_settings.notify_approval
-                    and (push_ref is not None or default_push_path().is_file())
-                ):
-                    notify_bot_parked(
-                        push_store(),
-                        bot,
-                        rt.active_session.id,
-                        str(pending.get("command", "")),
-                    )
-                return TurnStatus.WAITING_PERMISSION
-            await asyncio.sleep(0.2)
-        if ws.has_pending_permission:
-            pending = ws._pending_permission or {}
-            from quartz.settings import load_settings as _load_settings
-
-            _bot_notif_settings = _load_settings()
-            if (
-                _bot_notif_settings.notifications
-                and _bot_notif_settings.notify_approval
-                and (push_ref is not None or default_push_path().is_file())
-            ):
-                notify_bot_parked(
-                    push_store(),
-                    bot,
-                    rt.active_session.id,
-                    str(pending.get("command", "")),
-                )
-            return TurnStatus.WAITING_PERMISSION
-        return TurnStatus.OK
 
     bot_runner = BotRunner(
         bot_store,
@@ -224,6 +146,7 @@ def create_app(
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         """Start watchers on boot and close every live kernel on shutdown."""
+        manager.bind_loop(asyncio.get_running_loop())
         manager.start_watcher()
         if should_run_bots:
             bot_runner.start()
@@ -233,7 +156,7 @@ def create_app(
             with contextlib.suppress(Exception):
                 await bot_runner.stop()
             with contextlib.suppress(Exception):
-                await asyncio.to_thread(manager.close_all)
+                await manager.aclose_all()
             with contextlib.suppress(Exception):
                 from quartz.mcp.pool import close_shared_host_mcp_pool
 
