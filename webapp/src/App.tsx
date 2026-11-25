@@ -297,13 +297,20 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
           quartz.state.fatalError !== null ||
           lastRow?.kind === "error" ||
           (lastRow?.kind === "turn_end" && lastRow.status === "error");
+        const waitingBg = (quartz.state.session.bgCount ?? 0) > 0;
         const unread = waitingPermission
           ? true
-          : typeof document !== "undefined" && document.hidden;
+          : !waitingBg && typeof document !== "undefined" && document.hidden;
         setSessionActivity((prev) => ({
           ...prev,
           [sessionId]: {
-            status: waitingPermission ? "permission" : failed ? "error" : "done",
+            status: waitingPermission
+              ? "permission"
+              : failed
+                ? "error"
+                : waitingBg
+                  ? "waiting"
+                  : "done",
             unread,
           },
         }));
@@ -316,6 +323,7 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     quartz.state.fatalError,
     quartz.state.rows,
     quartz.state.session.pendingPermission,
+    quartz.state.session.bgCount,
     sessionId,
     sidebar.reload,
   ]);

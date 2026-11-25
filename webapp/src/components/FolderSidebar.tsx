@@ -160,7 +160,7 @@ export function FolderSidebar({
       : [...activeSessionItems];
     const priority = (kind: ActiveSessionItem["kind"]): number => {
       if (kind === "permission" || kind === "error") return 0;
-      if (kind === "working") return 1;
+      if (kind === "working" || kind === "waiting") return 1;
       return 2;
     };
     return [...filtered].sort((a, b) => priority(a.kind) - priority(b.kind));

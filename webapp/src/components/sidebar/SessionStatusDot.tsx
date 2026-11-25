@@ -16,6 +16,15 @@ export function SessionStatusDot({
       />
     );
   }
+  if (status === "waiting") {
+    return (
+      <span
+        aria-label="Waiting"
+        title="Waiting"
+        className="mr-1.5 size-1.5 shrink-0 rounded-full bg-amber-500"
+      />
+    );
+  }
   if (status === "done") {
     return (
       <span

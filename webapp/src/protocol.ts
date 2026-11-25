@@ -225,7 +225,7 @@ export type ServerMessage =
   | { type: "error"; message: string; fatal: boolean }
   | { type: "command_result"; name: string; ok: boolean; result: CommandResult };
 
-export type ActiveSessionKind = "working" | "permission" | "done" | "error";
+export type ActiveSessionKind = "working" | "waiting" | "permission" | "done" | "error";
 
 export interface ActiveSessionItem {
   sessionId: string;

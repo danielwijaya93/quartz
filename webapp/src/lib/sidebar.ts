@@ -515,7 +515,7 @@ export function formatAge(iso: string, now: number = Date.now()): string {
 
 /* ----------------------------------------------------- search & live status */
 
-export type SessionActivityStatus = "idle" | "running" | "done" | "error" | "permission";
+export type SessionActivityStatus = "idle" | "running" | "waiting" | "done" | "error" | "permission";
 
 export interface SessionActivity {
   status: SessionActivityStatus;

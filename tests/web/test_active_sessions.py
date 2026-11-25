@@ -389,3 +389,101 @@ def test_parked_permission_turn_stays_permission_in_active_sessions(tmp_path: Pa
         assert items_after[0]["kind"] == "done"
     finally:
         manager.close_all()
+
+
+def test_turn_end_with_running_background_jobs_sets_waiting_and_blocks_dismiss(tmp_path: Path) -> None:
+    def runner(rt: Any, observer: Any, **_kw: Any) -> TurnOutcome:
+        return TurnOutcome(TurnStatus.OK)
+
+    manager = SessionManager(_build_factory(tmp_path), cwd=tmp_path, runner=runner)
+    try:
+        s1 = manager.create_session(tmp_path)
+        s1.ensure_runtime()
+        sid1 = s1.runtime.active_session.id
+        s1.runtime.kernel._running_bash_count = 1
+
+        s1.start_turn("Run background task", [])
+        _wait_turn(s1)
+
+        items = manager.active_sessions_items()
+        assert len(items) == 1
+        assert items[0]["sessionId"] == sid1
+        assert items[0]["kind"] == "waiting"
+        assert manager.dismiss_active_session(sid1) is False
+
+        # Once background job finishes and a wake turn completes with 0 jobs -> "done"
+        s1.runtime.kernel._running_bash_count = 0
+        s1.start_turn("Wake turn", [])
+        _wait_turn(s1)
+
+        items_after = manager.active_sessions_items()
+        assert len(items_after) == 1
+        assert items_after[0]["kind"] == "done"
+        assert manager.dismiss_active_session(sid1) is True
+    finally:
+        manager.close_all()
+
+
+def test_turn_end_error_with_running_background_jobs_keeps_error(tmp_path: Path) -> None:
+    def runner(rt: Any, observer: Any, **_kw: Any) -> TurnOutcome:
+        return TurnOutcome(TurnStatus.ERROR, error="boom")
+
+    manager = SessionManager(_build_factory(tmp_path), cwd=tmp_path, runner=runner)
+    try:
+        s1 = manager.create_session(tmp_path)
+        s1.ensure_runtime()
+        s1.runtime.kernel._running_bash_count = 1
+
+        s1.start_turn("Fail while bg runs", [])
+        _wait_turn(s1)
+
+        items = manager.active_sessions_items()
+        assert len(items) == 1
+        assert items[0]["kind"] == "error"
+    finally:
+        manager.close_all()
+
+
+def test_kill_last_background_job_while_waiting_transitions_to_done(tmp_path: Path) -> None:
+    def runner(rt: Any, observer: Any, **_kw: Any) -> TurnOutcome:
+        return TurnOutcome(TurnStatus.OK)
+
+    app = create_app(build=_build_factory(tmp_path), cwd=tmp_path, runner=runner, static_dir=tmp_path / "missing")
+    client = TestClient(app)
+    manager: SessionManager = app.state.manager
+    events: list[dict[str, Any]] = []
+    manager.register_sink(events.append)
+    try:
+        s1 = manager.create_session(tmp_path)
+        s1.ensure_runtime()
+        sid1 = s1.runtime.active_session.id
+        s1.runtime.kernel._running_bash_count = 1
+
+        def _kill_bash(pid: int) -> bool:
+            if pid == 4242:
+                s1.runtime.kernel._running_bash_count = 0
+                return True
+            return False
+
+        s1.runtime.kernel.kill_bash = _kill_bash  # type: ignore[attr-defined]
+
+        s1.start_turn("Run background task", [])
+        _wait_turn(s1)
+        assert manager.active_sessions_items()[0]["kind"] == "waiting"
+
+        events.clear()
+        resp = client.post(f"/api/jobs/4242/kill?sessionId={sid1}", json={})
+        assert resp.status_code == 200
+        assert resp.json() == {"pid": 4242, "killed": True}
+
+        items = manager.active_sessions_items()
+        assert len(items) == 1
+        assert items[0]["kind"] == "done"
+        assert any(
+            f.get("type") == "active_sessions_state"
+            and f["items"]
+            and f["items"][0]["kind"] == "done"
+            for f in events
+        )
+    finally:
+        manager.close_all()

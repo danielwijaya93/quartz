@@ -276,7 +276,10 @@ def create_router(ctx: AppContext) -> APIRouter:
         kill_fn = getattr(target.runtime.kernel, "kill_bash", None)
         if not callable(kill_fn):
             return JSONResponse({"error": "Job kill unavailable"}, status_code=404)
-        return JSONResponse({"pid": pid, "killed": bool(await asyncio.to_thread(kill_fn, pid))})
+        killed = bool(await asyncio.to_thread(kill_fn, pid))
+        if killed:
+            manager.sync_session_background_jobs(target)
+        return JSONResponse({"pid": pid, "killed": killed})
 
     @router.get("/api/models")
     async def get_models(request: Request, session_id: str | None = Query(default=None, alias="sessionId")) -> JSONResponse:
