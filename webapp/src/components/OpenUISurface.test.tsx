@@ -10,7 +10,11 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { OPENUI_TURN_LANG } from "../../mock/script.mjs";
 import { buildActionUserMessage, OpenUISurface } from "./OpenUISurface";
-import { hasOpenUILangSyntax, stripOpenUIFences } from "@/lib/openui/lang-helpers";
+import {
+  extractOpenUIUserText,
+  hasOpenUILangSyntax,
+  stripOpenUIFences,
+} from "@/lib/openui/lang-helpers";
 
 function renderLang(lang: string, onContinue = vi.fn(), onStateUpdate = vi.fn()) {
   return {
@@ -72,6 +76,7 @@ describe("OpenUISurface", () => {
     expect(message).toContain("Apply these settings");
     expect(message).toContain("effort");
     expect(message).toContain("high");
+    expect(extractOpenUIUserText(message)).toBe("Apply these settings");
   });
 });
 

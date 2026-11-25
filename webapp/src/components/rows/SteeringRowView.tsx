@@ -1,5 +1,6 @@
 import * as React from "react";
 import { CornerDownRight } from "lucide-react";
+import { extractOpenUIUserText } from "@/lib/openui/lang-helpers";
 import type { SteeringRow } from "@/lib/transcript";
 
 /**
@@ -17,7 +18,9 @@ export function SteeringRowView({ row }: { row: SteeringRow }): React.ReactEleme
         <figcaption className="text-xs font-medium text-accent-soft-foreground">
           You steered the turn
         </figcaption>
-        <p className="mt-0.5 whitespace-pre-wrap text-sm text-accent-soft-foreground">{row.text}</p>
+        <p className="mt-0.5 whitespace-pre-wrap text-sm text-accent-soft-foreground">
+          {extractOpenUIUserText(row.text)}
+        </p>
       </blockquote>
     </figure>
   );

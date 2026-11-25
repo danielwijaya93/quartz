@@ -60,4 +60,34 @@ describe("UserRowView", () => {
 
     expect(screen.getByText(text)).toBeInTheDocument();
   });
+
+  it("renders only plain text for OpenUI reply action messages", () => {
+    const text = [
+      "]]>openui:content",
+      "5 minutes passed and my Cron Test Bot didn't run. Help me check why.",
+      "]]>openui:context",
+      '["User clicked: 5 minutes passed and my Cron Test Bot didn\'t run. Help me check why.",{}]',
+    ].join("\n");
+
+    render(<UserRowView row={makeRow(text)} />);
+
+    expect(
+      screen.getByText("5 minutes passed and my Cron Test Bot didn't run. Help me check why."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/openui:content/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/openui:context/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/User clicked:/)).not.toBeInTheDocument();
+  });
+
+  it("strips context-only OpenUI action messages without leaking protocol markers", () => {
+    const text = [
+      "]]>openui:context",
+      '["User clicked: ",{"effort":"high"}]',
+    ].join("\n");
+
+    const { container } = render(<UserRowView row={makeRow(text)} />);
+
+    expect(container.textContent).not.toContain("openui:context");
+    expect(container.textContent).not.toContain("User clicked:");
+  });
 });
