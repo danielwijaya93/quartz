@@ -13,7 +13,9 @@ from urllib.parse import urlsplit
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from quartz.bots import BotQueue, BotStore
 from quartz.web.attachments import AttachedFileRegistry
+from quartz.web.bot_runner import BotRunner
 from quartz.web.push import PushStore
 from quartz.web.session import SessionManager, WebSession
 from quartz.web.sidebar import SidebarStore
@@ -52,6 +54,9 @@ class AppContext:
     static_dir: Path | None
     dev: bool
     auth_token: str | None = None
+    bot_store: BotStore | None = None
+    bot_queue: BotQueue | None = None
+    bot_runner: BotRunner | None = None
 
     @property
     def cwd(self) -> Path:
