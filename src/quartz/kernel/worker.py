@@ -557,27 +557,37 @@ class KernelWorker:
             vars_info[name] = type(val).__name__
         return vars_info
 
-    def snapshot_vars(self, snapshot_dir: str) -> dict[str, Any]:
-        """Serialize user-defined variables to ``snapshot_dir`` (JSON-first, then pickle/dill) with SHA-256 + HMAC."""
+    def snapshot_vars(self, snapshot_dir: str, *, sign: bool = True) -> dict[str, Any]:
+        """Serialize user-defined variables to ``snapshot_dir`` (JSON-first, then pickle/dill) with SHA-256."""
         return snapshot_namespace(
             self._namespace,
             snapshot_dir,
             reserved_names=self._reserved_names,
             default_bindings=self._default_bindings,
             auto_imported=self._auto_imported,
+            sign=sign,
         )
 
     @staticmethod
     def _restore_cwd(saved_cwd: object, root: str | None) -> str | None:
         return restore_cwd(saved_cwd, root)
 
-    def restore_vars(self, snapshot_dir: str, root: str | None = None) -> dict[str, Any]:
+    def restore_vars(
+        self,
+        snapshot_dir: str,
+        root: str | None = None,
+        *,
+        allow_pickle: bool | None = None,
+        pickle_reject_reason: str | None = None,
+    ) -> dict[str, Any]:
         """Restore variables from ``snapshot_dir`` into the kernel namespace."""
         return restore_namespace(
             self._namespace,
             snapshot_dir,
             default_bindings=self._default_bindings,
             root=root,
+            allow_pickle=allow_pickle,
+            pickle_reject_reason=pickle_reject_reason,
         )
 
     def _handle_control_msg(self, msg_type: str, req_id: str, msg: dict[str, Any]) -> None:
@@ -616,13 +626,28 @@ class KernelWorker:
                     self._send({"type": "kill_bash_result", "id": req_id, "killed": False, "error": str(exc)})
         elif msg_type == "snapshot":
             try:
-                self._send({"type": "snapshot_result", "id": req_id, "manifest": self.snapshot_vars(msg.get("dir", ""))})
+                raw_sign = msg.get("sign")
+                should_sign = bool(raw_sign) if isinstance(raw_sign, bool) else True
+                self._send(
+                    {
+                        "type": "snapshot_result",
+                        "id": req_id,
+                        "manifest": self.snapshot_vars(msg.get("dir", ""), sign=should_sign),
+                    }
+                )
             except Exception as exc:
                 self._send({"type": "error", "id": req_id, "error": str(exc)})
         elif msg_type == "restore":
             try:
                 raw_root = msg.get("root")
-                result = self.restore_vars(msg.get("dir", ""), raw_root if isinstance(raw_root, str) else None)
+                raw_allow = msg.get("allow_pickle")
+                raw_reason = msg.get("pickle_reject_reason")
+                result = self.restore_vars(
+                    msg.get("dir", ""),
+                    raw_root if isinstance(raw_root, str) else None,
+                    allow_pickle=raw_allow if isinstance(raw_allow, bool) else None,
+                    pickle_reject_reason=raw_reason if isinstance(raw_reason, str) else None,
+                )
                 self._send({"type": "restore_result", "id": req_id, **result})
             except Exception as exc:
                 self._send({"type": "error", "id": req_id, "error": str(exc)})

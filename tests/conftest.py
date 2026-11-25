@@ -35,6 +35,7 @@ def isolated_quartz_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[N
         "QUARTZ_WEB_SIDEBAR": root / "web" / "sidebar.json",
         "QUARTZ_WEB_FILES": root / "web-files.json",
         "QUARTZ_WEB_PUSH": root / "web" / "push.json",
+        "QUARTZ_SNAPSHOT_KEY_FILE": root / "snapshot-key",
         "QUARTZ_CONFIG_FILE": root / "config.json",
         "SESSION_DIR": root / "sessions",
     }

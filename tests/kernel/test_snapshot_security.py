@@ -219,3 +219,98 @@ def test_strict_snapshots_rejects_unsigned_dill_but_restores_json(
     assert "tup" not in w2._namespace
     assert res["restored"] == ["plain"]
     assert w2._namespace["plain"] == [10, 20]
+
+
+def test_unsigned_dill_rejected_by_default_and_opt_in_escape_hatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("QUARTZ_STRICT_SNAPSHOTS", raising=False)
+    monkeypatch.delenv("QUARTZ_ALLOW_UNSIGNED_SNAPSHOTS", raising=False)
+    monkeypatch.delenv("QUARTZ_SNAPSHOT_KEY", raising=False)
+    monkeypatch.setenv("QUARTZ_SNAPSHOT_KEY_FILE", str(tmp_path / "nonexistent-key"))
+    snap_dir = tmp_path / "snap"
+
+    w1 = _make_worker(tmp_path)
+    w1._namespace["tup"] = (7, 8)
+    w1._namespace["plain"] = [10, 20]
+    manifest = w1.snapshot_vars(str(snap_dir))
+
+    manifest_path = snap_dir / "manifest.json"
+    unsigned = dict(manifest)
+    unsigned.pop("hmac", None)
+    manifest_path.write_text(json.dumps(unsigned), encoding="utf-8")
+
+    # Default (no env vars set): unsigned dill MUST be rejected without unpickling
+    def _forbid_unpickle(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("unpickler must not run on unsigned snapshot by default")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(pickle, "loads", _forbid_unpickle)
+        mp.setattr(dill, "loads", _forbid_unpickle)
+        w2 = _make_worker(tmp_path)
+        res = w2.restore_vars(str(snap_dir))
+        assert "tup (unsigned snapshot rejected)" in res["skipped"]
+        assert "tup" not in w2._namespace
+        assert res["restored"] == ["plain"]
+
+    # Explicit opt-in escape hatch restores legacy unsigned dill
+    monkeypatch.setenv("QUARTZ_ALLOW_UNSIGNED_SNAPSHOTS", "1")
+    w3 = _make_worker(tmp_path)
+    res_opt = w3.restore_vars(str(snap_dir))
+    assert set(res_opt["restored"]) == {"tup", "plain"}
+    assert w3._namespace["tup"] == (7, 8)
+
+
+async def test_kernel_client_signs_and_verifies_snapshots_on_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from quartz.kernel.client import KernelClient
+    from quartz.kernel.snapshots import sign_snapshot_dir, verify_snapshot_dir
+
+    key_file = tmp_path / "host-keys" / "snapshot-key"
+    monkeypatch.delenv("QUARTZ_SNAPSHOT_KEY", raising=False)
+    monkeypatch.delenv("QUARTZ_ALLOW_UNSIGNED_SNAPSHOTS", raising=False)
+    monkeypatch.setenv("QUARTZ_SNAPSHOT_KEY_FILE", str(key_file))
+
+    snap_dir = tmp_path / "snap"
+    c1 = KernelClient(cwd=tmp_path)
+    try:
+        await c1.astart()
+        assert (await c1.exec_cell("plain = {'k': 1}\ntup = (3, 4)")).ok
+        manifest = await c1.asnapshot(snap_dir)
+        assert "hmac" in manifest
+        assert verify_snapshot_dir(snap_dir) == (True, None)
+    finally:
+        await c1.aclose()
+
+    # Valid host-signed snapshot restores both JSON and dill
+    c2 = KernelClient(cwd=tmp_path)
+    try:
+        await c2.astart()
+        restored = await c2.arestore(snap_dir, root=tmp_path)
+        assert set(restored["restored"]) == {"plain", "tup"}
+        r = await c2.exec_cell("(plain['k'], tup)")
+        assert r.ok and r.result == "(1, (3, 4))"
+    finally:
+        await c2.aclose()
+
+    # Tampering with manifest fails closed on host verification (JSON still restores, dill skipped)
+    manifest_path = snap_dir / "manifest.json"
+    tampered = json.loads(manifest_path.read_text(encoding="utf-8"))
+    tampered["cwd"] = str(tmp_path / "tampered")
+    manifest_path.write_text(json.dumps(tampered), encoding="utf-8")
+    assert verify_snapshot_dir(snap_dir) == (False, "tampered snapshot")
+
+    c3 = KernelClient(cwd=tmp_path)
+    try:
+        await c3.astart()
+        res_bad = await c3.arestore(snap_dir, root=tmp_path)
+        assert "tup (tampered snapshot)" in res_bad["skipped"]
+        assert "plain" in res_bad["restored"]
+    finally:
+        await c3.aclose()
+
+    # Re-signing with sign_snapshot_dir restores validity
+    resigned = sign_snapshot_dir(snap_dir)
+    assert resigned is not None and "hmac" in resigned
+    assert verify_snapshot_dir(snap_dir) == (True, None)

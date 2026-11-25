@@ -7,6 +7,8 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
 from quartz.core.session import Session, prune_snapshots
 from quartz.kernel.client import KernelClient
 
@@ -106,8 +108,10 @@ async def test_snapshot_stores_aliased_objects_once(tmp_path: Path) -> None:
         k2.close()
 
 
-async def test_restore_reads_legacy_name_keyed_snapshot(tmp_path: Path) -> None:
-    """Snapshots written before dedup used `<name>.dill`; resume must still work."""
+async def test_restore_reads_legacy_name_keyed_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Snapshots written before dedup used `<name>.dill`; opt-in resume must still work."""
     import json
     import pickle
 
@@ -125,6 +129,7 @@ async def test_restore_reads_legacy_name_keyed_snapshot(tmp_path: Path) -> None:
     }
     (s.snapshot_dir / "manifest.json").write_text(json.dumps(manifest))
 
+    monkeypatch.setenv("QUARTZ_ALLOW_UNSIGNED_SNAPSHOTS", "1")
     k2 = KernelClient(cwd=tmp_path)
     k2.start()
     try:
