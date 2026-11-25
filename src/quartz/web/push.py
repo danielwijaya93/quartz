@@ -1,17 +1,18 @@
-"""Web Push (VAPID) key management, subscription store, and sender."""
+"""Web Push (VAPID) key management, SQLite subscription store, and sender."""
 
 from __future__ import annotations
 
 import base64
-import contextlib
 import json
 import logging
 import os
-import tempfile
 import threading
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+from quartz.storage import QuartzDB, get_shared_db, resolve_store_db_path
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ webpush: Any = None
 
 
 def default_push_path() -> Path:
-    """Where VAPID keys and push subscriptions live, unless overridden."""
+    """Where legacy push JSON lives (honors ``QUARTZ_WEB_PUSH``)."""
     env = os.getenv("QUARTZ_WEB_PUSH")
     if env and env.strip():
         return Path(env).expanduser()
@@ -130,16 +131,51 @@ def format_push_payload(frame: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-class PushStore:
-    """Persistent VAPID keypair and Web Push subscriptions."""
+def _validate_vapid_pair(priv: Any, pub: Any) -> tuple[str, str] | None:
+    if not (isinstance(priv, str) and priv.strip() and isinstance(pub, str) and pub.strip()):
+        return None
+    pub_clean = pub.strip()
+    # Fast path: trust an already-persisted PEM + 87-char uncompressed P-256
+    # public key without importing py_vapid/cryptography on server boot.
+    if "BEGIN" in priv and "PRIVATE KEY" in priv and len(pub_clean) == 87:
+        return priv, pub_clean
+    try:
+        from py_vapid import Vapid
 
-    def __init__(self, path: Path | None = None, *, claims_sub: str = "mailto:quartz@localhost") -> None:
-        self._path = path or default_push_path()
+        vapid = Vapid.from_pem(priv.encode("utf-8"))
+        return priv, _public_key_b64(vapid)
+    except Exception:
+        return None
+
+
+class PushStore:
+    """SQLite-backed VAPID keypair and Web Push subscriptions (with legacy JSON import)."""
+
+    _IMPORT_META_KEY = "import:push:v1"
+
+    def __init__(
+        self,
+        path: Path | None = None,
+        *,
+        db: QuartzDB | None = None,
+        claims_sub: str = "mailto:quartz@localhost",
+    ) -> None:
+        legacy_path = path if path is not None else default_push_path()
+        self._path = legacy_path
         self._claims_sub = claims_sub
         self._lock = threading.RLock()
+        if db is not None:
+            self._db = db
+        else:
+            db_path = resolve_store_db_path(
+                legacy_path,
+                env_var="QUARTZ_WEB_PUSH",
+                explicit=path is not None,
+            )
+            self._db = get_shared_db(db_path)
+        self.db_path = self._db.path
         self._private_pem: str = ""
         self._public_key: str = ""
-        self._subscriptions: dict[str, dict[str, Any]] = {}
         self._load_or_init()
 
     @property
@@ -148,58 +184,101 @@ class PushStore:
             return self._public_key
 
     def subscription_count(self) -> int:
-        with self._lock:
-            return len(self._subscriptions)
+        row = self._db.read_connection().execute(
+            "SELECT COUNT(*) FROM push_subscriptions"
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def _load_legacy_json(self) -> dict[str, Any]:
+        if not self._path.is_file():
+            return {}
+        try:
+            raw = json.loads(self._path.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, dict) else {}
+        except (OSError, ValueError):
+            logger.warning("Corrupt legacy push file %s; skipping", self._path, exc_info=True)
+            return {}
 
     def _load_or_init(self) -> None:
-        data: dict[str, Any] = {}
-        if self._path.is_file():
-            try:
-                raw = json.loads(self._path.read_text(encoding="utf-8"))
-                if isinstance(raw, dict):
-                    data = raw
-            except Exception:
-                data = {}
+        if self._db.get_meta(self._IMPORT_META_KEY) is None:
+            with self._db.write_transaction() as conn:
+                already = conn.execute(
+                    "SELECT 1 FROM meta WHERE key = ?", (self._IMPORT_META_KEY,)
+                ).fetchone()
+                if already is None:
+                    now = time.time()
+                    data = self._load_legacy_json()
+                    pair = _validate_vapid_pair(
+                        data.get("vapid_private_pem"), data.get("vapid_public_key")
+                    )
+                    if pair is not None:
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO push_config
+                                (singleton, vapid_private_pem, vapid_public_key, updated_at)
+                            VALUES (1, ?, ?, ?)
+                            """,
+                            (pair[0], pair[1], now),
+                        )
+                    subs = data.get("subscriptions")
+                    if isinstance(subs, list):
+                        for sub in subs:
+                            if self._is_valid_sub(sub):
+                                clean = {
+                                    "endpoint": sub["endpoint"],
+                                    "keys": {
+                                        "p256dh": sub["keys"]["p256dh"],
+                                        "auth": sub["keys"]["auth"],
+                                    },
+                                }
+                                conn.execute(
+                                    """
+                                    INSERT OR IGNORE INTO push_subscriptions
+                                        (endpoint, subscription_json, created_at, updated_at)
+                                    VALUES (?, ?, ?, ?)
+                                    """,
+                                    (clean["endpoint"], json.dumps(clean), now, now),
+                                )
+                    conn.execute(
+                        "INSERT INTO meta (key, value, updated_at) VALUES (?, '1', ?)",
+                        (self._IMPORT_META_KEY, now),
+                    )
 
-        priv = data.get("vapid_private_pem")
-        pub = data.get("vapid_public_key")
-        valid_keys = False
-        if isinstance(priv, str) and priv.strip() and isinstance(pub, str) and pub.strip():
-            pub_clean = pub.strip()
-            # Fast path: trust an already-persisted PEM + 87-char uncompressed P-256
-            # public key without importing py_vapid/cryptography on server boot.
-            if "BEGIN" in priv and "PRIVATE KEY" in priv and len(pub_clean) == 87:
-                self._private_pem = priv
-                self._public_key = pub_clean
-                valid_keys = True
-            else:
-                try:
-                    from py_vapid import Vapid
+        row = self._db.read_connection().execute(
+            "SELECT vapid_private_pem, vapid_public_key FROM push_config WHERE singleton = 1"
+        ).fetchone()
+        if row is not None:
+            pair = _validate_vapid_pair(row["vapid_private_pem"], row["vapid_public_key"])
+            if pair is not None:
+                self._private_pem, self._public_key = pair
+                return
 
-                    vapid = Vapid.from_pem(priv.encode("utf-8"))
-                    self._private_pem = priv
-                    self._public_key = _public_key_b64(vapid)
-                    valid_keys = True
-                except Exception:
-                    valid_keys = False
-
-        if not valid_keys:
-            self._private_pem, self._public_key = _generate_vapid()
-
-        subs = data.get("subscriptions")
-        if isinstance(subs, list):
-            for sub in subs:
-                if self._is_valid_sub(sub):
-                    self._subscriptions[sub["endpoint"]] = {
-                        "endpoint": sub["endpoint"],
-                        "keys": {
-                            "p256dh": sub["keys"]["p256dh"],
-                            "auth": sub["keys"]["auth"],
-                        },
-                    }
-
-        if not valid_keys or not self._path.is_file():
-            self._save_locked()
+        priv, pub = _generate_vapid()
+        now = time.time()
+        with self._db.write_transaction() as conn:
+            # Re-check under write lock in case another process generated keys simultaneously.
+            existing = conn.execute(
+                "SELECT vapid_private_pem, vapid_public_key FROM push_config WHERE singleton = 1"
+            ).fetchone()
+            if existing is not None:
+                pair = _validate_vapid_pair(
+                    existing["vapid_private_pem"], existing["vapid_public_key"]
+                )
+                if pair is not None:
+                    self._private_pem, self._public_key = pair
+                    return
+            conn.execute(
+                """
+                INSERT INTO push_config (singleton, vapid_private_pem, vapid_public_key, updated_at)
+                VALUES (1, ?, ?, ?)
+                ON CONFLICT(singleton) DO UPDATE SET
+                    vapid_private_pem = excluded.vapid_private_pem,
+                    vapid_public_key = excluded.vapid_public_key,
+                    updated_at = excluded.updated_at
+                """,
+                (priv, pub, now),
+            )
+        self._private_pem, self._public_key = priv, pub
 
     @staticmethod
     def _is_valid_sub(sub: Any) -> bool:
@@ -215,57 +294,63 @@ class PushStore:
         auth = keys.get("auth")
         return isinstance(p256dh, str) and bool(p256dh) and isinstance(auth, str) and bool(auth)
 
-    def _save_locked(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "vapid_private_pem": self._private_pem,
-            "vapid_public_key": self._public_key,
-            "subscriptions": list(self._subscriptions.values()),
-        }
-        fd, tmp_name = tempfile.mkstemp(dir=str(self._path.parent), prefix=".push-", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh, indent=2)
-                fh.write("\n")
-            with contextlib.suppress(OSError):
-                os.chmod(tmp_name, 0o600)
-            os.replace(tmp_name, self._path)
-        except Exception:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_name)
-            raise
+    def _list_subscriptions(self, endpoint: str | None = None) -> list[dict[str, Any]]:
+        if endpoint is not None:
+            rows = self._db.read_connection().execute(
+                "SELECT subscription_json FROM push_subscriptions WHERE endpoint = ?",
+                (endpoint,),
+            ).fetchall()
+        else:
+            rows = self._db.read_connection().execute(
+                "SELECT subscription_json FROM push_subscriptions ORDER BY created_at ASC"
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                parsed = json.loads(str(row["subscription_json"]))
+                if self._is_valid_sub(parsed):
+                    out.append(parsed)
+            except ValueError:
+                continue
+        return out
 
     def subscribe(self, sub: dict[str, Any]) -> bool:
         if not self._is_valid_sub(sub):
             return False
-        with self._lock:
-            self._subscriptions[sub["endpoint"]] = {
-                "endpoint": sub["endpoint"],
-                "keys": {
-                    "p256dh": sub["keys"]["p256dh"],
-                    "auth": sub["keys"]["auth"],
-                },
-            }
-            self._save_locked()
+        clean = {
+            "endpoint": sub["endpoint"],
+            "keys": {
+                "p256dh": sub["keys"]["p256dh"],
+                "auth": sub["keys"]["auth"],
+            },
+        }
+        now = time.time()
+        with self._db.write_transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO push_subscriptions (endpoint, subscription_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(endpoint) DO UPDATE SET
+                    subscription_json = excluded.subscription_json,
+                    updated_at = excluded.updated_at
+                """,
+                (clean["endpoint"], json.dumps(clean), now, now),
+            )
         return True
 
     def unsubscribe(self, endpoint: str) -> bool:
         if not isinstance(endpoint, str) or not endpoint:
             return False
-        with self._lock:
-            removed = self._subscriptions.pop(endpoint, None) is not None
-            if removed:
-                self._save_locked()
-            return removed
+        with self._db.write_transaction() as conn:
+            cur = conn.execute(
+                "DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,)
+            )
+            return cur.rowcount > 0
 
     def send(self, payload: Mapping[str, Any], *, endpoint: str | None = None) -> int:
         """Send a Web Push payload synchronously. Returns number of successful deliveries."""
+        targets = self._list_subscriptions(endpoint=endpoint)
         with self._lock:
-            if endpoint is not None:
-                sub = self._subscriptions.get(endpoint)
-                targets = [sub] if sub is not None else []
-            else:
-                targets = list(self._subscriptions.values())
             priv_pem = self._private_pem
 
         if not targets:
@@ -303,13 +388,11 @@ class PushStore:
                 continue
 
         if expired:
-            with self._lock:
-                changed = False
-                for ep in expired:
-                    if self._subscriptions.pop(ep, None) is not None:
-                        changed = True
-                if changed:
-                    self._save_locked()
+            with self._db.write_transaction() as conn:
+                conn.executemany(
+                    "DELETE FROM push_subscriptions WHERE endpoint = ?",
+                    [(ep,) for ep in expired],
+                )
 
         return sent
 
@@ -319,8 +402,7 @@ class PushStore:
 
     def send_async(self, payload: Mapping[str, Any]) -> None:
         """Dispatch a Web Push payload in a daemon thread so callers never block."""
-        with self._lock:
-            if not self._subscriptions:
-                return
+        if self.subscription_count() == 0:
+            return
         t = threading.Thread(target=self.send, args=(payload,), daemon=True, name="quartz-web-push")
         t.start()

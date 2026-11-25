@@ -30,7 +30,11 @@ def isolated_quartz_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[N
     """
     root = tmp_path_factory.mktemp("quartz-home")
     overrides = {
+        "QUARTZ_DB_PATH": root / "quartz.db",
+        "QUARTZ_BOTS_DIR": root / "bots",
         "QUARTZ_WEB_SIDEBAR": root / "web" / "sidebar.json",
+        "QUARTZ_WEB_FILES": root / "web-files.json",
+        "QUARTZ_WEB_PUSH": root / "web" / "push.json",
         "QUARTZ_CONFIG_FILE": root / "config.json",
         "SESSION_DIR": root / "sessions",
     }
@@ -39,6 +43,9 @@ def isolated_quartz_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[N
     try:
         yield
     finally:
+        from quartz.storage import close_shared_dbs
+
+        close_shared_dbs()
         # `monkeypatch` in a test has already restored its own value by now, so this
         # only has to put the process back the way it found it.
         for key, value in previous.items():

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from quartz.core.session import Session
@@ -35,6 +36,17 @@ def create_router(ctx: AppContext) -> APIRouter:
     @router.get("/api/sessions")
     async def sessions() -> JSONResponse:
         return JSONResponse(await asyncio.to_thread(sidebar_snapshot))
+
+    @router.get("/api/sessions/search")
+    async def search_sessions(
+        q: str = Query(default=""),
+        limit: int = Query(default=50, ge=1, le=200),
+        cwd: str | None = Query(default=None),
+    ) -> JSONResponse:
+        """Full-text FTS5 search over indexed sessions."""
+        target_cwd = Path(cwd).expanduser().resolve() if cwd and cwd.strip() else None
+        results = await asyncio.to_thread(Session.search, q, cwd=target_cwd, limit=limit)
+        return JSONResponse({"query": q, "results": results})
 
     @router.post("/api/sessions/hide")
     async def hide_session(request: Request) -> JSONResponse:

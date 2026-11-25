@@ -20,16 +20,19 @@ Three rules shape the whole module:
 
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import json
+import logging
 import os
-import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
 from quartz.core.session import ORIGIN_WEB
+from quartz.storage import QuartzDB, get_shared_db, resolve_store_db_path
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "SIDEBAR_VERSION",
@@ -151,34 +154,78 @@ def _str_list(raw: Any) -> list[str]:
 
 
 class SidebarStore:
-    """Load, mutate and atomically save one `sidebar.json`.
+    """SQLite-backed store for web sidebar state (with one-time legacy JSON import)."""
 
-    One small class rather than a module of functions because the file is written
-    on every mutation: keeping the path and the parsed state together is what makes
-    "hide, then rename" two writes instead of two loads.
-    """
+    _IMPORT_META_KEY = "import:sidebar:v1"
 
-    def __init__(self, path: Path) -> None:
-        self.path = path
+    def __init__(self, path: Path | None = None, *, db: QuartzDB | None = None) -> None:
+        legacy_path = path if path is not None else default_sidebar_path()
+        self.path = legacy_path
         self._lock = threading.RLock()
-        self.state = self._read(path)
+        if db is not None:
+            self._db = db
+        else:
+            db_path = resolve_store_db_path(
+                legacy_path,
+                env_var="QUARTZ_WEB_SIDEBAR",
+                explicit=path is not None,
+            )
+            self._db = get_shared_db(db_path)
+        self.db_path = self._db.path
+        self.state = self._load_or_import()
 
     @classmethod
-    def load(cls, path: Path | None = None) -> SidebarStore:
-        return cls(path or default_sidebar_path())
+    def load(cls, path: Path | None = None, *, db: QuartzDB | None = None) -> SidebarStore:
+        return cls(path, db=db)
 
     @staticmethod
     def _read(path: Path) -> SidebarState:
-        """Best-effort read. Any failure is empty state, never an exception."""
+        """Best-effort read of legacy JSON. Any failure is empty state, never an exception."""
         try:
             return SidebarState.from_dict(json.loads(path.read_text(encoding="utf-8")))
         except (OSError, ValueError):
             return SidebarState()
 
+    def _load_or_import(self) -> SidebarState:
+        if self._db.get_meta(self._IMPORT_META_KEY) is None:
+            with self._db.write_transaction() as conn:
+                already = conn.execute(
+                    "SELECT 1 FROM meta WHERE key = ?", (self._IMPORT_META_KEY,)
+                ).fetchone()
+                if already is None:
+                    now = time.time()
+                    existing_row = conn.execute(
+                        "SELECT 1 FROM sidebar_state WHERE singleton = 1"
+                    ).fetchone()
+                    if existing_row is None and self.path.exists():
+                        imported = self._read(self.path)
+                        conn.execute(
+                            """
+                            INSERT INTO sidebar_state (singleton, state_json, updated_at)
+                            VALUES (1, ?, ?)
+                            """,
+                            (json.dumps(imported.to_dict()), now),
+                        )
+                    conn.execute(
+                        "INSERT INTO meta (key, value, updated_at) VALUES (?, '1', ?)",
+                        (self._IMPORT_META_KEY, now),
+                    )
+
+        row = self._db.read_connection().execute(
+            "SELECT state_json FROM sidebar_state WHERE singleton = 1"
+        ).fetchone()
+        if row is None:
+            return SidebarState()
+        try:
+            return SidebarState.from_dict(json.loads(str(row["state_json"])))
+        except ValueError:
+            logger.warning("Corrupt sidebar_state in SQLite; falling back to empty", exc_info=True)
+            return SidebarState()
+
     # -- mutations the API needs ------------------------------------------
 
     def hide(self, session_id: str) -> None:
-        """Stop listing a session. Nothing on disk is touched but this file."""
+        """Stop listing a session. Nothing on disk is touched but our state."""
         with self._lock:
             self.state.hidden_sessions.add(session_id)
             self.save()
@@ -242,30 +289,21 @@ class SidebarStore:
     # -- persistence -------------------------------------------------------
 
     def save(self) -> None:
-        """Write the whole file atomically.
-
-        Temp file in the same directory (`os.replace` is only atomic within a
-        filesystem) plus `os.replace`, so a crash leaves either the old file or the
-        new one -- never a truncated one. Called on every mutation: this file is a
-        few hundred bytes and a lost sidebar is more annoying than a few writes.
-        """
+        """Persist the sidebar state atomically in SQLite WAL."""
         with self._lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            payload = json.dumps(self.state.to_dict(), indent=2, sort_keys=False) + "\n"
-            handle, tmp_name = tempfile.mkstemp(
-                dir=str(self.path.parent), prefix=f"{self.path.name}.", suffix=".tmp"
-            )
-            try:
-                with os.fdopen(handle, "w", encoding="utf-8") as fh:
-                    fh.write(payload)
-                    fh.flush()
-                    os.fsync(fh.fileno())
-                os.replace(tmp_name, self.path)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    os.unlink(tmp_name)
-                raise
-
+            payload = json.dumps(self.state.to_dict(), ensure_ascii=False)
+            now = time.time()
+            with self._db.write_transaction() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO sidebar_state (singleton, state_json, updated_at)
+                    VALUES (1, ?, ?)
+                    ON CONFLICT(singleton) DO UPDATE SET
+                        state_json = excluded.state_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (payload, now),
+                )
 
 def is_visible(session: dict[str, Any], state: SidebarState) -> bool:
     """The sidebar's one rule.

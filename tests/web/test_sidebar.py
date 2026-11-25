@@ -7,7 +7,6 @@ test is about what survives a round trip and what a corrupt file degrades to.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 from quartz.web.sidebar import (
@@ -97,39 +96,46 @@ def test_removing_a_workspace_persists_and_is_idempotent(tmp_path: Path) -> None
     assert [workspace.cwd for workspace in SidebarStore(path).state.workspaces] == ["/tmp/two"]
 
 
-def test_save_is_atomic_and_leaves_no_temp_files(tmp_path: Path) -> None:
-    """A crash mid-write must leave the old file, never a truncated one."""
+def test_save_is_atomic_on_db_write_failure(tmp_path: Path) -> None:
+    """A crash mid-transaction must leave the previous committed state intact."""
     path = tmp_path / "sidebar.json"
     store = SidebarStore(path)
     store.hide("s1")
-    before = path.read_text(encoding="utf-8")
 
-    # A write that fails while the temp file exists: the previous file survives.
     class Boom(Exception):
         pass
 
-    original_replace = os.replace
+    original_tx = store._db.write_transaction
 
-    def exploding_replace(src: str, dst: str) -> None:
-        raise Boom("disk on fire")
+    from collections.abc import Iterator
+    from contextlib import contextmanager
 
-    os.replace = exploding_replace  # type: ignore[assignment]
+    @contextmanager
+    def exploding_tx() -> Iterator[object]:
+        with original_tx() as conn:
+            conn.execute(
+                "UPDATE sidebar_state SET state_json = '{}' WHERE singleton = 1"
+            )
+            raise Boom("disk on fire")
+            yield conn  # pragma: no cover
+
+    store._db.write_transaction = exploding_tx  # type: ignore[method-assign]
     try:
         store.hide("s2")
     except Boom:
         pass
     finally:
-        os.replace = original_replace  # type: ignore[assignment]
+        store._db.write_transaction = original_tx  # type: ignore[method-assign]
 
-    assert path.read_text(encoding="utf-8") == before
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["sidebar.json"]
+    assert SidebarStore(path).state.hidden_sessions == {"s1"}
 
 
 def test_lock_free_write_creates_the_directory(tmp_path: Path) -> None:
     """`~/.quartz/web` does not exist on a fresh machine."""
     path = tmp_path / "nested" / "deeper" / "sidebar.json"
-    SidebarStore(path).hide("s1")
-    assert path.is_file()
+    store = SidebarStore(path)
+    store.hide("s1")
+    assert store.db_path.is_file()
 
 
 # -- tolerant load -----------------------------------------------------

@@ -18,7 +18,11 @@ def test_session_list_all_caches_unchanged_files_and_invalidates_on_write(tmp_pa
     s1 = Session.create(cwd, sessions_dir=sessions_dir, origin="web")
     s1.save_messages([{"role": "user", "content": "first message"}])
 
-    with patch.object(Session, "_read_session_facts", wraps=Session._read_session_facts) as spy:
+    from quartz.core import session_index
+
+    with patch.object(
+        session_index, "_parse_jsonl_for_index", wraps=session_index._parse_jsonl_for_index
+    ) as spy:
         rows1, _ = Session.list_all(limit=None, sessions_dir=sessions_dir)
         assert len(rows1) == 1
         assert rows1[0]["title"] == "first message"
