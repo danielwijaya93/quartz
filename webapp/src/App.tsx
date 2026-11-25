@@ -1,6 +1,10 @@
 import * as React from "react";
 import { HeaderBar } from "./components/HeaderBar";
+import { BotRunBanner } from "./components/BotRunBanner";
+import { BotsHistoryModal } from "./components/BotsHistoryModal";
+import { CreateBotModal } from "./components/CreateBotModal";
 import { Transcript } from "./components/Transcript";
+import type { BotConfig } from "./types/bots";
 import { StatusLine } from "./components/StatusLine";
 import { Composer } from "./components/Composer";
 import { CommandPalette } from "./components/CommandPalette";
@@ -121,6 +125,14 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
   markNotificationsReadRef.current = quartz.markNotificationsRead;
   const sidebar = useSidebar();
   const bots = useBots();
+  const [bannerHistoryBotId, setBannerHistoryBotId] = React.useState<string | null>(null);
+  const [bannerEditBot, setBannerEditBot] = React.useState<BotConfig | null>(null);
+
+  React.useEffect(() => {
+    void bots.reloadRuns();
+  }, [quartz.state.activeSessions, bots.reloadRuns]);
+
+
 
   const composerRef = React.useRef<HTMLTextAreaElement | null>(null);
   const palette = useCommandPalette(composerRef);
@@ -236,6 +248,14 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
   }, []);
 
   const sessionId = quartz.state.session.sessionId;
+  const activeBotRun = React.useMemo(
+    () => (sessionId ? bots.runs.find((r) => r.session_id === sessionId) : undefined),
+    [bots.runs, sessionId],
+  );
+  const activeBotConfig = React.useMemo(
+    () => (activeBotRun ? bots.bots.find((b) => b.id === activeBotRun.bot_id) : undefined),
+    [activeBotRun, bots.bots],
+  );
 
   /**
    * Refresh the sidebar when the live session changes.
@@ -455,6 +475,7 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     onDismissActiveSession: quartz.dismissActiveSession,
     onClearReadActiveSessions: quartz.clearReadActiveSessions,
     bots: bots.bots,
+    botRuns: bots.runs,
     togglingBotIds: bots.togglingIds,
     runningBotIds: bots.runningIds,
     botToggleError: bots.toggleError,
@@ -506,6 +527,18 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
           />
         ) : (
           <>
+            {activeBotRun ? (
+              <BotRunBanner
+                run={activeBotRun}
+                bot={activeBotConfig}
+                isRunning={bots.runningIds.has(activeBotRun.bot_id)}
+                onOpenHistory={(botId) => setBannerHistoryBotId(botId)}
+                onEditBot={(bot) => setBannerEditBot(bot)}
+                onRerun={(botId) => {
+                  void bots.runNow(botId);
+                }}
+              />
+            ) : null}
             <Transcript
               rows={quartz.state.rows}
               turnRunning={quartz.state.turnRunning}
@@ -616,6 +649,25 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
           if (picker === "workspace") void sidebar.addWorkspace(path);
           else newSessionIn(path);
         }}
+      />
+
+      <CreateBotModal
+        open={bannerEditBot !== null}
+        initialBot={bannerEditBot}
+        defaultCwd={quartz.state.session.cwd}
+        onClose={() => setBannerEditBot(null)}
+        onSubmit={async (payload) => {
+          if (bannerEditBot) await bots.update(bannerEditBot.id, payload);
+        }}
+      />
+
+      <BotsHistoryModal
+        open={bannerHistoryBotId !== null}
+        bots={bots.bots}
+        initialBotId={bannerHistoryBotId ?? undefined}
+        onClose={() => setBannerHistoryBotId(null)}
+        onOpenSession={selectSession}
+        onRestoreBot={bots.restore}
       />
 
       <SessionArchiveDialog

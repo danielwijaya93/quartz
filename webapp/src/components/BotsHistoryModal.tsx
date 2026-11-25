@@ -7,6 +7,7 @@ import type { BotConfig, BotRunRecord, DeletedBotRecord } from "@/types/bots";
 export interface BotsHistoryModalProps {
   open: boolean;
   bots: readonly BotConfig[];
+  initialBotId?: string;
   onClose: () => void;
   onOpenSession: (sessionId: string) => void;
   onRestoreBot?: (id: string) => Promise<unknown>;
@@ -46,6 +47,7 @@ function formatDuration(durationMs: number | null): string {
 export function BotsHistoryModal({
   open,
   bots,
+  initialBotId,
   onClose,
   onOpenSession,
   onRestoreBot,
@@ -54,7 +56,14 @@ export function BotsHistoryModal({
   const dialogRef = React.useRef<HTMLDialogElement | null>(null);
 
   const [tab, setTab] = React.useState<"runs" | "deleted">("runs");
-  const [botFilter, setBotFilter] = React.useState<string>("");
+  const [botFilter, setBotFilter] = React.useState<string>(initialBotId ?? "");
+
+  React.useEffect(() => {
+    if (open) {
+      setTab("runs");
+      setBotFilter(initialBotId ?? "");
+    }
+  }, [open, initialBotId]);
   const [statusFilter, setStatusFilter] = React.useState<string>("");
   const [runs, setRuns] = React.useState<BotRunRecord[]>([]);
   const [deletedBots, setDeletedBots] = React.useState<DeletedBotRecord[]>([]);

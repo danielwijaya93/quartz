@@ -250,6 +250,7 @@ export interface ActiveSessionItem {
   read?: boolean;
   updatedAt: string;
   preview?: string;
+  isBot?: boolean;
 }
 
 export type ServerMessageType = ServerMessage["type"];

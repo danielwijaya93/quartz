@@ -120,7 +120,7 @@ def create_app(
     manager = SessionManager(build, cwd=cwd, runner=runner)
     bot_store = BotStore(bots_dir)
     bot_queue = BotQueue(bots_dir)
-    bot_history = BotHistoryStore(bots_dir)
+    bot_history = BotHistoryStore(bots_dir, max_runs_per_bot=50, max_age_seconds=7 * 24 * 3600)
 
     async def _run_bot_trigger(bot: BotConfig, trigger: QueuedTrigger) -> TurnStatus:
         target_cwd = Path(bot.cwd) if bot.cwd else None
@@ -130,6 +130,9 @@ def create_app(
             == "allow"
         )
         rt = await asyncio.to_thread(ws.ensure_runtime, target_cwd)
+        from quartz.core.session import ORIGIN_BOT
+
+        await asyncio.to_thread(rt.active_session.set_origin, ORIGIN_BOT)
         await asyncio.to_thread(store().rename, rt.active_session.id, f"[Bot] {bot.name}")
         state = await asyncio.to_thread(bot_store.get_state, bot.id)
         state.active_session_id = rt.active_session.id

@@ -184,6 +184,8 @@ class SessionManager:
             "updatedAt": datetime.now(UTC).isoformat(),
             "_seq": seq,
         }
+        if ws.built and getattr(ws.runtime.active_session, "origin", None) == "bot":
+            entry["isBot"] = True
         if preview:
             entry["preview"] = _clip(preview, 120)
         return entry

@@ -150,6 +150,7 @@ def create_router(ctx: AppContext) -> APIRouter:
     async def get_bots_history(
         bot_id: str | None = None,
         status: str | None = None,
+        session_id: str | None = None,
         limit: int = 100,
     ) -> JSONResponse:
         store, _queue = _stores()
@@ -159,7 +160,9 @@ def create_router(ctx: AppContext) -> APIRouter:
         def _read() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
             runs = [
                 r.to_dict()
-                for r in history.list_runs(bot_id=bot_id, status=status, limit=bounded_limit)
+                for r in history.list_runs(
+                    bot_id=bot_id, status=status, session_id=session_id, limit=bounded_limit
+                )
             ]
             deleted = [d.to_dict() for d in history.list_deleted_bots()]
             return runs, deleted

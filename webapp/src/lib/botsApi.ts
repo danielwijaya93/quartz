@@ -125,12 +125,14 @@ export async function deleteBot(id: string): Promise<void> {
 export async function fetchBotsHistory(params?: {
   botId?: string;
   status?: string;
+  sessionId?: string;
   limit?: number;
   signal?: AbortSignal;
 }): Promise<BotsHistoryResponse> {
   const search = new URLSearchParams();
   if (params?.botId) search.set("bot_id", params.botId);
   if (params?.status) search.set("status", params.status);
+  if (params?.sessionId) search.set("session_id", params.sessionId);
   if (params?.limit) search.set("limit", String(params.limit));
   const qs = search.toString();
   const path = qs ? `/api/bots/history?${qs}` : "/api/bots/history";

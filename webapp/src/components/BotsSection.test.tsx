@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BotsSection } from "./BotsSection";
-import type { BotConfig } from "@/types/bots";
+import type { BotConfig, BotRunRecord } from "@/types/bots";
 
 function makeBot(overrides: Partial<BotConfig> = {}): BotConfig {
   return {
@@ -131,5 +131,52 @@ describe("BotsSection", () => {
 
     await user.click(screen.getByRole("button", { name: /Bots history/i }));
     expect(onOpenHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("expands recent runs under a bot, opens a run session, and opens filtered history", async () => {
+    const user = userEvent.setup();
+    const bot = makeBot({ id: "b1", name: "git-log-summary", watcher_type: "cron", enabled: true });
+    const runs: BotRunRecord[] = Array.from({ length: 6 }, (_, i) => ({
+      run_id: `r-${i}`,
+      bot_id: "b1",
+      bot_name: "git-log-summary",
+      trigger_id: `t-${i}`,
+      event_key: `cron:${i}`,
+      source: "cron",
+      status: i === 0 ? "ok" : "error",
+      started_at: 1700000000 - i * 300,
+      finished_at: 1700000004 - i * 300,
+      duration_ms: 4200,
+      session_id: `sess-${i}`,
+      error: i === 0 ? null : "failed",
+    }));
+    const onOpenSession = vi.fn();
+    const onOpenBotHistory = vi.fn();
+
+    render(
+      <BotsSection
+        bots={[bot]}
+        runs={runs}
+        activeSessionId="sess-0"
+        onCreateBot={vi.fn()}
+        onOpenSession={onOpenSession}
+        onOpenBotHistory={onOpenBotHistory}
+        onEditBot={vi.fn()}
+        onToggleBot={vi.fn()}
+        onDeleteBot={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /Toggle runs for git-log-summary/i }));
+
+    // Shows at most 5 recent runs
+    const runButtons = screen.getAllByRole("button", { name: /Open run/i });
+    expect(runButtons).toHaveLength(5);
+
+    await user.click(runButtons[0]!);
+    expect(onOpenSession).toHaveBeenCalledWith("sess-0");
+
+    await user.click(screen.getByRole("button", { name: /View all 6 runs/i }));
+    expect(onOpenBotHistory).toHaveBeenCalledWith("b1");
   });
 });

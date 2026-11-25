@@ -99,6 +99,11 @@ export function ActiveSessionsSection({
                   <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
                     {title}
                   </span>
+                  {item.isBot || title.startsWith("[Bot]") ? (
+                    <span className="shrink-0 rounded border border-indigo-500/30 bg-indigo-500/10 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-indigo-600 dark:text-indigo-400">
+                      Bot
+                    </span>
+                  ) : null}
                   <span
                     className={cn(
                       "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none",

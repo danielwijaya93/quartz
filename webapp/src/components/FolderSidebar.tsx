@@ -29,7 +29,7 @@ import {
   type SidebarState,
 } from "@/lib/sidebar";
 import type { ActiveSessionItem } from "@/protocol";
-import type { BotConfig, BotFormValues } from "@/types/bots";
+import type { BotConfig, BotFormValues, BotRunRecord } from "@/types/bots";
 
 export interface FolderSidebarProps {
   /** The last good payload, or null before the first load succeeds. */
@@ -79,6 +79,8 @@ export interface FolderSidebarProps {
   onClearReadActiveSessions?: () => void;
   /** Configured autonomous bots. */
   bots?: readonly BotConfig[];
+  /** Recent bot execution runs for inline sidebar grouping. */
+  botRuns?: readonly BotRunRecord[];
   togglingBotIds?: ReadonlySet<string>;
   runningBotIds?: ReadonlySet<string>;
   botToggleError?: string | null;
@@ -129,6 +131,7 @@ export function FolderSidebar({
   activeSessions: activeSessionItems = [],
   onDismissActiveSession,
   bots = [],
+  botRuns = [],
   togglingBotIds,
   runningBotIds,
   botToggleError,
@@ -193,6 +196,7 @@ export function FolderSidebar({
   const [botModalOpen, setBotModalOpen] = React.useState(false);
   const [editingBot, setEditingBot] = React.useState<BotConfig | null>(null);
   const [historyModalOpen, setHistoryModalOpen] = React.useState(false);
+  const [historyBotFilter, setHistoryBotFilter] = React.useState<string | undefined>(undefined);
 
   // A notice dismisses itself, and every new one restarts the clock: the person
   // acting twice gets the second confirmation, not a countdown inherited from the
@@ -334,6 +338,8 @@ export function FolderSidebar({
             />
             <BotsSection
               bots={bots}
+              runs={botRuns}
+              activeSessionId={currentSessionId}
               togglingIds={togglingBotIds}
               runningIds={runningBotIds}
               toggleError={botToggleError}
@@ -341,7 +347,15 @@ export function FolderSidebar({
                 setEditingBot(null);
                 setBotModalOpen(true);
               }}
-              onOpenHistory={() => setHistoryModalOpen(true)}
+              onOpenHistory={() => {
+                setHistoryBotFilter(undefined);
+                setHistoryModalOpen(true);
+              }}
+              onOpenBotHistory={(botId) => {
+                setHistoryBotFilter(botId);
+                setHistoryModalOpen(true);
+              }}
+              onOpenSession={onSelectSession}
               onEditBot={(bot) => {
                 setEditingBot(bot);
                 setBotModalOpen(true);
@@ -493,6 +507,7 @@ export function FolderSidebar({
       <BotsHistoryModal
         open={historyModalOpen}
         bots={bots}
+        initialBotId={historyBotFilter}
         onClose={() => setHistoryModalOpen(false)}
         onOpenSession={onSelectSession}
         onRestoreBot={onRestoreBot}
