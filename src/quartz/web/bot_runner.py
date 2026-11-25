@@ -148,6 +148,8 @@ class BotRunner:
 
     async def _run_loop(self) -> None:
         while not self._stopped:
+            # Clear BEFORE ticking so any notify_queue() arriving mid-tick is never lost.
+            self._wake_event.clear()
             try:
                 await self.tick_once()
                 await self.dispatch_available()
@@ -156,7 +158,6 @@ class BotRunner:
             except Exception:
                 logger.warning("BotRunner loop tick failed", exc_info=True)
 
-            self._wake_event.clear()
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._wake_event.wait(), timeout=self._tick_interval_s)
 
@@ -276,16 +277,47 @@ class BotRunner:
             return [], "gh api returned non-list payload"
         return [x for x in parsed if isinstance(x, dict)], None
 
+    def _dequeue_enabled_trigger(self) -> tuple[BotConfig, QueuedTrigger] | None:
+        while True:
+            trigger = self._queue.dequeue_next()
+            if trigger is None:
+                return None
+            bot = self._store.get_bot(trigger.bot_id)
+            if bot is not None and bot.enabled:
+                return bot, trigger
+
+    def _finalize_run_state(
+        self,
+        bot_id: str,
+        run_id: str,
+        *,
+        status: str,
+        finished_at: float,
+        error: str | None = None,
+        update_bot_state: bool = True,
+    ) -> None:
+        state = self._store.get_state(bot_id)
+        if update_bot_state:
+            state.last_run_at = finished_at
+            state.last_error = error
+            self._store.save_state(state)
+        if self._history is not None:
+            self._history.record_run_finish(
+                run_id,
+                status=status,
+                finished_at=finished_at,
+                session_id=state.active_session_id,
+                error=error,
+            )
+
     async def dispatch_available(self) -> int:
         """Dequeue and start worker tasks up to ``max_concurrent``."""
         started = 0
         while self._active_slots < self._max_concurrent:
-            trigger = await asyncio.to_thread(self._queue.dequeue_next)
-            if trigger is None:
+            pair = await asyncio.to_thread(self._dequeue_enabled_trigger)
+            if pair is None:
                 break
-            bot = await asyncio.to_thread(self._store.get_bot, trigger.bot_id)
-            if bot is None or not bot.enabled:
-                continue
+            bot, trigger = pair
 
             self._active_slots += 1
             started += 1
@@ -332,47 +364,35 @@ class BotRunner:
             ):
                 run_status = "cancelled"
 
-            finished_at = time.time()
-            state = await asyncio.to_thread(self._store.get_state, bot.id)
-            state.last_run_at = finished_at
-            state.last_error = None
-            await asyncio.to_thread(self._store.save_state, state)
-            if self._history is not None:
-                await asyncio.to_thread(
-                    self._history.record_run_finish,
-                    run_id,
-                    status=run_status,
-                    finished_at=finished_at,
-                    session_id=state.active_session_id,
-                )
+            await asyncio.to_thread(
+                self._finalize_run_state,
+                bot.id,
+                run_id,
+                status=run_status,
+                finished_at=time.time(),
+            )
         except asyncio.CancelledError:
             if self._history is not None:
                 with contextlib.suppress(Exception):
-                    state = await asyncio.to_thread(self._store.get_state, bot.id)
                     await asyncio.to_thread(
-                        self._history.record_run_finish,
+                        self._finalize_run_state,
+                        bot.id,
                         run_id,
                         status="cancelled",
                         finished_at=time.time(),
-                        session_id=state.active_session_id,
+                        update_bot_state=False,
                     )
             raise
         except Exception as exc:
             logger.warning("Bot %s trigger %s failed", bot.id, trigger.trigger_id, exc_info=True)
-            finished_at = time.time()
-            state = await asyncio.to_thread(self._store.get_state, bot.id)
-            state.last_run_at = finished_at
-            state.last_error = str(exc)
-            await asyncio.to_thread(self._store.save_state, state)
-            if self._history is not None:
-                await asyncio.to_thread(
-                    self._history.record_run_finish,
-                    run_id,
-                    status="error",
-                    finished_at=finished_at,
-                    session_id=state.active_session_id,
-                    error=str(exc),
-                )
+            await asyncio.to_thread(
+                self._finalize_run_state,
+                bot.id,
+                run_id,
+                status="error",
+                finished_at=time.time(),
+                error=str(exc),
+            )
         finally:
             if not slot_released:
                 self._active_slots = max(0, self._active_slots - 1)

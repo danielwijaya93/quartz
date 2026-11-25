@@ -77,7 +77,7 @@ async def _ensure_conn_session(
     if conn.session is not None and conn.session.built:
         return conn.session
     try:
-        target = await asyncio.to_thread(manager.ensure_default_session, cwd)
+        target = await manager.aensure_default_session(cwd)
     except Exception as exc:
         _err(push, f"{exc.__class__.__name__}: {exc}", fatal=True)
         raise AlreadyReported from exc
@@ -122,7 +122,7 @@ async def _dispatch(
             session: WebSession | None = None
             if isinstance(frame.session_id, str) and frame.session_id.strip():
                 with contextlib.suppress(Exception):
-                    session = await asyncio.to_thread(manager.get_or_load_session, frame.session_id.strip())
+                    session = await manager.aget_or_load_session(frame.session_id.strip())
             if session is None:
                 session = await _ensure_conn_session(manager, conn, push, app, resolve_cwd(frame.cwd, manager.cwd))
             else:
@@ -130,8 +130,10 @@ async def _dispatch(
             await asyncio.to_thread(remember_workspace, sidebar, session)
             from quartz.settings import load_settings
 
-            loaded = await asyncio.to_thread(load_settings)
-            snapshot = await asyncio.to_thread(session.snapshot)
+            loaded, snapshot = await asyncio.gather(
+                asyncio.to_thread(load_settings),
+                session.asnapshot(),
+            )
             snapshot["settings"] = {
                 "notifications": loaded.notifications,
                 "notifyTurn": loaded.notify_turn,
@@ -179,10 +181,10 @@ async def _dispatch(
 
         elif isinstance(frame, NewSessionFrame):
             resolved_cwd = None if frame.cwd is None else resolve_cwd(frame.cwd, manager.cwd)
-            session = await asyncio.to_thread(manager.create_session, resolved_cwd)
+            session = await manager.acreate_session(resolved_cwd)
             _switch_connection(conn, session, push, app)
             await asyncio.to_thread(remember_workspace, sidebar, session)
-            push(await asyncio.to_thread(session.snapshot))
+            push(await session.asnapshot())
             push({"type": "active_sessions_state", "items": manager.active_sessions_items()})
 
         elif isinstance(frame, LoadSessionFrame):
@@ -190,22 +192,22 @@ async def _dispatch(
             if not session_id:
                 _err(push, "Missing sessionId.")
                 return
-            session = await asyncio.to_thread(manager.get_or_load_session, session_id)
+            session = await manager.aget_or_load_session(session_id)
             _switch_connection(conn, session, push, app)
-            snapshot = await asyncio.to_thread(session.snapshot)
+            snapshot = await session.asnapshot()
             push(snapshot)
             _replay_live_turn(session, snapshot, push)
             push({"type": "active_sessions_state", "items": manager.active_sessions_items()})
 
         elif isinstance(frame, TrustProjectFrame):
             session = await _ensure_conn_session(manager, conn, push, app)
-            await asyncio.to_thread(session.trust_current_project)
-            push(session.snapshot())
+            await session.atrust_current_project()
+            push(await session.asnapshot())
 
         elif isinstance(frame, SetSandboxFrame):
             session = await _ensure_conn_session(manager, conn, push, app)
-            await asyncio.to_thread(session.set_sandbox, frame.enabled)
-            session.emit(session.snapshot())
+            await session.aset_sandbox(frame.enabled)
+            session.emit(await session.asnapshot())
 
         elif isinstance(frame, PermissionResponseFrame):
             session = await _ensure_conn_session(manager, conn, push, app)
@@ -213,24 +215,24 @@ async def _dispatch(
             if not request_id:
                 _err(push, "Missing requestId.")
                 return
-            await asyncio.to_thread(session.resolve_permission, request_id, frame.decision.strip())
+            session.resolve_permission(request_id, frame.decision.strip())
 
         elif isinstance(frame, IdleSessionResponseFrame):
             session_id = frame.session_id.strip()
             if not session_id:
                 _err(push, "Missing sessionId.")
                 return
-            await asyncio.to_thread(manager.resolve_idle_prompt, session_id, frame.action.strip())
+            await manager.aresolve_idle_prompt(session_id, frame.action.strip())
 
         elif isinstance(frame, ActiveSessionDismissFrame):
             session_id = frame.session_id.strip()
             if not session_id:
                 _err(push, "Missing sessionId.")
                 return
-            await asyncio.to_thread(manager.dismiss_active_session, session_id)
+            manager.dismiss_active_session(session_id)
 
         elif isinstance(frame, ActiveSessionsClearReadFrame):
-            await asyncio.to_thread(manager.clear_read_active_sessions)
+            manager.clear_read_active_sessions()
 
         elif isinstance(frame, NotificationsReadFrame):
             manager.broadcast_notifications_cleared()

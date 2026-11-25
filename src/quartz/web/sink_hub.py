@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import threading
 import time
@@ -29,12 +30,17 @@ class SinkHub:
         *,
         on_event: Callable[[Frame], None] | None = None,
         on_grace_expired: Callable[[], None] | None = None,
+        resolve_loop: Callable[[], asyncio.AbstractEventLoop | None] | None = None,
     ) -> None:
         self._on_event = on_event
         self._on_grace_expired = on_grace_expired
+        self._resolve_loop = resolve_loop
         self._lock = threading.Lock()
         self._sinks: set[Push] = set()
         self._grace: threading.Timer | None = None
+        self._grace_handle: asyncio.TimerHandle | None = None
+        self._grace_loop: asyncio.AbstractEventLoop | None = None
+        self._grace_gen = 0
         # What the turn in flight has said so far, so a tab that reconnects mid-answer
         # can be caught up without asking the kernel to say it again.
         self._streaming = ""
@@ -123,10 +129,6 @@ class SinkHub:
         A sink that raises is dropped rather than allowed to fail the turn: the
         socket dying is exactly the case this class exists to survive.
         """
-        # Keep the in-flight answer so a tab that arrives mid-turn can be told, in one
-        # frame, the text it missed. Reset on `tool_call` (which settles the preceding
-        # step) and on `start_turn`, not on `turn_end`, so a turn that has just
-        # finished still replays to a socket that connected a moment too late.
         kind = frame.get("type")
         with self._lock:
             if kind == "text_delta":
@@ -146,9 +148,38 @@ class SinkHub:
 
     def cancel_grace(self) -> None:
         with self._lock:
+            self._grace_gen += 1
             grace, self._grace = self._grace, None
+            handle, self._grace_handle = self._grace_handle, None
+            grace_loop, self._grace_loop = self._grace_loop, None
         if grace is not None:
             grace.cancel()
+        if handle is not None:
+            self._cancel_handle(handle, grace_loop)
+
+    @staticmethod
+    def _cancel_handle(
+        handle: asyncio.TimerHandle, loop: asyncio.AbstractEventLoop | None
+    ) -> None:
+        if loop is None or loop.is_closed():
+            handle.cancel()
+            return
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            handle.cancel()
+        else:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(handle.cancel)
+
+    def _active_loop(self) -> asyncio.AbstractEventLoop | None:
+        if self._resolve_loop is not None:
+            loop = self._resolve_loop()
+            if loop is not None and loop.is_running() and not loop.is_closed():
+                return loop
+        return None
 
     def begin_grace(
         self, timeout: float = RECONNECT_GRACE_S, *, turn_running: bool
@@ -157,16 +188,47 @@ class SinkHub:
         if not turn_running or self.attached:
             return
         self.cancel_grace()
-        grace = threading.Timer(timeout, self._abort_if_unattended)
+        with self._lock:
+            gen = self._grace_gen
+
+        loop = self._active_loop()
+        if loop is not None:
+            def _schedule() -> None:
+                with self._lock:
+                    if gen != self._grace_gen or self._sinks:
+                        return
+                    self._grace_loop = loop
+                    self._grace_handle = loop.call_later(
+                        timeout, self._abort_if_unattended, gen
+                    )
+
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+            if running is loop:
+                _schedule()
+                return
+            try:
+                loop.call_soon_threadsafe(_schedule)
+                return
+            except RuntimeError:
+                pass
+
+        grace = threading.Timer(timeout, self._abort_if_unattended, args=(gen,))
         grace.daemon = True
         with self._lock:
             self._grace = grace
         grace.start()
 
-    def _abort_if_unattended(self) -> None:
+    def _abort_if_unattended(self, gen: int | None = None) -> None:
         """The grace expired. Stop the turn only if nobody came back."""
         with self._lock:
+            if gen is not None and gen != self._grace_gen:
+                return
             self._grace = None
+            self._grace_handle = None
+            self._grace_loop = None
             attached = bool(self._sinks)
         if attached:
             return
