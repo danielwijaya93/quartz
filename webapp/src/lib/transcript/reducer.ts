@@ -325,65 +325,136 @@ function mergeHistory(
   cellFiles?: Record<string, FileAttachment[]>,
 ): TranscriptState {
   const incoming = buildHistoryRows(messages, cellFiles);
-  const fresh = incoming.filter((row) => !state.seen.has(row.id));
+  const historyIndexById = new Map<string, number>();
+  const freshUserIndices = new Map<string, number[]>();
+  const freshAssistantIndices = new Map<string, number[]>();
+  let freshCount = 0;
 
-  // A prompt is echoed locally the moment it is sent (the wire has no
-  // `user_message` frame), so history will eventually contain the same prompt
-  // under a positional id. Retire the local copy by text, one for one, or a
-  // reconnect shows every prompt twice. Similarly, retire live assistant rows
-  // once history catches up with them (e.g. `session_state` on Rich UI toggle).
-  const pendingUsers = new Map<string, number>();
-  const pendingAssistants = new Map<string, number>();
-  for (const row of fresh) {
+  for (let i = 0; i < incoming.length; i += 1) {
+    const row = incoming[i]!;
+    historyIndexById.set(row.id, i);
+    if (state.seen.has(row.id)) continue;
+    freshCount += 1;
     if (row.kind === "user") {
-      pendingUsers.set(row.text, (pendingUsers.get(row.text) ?? 0) + 1);
+      const queue = freshUserIndices.get(row.text);
+      if (queue) queue.push(i);
+      else freshUserIndices.set(row.text, [i]);
     } else if (row.kind === "assistant") {
       const key = row.text.trim();
-      pendingAssistants.set(key, (pendingAssistants.get(key) ?? 0) + 1);
+      const queue = freshAssistantIndices.get(key);
+      if (queue) queue.push(i);
+      else freshAssistantIndices.set(key, [i]);
     }
   }
 
-  const retired = new Set<string>();
-  const inheritedFormState = new Map<string, Record<string, unknown>>();
+  // A prompt is echoed locally the moment it is sent (the wire has no
+  // `user_message` frame), and live assistant answers stream in before history
+  // commits them. Match each local/live copy 1-to-1 to its incoming history
+  // index so it is replaced *in place* -- preserving the relative order of
+  // live-only rows like `thinking` and `turn_end` around it.
+  type MergeEntry = { kind: "history"; index: number } | { kind: "live"; row: Row };
+  const entries: MergeEntry[] = [];
+  const placedIndices = new Set<number>();
+  const existingById = new Map<string, Row>();
+  const inheritedFormState = new Map<number, Record<string, unknown>>();
+  let retiredCount = 0;
+
   for (const row of state.rows) {
+    existingById.set(row.id, row);
+    const directIndex = historyIndexById.get(row.id);
+    if (directIndex !== undefined) {
+      placedIndices.add(directIndex);
+      entries.push({ kind: "history", index: directIndex });
+      continue;
+    }
     if (row.kind === "user" && isLocalRow(row.id)) {
-      const left = pendingUsers.get(row.text) ?? 0;
-      if (left > 0) {
-        pendingUsers.set(row.text, left - 1);
-        retired.add(row.id);
+      const matchedIndex = freshUserIndices.get(row.text)?.shift();
+      if (matchedIndex !== undefined) {
+        retiredCount += 1;
+        placedIndices.add(matchedIndex);
+        entries.push({ kind: "history", index: matchedIndex });
+        continue;
       }
     } else if (row.kind === "assistant" && !row.id.startsWith("history-")) {
-      const key = row.text.trim();
-      const left = pendingAssistants.get(key) ?? 0;
-      if (left > 0) {
-        pendingAssistants.set(key, left - 1);
-        retired.add(row.id);
+      const matchedIndex = freshAssistantIndices.get(row.text.trim())?.shift();
+      if (matchedIndex !== undefined) {
+        retiredCount += 1;
+        placedIndices.add(matchedIndex);
         if (row.formState !== null) {
-          inheritedFormState.set(key, row.formState);
+          inheritedFormState.set(matchedIndex, row.formState);
         }
+        entries.push({ kind: "history", index: matchedIndex });
+        continue;
       }
     }
+    entries.push({ kind: "live", row });
   }
 
-  if (fresh.length === 0 && retired.size === 0) return state;
+  if (freshCount === 0 && retiredCount === 0) return state;
 
-  // History belongs above live rows: it is everything that happened before.
-  const existingById = new Map(state.rows.map((row) => [row.id, row]));
-  const historyIds = new Set(incoming.map((row) => row.id));
-  const reconciledHistory = incoming.map((row) => {
+  const reconciledHistory = incoming.map((row, index) => {
     const existing = existingById.get(row.id);
     if (existing !== undefined) return existing;
     if (row.kind === "assistant" && row.formState === null) {
-      const formState = inheritedFormState.get(row.text.trim());
+      const formState = inheritedFormState.get(index);
       if (formState !== undefined) {
-        inheritedFormState.delete(row.text.trim());
         return { ...row, formState };
       }
     }
     return row;
   });
-  const liveRows = state.rows.filter((row) => !retired.has(row.id) && !historyIds.has(row.id));
-  return withRows(state, [...reconciledHistory, ...liveRows]);
+
+  // Find where trailing live-only rows (e.g. an in-progress reply not yet in
+  // history) begin: everything up through the last placed history row and any
+  // `turn_end` that immediately closed it belongs before new history rows.
+  let splitAt = 0;
+  for (let i = 0; i < entries.length; i += 1) {
+    if (entries[i]!.kind === "history") {
+      splitAt = i + 1;
+    }
+  }
+  while (splitAt < entries.length) {
+    const entry = entries[splitAt]!;
+    if (entry.kind === "live" && entry.row.kind === "turn_end") {
+      splitAt += 1;
+    } else {
+      break;
+    }
+  }
+
+  // Interleave any unplaced history rows (e.g. initial load or messages missed
+  // while disconnected) right before the next placed history row, and place any
+  // remaining unplaced history rows before trailing live rows.
+  const merged: Row[] = [];
+  let nextUnplaced = 0;
+  for (let i = 0; i < splitAt; i += 1) {
+    const entry = entries[i]!;
+    if (entry.kind === "live") {
+      merged.push(entry.row);
+      continue;
+    }
+    while (nextUnplaced < entry.index) {
+      if (!placedIndices.has(nextUnplaced)) {
+        merged.push(reconciledHistory[nextUnplaced]!);
+      }
+      nextUnplaced += 1;
+    }
+    merged.push(reconciledHistory[entry.index]!);
+  }
+  while (nextUnplaced < reconciledHistory.length) {
+    if (!placedIndices.has(nextUnplaced)) {
+      merged.push(reconciledHistory[nextUnplaced]!);
+    }
+    nextUnplaced += 1;
+  }
+  for (let i = splitAt; i < entries.length; i += 1) {
+    const entry = entries[i]!;
+    if (entry.kind === "live") {
+      merged.push(entry.row);
+    }
+  }
+
+  return withRows(state, merged);
 }
 
 /**
