@@ -269,6 +269,21 @@ describe("turn lifecycle", () => {
       { type: "turn_end", status: "interrupted", tokens: 0, elapsedMs: 1 },
     ]);
     expect(interrupted.rows.at(-1)).toMatchObject({ status: "interrupted" });
+
+    const waiting = fold([
+      { type: "turn_start", turnId: "t3" },
+      { type: "turn_end", status: "waiting_permission", tokens: 0, elapsedMs: 0 },
+    ]);
+    expect(waiting.turnRunning).toBe(false);
+    expect(waiting.rows.at(-1)).toMatchObject({ status: "waiting_permission" });
+
+    const resumed = fold([
+      { type: "turn_start", turnId: "t3" },
+      { type: "turn_end", status: "waiting_permission", tokens: 0, elapsedMs: 0 },
+      { type: "turn_start", turnId: "t3" },
+    ]);
+    expect(resumed.turnRunning).toBe(true);
+    expect(resumed.turnId).toBe("t3");
   });
 });
 

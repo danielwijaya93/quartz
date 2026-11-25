@@ -63,6 +63,7 @@ class TurnStatus(enum.Enum):
     OK = "ok"
     ABORTED = "aborted"
     INTERRUPTED = "interrupted"
+    WAITING_PERMISSION = "waiting_permission"
     ERROR = "error"
 
 

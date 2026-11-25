@@ -3,20 +3,33 @@
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from typing import Any
 
 from quartz.web.bridge import Frame
 
-__all__ = ["PermissionGate"]
+__all__ = ["DEFAULT_PARK_DELAY_S", "PermissionGate"]
+
+DEFAULT_PARK_DELAY_S = 15.0
 
 
 class PermissionGate:
     """Coordinates blocking kernel permission requests with browser responses."""
 
-    def __init__(self, emit: Callable[[Frame], None]) -> None:
+    def __init__(
+        self,
+        emit: Callable[[Frame], None],
+        *,
+        park_delay_s: float = DEFAULT_PARK_DELAY_S,
+        on_park: Callable[[], None] | None = None,
+        on_wake: Callable[[], None] | None = None,
+    ) -> None:
         self._emit = emit
+        self._park_delay_s = park_delay_s
+        self._on_park = on_park
+        self._on_wake = on_wake
         self._lock = threading.Lock()
         self._pending: dict[str, Any] | None = None
         self._event: threading.Event | None = None
@@ -48,18 +61,32 @@ class PermissionGate:
             self._decision = None
         self._emit({"type": "permission_request", **payload})
         cancel_ev = getattr(req, "cancel_event", None)
-        if cancel_ev is None:
-            event.wait()
-        else:
-            while not event.wait(timeout=0.05):
-                if cancel_ev.is_set():
-                    break
+        park_deadline = (
+            None if self._park_delay_s < 0 else time.monotonic() + self._park_delay_s
+        )
+        parked = False
+        while True:
+            wait_s = 0.05
+            if not parked and park_deadline is not None:
+                until_park = park_deadline - time.monotonic()
+                if until_park <= 0:
+                    parked = True
+                    if self._on_park is not None:
+                        self._on_park()
+                else:
+                    wait_s = min(0.05, until_park)
+            if event.wait(timeout=wait_s):
+                break
+            if cancel_ev is not None and cancel_ev.is_set():
+                break
         with self._lock:
             decision = self._decision or "reject" if event.is_set() else "reject"
             if self._pending and self._pending.get("requestId") == req_id:
                 self._pending = None
                 self._event = None
                 self._decision = None
+        if parked and self._on_wake is not None:
+            self._on_wake()
         self._emit({"type": "permission_resolved", "requestId": req_id, "decision": decision})
         return decision
 

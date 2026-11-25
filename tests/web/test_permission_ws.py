@@ -25,6 +25,9 @@ class _DummyKernel:
     def running_bash_count(self) -> int:
         return 0
 
+    def interrupt(self) -> None:
+        pass
+
     def close(self) -> None:
         pass
 
@@ -33,6 +36,9 @@ class _DummySession:
     def __init__(self, cwd: Path) -> None:
         self.id = "sess-1"
         self.jsonl_path = cwd / "sess.jsonl"
+
+    def save_messages(self, _messages: Any) -> None:
+        pass
 
 
 class _DummyRuntime:
@@ -178,3 +184,202 @@ def test_web_session_permission_unblocked_on_request_cancel_event(tmp_path: Path
         for f in frames
     )
     ws.close()
+
+
+def _wait_until(predicate: Any, timeout: float = 2.0) -> None:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        threading.Event().wait(0.01)
+    raise AssertionError("Timed out waiting for condition")
+
+
+def test_permission_parks_turn_after_grace_and_wakes_on_reply(tmp_path: Path) -> None:
+    from quartz.core.turn import TurnOutcome, TurnStatus
+
+    rt = _DummyRuntime(tmp_path)
+    frames: list[dict[str, Any]] = []
+    req = PermissionRequest(
+        tool="git",
+        argv=("push",),
+        cwd=str(tmp_path),
+        scope="git_remote",
+        command_display="git push",
+    )
+    decisions: list[str] = []
+
+    def _runner(_rt: Any, _obs: Any, **_kw: Any) -> TurnOutcome:
+        decisions.append(ws._handle_permission_request(req))
+        return TurnOutcome(TurnStatus.OK)
+
+    ws = WebSession(
+        build=lambda _sid, _cwd: (rt, False),
+        cwd=tmp_path,
+        runner=_runner,
+        permission_park_delay_s=0.05,
+    )
+    ws.attach(frames.append)
+    ws.ensure_runtime()
+
+    turn_id = ws.start_turn("push it", [])
+    _wait_until(
+        lambda: any(
+            f.get("type") == "turn_end" and f.get("status") == "waiting_permission"
+            for f in frames
+        )
+    )
+
+    assert ws.turn_running is False
+    snap = ws.snapshot()
+    assert snap["turnRunning"] is False
+    assert snap["pendingPermission"] is not None
+    assert ws.can_hibernate() is False
+
+    req_id = snap["pendingPermission"]["requestId"]
+    assert ws.resolve_permission(req_id, "allow_once") is True
+
+    _wait_until(
+        lambda: any(
+            f.get("type") == "turn_end" and f.get("status") == "ok"
+            for f in frames
+        )
+    )
+    assert decisions == ["allow_once"]
+    turn_starts = [f for f in frames if f.get("type") == "turn_start"]
+    assert len(turn_starts) == 2
+    assert turn_starts[0]["turnId"] == turn_id
+    assert turn_starts[1]["turnId"] == turn_id
+    assert ws.turn_running is False
+    ws.close()
+
+
+def test_permission_fast_reply_does_not_park_turn(tmp_path: Path) -> None:
+    from quartz.core.turn import TurnOutcome, TurnStatus
+
+    rt = _DummyRuntime(tmp_path)
+    frames: list[dict[str, Any]] = []
+    req = PermissionRequest(
+        tool="git",
+        argv=("push",),
+        cwd=str(tmp_path),
+        scope="git_remote",
+        command_display="git push",
+    )
+
+    def _runner(_rt: Any, _obs: Any, **_kw: Any) -> TurnOutcome:
+        ws._handle_permission_request(req)
+        return TurnOutcome(TurnStatus.OK)
+
+    ws = WebSession(
+        build=lambda _sid, _cwd: (rt, False),
+        cwd=tmp_path,
+        runner=_runner,
+        permission_park_delay_s=0.5,
+    )
+    ws.attach(frames.append)
+    ws.ensure_runtime()
+    ws.start_turn("push it", [])
+
+    _wait_until(lambda: any(f.get("type") == "permission_request" for f in frames))
+    req_id = next(f["requestId"] for f in frames if f.get("type") == "permission_request")
+    assert ws.resolve_permission(req_id, "allow_once") is True
+
+    _wait_until(lambda: any(f.get("type") == "turn_end" and f.get("status") == "ok" for f in frames))
+    assert not any(
+        f.get("type") == "turn_end" and f.get("status") == "waiting_permission"
+        for f in frames
+    )
+    assert len([f for f in frames if f.get("type") == "turn_start"]) == 1
+    ws.close()
+
+
+def test_permission_parked_not_aborted_on_reconnect_grace(tmp_path: Path) -> None:
+    from quartz.core.turn import TurnOutcome, TurnStatus
+
+    rt = _DummyRuntime(tmp_path)
+    frames: list[dict[str, Any]] = []
+    req = PermissionRequest(
+        tool="git",
+        argv=("push",),
+        cwd=str(tmp_path),
+        scope="git_remote",
+        command_display="git push",
+    )
+    decisions: list[str] = []
+
+    def _runner(_rt: Any, _obs: Any, **_kw: Any) -> TurnOutcome:
+        decisions.append(ws._handle_permission_request(req))
+        return TurnOutcome(TurnStatus.OK)
+
+    ws = WebSession(
+        build=lambda _sid, _cwd: (rt, False),
+        cwd=tmp_path,
+        runner=_runner,
+        permission_park_delay_s=0.05,
+    )
+    ws.attach(frames.append)
+    ws.ensure_runtime()
+    ws.start_turn("push it", [])
+
+    _wait_until(
+        lambda: any(
+            f.get("type") == "turn_end" and f.get("status") == "waiting_permission"
+            for f in frames
+        )
+    )
+    ws.detach(frames.append)
+    ws._on_reconnect_grace_expired()
+    assert ws.has_pending_permission is True
+
+    ws.attach(frames.append)
+    req_id = ws.snapshot()["pendingPermission"]["requestId"]
+    assert ws.resolve_permission(req_id, "allow_session") is True
+    _wait_until(lambda: any(f.get("type") == "turn_end" and f.get("status") == "ok" for f in frames))
+    assert decisions == ["allow_session"]
+    ws.close()
+
+
+def test_permission_parked_cancelled_cleanly(tmp_path: Path) -> None:
+    from quartz.core.turn import TurnOutcome, TurnStatus
+
+    rt = _DummyRuntime(tmp_path)
+    frames: list[dict[str, Any]] = []
+    req = PermissionRequest(
+        tool="git",
+        argv=("push",),
+        cwd=str(tmp_path),
+        scope="git_remote",
+        command_display="git push",
+    )
+
+    def _runner(_rt: Any, _obs: Any, abort_event: Any = None, **_kw: Any) -> TurnOutcome:
+        ws._handle_permission_request(req)
+        if abort_event is not None and abort_event.is_set():
+            return TurnOutcome(TurnStatus.ABORTED)
+        return TurnOutcome(TurnStatus.OK)
+
+    ws = WebSession(
+        build=lambda _sid, _cwd: (rt, False),
+        cwd=tmp_path,
+        runner=_runner,
+        permission_park_delay_s=0.05,
+    )
+    ws.attach(frames.append)
+    ws.ensure_runtime()
+    ws.start_turn("push it", [])
+
+    _wait_until(
+        lambda: any(
+            f.get("type") == "turn_end" and f.get("status") == "waiting_permission"
+            for f in frames
+        )
+    )
+    assert ws.cancel() is True
+    _wait_until(lambda: any(f.get("type") == "turn_end" and f.get("status") == "aborted" for f in frames))
+    assert ws.has_pending_permission is False
+    assert ws.turn_running is False
+    ws.close()
+

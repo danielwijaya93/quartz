@@ -31,9 +31,13 @@ function clip(text: string): string {
 function describeRow(row: Row): string | null {
   switch (row.kind) {
     case "turn_end":
-      return row.status === "ok"
-        ? `Turn finished in ${(row.elapsedMs / 1000).toFixed(1)} seconds.`
-        : `Turn ${row.status}.`;
+      if (row.status === "ok") {
+        return `Turn finished in ${(row.elapsedMs / 1000).toFixed(1)} seconds.`;
+      }
+      if (row.status === "waiting_permission") {
+        return "Turn paused, waiting for permission.";
+      }
+      return `Turn ${row.status}.`;
     case "error":
       return `Error: ${clip(row.message)}`;
     case "compaction":

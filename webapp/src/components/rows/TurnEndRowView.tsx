@@ -14,6 +14,7 @@ const STATUS_COPY: Record<
   ok: { label: "Finished", color: "success" },
   aborted: { label: "Aborted", color: "warning" },
   interrupted: { label: "Interrupted", color: "warning" },
+  waiting_permission: { label: "Waiting for permission", color: "warning" },
   error: { label: "Failed", color: "danger" },
 };
 

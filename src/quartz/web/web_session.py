@@ -28,7 +28,7 @@ from quartz.settings import trust_project
 from quartz.web.attachments import AttachedFileRegistry
 from quartz.web.bg_watcher import BackgroundEventWatcher
 from quartz.web.bridge import Frame, Push
-from quartz.web.permission_gate import PermissionGate
+from quartz.web.permission_gate import DEFAULT_PARK_DELAY_S, PermissionGate
 from quartz.web.sink_hub import RECONNECT_GRACE_S, SinkHub
 from quartz.web.snapshot import (
     _git_branch,
@@ -105,6 +105,7 @@ class WebSession:
         runner: TurnRunner = run_interactive_turn,
         on_event: Callable[[WebSession, Frame], None] | None = None,
         file_registry: AttachedFileRegistry | None = None,
+        permission_park_delay_s: float = DEFAULT_PARK_DELAY_S,
     ) -> None:
         self._build = build
         self._cwd = cwd
@@ -116,8 +117,16 @@ class WebSession:
         self._system_prompt_append = ""
         self._sandbox_override: bool | None = None
 
-        self._sinks = SinkHub(on_event=self._notify_event, on_grace_expired=self._abort_and_join)
-        self._perm_gate = PermissionGate(self.emit)
+        self._sinks = SinkHub(
+            on_event=self._notify_event,
+            on_grace_expired=self._on_reconnect_grace_expired,
+        )
+        self._perm_gate = PermissionGate(
+            self.emit,
+            park_delay_s=permission_park_delay_s,
+            on_park=lambda: self._turns.park_turn(),
+            on_wake=lambda: self._turns.wake_turn(),
+        )
         self._bg_watcher = BackgroundEventWatcher(
             is_current_runtime=lambda rt: self._runtime is rt,
             is_turn_running=lambda: self._turns.turn_running,
@@ -400,6 +409,11 @@ class WebSession:
 
     def cancel(self) -> bool:
         return self._turns.cancel()
+
+    def _on_reconnect_grace_expired(self) -> None:
+        if self.has_pending_permission:
+            return
+        self._abort_and_join()
 
     def _abort_and_join(self, timeout: float = 10.0) -> None:
         self._turns.abort_and_join(timeout=timeout)
