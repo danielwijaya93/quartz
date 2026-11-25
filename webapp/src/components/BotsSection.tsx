@@ -14,6 +14,7 @@ export interface BotsSectionProps {
   onOpenHistory?: () => void;
   onOpenBotHistory?: (botId: string) => void;
   onOpenSession?: (sessionId: string) => void;
+  onOpenSessionInNewTile?: (sessionId: string) => void;
   onEditBot: (bot: BotConfig) => void;
   onToggleBot: (id: string, enabled: boolean) => void;
   onRunBot?: (id: string) => void;
@@ -79,6 +80,7 @@ export function BotsSection({
   onOpenHistory,
   onOpenBotHistory,
   onOpenSession,
+  onOpenSessionInNewTile,
   onEditBot,
   onToggleBot,
   onRunBot,
@@ -293,8 +295,14 @@ export function BotsSection({
                           type="button"
                           disabled={!run.session_id || !onOpenSession}
                           aria-label={`Open run ${timeText}`}
-                          onClick={() => {
-                            if (run.session_id && onOpenSession) onOpenSession(run.session_id);
+                          onClick={(event) => {
+                            if (!run.session_id) return;
+                            if ((event.metaKey || event.ctrlKey) && onOpenSessionInNewTile) {
+                              event.preventDefault();
+                              onOpenSessionInNewTile(run.session_id);
+                              return;
+                            }
+                            if (onOpenSession) onOpenSession(run.session_id);
                           }}
                           className={cn(
                             "flex w-full cursor-pointer items-center justify-between rounded px-1.5 py-1 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus disabled:cursor-default disabled:opacity-60",

@@ -29,6 +29,7 @@ import {
   type SidebarState,
 } from "@/lib/sidebar";
 import type { ActiveSessionItem } from "@/protocol";
+import type { TileBadge } from "@/lib/tiling";
 import type { BotConfig, BotFormValues, BotRunRecord } from "@/types/bots";
 
 export interface FolderSidebarProps {
@@ -52,6 +53,12 @@ export interface FolderSidebarProps {
   onClose: () => void;
   onReload: () => void;
   onSelectSession: (sessionId: string) => void;
+  /** Opens a session in a new tile (up to 4). */
+  onOpenSessionInNewTile?: (sessionId: string) => void;
+  /** Numbered badges for sessions currently displayed in tiles. */
+  tileBadges?: ReadonlyMap<string, TileBadge>;
+  /** Whether a new tile can still be added (< 4 open). */
+  canAddTile?: boolean;
   onNewSession: (cwd: string) => void;
   /** Adds a folder to the sidebar; the header's folder button. */
   onNewFolder: () => void;
@@ -117,6 +124,9 @@ export function FolderSidebar({
   onClose,
   onReload,
   onSelectSession,
+  onOpenSessionInNewTile,
+  tileBadges,
+  canAddTile = false,
   onNewSession,
   onNewFolder,
   onRemoveFolder,
@@ -333,7 +343,9 @@ export function FolderSidebar({
               currentSessionId={currentSessionId}
               sessionById={sessionById}
               renames={sidebarState.renames}
+              tileBadges={tileBadges}
               onSelectSession={onSelectSession}
+              onOpenInNewTile={onOpenSessionInNewTile}
               onDismiss={onDismissActiveSession}
             />
             <BotsSection
@@ -356,6 +368,7 @@ export function FolderSidebar({
                 setHistoryModalOpen(true);
               }}
               onOpenSession={onSelectSession}
+              onOpenSessionInNewTile={onOpenSessionInNewTile}
               onEditBot={(bot) => {
                 setEditingBot(bot);
                 setBotModalOpen(true);
@@ -431,7 +444,14 @@ export function FolderSidebar({
                               currentSessionId !== "" &&
                               session.sessionId === currentSessionId
                             }
+                            tileBadge={tileBadges?.get(session.sessionId)}
+                            canOpenInNewTile={canAddTile}
                             onSelect={() => onSelectSession(session.sessionId)}
+                            onOpenInNewTile={
+                              onOpenSessionInNewTile
+                                ? () => onOpenSessionInNewTile(session.sessionId)
+                                : undefined
+                            }
                             onRename={(title) =>
                               void rename(
                                 session.sessionId,

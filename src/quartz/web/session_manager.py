@@ -87,6 +87,9 @@ class SessionManager:
         with self._lock:
             return list(self._sessions.values())
 
+    def session_title(self, ws: WebSession) -> str | None:
+        return self._session_title(ws)
+
     def set_system_prompt_append(self, append: str) -> None:
         cleaned = append.strip()
         with self._lock:

@@ -58,6 +58,8 @@ export interface ConnectionOptions {
   reconnect?: boolean;
   /** How long to wait for a server response on wake before treating an open socket as dead. */
   wakeCheckTimeoutMs?: number;
+  /** Optional sessionId sent in the very first `hello` frame (used by multi-tile panes). */
+  initialSessionId?: string;
 }
 
 const DEFAULT_BACKOFF_MS = [100, 300, 1000, 2000, 4000] as const;
@@ -120,6 +122,9 @@ export class Connection {
     this.backoffMs = options.backoffMs ?? DEFAULT_BACKOFF_MS;
     this.reconnectEnabled = options.reconnect ?? true;
     this.wakeCheckTimeoutMs = options.wakeCheckTimeoutMs ?? DEFAULT_WAKE_CHECK_TIMEOUT_MS;
+    if (options.initialSessionId) {
+      this.currentSessionId = options.initialSessionId;
+    }
   }
 
   get status(): ConnectionStatus {

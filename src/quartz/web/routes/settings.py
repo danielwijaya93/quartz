@@ -252,27 +252,47 @@ def create_router(ctx: AppContext) -> APIRouter:
         return JSONResponse({"ok": True, **(await asyncio.to_thread(_mcp_snapshot))})
 
     @router.get("/api/jobs")
-    async def list_jobs(session_id: str | None = Query(default=None, alias="sessionId")) -> JSONResponse:
-        target = manager.get_session(session_id)
-        if target is None or not target.built:
-            return JSONResponse({"jobs": []})
+    async def list_jobs(
+        session_id: str | None = Query(default=None, alias="sessionId"),
+        all_sessions: bool = Query(default=False, alias="all"),
+    ) -> JSONResponse:
         from quartz.kernel.actions import describe_job_label
 
-        jobs_fn = getattr(target.runtime.kernel, "running_bash_jobs", None)
-        raw_jobs = await asyncio.to_thread(
-            lambda: list(cast(Iterable[dict[str, Any]], jobs_fn())) if callable(jobs_fn) else []
-        )
-        return JSONResponse({
-            "jobs": [
-                {
+        def _collect(ws: Any, include_session: bool) -> list[dict[str, Any]]:
+            if ws is None or not ws.built:
+                return []
+            jobs_fn = getattr(ws.runtime.kernel, "running_bash_jobs", None)
+            raw_jobs = list(cast(Iterable[dict[str, Any]], jobs_fn())) if callable(jobs_fn) else []
+            sid = ws.runtime.active_session.id
+            title = manager.session_title(ws) if include_session else None
+            out: list[dict[str, Any]] = []
+            for job in raw_jobs:
+                cmd = str(job.get("command", ""))
+                entry: dict[str, Any] = {
                     "pid": job.get("pid", "?"),
-                    "command": (cmd := str(job.get("command", ""))),
+                    "command": cmd,
                     "label": describe_job_label(cmd),
                     "elapsed_s": float(job.get("elapsed_s", 0.0) or 0.0),
                 }
-                for job in raw_jobs
-            ]
-        })
+                if include_session:
+                    entry["sessionId"] = sid
+                    if title:
+                        entry["sessionTitle"] = title
+                out.append(entry)
+            return out
+
+        if all_sessions:
+            sessions = manager.all_sessions()
+            items = await asyncio.to_thread(
+                lambda: [entry for ws in sessions for entry in _collect(ws, True)]
+            )
+            return JSONResponse({"jobs": items})
+
+        target = manager.get_session(session_id)
+        if target is None or not target.built:
+            return JSONResponse({"jobs": []})
+        items = await asyncio.to_thread(lambda: _collect(target, False))
+        return JSONResponse({"jobs": items})
 
     @router.get("/api/jobs/{pid}/tail")
     async def job_tail(pid: int, session_id: str | None = Query(default=None, alias="sessionId")) -> JSONResponse:

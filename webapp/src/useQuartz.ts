@@ -51,11 +51,19 @@ export interface QuartzApi {
  * into transcript state, and exposes intent-level actions. Components never see a
  * socket or a protocol message.
  */
+export interface UseQuartzOptions {
+  /** Bind this connection directly to a specific session on initial `hello`. */
+  initialSessionId?: string | null;
+  /** When set (including ""), start a fresh session in this cwd on first open instead of attaching to default. */
+  createFreshCwd?: string;
+}
+
 export function useQuartz(
   url?: string,
   systemPromptAppend = "",
   onServerMessage?: (message: ServerMessage) => void,
   onAuthError?: () => void,
+  options?: UseQuartzOptions,
 ): QuartzApi {
   const [state, setState] = React.useState<TranscriptState>(initialState);
   const [status, setStatus] = React.useState<ConnectionStatus>("disconnected");
@@ -68,13 +76,23 @@ export function useQuartz(
   onMessageRef.current = onServerMessage;
   const onAuthErrorRef = React.useRef(onAuthError);
   onAuthErrorRef.current = onAuthError;
+  const initialSessionIdRef = React.useRef(options?.initialSessionId ?? undefined);
+  const createFreshCwdRef = React.useRef(options?.createFreshCwd);
 
   React.useEffect(() => {
     const target = url ?? resolveSocketUrl(window.location);
-    const connection = new Connection(target);
+    const initialSessionId = initialSessionIdRef.current || undefined;
+    const connection = new Connection(target, initialSessionId ? { initialSessionId } : undefined);
     connection.setSystemPromptAppend(appendRef.current);
     connectionRef.current = connection;
 
+    let createdFresh = false;
+    const offOpen = connection.on("open", () => {
+      if (!createdFresh && !initialSessionId && createFreshCwdRef.current !== undefined) {
+        createdFresh = true;
+        connection.sendNewSession(createFreshCwdRef.current || undefined);
+      }
+    });
     const offMessage = connection.on("message", (message) => {
       setState((prev) => reduce(prev, message));
       onMessageRef.current?.(message);
@@ -87,6 +105,7 @@ export function useQuartz(
     connection.connect();
 
     return () => {
+      offOpen();
       offMessage();
       offStatus();
       offAuthError();
