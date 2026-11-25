@@ -21,12 +21,16 @@ class BotHistoryStore:
         root_dir: Path | None = None,
         *,
         max_runs: int = 500,
+        max_runs_per_bot: int = 50,
+        max_age_seconds: float | None = None,
         max_deleted: int = 100,
     ) -> None:
         self.root_dir = root_dir or default_bots_dir()
         self._history_path = self.root_dir / "history.json"
         self._deleted_path = self.root_dir / "deleted.json"
         self._max_runs = max(1, int(max_runs))
+        self._max_runs_per_bot = max(1, int(max_runs_per_bot))
+        self._max_age_seconds = float(max_age_seconds) if max_age_seconds is not None else None
         self._max_deleted = max(1, int(max_deleted))
         self._lock = threading.Lock()
 
@@ -46,8 +50,21 @@ class BotHistoryStore:
         return runs
 
     def _save_runs(self, runs: list[BotRunRecord]) -> None:
-        trimmed = sorted(runs, key=lambda r: r.started_at, reverse=True)[: self._max_runs]
-        _atomic_write_json(self._history_path, {"runs": [r.to_dict() for r in trimmed]})
+        ordered = sorted(runs, key=lambda r: r.started_at, reverse=True)
+        cutoff = (time.time() - self._max_age_seconds) if self._max_age_seconds is not None else None
+        per_bot_counts: dict[str, int] = {}
+        kept: list[BotRunRecord] = []
+        for run in ordered:
+            if cutoff is not None and run.started_at < cutoff:
+                continue
+            count = per_bot_counts.get(run.bot_id, 0)
+            if count >= self._max_runs_per_bot:
+                continue
+            per_bot_counts[run.bot_id] = count + 1
+            kept.append(run)
+            if len(kept) >= self._max_runs:
+                break
+        _atomic_write_json(self._history_path, {"runs": [r.to_dict() for r in kept]})
 
     def record_run_start(self, run: BotRunRecord) -> BotRunRecord:
         with self._lock:
@@ -64,6 +81,7 @@ class BotHistoryStore:
         finished_at: float | None = None,
         session_id: str | None = None,
         error: str | None = None,
+        summary: str | None = None,
     ) -> BotRunRecord | None:
         end_ts = finished_at if finished_at is not None else time.time()
         with self._lock:
@@ -77,6 +95,8 @@ class BotHistoryStore:
                     if session_id is not None:
                         run.session_id = session_id
                     run.error = error
+                    if summary is not None:
+                        run.summary = summary
                     target = run
                     break
             if target is None:
@@ -90,6 +110,7 @@ class BotHistoryStore:
         *,
         bot_id: str | None = None,
         status: str | None = None,
+        session_id: str | None = None,
         limit: int = 100,
     ) -> list[BotRunRecord]:
         with self._lock:
@@ -98,6 +119,8 @@ class BotHistoryStore:
             runs = [r for r in runs if r.bot_id == bot_id]
         if status:
             runs = [r for r in runs if r.status == status]
+        if session_id:
+            runs = [r for r in runs if r.session_id == session_id]
         if limit > 0:
             runs = runs[:limit]
         return runs

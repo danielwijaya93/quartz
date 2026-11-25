@@ -58,6 +58,7 @@ export interface BotRunRecord {
   duration_ms: number | null;
   session_id: string | null;
   error: string | null;
+  summary?: string | null;
 }
 
 export interface DeletedBotRecord {

@@ -3,20 +3,23 @@ import {
   createBot,
   deleteBot,
   fetchBots,
+  fetchBotsHistory,
   restoreDeletedBot,
   runBotNow,
   toggleBot,
   updateBot,
 } from "./botsApi";
-import type { BotConfig, BotFormValues } from "@/types/bots";
+import type { BotConfig, BotFormValues, BotRunRecord } from "@/types/bots";
 
 export interface UseBotsResult {
   bots: BotConfig[];
+  runs: BotRunRecord[];
   loading: boolean;
   togglingIds: ReadonlySet<string>;
   runningIds: ReadonlySet<string>;
   toggleError: string | null;
   reload: () => Promise<void>;
+  reloadRuns: () => Promise<void>;
   create: (payload: BotFormValues) => Promise<void>;
   update: (id: string, payload: BotFormValues) => Promise<void>;
   toggle: (id: string, enabled: boolean) => Promise<void>;
@@ -27,16 +30,30 @@ export interface UseBotsResult {
 
 export function useBots(): UseBotsResult {
   const [bots, setBots] = React.useState<BotConfig[]>([]);
+  const [runs, setRuns] = React.useState<BotRunRecord[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [togglingIds, setTogglingIds] = React.useState<Set<string>>(() => new Set());
   const [runningIds, setRunningIds] = React.useState<Set<string>>(() => new Set());
   const [toggleError, setToggleError] = React.useState<string | null>(null);
 
+  const reloadRuns = React.useCallback(async () => {
+    try {
+      const data = await fetchBotsHistory({ limit: 100 });
+      setRuns(data.runs);
+    } catch {
+      // Safe fallback if /api/bots/history is unavailable.
+    }
+  }, []);
+
   const reload = React.useCallback(async () => {
     setLoading(true);
     try {
-      const list = await fetchBots();
+      const [list, history] = await Promise.all([
+        fetchBots(),
+        fetchBotsHistory({ limit: 100 }).catch(() => null),
+      ]);
       setBots(list);
+      if (history) setRuns(history.runs);
     } catch {
       // Safe fallback: if /api/bots is unmounted or errors on initial load, keep empty list.
       setBots([]);
@@ -47,9 +64,14 @@ export function useBots(): UseBotsResult {
 
   React.useEffect(() => {
     const controller = new AbortController();
-    fetchBots(controller.signal)
-      .then((list) => {
-        if (!controller.signal.aborted) setBots(list);
+    Promise.all([
+      fetchBots(controller.signal),
+      fetchBotsHistory({ limit: 100, signal: controller.signal }).catch(() => null),
+    ])
+      .then(([list, history]) => {
+        if (controller.signal.aborted) return;
+        setBots(list);
+        if (history) setRuns(history.runs);
       })
       .catch(() => {
         if (!controller.signal.aborted) setBots([]);
@@ -124,11 +146,13 @@ export function useBots(): UseBotsResult {
 
   return {
     bots,
+    runs,
     loading,
     togglingIds,
     runningIds,
     toggleError,
     reload,
+    reloadRuns,
     create,
     update,
     toggle,

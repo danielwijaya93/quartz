@@ -114,3 +114,66 @@ def test_archive_and_restore_deleted_bot(tmp_path: Path) -> None:
     assert popped.bot.id == "b1"
     assert history.list_deleted_bots() == []
     assert history.pop_deleted_bot("b1") is None
+
+
+def test_per_bot_cap_and_max_age_pruning_and_summary(tmp_path: Path) -> None:
+    import time
+
+    now = time.time()
+    history = BotHistoryStore(tmp_path, max_runs=500, max_runs_per_bot=2, max_age_seconds=3600.0)
+
+    # 3 recent runs for bot-a -> should keep only newest 2
+    for idx in range(3):
+        history.record_run_start(
+            BotRunRecord(
+                run_id=f"a-{idx}",
+                bot_id="bot-a",
+                bot_name="Bot A",
+                trigger_id=f"t-{idx}",
+                event_key=f"k-{idx}",
+                source="cron",
+                status="running",
+                started_at=now - 100 + idx * 10,
+            )
+        )
+        history.record_run_finish(
+            f"a-{idx}",
+            status="ok",
+            finished_at=now - 99 + idx * 10,
+            session_id=f"sess-a-{idx}",
+            summary=f"Summary {idx}",
+        )
+
+    # 1 stale run for bot-b (older than max_age_seconds) -> should be pruned
+    history.record_run_start(
+        BotRunRecord(
+            run_id="b-old",
+            bot_id="bot-b",
+            bot_name="Bot B",
+            trigger_id="tb-old",
+            event_key="kb-old",
+            source="cron",
+            status="ok",
+            started_at=now - 7200,
+        )
+    )
+    # 1 recent run for bot-b -> should remain
+    history.record_run_start(
+        BotRunRecord(
+            run_id="b-new",
+            bot_id="bot-b",
+            bot_name="Bot B",
+            trigger_id="tb-new",
+            event_key="kb-new",
+            source="cron",
+            status="ok",
+            started_at=now - 10,
+        )
+    )
+
+    a_runs = history.list_runs(bot_id="bot-a")
+    assert [r.run_id for r in a_runs] == ["a-2", "a-1"]
+    assert a_runs[0].summary == "Summary 2"
+
+    b_runs = history.list_runs(bot_id="bot-b")
+    assert [r.run_id for r in b_runs] == ["b-new"]

@@ -14,7 +14,7 @@
  */
 
 /** Which transport created a session. Old logs have no origin; the server says `cli`. */
-export type SessionOrigin = "web" | "cli";
+export type SessionOrigin = "web" | "cli" | "bot";
 
 /** One stored session, as `GET /api/sessions` describes it. */
 export interface SidebarSession {
@@ -79,7 +79,7 @@ function asStringArray(value: unknown): string[] {
 
 function parseSession(raw: unknown): SidebarSession {
   const record = asRecord(raw, "session");
-  const origin = record.origin === "web" ? "web" : "cli";
+  const origin: SessionOrigin = record.origin === "web" ? "web" : record.origin === "bot" ? "bot" : "cli";
   return {
     sessionId: asString(record.sessionId),
     cwd: asString(record.cwd),
@@ -387,7 +387,7 @@ export function archiveEntries(payload: SidebarPayload): ArchiveEntry[] {
     .map((session) => {
       const hidden = payload.sidebar.hiddenSessions.includes(session.sessionId);
       const needsImport =
-        session.origin !== "web" && !payload.sidebar.importedSessions.includes(session.sessionId);
+        session.origin === "cli" && !payload.sidebar.importedSessions.includes(session.sessionId);
       const missingFolder = !session.cwdExists;
       const reasons = ARCHIVE_REASONS.filter(
         (reason) =>

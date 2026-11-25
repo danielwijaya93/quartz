@@ -158,6 +158,7 @@ class BotRunRecord:
     duration_ms: int | None = None
     session_id: str | None = None
     error: str | None = None
+    summary: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -183,6 +184,7 @@ class BotRunRecord:
                 str(raw["session_id"]) if raw.get("session_id") is not None else None
             ),
             error=str(raw["error"]) if raw.get("error") is not None else None,
+            summary=str(raw["summary"]) if raw.get("summary") is not None else None,
         )
 
 

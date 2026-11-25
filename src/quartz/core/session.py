@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import dataclasses
 import json
 import os
 import shutil
+import tempfile
 import time
 import uuid
 import warnings
@@ -41,7 +43,8 @@ _NOTICE_NAME_LIMIT = 40
 #: `ORIGIN_CLI` everywhere, and no old file has to be rewritten.
 ORIGIN_WEB = "web"
 ORIGIN_CLI = "cli"
-_ORIGINS = frozenset({ORIGIN_WEB, ORIGIN_CLI})
+ORIGIN_BOT = "bot"
+_ORIGINS = frozenset({ORIGIN_WEB, ORIGIN_CLI, ORIGIN_BOT})
 
 
 def _summarise_names(names: list[str], limit: int = _NOTICE_NAME_LIMIT) -> str:
@@ -314,6 +317,41 @@ class Session:
             "origin": session.origin,
         }
         return session
+
+    def set_origin(self, origin: str) -> None:
+        """Update this session's origin in memory, pending meta, and persisted JSONL."""
+        if origin not in _ORIGINS:
+            raise ValueError(f"Unsupported session origin: {origin!r}")
+        self.origin = origin
+        if self._pending_meta is not None:
+            self._pending_meta["origin"] = origin
+        if not self.jsonl_path.is_file():
+            return
+        lines = self.jsonl_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        updated = False
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                rec = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("type") == "meta":
+                rec["origin"] = origin
+                lines[idx] = json.dumps(rec) + "\n"
+                updated = True
+                break
+        if updated:
+            fd, tmp_name = tempfile.mkstemp(dir=str(self.jsonl_path.parent), prefix=f".{self.id}.", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.writelines(lines)
+                os.replace(tmp_name, self.jsonl_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_name)
+                raise
 
     @classmethod
     def _inspect_session(cls, jsonl_path: Path) -> _SessionFacts:
