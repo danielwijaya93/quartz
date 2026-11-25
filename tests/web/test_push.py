@@ -19,7 +19,7 @@ def test_push_store_generates_and_persists_vapid_keys(tmp_path: Path) -> None:
     store1 = PushStore(path)
     pub1 = store1.public_key
     assert len(pub1) == 87
-    assert path.is_file()
+    assert store1.db_path.is_file()
 
     store2 = PushStore(path)
     assert store2.public_key == pub1

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -110,8 +109,7 @@ def test_mark_seen_dedupes_and_caps(tmp_path: Path) -> None:
     reloaded = BotStore(tmp_path)
     state = reloaded.get_state("b1")
     assert state.seen_event_keys == ["issue#2", "issue#3", "issue#4"]
-    raw = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
-    assert "b1" in raw
+    assert (tmp_path / "quartz.db").is_file()
 
 
 def test_bot_model_config_roundtrip_and_validation(tmp_path: Path) -> None:

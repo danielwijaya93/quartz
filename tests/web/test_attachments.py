@@ -265,24 +265,25 @@ def test_web_app_inline_mime_allowlist_and_nosniff(
         assert r_inline.headers.get("x-content-type-options") == "nosniff"
 
 
-def test_attachment_registry_logs_save_oserror_at_debug(
+def test_attachment_registry_logs_copy_oserror_at_debug(
     tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import logging
+    import shutil
 
     reg = AttachedFileRegistry(path=tmp_path / "web-files.json")
     sample = tmp_path / "a.txt"
     sample.write_text("hi", encoding="utf-8")
 
-    def _fail_write(*_args: Any, **_kwargs: Any) -> int:
+    def _fail_copy(*_args: Any, **_kwargs: Any) -> str:
         raise OSError("disk full")
 
-    monkeypatch.setattr(Path, "write_text", _fail_write)
+    monkeypatch.setattr(shutil, "copy2", _fail_copy)
     with caplog.at_level(logging.DEBUG, logger="quartz.web.attachments"):
         desc = reg.register({"path": str(sample), "name": "a.txt", "mime_type": "text/plain", "size": 2})
 
     assert desc["id"]
-    assert any("Failed to persist attached file registry" in rec.message for rec in caplog.records)
+    assert any("Failed to copy attached file" in rec.message for rec in caplog.records)
 
 
 

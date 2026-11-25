@@ -532,39 +532,31 @@ class Session:
         folder whose directory has been deleted (worktrees get removed), and a
         browser has no way to check a path on this machine.
         """
+        from quartz.core.session_index import get_session_index
+
         root = (sessions_dir or default_sessions_dir()).resolve()
         if not root.is_dir():
             return [], None
-        target_cwd = str(cwd.resolve()) if cwd is not None else None
-        results: list[dict[str, Any]] = []
-        cwd_exists_cache: dict[str, bool] = {}
-        seen_cursor = cursor is None
-        next_cursor: str | None = None
-        for f, mtime in _sorted_jsonl_files(root):
-            if not seen_cursor:
-                if f.stem == cursor:
-                    seen_cursor = True
-                continue
-            facts = cls._inspect_session(f)
-            if not facts.has_messages or facts.cwd is None:
-                continue
-            if target_cwd is not None and facts.cwd != target_cwd:
-                continue
-            entry: dict[str, Any] = {
-                "sessionId": f.stem,
-                "cwd": facts.cwd,
-                "updatedAt": datetime.fromtimestamp(mtime, tz=UTC).isoformat(),
-                "origin": facts.origin,
-                "cwdExists": cwd_exists_cache.setdefault(facts.cwd, _is_dir(facts.cwd)),
-            }
-            if facts.preview:
-                entry["title"] = facts.preview
-            if limit is None or len(results) < limit:
-                results.append(entry)
-            else:
-                next_cursor = results[-1]["sessionId"] if results else None
-                break
-        return results, next_cursor
+        index = get_session_index(sessions_dir)
+        return index.list_all(root, cwd=cwd, cursor=cursor, limit=limit)
+
+    @classmethod
+    def search(
+        cls,
+        query: str,
+        *,
+        cwd: Path | None = None,
+        limit: int = 50,
+        sessions_dir: Path | None = None,
+    ) -> list[dict[str, Any]]:
+        """Full-text search across session titles and transcripts via SQLite FTS5."""
+        from quartz.core.session_index import get_session_index
+
+        root = (sessions_dir or default_sessions_dir()).resolve()
+        if not root.is_dir():
+            return []
+        index = get_session_index(sessions_dir)
+        return index.search(root, query, cwd=cwd, limit=limit)
 
     @classmethod
     def load(cls, session_id: str, sessions_dir: Path | None = None) -> tuple[Session, list[dict[str, Any]]]:

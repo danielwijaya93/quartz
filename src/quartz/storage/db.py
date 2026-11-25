@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import logging
 import os
 import sqlite3
 import threading
+import time
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Literal, Self
@@ -19,7 +21,10 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "DEFAULT_BUSY_TIMEOUT_MS",
     "QuartzDB",
+    "close_shared_dbs",
     "default_db_path",
+    "get_shared_db",
+    "resolve_store_db_path",
 ]
 
 DEFAULT_BUSY_TIMEOUT_MS = 5000
@@ -181,6 +186,24 @@ class QuartzDB:
         finally:
             self._local.tx_depth = depth
 
+    def get_meta(self, key: str) -> str | None:
+        """Read one string value from the ``meta`` table, or ``None`` if absent."""
+        row = self.read_connection().execute(
+            "SELECT value FROM meta WHERE key = ?", (key,)
+        ).fetchone()
+        return str(row["value"]) if row is not None else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        """Upsert one string value in the ``meta`` table atomically."""
+        with self.write_transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO meta (key, value, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                """,
+                (key, value, time.time()),
+            )
+
     def health_check(self) -> bool:
         """Verify the database responds to a quick read query."""
         try:
@@ -226,3 +249,53 @@ class QuartzDB:
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         self.close()
+
+
+_SHARED_DBS_LOCK = threading.Lock()
+_SHARED_DBS: dict[Path, QuartzDB] = {}
+
+
+def resolve_store_db_path(
+    legacy_path: Path,
+    *,
+    env_var: str,
+    explicit: bool,
+) -> Path:
+    """Resolve which SQLite DB file a store should use.
+
+    Default production stores share ``default_db_path()`` (``~/.quartz/quartz.db``).
+    When a caller passes an explicit path or sets a store-specific env override
+    (e.g. in tests), the store gets a sibling SQLite file next to ``legacy_path``
+    so isolated test fixtures never collide.
+    """
+    if not explicit and not os.environ.get(env_var, "").strip():
+        return default_db_path()
+    resolved = legacy_path.expanduser().resolve()
+    if resolved.suffix:
+        return resolved.with_suffix(".db")
+    return resolved / "quartz.db"
+
+
+def get_shared_db(path: Path | None = None) -> QuartzDB:
+    """Return a process-shared ``QuartzDB`` instance for ``path`` (reopening if closed)."""
+    target = (path if path is not None else default_db_path()).expanduser().resolve()
+    with _SHARED_DBS_LOCK:
+        existing = _SHARED_DBS.get(target)
+        if existing is not None and not existing.closed:
+            return existing
+        db = QuartzDB(target)
+        _SHARED_DBS[target] = db
+        return db
+
+
+def close_shared_dbs() -> None:
+    """Close all process-shared ``QuartzDB`` instances cleanly."""
+    with _SHARED_DBS_LOCK:
+        dbs = list(_SHARED_DBS.values())
+        _SHARED_DBS.clear()
+    for db in dbs:
+        with contextlib.suppress(Exception):
+            db.close()
+
+
+atexit.register(close_shared_dbs)
