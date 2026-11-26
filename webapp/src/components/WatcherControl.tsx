@@ -1,4 +1,5 @@
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { Button } from "@heroui/react";
 import { Eye, SlidersHorizontal, X } from "lucide-react";
 import type { WatcherAction, WatcherMode, WatcherState } from "../protocol";
@@ -38,6 +39,7 @@ export function WatcherControl({
   const [delayDraft, setDelayDraft] = React.useState(String(watcher.delaySeconds));
   const [maxTurnsDraft, setMaxTurnsDraft] = React.useState(String(watcher.maxTurns));
   const containerRef = React.useRef<HTMLDivElement>(null);
+  const dialogRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
     if (open) return;
@@ -54,7 +56,11 @@ export function WatcherControl({
       if (e.key === "Escape") setOpen(false);
     };
     const onPointerDown = (e: PointerEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (
+        !containerRef.current?.contains(target) &&
+        !dialogRef.current?.contains(target)
+      ) {
         setOpen(false);
       }
     };
@@ -103,12 +109,14 @@ export function WatcherControl({
         <SlidersHorizontal aria-hidden="true" className="hidden size-2.5 opacity-70 sm:inline" />
       </button>
 
-      {open ? (
-        <div
-          role="dialog"
-          aria-label="Session Turn Watcher Settings"
-          className="fixed inset-x-2 top-12 z-50 rounded-xl border border-border bg-surface p-3 shadow-lg sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mt-2 sm:w-96"
-        >
+      {open
+        ? createPortal(
+            <div
+              ref={dialogRef}
+              role="dialog"
+              aria-label="Session Turn Watcher Settings"
+              className="fixed inset-x-2 top-[calc(3.25rem+env(safe-area-inset-top))] z-50 rounded-xl border border-border bg-surface p-3 shadow-lg sm:left-auto sm:right-4 sm:w-96"
+            >
           <div className="mb-2 flex items-center justify-between">
             <span className="text-xs font-semibold text-foreground">Session Turn Watcher</span>
             <button
@@ -222,8 +230,10 @@ export function WatcherControl({
               Apply
             </Button>
           </div>
-        </div>
-      ) : null}
+        </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

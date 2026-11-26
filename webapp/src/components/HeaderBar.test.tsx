@@ -1,8 +1,31 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { fireEvent } from "@testing-library/react";
 import { HeaderBar } from "./HeaderBar";
 import { EMPTY_SESSION, type SessionMeta } from "@/lib/transcript";
+import type { WatcherState } from "@/protocol";
+
+function makeWatcher(overrides: Partial<WatcherState> = {}): WatcherState {
+  return {
+    configured: true,
+    provider: "google",
+    model: "gemini-2.5-flash",
+    mode: "auto",
+    status: "idle",
+    goal: "",
+    promptTemplate: "Continue with the next step you mentioned.",
+    delaySeconds: 30,
+    maxTurns: 10,
+    turnCount: 0,
+    nudgesUsed: 0,
+    maxNudges: 3,
+    paused: false,
+    countdownRemaining: 0,
+    lastReason: "",
+    ...overrides,
+  };
+}
 
 const SESSION: SessionMeta = {
   ...EMPTY_SESSION,
@@ -90,5 +113,37 @@ describe("HeaderBar", () => {
     const label = screen.getByText("Sandboxed");
     expect(label).not.toHaveClass("line-through");
     expect(label).not.toHaveClass("text-danger");
+  });
+
+  it("renders simplified watcher pill without 'Watch' or Pause button and portals settings dialog", () => {
+    const onConfigureWatcher = vi.fn();
+    renderHeader({
+      watcher: makeWatcher({ mode: "auto" }),
+      onConfigureWatcher,
+      onWatcherAction: vi.fn(),
+    });
+
+    const pill = screen.getByRole("button", { name: "Turn Watcher controls" });
+    expect(pill).toHaveTextContent("Auto");
+    expect(pill).not.toHaveTextContent(/Watch/i);
+    expect(screen.queryByRole("button", { name: /Pause|Resume/i })).not.toBeInTheDocument();
+
+    fireEvent.click(pill);
+    const dialog = screen.getByRole("dialog", { name: "Session Turn Watcher Settings" });
+    expect(dialog).toBeInTheDocument();
+    expect(dialog.closest("header")).toBeNull();
+    fireEvent.pointerDown(dialog);
+    expect(screen.getByRole("dialog", { name: "Session Turn Watcher Settings" })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Session watcher mode"), { target: { value: "goal" } });
+    fireEvent.change(screen.getByLabelText("Session goal"), { target: { value: "Make tests green" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    expect(onConfigureWatcher).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "goal",
+        goal: "Make tests green",
+      }),
+    );
   });
 });
