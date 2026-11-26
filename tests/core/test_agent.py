@@ -583,6 +583,63 @@ async def test_agent_loop_abort_during_parallel_ipython(tmp_path: Path) -> None:
         kernel.close()
 
 
+async def test_agent_loop_records_explicit_abort_reason_on_tool_message(tmp_path: Path) -> None:
+    import asyncio
+
+    from quartz.core.loop import AbortSignal, TurnAborted, agent_loop
+    from quartz.providers.base import CompletionResult, ToolCall
+
+    class _SlowToolClient:
+        async def complete(self, **kwargs):
+            return CompletionResult(
+                text="",
+                tool_calls=[ToolCall(id="tc_shutdown", name="ipython", arguments='{"code": "import time; time.sleep(5)"}')],
+                usage=None,
+            )
+
+    class _SlowKernel:
+        def __init__(self) -> None:
+            self.interrupted = False
+
+        async def exec_cell(self, code: str):
+            del code
+            await asyncio.sleep(5)
+            raise AssertionError("should be cancelled")
+
+        def drain_events(self) -> list[dict]:
+            return []
+
+        def interrupt(self) -> None:
+            self.interrupted = True
+
+    signal = AbortSignal()
+    kernel = _SlowKernel()
+    messages: list[dict] = [{"role": "user", "content": "run"}]
+
+    async def _run() -> None:
+        await agent_loop(
+            _SlowToolClient(),  # type: ignore[arg-type]
+            "test-model",
+            "sys",
+            messages,
+            kernel,  # type: ignore[arg-type]
+            stream=False,
+            abort_event=signal,
+        )
+
+    task = asyncio.create_task(_run())
+    await asyncio.sleep(0.05)
+    signal.trigger("server shutdown")
+    task.cancel()
+    with pytest.raises(TurnAborted):
+        await task
+
+    assert kernel.interrupted is True
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0]["content"] == "[aborted: server shutdown]"
+
+
 def test_kernel_snapshot_rejects_empty_dir() -> None:
     from quartz.kernel.worker import KernelWorker
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from quartz.web.session_manager import SessionManager, _validate_session_id
 from quartz.web.web_session import (
-    RECONNECT_GRACE_S,
     BuildRuntime,
     NoActiveTurnError,
     TurnBusyError,
@@ -17,7 +16,6 @@ from quartz.web.web_session import (
 )
 
 __all__ = [
-    "RECONNECT_GRACE_S",
     "BuildRuntime",
     "NoActiveTurnError",
     "SessionManager",

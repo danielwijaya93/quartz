@@ -331,7 +331,7 @@ def test_permission_parked_not_aborted_on_reconnect_grace(tmp_path: Path) -> Non
         )
     )
     ws.detach(frames.append)
-    ws._on_reconnect_grace_expired()
+    assert not hasattr(ws, "begin_grace")
     assert ws.has_pending_permission is True
 
     ws.attach(frames.append)

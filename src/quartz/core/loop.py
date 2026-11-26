@@ -36,6 +36,7 @@ from quartz.providers.types import ChatMessage, ToolCallAccumulator, ToolCallDic
 
 __all__ = [
     "TOOLS",
+    "AbortSignal",
     "TurnAborted",
     "TurnUsage",
     "agent_loop",
@@ -43,8 +44,30 @@ __all__ = [
 ]
 
 
+class AbortSignal(asyncio.Event):
+    """``asyncio.Event`` carrying an optional human-readable abort reason."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reason: str | None = None
+
+    def trigger(self, reason: str | None = None) -> None:
+        if self.reason is None and reason is not None:
+            self.reason = reason
+        self.set()
+
+
+def _abort_marker(exc: BaseException, abort_event: asyncio.Event | None) -> str:
+    if isinstance(exc, KeyboardInterrupt):
+        return "[interrupted by user]"
+    reason = abort_event.reason if isinstance(abort_event, AbortSignal) else None
+    if reason:
+        return f"[aborted: {reason}]"
+    return "[aborted by user]"
+
+
 class TurnAborted(Exception):
-    """Raised when the user aborts an active turn (e.g., by pressing Esc)."""
+    """Raised when an active turn is aborted (user cancel or shutdown)."""
 
 
 @dataclasses.dataclass
@@ -678,11 +701,7 @@ async def agent_loop(
             except (KeyboardInterrupt, TurnAborted, asyncio.CancelledError) as exc:
                 observer.on_status(None)
                 kernel.interrupt()
-                marker = (
-                    "[aborted by user]"
-                    if isinstance(exc, (TurnAborted, asyncio.CancelledError))
-                    else "[interrupted by user]"
-                )
+                marker = _abort_marker(exc, abort_event)
                 for rem_tc in tool_calls:
                     messages.append(
                         {
