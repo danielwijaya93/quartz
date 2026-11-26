@@ -11,7 +11,9 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+from quartz.core.event_bus import EventBus, SessionEvent
 from quartz.core.turn import run_interactive_turn
+from quartz.core.watcher import TurnWatcherService
 from quartz.web.attachments import AttachedFileRegistry
 from quartz.web.bridge import Frame, Push
 from quartz.web.types import ActiveSessionEntry, ActiveSessionWireItem
@@ -66,6 +68,8 @@ class SessionManager:
         self._closed = False
         self._push_hook: Callable[[WebSession, Frame], None] | None = None
         self.file_registry = AttachedFileRegistry()
+        self.event_bus = EventBus()
+        self.watcher = TurnWatcherService(self.event_bus)
 
     def bind_loop(
         self, loop: asyncio.AbstractEventLoop | None = None
@@ -81,6 +85,7 @@ class SessionManager:
             targets = list(self._sessions.values()) + (
                 [self._placeholder] if self._placeholder is not None else []
             )
+        self.watcher.bind_loop(loop)
         for ws in targets:
             ws.bind_loop(loop)
         return loop
@@ -137,12 +142,42 @@ class SessionManager:
         for ws in targets:
             ws.set_system_prompt_append(cleaned)
 
+    def _attach_session_watcher(self, ws: WebSession) -> None:
+        if not ws.built:
+            return
+        sid = ws.runtime.active_session.id
+        ws.runtime.watcher_service = self.watcher
+
+        def _inject(prompt_text: str) -> bool:
+            if ws.turn_running or ws.has_pending_permission or not ws.built:
+                return False
+            ws.start_turn(prompt_text, [])
+            return True
+
+        ws.set_watcher_active_check(lambda: self.watcher.is_active_for_session(sid))
+        self.watcher.register_session(
+            sid,
+            get_messages=lambda: list(ws.runtime.messages) if ws.built else [],
+            inject_prompt=_inject,
+            has_background_jobs=lambda: ws.has_running_background_jobs,
+            has_pending_permission=lambda: ws.has_pending_permission,
+            is_turn_running=lambda: ws.turn_running,
+            on_state_change=lambda payload: ws.emit({"type": "watcher_state", "watcher": payload}),
+        )
+
+    def broadcast_watcher_states(self) -> None:
+        for ws in self.all_sessions():
+            if ws.built:
+                sid = ws.runtime.active_session.id
+                ws.emit({"type": "watcher_state", "watcher": self.watcher.state_payload(sid)})
+
     def _register_session(self, ws: WebSession, cwd: Path | None) -> WebSession:
         ws.ensure_runtime(cwd)
         sid = ws.runtime.active_session.id
         with self._lock:
             self._sessions[sid] = ws
             self._current_id = sid
+        self._attach_session_watcher(ws)
         self.evict_lru_sessions(keep_id=sid)
         return ws
 
@@ -186,6 +221,7 @@ class SessionManager:
                 return race
             self._sessions[cleaned] = ws
             self._current_id = cleaned
+        self._attach_session_watcher(ws)
         self.evict_lru_sessions(keep_id=cleaned)
         return ws
 
@@ -195,6 +231,7 @@ class SessionManager:
         with self._lock:
             self._sessions[sid] = ws
             self._current_id = sid
+        self._attach_session_watcher(ws)
         await self.aevict_lru_sessions(keep_id=sid)
         return ws
 
@@ -262,6 +299,7 @@ class SessionManager:
                 await ws.aclose()
                 winner.mark_active()
             else:
+                self._attach_session_watcher(ws)
                 await self.aevict_lru_sessions(keep_id=cleaned)
             if not inflight.done():
                 inflight.set_result(winner)
@@ -479,6 +517,18 @@ class SessionManager:
             self._broadcast_active_sessions()
         if kind in ("turn_end", "permission_request", "bash_notice", "error"):
             self._broadcast_notification({**frame, "sessionId": sid, "sessionTitle": self._session_title(ws)})
+        if kind == "_closed":
+            self.event_bus.publish(SessionEvent(kind="session_closed", session_id=sid))
+        elif kind == "turn_start":
+            self.event_bus.publish(SessionEvent(kind="turn_start", session_id=sid))
+        elif kind == "turn_end":
+            status = frame.get("status")
+            if status == "ok":
+                self.event_bus.publish(SessionEvent(kind="turn_end", session_id=sid))
+            elif status in ("aborted", "cancelled"):
+                self.event_bus.publish(SessionEvent(kind="turn_cancelled", session_id=sid))
+            elif status == "error":
+                self.event_bus.publish(SessionEvent(kind="turn_error", session_id=sid))
         if self._push_hook is not None:
             with contextlib.suppress(Exception):
                 self._push_hook(ws, frame)
@@ -740,6 +790,8 @@ class SessionManager:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
+        with contextlib.suppress(Exception):
+            await self.watcher.aclose()
         targets = sessions + ([placeholder] if placeholder is not None else [])
         for ws in targets:
             with contextlib.suppress(Exception):

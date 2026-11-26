@@ -21,6 +21,8 @@ import {
   type ClientMessage,
   type ImageAttachment,
   type ServerMessage,
+  type WatcherAction,
+  type WatcherMode,
 } from "../protocol";
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected";
@@ -417,6 +419,20 @@ export class Connection {
 
   sendNotificationsRead(): boolean {
     return this.send({ type: "notifications_read" });
+  }
+
+  sendWatcherConfigure(config: {
+    mode?: WatcherMode;
+    goal?: string;
+    promptTemplate?: string;
+    delaySeconds?: number;
+    maxTurns?: number;
+  }): boolean {
+    return this.send({ type: "watcher_configure", ...config });
+  }
+
+  sendWatcherAction(action: WatcherAction): boolean {
+    return this.send({ type: "watcher_action", action });
   }
 }
 

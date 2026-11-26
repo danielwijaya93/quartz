@@ -44,6 +44,13 @@ DEFAULT_BOT_WEBHOOK_RATE_LIMIT = 30
 DEFAULT_TRACK_CHAT_USAGE = True
 DEFAULT_UNPRICED_FALLBACK_INPUT_PER_M = 1.0
 DEFAULT_UNPRICED_FALLBACK_OUTPUT_PER_M = 5.0
+DEFAULT_WATCHER_PROVIDER = ""
+DEFAULT_WATCHER_MODEL = ""
+DEFAULT_WATCHER_ANTISTALL_DEFAULT = True
+DEFAULT_WATCHER_DELAY_SECONDS = 30
+DEFAULT_WATCHER_DEFAULT_MAX_TURNS = 10
+DEFAULT_WATCHER_ANTISTALL_MAX_NUDGES = 3
+DEFAULT_WATCHER_DEFAULT_PROMPT = "Continue with the next step you mentioned."
 
 FORBIDDEN_PASSTHROUGH_ENV: frozenset[str] = frozenset(
     {
@@ -69,6 +76,9 @@ _MAX_BOT_USD_PER_DAY = 10_000.0
 _MAX_BOT_CONSECUTIVE_ERRORS = 1_000
 _MAX_BOT_WEBHOOK_RATE_LIMIT = 10_000
 _MAX_TOKEN_RATE_PER_M = 10_000.0
+_MAX_WATCHER_DELAY_SECONDS = 3_600
+_MAX_WATCHER_TURNS = 100
+_MAX_WATCHER_NUDGES = 20
 _ENV_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 _PERSISTED_FIELDS = (
@@ -95,6 +105,13 @@ _PERSISTED_FIELDS = (
     "unpriced_fallback_input_per_m",
     "unpriced_fallback_output_per_m",
     "model_pricing",
+    "watcher_provider",
+    "watcher_model",
+    "watcher_antistall_default",
+    "watcher_delay_seconds",
+    "watcher_default_max_turns",
+    "watcher_antistall_max_nudges",
+    "watcher_default_prompt",
 )
 _OPTIONAL_FIELDS = ("bridge_timeout_s", "bridge_worker_timeout_s")
 
@@ -141,6 +158,13 @@ class Settings:
     unpriced_fallback_input_per_m: float = DEFAULT_UNPRICED_FALLBACK_INPUT_PER_M
     unpriced_fallback_output_per_m: float = DEFAULT_UNPRICED_FALLBACK_OUTPUT_PER_M
     model_pricing: tuple[ModelPricingRule, ...] = ()
+    watcher_provider: str = DEFAULT_WATCHER_PROVIDER
+    watcher_model: str = DEFAULT_WATCHER_MODEL
+    watcher_antistall_default: bool = DEFAULT_WATCHER_ANTISTALL_DEFAULT
+    watcher_delay_seconds: int = DEFAULT_WATCHER_DELAY_SECONDS
+    watcher_default_max_turns: int = DEFAULT_WATCHER_DEFAULT_MAX_TURNS
+    watcher_antistall_max_nudges: int = DEFAULT_WATCHER_ANTISTALL_MAX_NUDGES
+    watcher_default_prompt: str = DEFAULT_WATCHER_DEFAULT_PROMPT
 
 
 def _config_path(path: Path | None = None) -> Path:
@@ -410,6 +434,17 @@ def load_settings(path: Path | None = None) -> Settings:
         unpriced_fallback_input_per_m=_coerce_rate(raw.get("unpriced_fallback_input_per_m"), DEFAULT_UNPRICED_FALLBACK_INPUT_PER_M),
         unpriced_fallback_output_per_m=_coerce_rate(raw.get("unpriced_fallback_output_per_m"), DEFAULT_UNPRICED_FALLBACK_OUTPUT_PER_M),
         model_pricing=_coerce_model_pricing(raw.get("model_pricing")),
+        watcher_provider=str(raw.get("watcher_provider") or "").strip(),
+        watcher_model=str(raw.get("watcher_model") or "").strip(),
+        watcher_antistall_default=_coerce_bool(raw.get("watcher_antistall_default"), DEFAULT_WATCHER_ANTISTALL_DEFAULT),
+        watcher_delay_seconds=_coerce_int_range(raw.get("watcher_delay_seconds"), DEFAULT_WATCHER_DELAY_SECONDS, 0, _MAX_WATCHER_DELAY_SECONDS),
+        watcher_default_max_turns=_coerce_int_range(raw.get("watcher_default_max_turns"), DEFAULT_WATCHER_DEFAULT_MAX_TURNS, 1, _MAX_WATCHER_TURNS),
+        watcher_antistall_max_nudges=_coerce_int_range(raw.get("watcher_antistall_max_nudges"), DEFAULT_WATCHER_ANTISTALL_MAX_NUDGES, 1, _MAX_WATCHER_NUDGES),
+        watcher_default_prompt=(
+            str(raw.get("watcher_default_prompt")).strip()
+            if isinstance(raw.get("watcher_default_prompt"), str) and str(raw.get("watcher_default_prompt")).strip()
+            else DEFAULT_WATCHER_DEFAULT_PROMPT
+        ),
     )
     if cacheable:
         # Only cache if the file did not change mid-read.
@@ -470,6 +505,18 @@ def validate_bot_max_consecutive_errors(value: int) -> bool:
 
 def validate_bot_webhook_rate_limit(value: int) -> bool:
     return _valid_int_range(value, 0, _MAX_BOT_WEBHOOK_RATE_LIMIT)
+
+
+def validate_watcher_delay_seconds(value: int) -> bool:
+    return _valid_int_range(value, 0, _MAX_WATCHER_DELAY_SECONDS)
+
+
+def validate_watcher_max_turns(value: int) -> bool:
+    return _valid_int_range(value, 1, _MAX_WATCHER_TURNS)
+
+
+def validate_watcher_max_nudges(value: int) -> bool:
+    return _valid_int_range(value, 1, _MAX_WATCHER_NUDGES)
 
 
 def resolve_bridge_timeout(tool: str) -> float:

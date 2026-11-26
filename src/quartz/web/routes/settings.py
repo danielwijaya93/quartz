@@ -42,6 +42,19 @@ def _fail(error: str, status_code: int = 400) -> JSONResponse:
     return JSONResponse({"ok": False, "error": error}, status_code=status_code)
 
 
+def _broadcast_loaded_settings(manager: Any, loaded: Any, *, watcher_changed: bool = False) -> None:
+    manager.broadcast_settings_state(
+        notifications=loaded.notifications,
+        rich_ui=loaded.rich_ui,
+        notify_turn=loaded.notify_turn,
+        notify_approval=loaded.notify_approval,
+        notify_background=loaded.notify_background,
+        notify_error=loaded.notify_error,
+    )
+    if watcher_changed:
+        manager.broadcast_watcher_states()
+
+
 async def _apply_single_setting(
     ctx: AppContext, request: Request, key: str, raw_val: Any
 ) -> tuple[bool, str]:
@@ -128,14 +141,13 @@ def _register_settings_routes(router: APIRouter, ctx: AppContext) -> None:
                 return _fail(message)
 
         loaded = await asyncio.to_thread(load_settings)
-        manager.broadcast_settings_state(
-            notifications=loaded.notifications,
-            rich_ui=loaded.rich_ui,
-            notify_turn=loaded.notify_turn,
-            notify_approval=loaded.notify_approval,
-            notify_background=loaded.notify_background,
-            notify_error=loaded.notify_error,
+        touched_keys = (
+            {str(k).strip() for k in raw_updates}
+            if isinstance(raw_updates, dict)
+            else {str(payload.get("key") or "").strip()}
         )
+        watcher_changed = any(k == "reset" or k.startswith("watcher") for k in touched_keys)
+        _broadcast_loaded_settings(manager, loaded, watcher_changed=watcher_changed)
         current = manager.current_session
         return JSONResponse({
             "ok": True,

@@ -12,7 +12,13 @@ import {
   setRowFormState,
   type TranscriptState,
 } from "./lib/transcript";
-import type { ImageAttachment, PermissionDecision, ServerMessage } from "./protocol";
+import type {
+  ImageAttachment,
+  PermissionDecision,
+  ServerMessage,
+  WatcherAction,
+  WatcherMode,
+} from "./protocol";
 
 export interface QuartzApi {
   state: TranscriptState;
@@ -42,6 +48,16 @@ export interface QuartzApi {
   clearReadActiveSessions: () => void;
   /** Tell other connected devices that notifications were read. */
   markNotificationsRead: () => void;
+  /** Update per-session Turn Watcher mode, goal, prompt template, delay, or max turns. */
+  configureWatcher: (config: {
+    mode?: WatcherMode;
+    goal?: string;
+    promptTemplate?: string;
+    delaySeconds?: number;
+    maxTurns?: number;
+  }) => void;
+  /** Trigger an immediate Turn Watcher action (continue_now, cancel_countdown, pause, resume, clear). */
+  watcherAction: (action: WatcherAction) => void;
 }
 
 /**
@@ -252,6 +268,23 @@ export function useQuartz(
     connectionRef.current?.sendNotificationsRead();
   }, []);
 
+  const configureWatcher = React.useCallback(
+    (config: {
+      mode?: WatcherMode;
+      goal?: string;
+      promptTemplate?: string;
+      delaySeconds?: number;
+      maxTurns?: number;
+    }) => {
+      connectionRef.current?.sendWatcherConfigure(config);
+    },
+    [],
+  );
+
+  const watcherAction = React.useCallback((action: WatcherAction) => {
+    connectionRef.current?.sendWatcherAction(action);
+  }, []);
+
   return React.useMemo(
     () => ({
       state,
@@ -271,6 +304,8 @@ export function useQuartz(
       dismissActiveSession,
       clearReadActiveSessions,
       markNotificationsRead,
+      configureWatcher,
+      watcherAction,
     }),
     [
       state,
@@ -290,6 +325,8 @@ export function useQuartz(
       dismissActiveSession,
       clearReadActiveSessions,
       markNotificationsRead,
+      configureWatcher,
+      watcherAction,
     ],
   );
 }

@@ -100,6 +100,20 @@ export interface NotificationsReadFrame {
   type: "notifications_read";
 }
 
+export interface WatcherConfigureFrame {
+  type: "watcher_configure";
+  mode?: "auto" | "goal" | "loop" | "off" | null;
+  goal?: string | null;
+  promptTemplate?: string | null;
+  delaySeconds?: number | null;
+  maxTurns?: number | null;
+}
+
+export interface WatcherActionFrame {
+  type: "watcher_action";
+  action: "continue_now" | "cancel_countdown" | "pause" | "resume" | "clear";
+}
+
 export type GeneratedClientFrame =
   | HelloFrame
   | PromptFrame
@@ -114,7 +128,9 @@ export type GeneratedClientFrame =
   | IdleSessionResponseFrame
   | ActiveSessionDismissFrame
   | ActiveSessionsClearReadFrame
-  | NotificationsReadFrame;
+  | NotificationsReadFrame
+  | WatcherConfigureFrame
+  | WatcherActionFrame;
 
 export interface AuthLoginRequest {
   token: string;

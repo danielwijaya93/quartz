@@ -129,6 +129,13 @@ def test_settings_progress_edit_preserves_compaction_values(
         "unpriced_fallback_input_per_m": 1.0,
         "unpriced_fallback_output_per_m": 5.0,
         "model_pricing": [],
+        "watcher_provider": "",
+        "watcher_model": "",
+        "watcher_antistall_default": True,
+        "watcher_delay_seconds": 30,
+        "watcher_default_max_turns": 10,
+        "watcher_antistall_max_nudges": 3,
+        "watcher_default_prompt": "Continue with the next step you mentioned.",
     }
 
 

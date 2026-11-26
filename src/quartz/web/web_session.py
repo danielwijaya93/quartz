@@ -117,6 +117,7 @@ class WebSession:
         self._sandbox_override: bool | None = None
 
         self._auto_allow_check: Callable[[Any], bool] | None = None
+        self._watcher_active_check: Callable[[], bool] | None = None
         self._sinks = SinkHub(on_event=self._notify_event)
         self._perm_gate = PermissionGate(
             self.emit,
@@ -273,6 +274,9 @@ class WebSession:
     def set_auto_allow_check(self, check: Callable[[Any], bool] | None) -> None:
         self._auto_allow_check = check
 
+    def set_watcher_active_check(self, check: Callable[[], bool] | None) -> None:
+        self._watcher_active_check = check
+
     def _handle_permission_request(self, req: Any) -> str:
         if self._auto_allow_check is not None and self._auto_allow_check(req):
             return "allow_once"
@@ -345,6 +349,7 @@ class WebSession:
             and not self.attached
             and not self.has_running_background_jobs
             and not self.has_pending_permission
+            and not (self._watcher_active_check is not None and self._watcher_active_check())
         )
 
     def hibernate(self) -> bool:

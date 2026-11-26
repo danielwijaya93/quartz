@@ -104,6 +104,7 @@ class AgentRuntime:
     session_state: SessionState
     view_config: ViewConfig
     pending_images: list[ImageAttachment]
+    watcher_service: Any = None
 
     provider_name: _Delegate[str] = _Delegate("model_config", "provider_name")
     model: _Delegate[str] = _Delegate("model_config", "model")

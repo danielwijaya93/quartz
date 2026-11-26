@@ -38,6 +38,8 @@ from quartz.web.schemas import (
     SetSandboxFrame,
     SteerFrame,
     TrustProjectFrame,
+    WatcherActionFrame,
+    WatcherConfigureFrame,
     parse_client_frame,
 )
 from quartz.web.session import SessionManager, TurnBusyError, WebSession, resolve_cwd
@@ -142,6 +144,7 @@ async def _dispatch(
                 "notifyError": loaded.notify_error,
                 "richUi": loaded.rich_ui,
             }
+            snapshot["watcher"] = manager.watcher.state_payload(session.runtime.active_session.id)
             push(snapshot)
             _replay_live_turn(session, snapshot, push)
             for idle_frame in manager.pending_idle_prompts():
@@ -161,7 +164,13 @@ async def _dispatch(
             if session.turn_running:
                 _err(push, "A turn is already running. Press Esc to abort it.")
                 return
+            from quartz.core.event_bus import SessionEvent
+
             session.bind_loop(asyncio.get_running_loop())
+            manager.watcher.bind_loop(asyncio.get_running_loop())
+            manager.event_bus.publish(
+                SessionEvent(kind="user_message", session_id=session.runtime.active_session.id)
+            )
             session.start_turn(text, images)
 
         elif isinstance(frame, SteerFrame):
@@ -184,7 +193,9 @@ async def _dispatch(
             session = await manager.acreate_session(resolved_cwd)
             _switch_connection(conn, session, push, app)
             await asyncio.to_thread(remember_workspace, sidebar, session)
-            push(await session.asnapshot())
+            snapshot = await session.asnapshot()
+            snapshot["watcher"] = manager.watcher.state_payload(session.runtime.active_session.id)
+            push(snapshot)
             push({"type": "active_sessions_state", "items": manager.active_sessions_items()})
 
         elif isinstance(frame, LoadSessionFrame):
@@ -195,6 +206,7 @@ async def _dispatch(
             session = await manager.aget_or_load_session(session_id)
             _switch_connection(conn, session, push, app)
             snapshot = await session.asnapshot()
+            snapshot["watcher"] = manager.watcher.state_payload(session.runtime.active_session.id)
             push(snapshot)
             _replay_live_turn(session, snapshot, push)
             push({"type": "active_sessions_state", "items": manager.active_sessions_items()})
@@ -236,6 +248,41 @@ async def _dispatch(
 
         elif isinstance(frame, NotificationsReadFrame):
             manager.broadcast_notifications_cleared()
+
+        elif isinstance(frame, WatcherConfigureFrame):
+            session = await _ensure_conn_session(manager, conn, push, app)
+            sid = session.runtime.active_session.id
+            if frame.mode == "goal" and frame.goal is not None:
+                manager.watcher.set_goal(
+                    sid,
+                    frame.goal,
+                    max_turns=frame.max_turns,
+                    delay_seconds=float(frame.delay_seconds) if frame.delay_seconds is not None else None,
+                    prompt_template=frame.prompt_template,
+                )
+            else:
+                manager.watcher.configure_session(
+                    sid,
+                    mode=frame.mode,
+                    goal=frame.goal,
+                    prompt_template=frame.prompt_template,
+                    delay_seconds=float(frame.delay_seconds) if frame.delay_seconds is not None else None,
+                    max_turns=frame.max_turns,
+                )
+
+        elif isinstance(frame, WatcherActionFrame):
+            session = await _ensure_conn_session(manager, conn, push, app)
+            sid = session.runtime.active_session.id
+            if frame.action == "continue_now":
+                await manager.watcher.continue_now(sid)
+            elif frame.action == "cancel_countdown":
+                manager.watcher.cancel_countdown(sid)
+            elif frame.action == "pause":
+                manager.watcher.pause(sid, reason="paused by user")
+            elif frame.action == "resume":
+                manager.watcher.resume(sid)
+            elif frame.action == "clear":
+                manager.watcher.clear_goal(sid)
 
     except WebSocketDisconnect:
         raise

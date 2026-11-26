@@ -57,6 +57,13 @@ def _settings_values(loaded: Any, rt: Any | None = None) -> SettingsValuesPayloa
             }
             for r in loaded.model_pricing
         ],
+        "watcherProvider": loaded.watcher_provider,
+        "watcherModel": loaded.watcher_model,
+        "watcherAntistallDefault": loaded.watcher_antistall_default,
+        "watcherDelaySeconds": loaded.watcher_delay_seconds,
+        "watcherDefaultMaxTurns": loaded.watcher_default_max_turns,
+        "watcherAntistallMaxNudges": loaded.watcher_antistall_max_nudges,
+        "watcherDefaultPrompt": loaded.watcher_default_prompt,
     }
 
 
@@ -82,6 +89,13 @@ def _settings_defaults() -> SettingsValuesPayload:
         DEFAULT_TRACK_CHAT_USAGE,
         DEFAULT_UNPRICED_FALLBACK_INPUT_PER_M,
         DEFAULT_UNPRICED_FALLBACK_OUTPUT_PER_M,
+        DEFAULT_WATCHER_ANTISTALL_DEFAULT,
+        DEFAULT_WATCHER_ANTISTALL_MAX_NUDGES,
+        DEFAULT_WATCHER_DEFAULT_MAX_TURNS,
+        DEFAULT_WATCHER_DEFAULT_PROMPT,
+        DEFAULT_WATCHER_DELAY_SECONDS,
+        DEFAULT_WATCHER_MODEL,
+        DEFAULT_WATCHER_PROVIDER,
         DEFAULT_WEB_IDLE_HOURS,
     )
 
@@ -111,6 +125,13 @@ def _settings_defaults() -> SettingsValuesPayload:
             "outputPerM": DEFAULT_UNPRICED_FALLBACK_OUTPUT_PER_M,
         },
         "modelPricing": [],
+        "watcherProvider": DEFAULT_WATCHER_PROVIDER,
+        "watcherModel": DEFAULT_WATCHER_MODEL,
+        "watcherAntistallDefault": DEFAULT_WATCHER_ANTISTALL_DEFAULT,
+        "watcherDelaySeconds": DEFAULT_WATCHER_DELAY_SECONDS,
+        "watcherDefaultMaxTurns": DEFAULT_WATCHER_DEFAULT_MAX_TURNS,
+        "watcherAntistallMaxNudges": DEFAULT_WATCHER_ANTISTALL_MAX_NUDGES,
+        "watcherDefaultPrompt": DEFAULT_WATCHER_DEFAULT_PROMPT,
     }
 
 
