@@ -22,41 +22,17 @@ from quartz.web.sink_hub import SinkHub
 from quartz.web.web_session import WebSession
 
 
-class TestSinkHubAsyncGrace:
-    async def test_begin_grace_uses_asyncio_timer_handle_when_loop_bound(self) -> None:
-        fired = asyncio.Event()
-        loop = asyncio.get_running_loop()
-        hub = SinkHub(
-            on_grace_expired=fired.set,
-            resolve_loop=lambda: loop,
-        )
-        hub.begin_grace(0.03, turn_running=True)
-        # Must use asyncio.TimerHandle rather than spawning a threading.Timer OS thread
-        assert hub._grace is None
-        assert hub._grace_handle is not None
-        await asyncio.wait_for(fired.wait(), timeout=1.0)
-
-    async def test_reattach_cancels_asyncio_grace_handle(self) -> None:
-        fired = False
-        loop = asyncio.get_running_loop()
-
-        def _on_expired() -> None:
-            nonlocal fired
-            fired = True
-
-        hub = SinkHub(on_grace_expired=_on_expired, resolve_loop=lambda: loop)
-        hub.begin_grace(0.05, turn_running=True)
-        assert hub._grace_handle is not None
-        hub.attach(lambda _frame: None)
-        assert hub._grace_handle is None
-        await asyncio.sleep(0.08)
-        assert fired is False
-
-    def test_sync_fallback_still_works_without_event_loop(self) -> None:
-        fired = threading.Event()
-        hub = SinkHub(on_grace_expired=fired.set)
-        hub.begin_grace(0.03, turn_running=True)
-        assert fired.wait(timeout=1.0) is True
+class TestSinkHubLifecycle:
+    def test_detach_does_not_schedule_reconnect_abort_timer(self) -> None:
+        events: list[dict[str, Any]] = []
+        hub = SinkHub(on_event=events.append)
+        def sink(_frame: Any) -> None:
+            return None
+        hub.attach(sink)
+        assert hub.attached is True
+        hub.detach(sink)
+        assert hub.attached is False
+        assert not hasattr(hub, "begin_grace")
 
 
 class TestSessionManagerAsyncLifecycle:

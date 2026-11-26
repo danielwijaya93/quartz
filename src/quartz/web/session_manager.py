@@ -722,7 +722,7 @@ class SessionManager:
         self.stop_watcher()
         for ws in sessions + ([placeholder] if placeholder is not None else []):
             with contextlib.suppress(Exception):
-                ws.close()
+                ws.close(reason="server shutdown")
 
     async def aclose_all(self) -> None:
         with self._lock:
@@ -743,4 +743,4 @@ class SessionManager:
         targets = sessions + ([placeholder] if placeholder is not None else [])
         for ws in targets:
             with contextlib.suppress(Exception):
-                await ws.aclose()
+                await ws.aclose(reason="server shutdown")

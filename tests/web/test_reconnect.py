@@ -1,18 +1,17 @@
 """A turn outlives the socket that started it.
 
 A phone whose screen turns off is not a user who quit. The socket dies, the tab is
-frozen, and seconds later the same page is back asking where the answer got to.
-Aborting on the first close threw that answer away -- and a reconnect that arrived
-before the close handler had finished left `turnRunning` true behind a socket nobody
-owned, so every later prompt was answered "a turn is already running" and the page
-looked connected while never moving again.
+frozen, and minutes later the same page is back asking where the answer got to.
+Aborting on disconnect (or after an arbitrary grace timer) threw away long-running
+work while the user was away.
 
-These tests pin the contract that replaced it: detach the sink, keep the turn, and
-stop it only when nobody comes back.
+These tests pin the contract: detach the sink, let the turn finish in the
+background, and abort only on explicit user cancel or session/server shutdown.
 """
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from pathlib import Path
@@ -20,11 +19,11 @@ from typing import Any
 
 import pytest
 
-from quartz.core.loop import TurnUsage
+from quartz.core.loop import AbortSignal, TurnUsage
 from quartz.core.runtime import AgentRuntime
 from quartz.core.session import Session
 from quartz.core.turn import TurnOutcome, TurnStatus
-from quartz.web.session import RECONNECT_GRACE_S, WebSession
+from quartz.web.session import SessionManager, WebSession
 
 
 class _Kernel:
@@ -186,20 +185,18 @@ def test_the_pending_answer_is_readable_while_it_is_written(tmp_path: Path) -> N
     assert session.snapshot()["streamingText"] == ""
 
 
-def test_the_grace_is_cancelled_by_a_reconnect(tmp_path: Path) -> None:
-    """A tab that comes back must not be killed by the timer it raced."""
-    stopped = threading.Event()
+def test_disconnect_does_not_abort_and_turn_finishes_in_background(tmp_path: Path) -> None:
+    """A disconnected turn runs to completion and exposes its final answer on reconnect."""
+    release = threading.Event()
+    started = threading.Event()
 
-    async def runner(rt: AgentRuntime, view: Any, *, abort_event: Any = None, **_: Any) -> TurnOutcome:
-        import asyncio
-
-        try:
-            if abort_event is not None:
-                await abort_event.wait()
-        except asyncio.CancelledError:
-            pass
-        stopped.set()
-        return TurnOutcome(TurnStatus.ABORTED, elapsed_s=0.0)
+    def runner(rt: AgentRuntime, view: Any, *, abort_event: Any = None, **_: Any) -> TurnOutcome:
+        del view, abort_event
+        started.set()
+        release.wait(timeout=10.0)
+        rt.messages.append({"role": "assistant", "content": "Finished while disconnected."})
+        rt.active_session.save_messages(rt.messages)
+        return TurnOutcome(TurnStatus.OK, elapsed_s=0.1)
 
     runtime = _runtime(tmp_path)
     session = WebSession(
@@ -207,64 +204,83 @@ def test_the_grace_is_cancelled_by_a_reconnect(tmp_path: Path) -> None:
     )
     _loaded(session)
 
-    def sink(frame: Any) -> None:
-        del frame
+    assert not hasattr(session, "begin_grace")
 
-    session.attach(sink)
-    session.start_turn("job", [])
-    session.detach(sink)
+    first: list[dict[str, Any]] = []
+    session.attach(first.append)
+    session.start_turn("long job", [])
+    assert started.wait(timeout=5.0)
+    session.detach(first.append)
 
-    session.begin_grace(timeout=0.05)
-    session.attach(sink)  # the phone wakes in time
-    time.sleep(0.2)
+    # While running and detached, the session must not hibernate.
+    assert session.turn_running is True
+    assert session.can_hibernate() is False
 
-    assert stopped.is_set() is False, "the reconnected tab's turn was aborted anyway"
-    turn = session._turn
-    if turn is not None:
-        session.cancel()
+    release.set()
+    assert _wait_until(lambda: session.turn_running is False)
+    assert session.can_hibernate() is True
+
+    # Reconnecting later sees the finished answer in the snapshot.
+    second: list[dict[str, Any]] = []
+    session.attach(second.append)
+    snap = session.snapshot()
+    assert snap["turnRunning"] is False
+    assert any(
+        m.get("role") == "assistant" and "Finished while disconnected." in str(m.get("content", ""))
+        for m in runtime.messages
+    )
 
 
-def test_the_grace_stops_a_turn_nobody_came_back_for(tmp_path: Path) -> None:
-    stopped = threading.Event()
+def test_ws_disconnect_keeps_turn_alive_until_completion(tmp_path: Path) -> None:
+    """Closing the WebSocket mid-turn detaches the sink without aborting the turn."""
+    from fastapi.testclient import TestClient
 
-    async def runner(rt: AgentRuntime, view: Any, *, abort_event: Any = None, **_: Any) -> TurnOutcome:
-        import asyncio
+    from quartz.web.app import create_app
 
-        try:
-            if abort_event is not None:
-                await abort_event.wait()
-        except asyncio.CancelledError:
-            pass
-        stopped.set()
-        return TurnOutcome(TurnStatus.ABORTED, elapsed_s=0.0)
+    release = threading.Event()
+    started = threading.Event()
+
+    def runner(rt: AgentRuntime, view: Any, *, abort_event: Any = None, **_: Any) -> TurnOutcome:
+        del view, abort_event
+        started.set()
+        release.wait(timeout=10.0)
+        rt.messages.append({"role": "assistant", "content": "Completed after ws drop."})
+        return TurnOutcome(TurnStatus.OK, elapsed_s=0.05)
 
     runtime = _runtime(tmp_path)
-    session = WebSession(
-        build=lambda session_id, cwd=None: (runtime, False), cwd=tmp_path, runner=runner
+    app = create_app(
+        build=lambda session_id, cwd=None: (runtime, False),
+        cwd=tmp_path,
+        runner=runner,
+        auth_token="test-token",
     )
-    _loaded(session)
-
-    def sink(frame: Any) -> None:
-        del frame
-
-    session.attach(sink)
-    session.start_turn("job", [])
-    session.detach(sink)
-
-    session.begin_grace(timeout=0.05)
-    assert stopped.wait(timeout=10), "an abandoned turn was never stopped"
-    assert RECONNECT_GRACE_S > 1.0
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws?token=test-token") as ws:
+            ws.send_json({"type": "hello", "clientVersion": 1})
+            assert ws.receive_json()["type"] == "session_state"
+            ws.send_json({"type": "prompt", "text": "run long"})
+            assert started.wait(timeout=5.0)
+            # Drop the WebSocket mid-turn.
+        ws_session = app.state.session
+        assert ws_session.turn_running is True
+        release.set()
+        assert _wait_until(lambda: ws_session.turn_running is False)
+        assert any(
+            m.get("role") == "assistant" and "Completed after ws drop." in str(m.get("content", ""))
+            for m in runtime.messages
+        )
 
 
 def test_an_aborted_turn_keeps_what_it_had_already_written(tmp_path: Path) -> None:
-    """Losing the socket must not lose the paragraphs already on screen."""
+    """Explicit cancel must not lose the paragraphs already streamed."""
     stopped = threading.Event()
+    streamed = threading.Event()
 
     async def runner(rt: AgentRuntime, view: Any, *, abort_event: Any = None, **_: Any) -> TurnOutcome:
-        import asyncio
-
+        del rt
         view.on_text_delta("Loom weaving began")
         view.on_text_delta(" in the Neolithic.")
+        streamed.set()
         try:
             if abort_event is not None:
                 await abort_event.wait()
@@ -284,10 +300,8 @@ def test_an_aborted_turn_keeps_what_it_had_already_written(tmp_path: Path) -> No
 
     session.attach(sink)
     session.start_turn("job", [])
-
-    # The tab went away, and nobody came back: the grace is what ends it.
-    session.detach(sink)
-    session.begin_grace(timeout=0.05)
+    assert streamed.wait(timeout=5.0)
+    assert session.cancel() is True
 
     assert stopped.wait(timeout=10)
     assert _wait_until(lambda: session.turn_running is False)
@@ -296,6 +310,47 @@ def test_an_aborted_turn_keeps_what_it_had_already_written(tmp_path: Path) -> No
     assert assistant, "the aborted turn's text was discarded"
     assert "Loom weaving began" in str(assistant[-1]["content"])
     assert "interrupted" in str(assistant[-1]["content"])
+
+
+def test_abort_signal_records_reason_for_cancel_close_and_shutdown(tmp_path: Path) -> None:
+    """User cancel leaves reason=None; session close and server shutdown carry explicit reasons."""
+    reasons: list[str | None] = []
+
+    def _run_case(trigger: Any) -> None:
+        started = threading.Event()
+        seen_signal: list[Any] = []
+
+        async def runner(rt: AgentRuntime, view: Any, *, abort_event: Any = None, **_: Any) -> TurnOutcome:
+            del rt, view
+            seen_signal.append(abort_event)
+            started.set()
+            try:
+                if abort_event is not None:
+                    await abort_event.wait()
+            except asyncio.CancelledError:
+                pass
+            return TurnOutcome(TurnStatus.ABORTED, elapsed_s=0.0)
+
+        rt = _runtime(tmp_path)
+        mgr = SessionManager(
+            build=lambda session_id, cwd=None: (rt, False),
+            cwd=tmp_path,
+            runner=runner,
+        )
+        ws = mgr.ensure_default_session()
+        ws.start_turn("job", [])
+        assert started.wait(timeout=5.0)
+        trigger(mgr, ws)
+        assert _wait_until(lambda: ws.turn_running is False)
+        assert seen_signal and isinstance(seen_signal[0], AbortSignal)
+        reasons.append(seen_signal[0].reason)
+        mgr.close_all()
+
+    _run_case(lambda mgr, ws: ws.cancel())
+    _run_case(lambda mgr, ws: ws.close())
+    _run_case(lambda mgr, ws: mgr.close_all())
+
+    assert reasons == [None, "session closed", "server shutdown"]
 
 
 def test_streaming_text_resets_on_tool_call_between_steps(tmp_path: Path) -> None:

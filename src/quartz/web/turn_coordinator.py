@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from quartz.core.controller import NoActiveTurnError, TurnBusyError
 from quartz.core.images import ImageAttachment, build_user_content
-from quartz.core.loop import drain_bash_events
+from quartz.core.loop import AbortSignal, drain_bash_events
 from quartz.core.turn import TurnOutcome, TurnStatus, run_interactive_turn
 from quartz.web.attachments import AttachedFileRegistry
 from quartz.web.bg_watcher import BackgroundEventWatcher
@@ -75,7 +75,7 @@ class _Turn:
     """The mutable state of the turn in flight."""
 
     id: str
-    abort_event: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
+    abort_event: AbortSignal = dataclasses.field(default_factory=AbortSignal)
     steering_queue: asyncio.Queue[str] = dataclasses.field(default_factory=asyncio.Queue)
     thread: threading.Thread | None = None
     task: asyncio.Task[None] | None = None
@@ -255,8 +255,12 @@ class TurnCoordinator:
             outcome = TurnOutcome(TurnStatus.ABORTED)
         except BaseException as exc:
             outcome = TurnOutcome(TurnStatus.ERROR, error=exc)
-        await asyncio.to_thread(_record_chat_turn_usage, rt, usage_before)
-        self._finalize_turn(turn, outcome)
+        try:
+            await asyncio.to_thread(_record_chat_turn_usage, rt, usage_before)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._finalize_turn(turn, outcome)
 
     def _finalize_turn(self, turn: _Turn, outcome: TurnOutcome) -> None:
         cleared = False
@@ -354,7 +358,10 @@ class TurnCoordinator:
         else:
             turn.steering_queue.put_nowait(text)
 
-    def _signal_turn_abort(self, turn: _Turn, *, cancel_task: bool = True) -> None:
+    def _signal_turn_abort(
+        self, turn: _Turn, *, cancel_task: bool = True, reason: str | None = None
+    ) -> None:
+        logger.info("Aborting running turn %s (%s)", turn.id, reason or "user")
         loop = turn.loop
         task = turn.task
         if loop is not None and not loop.is_closed():
@@ -364,7 +371,7 @@ class TurnCoordinator:
                 current_loop = None
 
             def _cancel_on_loop() -> None:
-                turn.abort_event.set()
+                turn.abort_event.trigger(reason)
                 if cancel_task and task is not None and not task.done():
                     task.cancel()
 
@@ -374,7 +381,7 @@ class TurnCoordinator:
                 with contextlib.suppress(RuntimeError):
                     loop.call_soon_threadsafe(_cancel_on_loop)
         else:
-            turn.abort_event.set()
+            turn.abort_event.trigger(reason)
 
     def cancel(self) -> bool:
         """Abort the running turn the same way `Esc` does in the terminal."""
@@ -393,12 +400,12 @@ class TurnCoordinator:
                 logger.debug("Kernel interrupt during cancel failed", exc_info=True)
         return True
 
-    def abort_and_join(self, timeout: float = 10.0) -> None:
+    def abort_and_join(self, timeout: float = 10.0, *, reason: str | None = "session closed") -> None:
         with self._lock:
             turn = self._turn
         if turn is None:
             return
-        self._signal_turn_abort(turn, cancel_task=True)
+        self._signal_turn_abort(turn, cancel_task=True, reason=reason)
         try:
             self._require_runtime().kernel.interrupt()
         except Exception:

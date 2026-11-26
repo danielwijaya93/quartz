@@ -262,9 +262,11 @@ def test_real_seam_disconnect_grace_aborts_live_kernel_cell(tmp_path: Path) -> N
         session.attach(events.append)
         session.start_turn("please hang", [])
         _wait_until(started_flag.exists, timeout=10.0)
-        # Detach and do not reconnect -> grace timer must abort the running kernel cell.
+        # Detach and do not reconnect -> turn stays running until explicitly cancelled.
         session.detach(events.append)
-        session.begin_grace(timeout=0.25)
+        time.sleep(0.3)
+        assert session.turn_running is True
+        assert session.cancel() is True
         _wait_until(lambda: not session.turn_running, timeout=10.0)
 
         # Re-attach and verify the session recovered cleanly and still executes Python cells.

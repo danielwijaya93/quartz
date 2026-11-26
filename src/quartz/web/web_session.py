@@ -1,7 +1,7 @@
 """One live `AgentRuntime`, serialised for the web transport.
 
 `WebSession` composes focused collaborators under `quartz.web`:
-- `SinkHub`: WebSocket sink fan-out, reconnect grace, streaming buffer, and activity.
+- `SinkHub`: WebSocket sink fan-out, streaming buffer, and activity.
 - `PermissionGate`: thread-safe kernel permission prompt coordination.
 - `BackgroundEventWatcher`: idle-session kernel event watcher.
 - `TurnCoordinator`: single-turn scheduling, steering, and cancellation.
@@ -29,7 +29,7 @@ from quartz.web.attachments import AttachedFileRegistry
 from quartz.web.bg_watcher import BackgroundEventWatcher
 from quartz.web.bridge import Frame, Push
 from quartz.web.permission_gate import DEFAULT_PARK_DELAY_S, PermissionGate
-from quartz.web.sink_hub import RECONNECT_GRACE_S, SinkHub
+from quartz.web.sink_hub import SinkHub
 from quartz.web.snapshot import (
     _git_branch,
     _turn_end_frame,
@@ -45,7 +45,6 @@ if TYPE_CHECKING:
     from quartz.core.runtime import AgentRuntime
 
 __all__ = [
-    "RECONNECT_GRACE_S",
     "BuildRuntime",
     "NoActiveTurnError",
     "TurnBusyError",
@@ -118,11 +117,7 @@ class WebSession:
         self._sandbox_override: bool | None = None
 
         self._auto_allow_check: Callable[[Any], bool] | None = None
-        self._sinks = SinkHub(
-            on_event=self._notify_event,
-            on_grace_expired=self._on_reconnect_grace_expired,
-            resolve_loop=lambda: self._turns.resolve_async_loop(),
-        )
+        self._sinks = SinkHub(on_event=self._notify_event)
         self._perm_gate = PermissionGate(
             self.emit,
             park_delay_s=permission_park_delay_s,
@@ -311,10 +306,10 @@ class WebSession:
             with contextlib.suppress(Exception):
                 self._on_event(self, frame)
 
-    def _retire(self, *, notify_closed: bool = True) -> None:
+    def _retire(self, *, notify_closed: bool = True, reason: str | None = "session closed") -> None:
         self._bg_watcher.stop(self._runtime)
         self._perm_gate.reject_pending()
-        self._abort_and_join()
+        self._abort_and_join(reason=reason)
         if notify_closed:
             self._notify_event({"type": "_closed"})
         runtime, self._runtime = self._runtime, None
@@ -368,11 +363,11 @@ class WebSession:
     async def ahibernate(self) -> bool:
         return await asyncio.to_thread(self.hibernate)
 
-    def close(self) -> None:
-        self._retire()
+    def close(self, *, reason: str | None = "session closed") -> None:
+        self._retire(reason=reason)
 
-    async def aclose(self) -> None:
-        await asyncio.to_thread(self.close)
+    async def aclose(self, *, reason: str | None = "session closed") -> None:
+        await asyncio.to_thread(self.close, reason=reason)
 
     # -- sinks & turns -----------------------------------------------------
 
@@ -422,9 +417,6 @@ class WebSession:
     def emit(self, frame: Frame) -> None:
         self._sinks.emit(frame)
 
-    def begin_grace(self, timeout: float = RECONNECT_GRACE_S) -> None:
-        self._sinks.begin_grace(timeout, turn_running=self.turn_running)
-
     @property
     def _turn(self) -> _Turn | None:
         return self._turns._turn
@@ -446,13 +438,8 @@ class WebSession:
     def cancel(self) -> bool:
         return self._turns.cancel()
 
-    def _on_reconnect_grace_expired(self) -> None:
-        if self.has_pending_permission:
-            return
-        self._abort_and_join()
-
-    def _abort_and_join(self, timeout: float = 10.0) -> None:
-        self._turns.abort_and_join(timeout=timeout)
+    def _abort_and_join(self, timeout: float = 10.0, *, reason: str | None = "session closed") -> None:
+        self._turns.abort_and_join(timeout=timeout, reason=reason)
 
     # -- commands & snapshot -----------------------------------------------
 

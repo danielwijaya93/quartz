@@ -1,8 +1,7 @@
-"""WebSocket sink fan-out, reconnect grace, streaming buffer, and activity tracking."""
+"""WebSocket sink fan-out, streaming buffer, and activity tracking."""
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import threading
 import time
@@ -10,37 +9,24 @@ from collections.abc import Callable
 
 from quartz.web.bridge import Frame, Push
 
-__all__ = ["RECONNECT_GRACE_S", "SinkHub"]
-
-#: How long a turn may keep running with no browser attached.
-#:
-#: A phone whose screen turns off is not a user who quit: the socket dies, the tab is
-#: frozen, and seconds later the same page is back asking where the answer got to.
-#: Aborting on the first `close` therefore threw away work the person was still
-#: waiting for. So a disconnect only detaches the sink, and the turn carries on; this
-#: is the timeout that stops a genuinely closed tab from running forever.
-RECONNECT_GRACE_S = 120.0
+__all__ = ["SinkHub"]
 
 
 class SinkHub:
-    """Manages attached browser sinks, reconnect grace, and in-flight stream replay."""
+    """Manages attached browser sinks and in-flight stream replay.
+
+    A socket disconnect only detaches the sink: turns keep running to completion
+    in the background so locking a phone screen or switching apps never aborts work.
+    """
 
     def __init__(
         self,
         *,
         on_event: Callable[[Frame], None] | None = None,
-        on_grace_expired: Callable[[], None] | None = None,
-        resolve_loop: Callable[[], asyncio.AbstractEventLoop | None] | None = None,
     ) -> None:
         self._on_event = on_event
-        self._on_grace_expired = on_grace_expired
-        self._resolve_loop = resolve_loop
         self._lock = threading.Lock()
         self._sinks: set[Push] = set()
-        self._grace: threading.Timer | None = None
-        self._grace_handle: asyncio.TimerHandle | None = None
-        self._grace_loop: asyncio.AbstractEventLoop | None = None
-        self._grace_gen = 0
         # What the turn in flight has said so far, so a tab that reconnects mid-answer
         # can be caught up without asking the kernel to say it again.
         self._streaming = ""
@@ -70,8 +56,7 @@ class SinkHub:
             self._idle_prompted_at = None
 
     def attach(self, push: Push) -> None:
-        """Register a socket sink and cancel any pending reconnect grace timer."""
-        self.cancel_grace()
+        """Register a socket sink and record activity."""
         self.detach(push)
         with self._lock:
             self._sinks.add(push)
@@ -145,92 +130,3 @@ class SinkHub:
             except Exception:
                 self.detach(sink)
         self.notify_event(frame)
-
-    def cancel_grace(self) -> None:
-        with self._lock:
-            self._grace_gen += 1
-            grace, self._grace = self._grace, None
-            handle, self._grace_handle = self._grace_handle, None
-            grace_loop, self._grace_loop = self._grace_loop, None
-        if grace is not None:
-            grace.cancel()
-        if handle is not None:
-            self._cancel_handle(handle, grace_loop)
-
-    @staticmethod
-    def _cancel_handle(
-        handle: asyncio.TimerHandle, loop: asyncio.AbstractEventLoop | None
-    ) -> None:
-        if loop is None or loop.is_closed():
-            handle.cancel()
-            return
-        try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:
-            running = None
-        if running is loop:
-            handle.cancel()
-        else:
-            with contextlib.suppress(RuntimeError):
-                loop.call_soon_threadsafe(handle.cancel)
-
-    def _active_loop(self) -> asyncio.AbstractEventLoop | None:
-        if self._resolve_loop is not None:
-            loop = self._resolve_loop()
-            if loop is not None and loop.is_running() and not loop.is_closed():
-                return loop
-        return None
-
-    def begin_grace(
-        self, timeout: float = RECONNECT_GRACE_S, *, turn_running: bool
-    ) -> None:
-        """Let the running turn continue for `timeout`, then invoke `on_grace_expired`."""
-        if not turn_running or self.attached:
-            return
-        self.cancel_grace()
-        with self._lock:
-            gen = self._grace_gen
-
-        loop = self._active_loop()
-        if loop is not None:
-            def _schedule() -> None:
-                with self._lock:
-                    if gen != self._grace_gen or self._sinks:
-                        return
-                    self._grace_loop = loop
-                    self._grace_handle = loop.call_later(
-                        timeout, self._abort_if_unattended, gen
-                    )
-
-            try:
-                running = asyncio.get_running_loop()
-            except RuntimeError:
-                running = None
-            if running is loop:
-                _schedule()
-                return
-            try:
-                loop.call_soon_threadsafe(_schedule)
-                return
-            except RuntimeError:
-                pass
-
-        grace = threading.Timer(timeout, self._abort_if_unattended, args=(gen,))
-        grace.daemon = True
-        with self._lock:
-            self._grace = grace
-        grace.start()
-
-    def _abort_if_unattended(self, gen: int | None = None) -> None:
-        """The grace expired. Stop the turn only if nobody came back."""
-        with self._lock:
-            if gen is not None and gen != self._grace_gen:
-                return
-            self._grace = None
-            self._grace_handle = None
-            self._grace_loop = None
-            attached = bool(self._sinks)
-        if attached:
-            return
-        if self._on_grace_expired is not None:
-            self._on_grace_expired()

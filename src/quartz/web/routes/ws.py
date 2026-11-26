@@ -315,7 +315,6 @@ def create_router(ctx: AppContext) -> APIRouter:
                 manager.unregister_sink(push)
                 if conn.session is not None:
                     conn.session.detach(push)
-                    conn.session.begin_grace()
 
     @router.websocket("/ws/notifications")
     async def websocket_notifications(socket: WebSocket) -> None:
