@@ -30,6 +30,8 @@ const stableActions = {
   dismissActiveSession: vi.fn(),
   clearReadActiveSessions: vi.fn(),
   markNotificationsRead: vi.fn(),
+  configureWatcher: vi.fn(),
+  watcherAction: vi.fn(),
 };
 
 vi.mock("@/useQuartz", () => ({

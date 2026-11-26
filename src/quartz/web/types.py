@@ -79,6 +79,13 @@ class SettingsValuesPayload(TypedDict):
     trackChatUsage: bool
     unpricedFallback: UnpricedFallbackEntry
     modelPricing: list[ModelPricingEntry]
+    watcherProvider: str
+    watcherModel: str
+    watcherAntistallDefault: bool
+    watcherDelaySeconds: int
+    watcherDefaultMaxTurns: int
+    watcherAntistallMaxNudges: int
+    watcherDefaultPrompt: str
 
 
 class McpServerEntry(TypedDict):

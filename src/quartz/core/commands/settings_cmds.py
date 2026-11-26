@@ -18,6 +18,7 @@ from quartz.settings import (
     DEFAULT_KERNEL_MAX_OPEN_FILES,
     DEFAULT_KERNEL_MAX_PROCESSES,
     DEFAULT_PROGRESS_EVERY,
+    DEFAULT_WATCHER_DEFAULT_PROMPT,
     DEFAULT_WEB_IDLE_HOURS,
     Settings,
     load_settings,
@@ -33,6 +34,9 @@ from quartz.settings import (
     validate_kernel_max_processes,
     validate_progress_every,
     validate_tokens,
+    validate_watcher_delay_seconds,
+    validate_watcher_max_nudges,
+    validate_watcher_max_turns,
     validate_web_idle_hours,
 )
 
@@ -61,6 +65,13 @@ _SETTING_ALIASES: dict[str, str] = {
     "bot_budget": "bot_budget", "bot_max_usd_per_day": "bot_budget", "botMaxUsdPerDay": "bot_budget", "bot-budget": "bot_budget",
     "bot_errors": "bot_errors", "bot_max_consecutive_errors": "bot_errors", "botMaxConsecutiveErrors": "bot_errors", "bot-errors": "bot_errors",
     "bot_rate": "bot_rate", "bot_webhook_rate_limit": "bot_rate", "botWebhookRateLimit": "bot_rate", "bot-rate": "bot_rate",
+    "watcher_provider": "watcher_provider", "watcherProvider": "watcher_provider", "watcher-provider": "watcher_provider",
+    "watcher_model": "watcher_model", "watcherModel": "watcher_model", "watcher-model": "watcher_model",
+    "watcher_antistall": "watcher_antistall_default", "watcher_antistall_default": "watcher_antistall_default", "watcherAntistallDefault": "watcher_antistall_default", "watcher-antistall": "watcher_antistall_default",
+    "watcher_delay": "watcher_delay_seconds", "watcher_delay_seconds": "watcher_delay_seconds", "watcherDelaySeconds": "watcher_delay_seconds", "watcher-delay": "watcher_delay_seconds",
+    "watcher_max_turns": "watcher_default_max_turns", "watcher_default_max_turns": "watcher_default_max_turns", "watcherDefaultMaxTurns": "watcher_default_max_turns", "watcher-max-turns": "watcher_default_max_turns",
+    "watcher_max_nudges": "watcher_antistall_max_nudges", "watcher_antistall_max_nudges": "watcher_antistall_max_nudges", "watcherAntistallMaxNudges": "watcher_antistall_max_nudges", "watcher-max-nudges": "watcher_antistall_max_nudges",
+    "watcher_prompt": "watcher_default_prompt", "watcher_default_prompt": "watcher_default_prompt", "watcherDefaultPrompt": "watcher_default_prompt", "watcher-prompt": "watcher_default_prompt",
 }
 
 _SETTINGS_USAGE = (
@@ -145,6 +156,24 @@ _INT_SETTINGS: dict[str, _IntSettingSpec] = {
         "Usage: /settings bot_rate <req/min> (0 = unlimited)",
         lambda v: f"Saved. bot_webhook_rate_limit = {'unlimited' if v == 0 else f'{v}/min'} (default for new bots).",
     ),
+    "watcher_delay_seconds": _IntSettingSpec(
+        "watcher_delay_seconds", None, validate_watcher_delay_seconds,
+        "an integer number of seconds", "between 0 and 3,600 seconds",
+        "Usage: /settings watcher_delay <seconds>",
+        lambda v: f"Saved. watcher_delay_seconds = {v}s.",
+    ),
+    "watcher_default_max_turns": _IntSettingSpec(
+        "watcher_default_max_turns", None, validate_watcher_max_turns,
+        "an integer turn limit", "between 1 and 100 turns",
+        "Usage: /settings watcher_max_turns <n>",
+        lambda v: f"Saved. watcher_default_max_turns = {v}.",
+    ),
+    "watcher_antistall_max_nudges": _IntSettingSpec(
+        "watcher_antistall_max_nudges", None, validate_watcher_max_nudges,
+        "an integer nudge limit", "between 1 and 20 nudges",
+        "Usage: /settings watcher_max_nudges <n>",
+        lambda v: f"Saved. watcher_antistall_max_nudges = {v}.",
+    ),
 }
 
 _BOOL_SETTINGS: dict[str, tuple[str, str | None]] = {
@@ -155,6 +184,7 @@ _BOOL_SETTINGS: dict[str, tuple[str, str | None]] = {
     "notify_error": ("notify_error", None),
     "rich_ui": ("rich_ui", None),
     "strict_snapshots": ("strict_snapshots", None),
+    "watcher_antistall_default": ("watcher_antistall_default", None),
 }
 
 
@@ -300,5 +330,28 @@ def cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
         save_settings(dataclasses.replace(current, sandbox_env_passthrough=parsed))
         summary = ", ".join(parsed) if parsed else "(none)"
         return CommandResult.text(f"Saved. sandbox_env_passthrough = {summary}. Applies on next kernel start.")
+
+    if parts[0] in ("watcher_provider", "watcher_model", "watcher_default_prompt"):
+        raw_val = parts[1].strip() if len(parts) == 2 else ""
+        if parts[0] == "watcher_provider":
+            if raw_val.lower() in ("", "none", "off", "clear"):
+                save_settings(dataclasses.replace(current, watcher_provider=""))
+                return CommandResult.text("Saved. watcher_provider cleared (Turn Watcher inactive).")
+            from quartz.providers.registry import PROVIDERS
+
+            if raw_val not in PROVIDERS:
+                known = ", ".join(sorted(PROVIDERS))
+                return CommandResult.error(f"Unknown provider {raw_val!r}.", body=f"Available: {known}")
+            save_settings(dataclasses.replace(current, watcher_provider=raw_val))
+            return CommandResult.text(f"Saved. watcher_provider = {raw_val}.")
+        if parts[0] == "watcher_model":
+            val = "" if raw_val.lower() in ("", "none", "off", "clear") else raw_val
+            save_settings(dataclasses.replace(current, watcher_model=val))
+            return CommandResult.text(
+                f"Saved. watcher_model = {val}." if val else "Saved. watcher_model cleared (Turn Watcher inactive)."
+            )
+        prompt_val = DEFAULT_WATCHER_DEFAULT_PROMPT if raw_val.lower() in ("", "default", "reset") else raw_val
+        save_settings(dataclasses.replace(current, watcher_default_prompt=prompt_val))
+        return CommandResult.text("Saved. watcher_default_prompt updated.")
 
     return CommandResult.error(f"Unknown settings argument {arg!r}.", body=_SETTINGS_USAGE)

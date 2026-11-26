@@ -122,6 +122,8 @@ def test_the_registry_lists_every_command_once() -> None:
         "/prompt",
         "/reset",
         "/jobs",
+        "/goal",
+        "/watch",
         "/help",
         "/exit",
     }
@@ -166,7 +168,7 @@ async def test_only_the_terminal_commands_ask_for_a_terminal(
 #: `/jobs` belongs here because its whole purpose is showing the background work that a
 #: running turn kicked off -- queueing it behind that turn made it answer the wrong
 #: question, which is the bug this set exists to keep fixed.
-IMMEDIATE = {"/jobs", "/settings", "/help"}
+IMMEDIATE = {"/jobs", "/settings", "/goal", "/watch", "/help"}
 
 
 def test_the_immediate_commands_are_exactly_the_ones_that_never_wait() -> None:

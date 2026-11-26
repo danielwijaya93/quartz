@@ -11,6 +11,7 @@ import type {
   PendingPermission,
   ProjectTrustState,
   TurnEndStatus,
+  WatcherState,
 } from "../../protocol";
 
 /* --------------------------------------------------------------- row models */
@@ -151,6 +152,7 @@ export interface SessionMeta {
   gitBranch?: string | null;
   sandboxed?: boolean;
   pendingPermission?: PendingPermission | null;
+  watcher?: WatcherState | null;
 }
 
 export interface IdleSessionPrompt {

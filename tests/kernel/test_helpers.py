@@ -915,7 +915,7 @@ def test_prompt_rules_and_helpers_reflect_unified_read(tmp_path: Path) -> None:
     assert "read(*paths, start=1, end=200, raw=False)" in formatted
 
     assert "raw=True" in PROMPT_RULES
-    assert "CODEBASE_MAP.md" in PROMPT_RULES
+    assert "repo index or architecture docs" in PROMPT_RULES
     assert "await bash(" in PROMPT_RULES
 
     (tmp_path / ".quartz").mkdir()

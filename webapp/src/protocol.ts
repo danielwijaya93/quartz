@@ -33,6 +33,39 @@ export interface ToolCallRecord {
 
 export type PermissionDecision = "allow_once" | "allow_session" | "reject";
 
+export type WatcherMode = "auto" | "goal" | "loop" | "off";
+export type WatcherStatus =
+  | "inactive"
+  | "idle"
+  | "countdown"
+  | "evaluating"
+  | "paused"
+  | "completed";
+export type WatcherAction =
+  | "continue_now"
+  | "cancel_countdown"
+  | "pause"
+  | "resume"
+  | "clear";
+
+export interface WatcherState {
+  configured: boolean;
+  provider: string;
+  model: string;
+  mode: WatcherMode;
+  status: WatcherStatus;
+  goal: string;
+  promptTemplate: string;
+  delaySeconds: number;
+  maxTurns: number;
+  turnCount: number;
+  nudgesUsed: number;
+  maxNudges: number;
+  paused: boolean;
+  countdownRemaining: number;
+  lastReason: string;
+}
+
 export interface PendingPermission {
   requestId: string;
   tool: string;
@@ -125,7 +158,16 @@ export type ClientMessage =
   | { type: "idle_session_response"; sessionId: string; action: "keep" | "close" }
   | { type: "active_session_dismiss"; sessionId: string }
   | { type: "active_sessions_clear_read" }
-  | { type: "notifications_read" };
+  | { type: "notifications_read" }
+  | {
+      type: "watcher_configure";
+      mode?: WatcherMode;
+      goal?: string;
+      promptTemplate?: string;
+      delaySeconds?: number;
+      maxTurns?: number;
+    }
+  | { type: "watcher_action"; action: WatcherAction };
 
 export interface ProjectTrustState {
   cwd: string;
@@ -162,6 +204,7 @@ export interface SessionStateMessage {
   gitBranch?: string | null;
   sandboxed?: boolean;
   pendingPermission?: PendingPermission | null;
+  watcher?: WatcherState | null;
   settings?: {
     notifications: boolean;
     notifyTurn?: boolean;
@@ -237,6 +280,7 @@ export type ServerMessage =
       richUi: boolean;
     }
   | { type: "notifications_cleared" }
+  | { type: "watcher_state"; watcher: WatcherState }
   | { type: "error"; message: string; fatal: boolean }
   | { type: "command_result"; name: string; ok: boolean; result: CommandResult };
 
@@ -277,6 +321,7 @@ const SERVER_MESSAGE_TYPES: ReadonlySet<string> = new Set<ServerMessageType>([
   "active_sessions_state",
   "settings_state",
   "notifications_cleared",
+  "watcher_state",
   "error",
   "command_result",
 ]);

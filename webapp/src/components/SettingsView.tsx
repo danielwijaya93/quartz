@@ -4,6 +4,7 @@ import { apiUrl, isNativeCapacitor } from "../lib/serverUrl";
 import { NativePlugin } from "../lib/nativeBridge";
 import { BiometricLockCard } from "./BiometricLockCard";
 import { SystemDiagnosticsCard } from "./SystemDiagnosticsCard";
+import { TurnWatcherSettingsCard } from "./TurnWatcherSettingsCard";
 import {
   ModelPricingSection,
   type ModelPricingRuleItem,
@@ -60,6 +61,13 @@ interface SettingsValues {
   trackChatUsage?: boolean;
   unpricedFallback?: { inputPerM: number; outputPerM: number };
   modelPricing?: ApiModelPricingRule[];
+  watcherProvider?: string;
+  watcherModel?: string;
+  watcherAntistallDefault?: boolean;
+  watcherDelaySeconds?: number;
+  watcherDefaultMaxTurns?: number;
+  watcherAntistallMaxNudges?: number;
+  watcherDefaultPrompt?: string;
 }
 
 interface SettingsPayload {
@@ -161,6 +169,12 @@ function draftsFromValues(values: SettingsValues, defaults: SettingsValues): Rec
     bot_rate: formatValueForDraft(values.botWebhookRateLimit, defaults.botWebhookRateLimit ?? 30),
     fallback_in: formatValueForDraft(values.unpricedFallback?.inputPerM, defaults.unpricedFallback?.inputPerM ?? 1),
     fallback_out: formatValueForDraft(values.unpricedFallback?.outputPerM, defaults.unpricedFallback?.outputPerM ?? 5),
+    watcher_provider: formatValueForDraft(values.watcherProvider, defaults.watcherProvider ?? ""),
+    watcher_model: formatValueForDraft(values.watcherModel, defaults.watcherModel ?? ""),
+    watcher_delay_seconds: formatValueForDraft(values.watcherDelaySeconds, defaults.watcherDelaySeconds ?? 30),
+    watcher_default_max_turns: formatValueForDraft(values.watcherDefaultMaxTurns, defaults.watcherDefaultMaxTurns ?? 10),
+    watcher_antistall_max_nudges: formatValueForDraft(values.watcherAntistallMaxNudges, defaults.watcherAntistallMaxNudges ?? 3),
+    watcher_default_prompt: formatValueForDraft(values.watcherDefaultPrompt, defaults.watcherDefaultPrompt ?? "Continue with the next step you mentioned."),
   };
 }
 
@@ -303,6 +317,21 @@ export function SettingsView({
     const sandboxDraft = (drafts.sandbox_env ?? sandboxCur).trim();
     if (sandboxDraft !== sandboxCur) {
       updates.sandbox_env = sandboxDraft || "none";
+    }
+    const watcherDraftSpecs: readonly [string, keyof SettingsValues, string][] = [
+      ["watcher_provider", "watcherProvider", "none"],
+      ["watcher_model", "watcherModel", "none"],
+      ["watcher_delay_seconds", "watcherDelaySeconds", "30"],
+      ["watcher_default_max_turns", "watcherDefaultMaxTurns", "10"],
+      ["watcher_antistall_max_nudges", "watcherAntistallMaxNudges", "3"],
+      ["watcher_default_prompt", "watcherDefaultPrompt", "default"],
+    ];
+    for (const [apiKey, valueKey, emptyVal] of watcherDraftSpecs) {
+      const current = formatValueForDraft(data.values[valueKey], data.defaults[valueKey] ?? "");
+      const draftVal = (drafts[apiKey] ?? current).trim();
+      if (draftVal !== current) {
+        updates[apiKey] = draftVal === "" ? emptyVal : draftVal;
+      }
     }
     const fbInCur = formatValueForDraft(data.values.unpricedFallback?.inputPerM, data.defaults.unpricedFallback?.inputPerM ?? 1);
     const fbOutCur = formatValueForDraft(data.values.unpricedFallback?.outputPerM, data.defaults.unpricedFallback?.outputPerM ?? 5);
@@ -613,6 +642,24 @@ export function SettingsView({
         <div role="tabpanel" aria-label="Advanced & Audit" className="space-y-4">
           {data ? (
             <>
+              <TurnWatcherSettingsCard
+                provider={drafts.watcher_provider ?? data.values.watcherProvider ?? ""}
+                model={drafts.watcher_model ?? data.values.watcherModel ?? ""}
+                antistallDefault={data.values.watcherAntistallDefault ?? true}
+                delaySeconds={drafts.watcher_delay_seconds ?? String(data.values.watcherDelaySeconds ?? 30)}
+                defaultMaxTurns={drafts.watcher_default_max_turns ?? String(data.values.watcherDefaultMaxTurns ?? 10)}
+                antistallMaxNudges={drafts.watcher_antistall_max_nudges ?? String(data.values.watcherAntistallMaxNudges ?? 3)}
+                defaultPrompt={drafts.watcher_default_prompt ?? data.values.watcherDefaultPrompt ?? ""}
+                saving={saving}
+                onChangeDraft={(key, value) => setDrafts((prev) => ({ ...prev, [key]: value }))}
+                onToggleAntistall={() =>
+                  void saveSingleKey(
+                    "watcher_antistall_default",
+                    (data.values.watcherAntistallDefault ?? true) ? "off" : "on",
+                  )
+                }
+              />
+
               <section
                 aria-label="Kernel Resource Quotas"
                 className="rounded-xl border border-border bg-surface/50 px-4 py-3"

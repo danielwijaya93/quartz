@@ -136,6 +136,20 @@ class NotificationsReadFrame(_WireModel):
     type: Literal["notifications_read"]
 
 
+class WatcherConfigureFrame(_WireModel):
+    type: Literal["watcher_configure"]
+    mode: Literal["auto", "goal", "loop", "off"] | None = None
+    goal: str | None = None
+    prompt_template: str | None = Field(default=None, alias="promptTemplate")
+    delay_seconds: int | None = Field(default=None, alias="delaySeconds", ge=0, le=3600)
+    max_turns: int | None = Field(default=None, alias="maxTurns", ge=1, le=100)
+
+
+class WatcherActionFrame(_WireModel):
+    type: Literal["watcher_action"]
+    action: Literal["continue_now", "cancel_countdown", "pause", "resume", "clear"]
+
+
 ClientFrame = Annotated[
     HelloFrame
     | PromptFrame
@@ -150,7 +164,9 @@ ClientFrame = Annotated[
     | IdleSessionResponseFrame
     | ActiveSessionDismissFrame
     | ActiveSessionsClearReadFrame
-    | NotificationsReadFrame,
+    | NotificationsReadFrame
+    | WatcherConfigureFrame
+    | WatcherActionFrame,
     Field(discriminator="type"),
 ]
 
@@ -170,6 +186,8 @@ CLIENT_FRAME_TYPES: frozenset[str] = frozenset(
         "active_session_dismiss",
         "active_sessions_clear_read",
         "notifications_read",
+        "watcher_configure",
+        "watcher_action",
     }
 )
 

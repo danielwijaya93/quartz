@@ -537,6 +537,7 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
           gitBranch: message.gitBranch ?? null,
           sandboxed: message.sandboxed ?? false,
           pendingPermission: message.pendingPermission ?? null,
+          watcher: message.watcher ?? state.session.watcher ?? null,
         },
         status: message.turnRunning ? merged.status : null,
       };
@@ -605,6 +606,9 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
       }
       return patchToolRow(state, message.id, (row) => ({ ...row, ...update }));
     }
+
+    case "watcher_state":
+      return patchSession(state, { watcher: message.watcher });
 
     case "permission_request":
       return patchSession(state, {
