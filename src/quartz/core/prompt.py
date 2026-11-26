@@ -15,9 +15,10 @@ PROMPT_HEADER = """# Quartz
 You have one tool, `ipython`: a persistent CPython REPL with top-level `await`. Variables, `os.chdir()`, and `os.environ` persist across cells and compaction. Messages starting with `[<kind>]` come from the harness."""
 
 PROMPT_RULES = """## Rules
-- Batch and chain operations generously into one cell: read multiple related files, inspect state, make edits, and verify results together rather than executing piecemeal single-call turns.
+- Batch and chain operations generously into one cell: pass multiple paths to `read('a.py', 'b.py')`, use `gather()` for parallel async/MCP calls, and inspect/edit/verify together rather than executing piecemeal single-call turns.
+- Check `docs/CODEBASE_MAP.md` or `docs/SYMBOL_INDEX.md` (when present) before broad `rg()`/`find()`, and use `read(path, start, end, raw=True)` before `edit()` to avoid line-number or whitespace mismatches.
 - Prioritize available REPL helpers and primitives over verbose standard-library boilerplate or multi-turn external commands.
-- Use `bash()` for long-running or background processes; do not block a cell with `sleep` or minutes-long awaits (let long jobs finish in the background).
+- Use `await bash(...)` (or `bash()` + `wait()`) for slow commands (tests, builds, CI watches like `gh pr checks --watch`) so the async kernel loop stays responsive; reserve `run()` for quick (<10s) commands. Do not block a cell with `sleep`.
 - Use raw strings (`r"..."`) for regexes or any string with backslashes (or `fixed=True` in `rg()` for literal searches) to avoid Python `SyntaxWarning`.
 - Keep tool outputs lean: read targeted line ranges instead of whole files, and use `git diff --stat` before full diffs.
 - For tests and builds, prefer quiet flags (e.g. `pytest -q --tb=short`) and inspect failures rather than printing full logs.
@@ -111,7 +112,7 @@ def build_system_prompt(
         sections.append(
             "## MCP Servers\n\n"
             f"{len(mcp_servers)} MCP server(s) configured. Use `mcp.list_servers()` or "
-            "`await mcp.search_tools(query)` in Python to discover servers and tools, and "
+            "`await mcp.search_tools(query)` (takes only `query`, no extra kwargs) in Python to discover servers and tools, and "
             "`await mcp.<server>.<tool>(...)` or `await mcp.call_tool(server, tool, arguments={...})` to call them."
         )
 

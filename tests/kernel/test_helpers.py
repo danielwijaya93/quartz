@@ -849,3 +849,77 @@ async def test_kernel_module_not_found_hints_project_venv(tmp_path: Path) -> Non
         assert ".venv/bin/python" in res.stderr
     finally:
         kernel.close()
+
+
+def test_unified_read_raw_and_end_none(tmp_path: Path) -> None:
+    from quartz.kernel.helpers import edit, read
+
+    f = tmp_path / "sample.py"
+    lines = [f"line_{i} = {i}" for i in range(1, 12)]
+    f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # raw=True omits line numbers and marks remaining lines when end stops early
+    raw_chunk = read(f, start=2, end=4, raw=True)
+    assert raw_chunk.startswith("line_2 = 2\nline_3 = 3\nline_4 = 4")
+    assert "2:" not in raw_chunk
+    assert "7 more lines" in raw_chunk
+    assert "raw=True" in raw_chunk
+
+    # Output of raw=True feeds directly into edit()
+    exact_block = read(f, start=2, end=3, raw=True).splitlines()[0:2]
+    edit_res = edit(str(f), "\n".join(exact_block), "line_2 = 20\nline_3 = 30")
+    assert "Updated" in edit_res
+
+    # end=None reads to EOF without truncation marker
+    full_raw = read(f, start=1, end=None, raw=True)
+    assert "line_11 = 11" in full_raw
+    assert "more lines" not in full_raw
+
+
+def test_unified_read_multiple_paths_and_errors(tmp_path: Path) -> None:
+    import pytest
+
+    from quartz.kernel.helpers import read
+
+    a = tmp_path / "a.txt"
+    b = tmp_path / "b.txt"
+    a.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    b.write_text("one\ntwo\n", encoding="utf-8")
+    missing = tmp_path / "missing.txt"
+
+    with pytest.raises(ValueError, match="at least one path"):
+        read()
+
+    with pytest.raises(FileNotFoundError):
+        read(missing)
+
+    multi = read(a, missing, b, start=1, end=2)
+    assert f"=== {a} (1-2 of 3 lines) ===" in multi
+    assert "1: alpha\n2: beta" in multi
+    assert "1 more lines" in multi
+    assert f"=== {missing} ===" in multi
+    assert "[missing: no such file" in multi
+    assert f"=== {b} (1-2 of 2 lines) ===" in multi
+    assert "1: one\n2: two" in multi
+
+    multi_raw = read(a, b, start=2, end=2, raw=True)
+    assert "beta" in multi_raw and "2: beta" not in multi_raw
+    assert "two" in multi_raw and "2: two" not in multi_raw
+
+
+def test_prompt_rules_and_helpers_reflect_unified_read(tmp_path: Path) -> None:
+    from quartz.core.prompt import PROMPT_RULES, build_system_prompt
+    from quartz.kernel.helpers import LoadedHelpers, format_helpers_for_prompt
+
+    formatted = format_helpers_for_prompt(LoadedHelpers(functions={}, infos={}))
+    assert "read(*paths, start=1, end=200, raw=False)" in formatted
+
+    assert "raw=True" in PROMPT_RULES
+    assert "CODEBASE_MAP.md" in PROMPT_RULES
+    assert "await bash(" in PROMPT_RULES
+
+    (tmp_path / ".quartz").mkdir()
+    (tmp_path / ".quartz" / "mcp.json").write_text('{"servers": {"demo": {"command": "echo"}}}', encoding="utf-8")
+    prompt = build_system_prompt(cwd=tmp_path, trusted=True)
+    assert "mcp.search_tools(query)" in prompt
+    assert "no extra kwargs" in prompt

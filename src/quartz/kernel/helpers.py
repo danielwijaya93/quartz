@@ -259,14 +259,19 @@ def rg(
     return _rg_python(pattern, expanded_path, glob, max_hits, fixed)
 
 
-def read(path: str, start: int = 1, end: int = 200) -> str:
-    """Read 1-based inclusive line range from a file with line numbers."""
+def _read_single(
+    path: str | Path,
+    start: int,
+    end: int | None,
+    raw: bool,
+    char_budget: int,
+) -> tuple[str, int, int, int, int | None]:
+    """Read one file's line range; returns (body, first, last, total_lines, truncated_at)."""
     p = Path(path).expanduser()
-    if not p.exists():
-        raise FileNotFoundError(f"No such file: {path}{_closest_path_hint(p)}")
     s = max(1, start)
     out: list[str] = []
     total_lines = 0
+    last_read = s - 1
     char_count = 0
     truncated_at: int | None = None
     with p.open("r", encoding="utf-8", errors="replace") as fh:
@@ -275,20 +280,91 @@ def read(path: str, start: int = 1, end: int = 200) -> str:
             if idx < s:
                 continue
             if end is not None and idx > end:
-                break
-            formatted = f"{idx}: {raw_line.rstrip(chr(10)).rstrip(chr(13))}"
-            if out and char_count + len(formatted) + 1 > MAX_READ_CHARS:
-                truncated_at = idx
-                break
-            out.append(formatted)
-            char_count += len(formatted) + 1
-    if s > total_lines:
-        return f"(EOF: file has {total_lines} lines)"
-    if truncated_at is not None:
-        out.append(
-            f"... [truncated at {MAX_READ_CHARS:,} chars; continue with read({path!r}, start={truncated_at}, end={end})]"
+                continue
+            clean = raw_line.rstrip("\n").rstrip("\r")
+            formatted = clean if raw else f"{idx}: {clean}"
+            if out and char_count + len(formatted) + 1 > char_budget:
+                if truncated_at is None:
+                    truncated_at = idx
+                continue
+            if truncated_at is None:
+                out.append(formatted)
+                char_count += len(formatted) + 1
+                last_read = idx
+    return "\n".join(out), s, last_read, total_lines, truncated_at
+
+
+def read(*paths: str | Path | int | None, start: int = 1, end: int | None = 200, raw: bool = False) -> str:
+    """Read 1-based inclusive line ranges from one or more files (raw=True omits line numbers for edit())."""
+    if not paths:
+        raise ValueError("read() requires at least one path")
+
+    # Support legacy positional read(path, start, end) alongside read(p1, p2, ...).
+    file_paths: tuple[str | Path | int | None, ...] = paths
+    if len(paths) == 2 and isinstance(paths[1], int):
+        start = paths[1]
+        file_paths = (paths[0],)
+    elif len(paths) == 3 and isinstance(paths[1], int) and (paths[2] is None or isinstance(paths[2], int)):
+        start = paths[1]
+        end = paths[2]
+        file_paths = (paths[0],)
+
+    stop_end = None if end == 0 else end
+    if len(file_paths) == 1:
+        path = file_paths[0]
+        if not isinstance(path, (str, Path)):
+            raise TypeError(f"Expected str or Path, got {type(path).__name__}")
+        p = Path(path).expanduser()
+        if not p.exists():
+            raise FileNotFoundError(f"No such file: {path}{_closest_path_hint(p)}")
+        body, s, last_read, total_lines, truncated_at = _read_single(
+            p, start, stop_end, raw, MAX_READ_CHARS
         )
-    return "\n".join(out)
+        if s > total_lines:
+            return f"(EOF: file has {total_lines} lines)"
+        path_str = str(path)
+        if truncated_at is not None:
+            raw_arg = ", raw=True" if raw else ""
+            return (
+                f"{body}\n... [truncated at {MAX_READ_CHARS:,} chars; "
+                f"continue with read({path_str!r}, start={truncated_at}, end={end}{raw_arg})]"
+            )
+        remaining = total_lines - last_read
+        if raw and remaining > 0:
+            return (
+                f"{body}\n\n--- [{remaining} more lines; "
+                f"continue with read({path_str!r}, start={last_read + 1}, raw=True)] ---"
+            )
+        return body
+
+    blocks: list[str] = []
+    remaining_budget = MAX_READ_CHARS
+    for path in file_paths:
+        if not isinstance(path, (str, Path)):
+            raise TypeError(f"Expected str or Path, got {type(path).__name__}")
+        path_str = str(path)
+        p = Path(path).expanduser()
+        if not p.is_file():
+            blocks.append(f"=== {path_str} ===\n[missing: no such file{_closest_path_hint(p)}]")
+            continue
+        if remaining_budget <= 0:
+            blocks.append(f"=== {path_str} ===\n... [skipped: {MAX_READ_CHARS:,} char budget reached]")
+            continue
+        body, s, last_read, total_lines, truncated_at = _read_single(
+            p, start, stop_end, raw, remaining_budget
+        )
+        remaining_budget -= len(body)
+        if s > total_lines:
+            blocks.append(f"=== {path_str} ===\n(EOF: file has {total_lines} lines)")
+            continue
+        header = f"=== {path_str} ({s}-{last_read} of {total_lines} lines) ==="
+        remaining = total_lines - last_read
+        if truncated_at is not None:
+            body += f"\n--- [truncated at char cap; continue with read({path_str!r}, start={truncated_at})] ---"
+        elif remaining > 0:
+            body += f"\n--- [{remaining} more lines] ---"
+        blocks.append(f"{header}\n{body}")
+    return "\n\n".join(blocks)
 
 
 def _atomic_write(path: Path, content: str, newline: str | None = None) -> None:
@@ -765,7 +841,7 @@ def format_helpers_for_prompt(loaded: LoadedHelpers) -> str:
         "- `ls(path='.')`, `find(pattern='*', path='.', limit=200)`, `rg(pattern, path='.', glob=None, max_hits=100, fixed=False)` "
         "(use raw strings r'...' for regex patterns with backslashes to avoid Python SyntaxWarning, or fixed=True for literal string search)",
 
-        "- `read(path, start=1, end=200)`, `edit(path, old, new)`, `write(path, content)`, `view_image(path)`, `attach_file(path, label=None)`, `find_skills(query='', limit=20)`, `gather(*coros)`",
+        "- `read(*paths, start=1, end=200, raw=False)` (pass multiple paths to batch; pass `raw=True` for unnumbered lines before `edit()`), `edit(path, old, new)`, `write(path, content)`, `view_image(path)`, `attach_file(path, label=None)`, `find_skills(query='', limit=20)`, `gather(*coros)`",
         "- Python stdlib modules (e.g. `Path`, `os`, `json`, `re`, `datetime`, `subprocess`, `collections`, etc.) "
         "are auto-imported on attribute access in `<ipython>` cells, while explicit imports are still required "
         "when writing or editing project `.py` files.",
