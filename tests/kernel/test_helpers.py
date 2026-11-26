@@ -919,7 +919,7 @@ def test_prompt_rules_and_helpers_reflect_unified_read(tmp_path: Path) -> None:
     assert "await bash(" in PROMPT_RULES
 
     (tmp_path / ".quartz").mkdir()
-    (tmp_path / ".quartz" / "mcp.json").write_text('{"servers": {"demo": {"command": "echo"}}}', encoding="utf-8")
+    (tmp_path / ".quartz" / "mcp.json").write_text('{"mcpServers": {"demo": {"command": "echo"}}}', encoding="utf-8")
     prompt = build_system_prompt(cwd=tmp_path, trusted=True)
     assert "mcp.search_tools(query)" in prompt
     assert "no extra kwargs" in prompt
