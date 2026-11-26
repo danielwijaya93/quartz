@@ -1,6 +1,6 @@
 import * as React from "react";
 import { ScrollShadow } from "@heroui/react";
-import { ArrowDown, FileCode, GitBranch, Terminal } from "lucide-react";
+import { ArrowDown } from "lucide-react";
 import { directoryLabel } from "@/lib/sidebar";
 import {
   groupTurns,
@@ -423,7 +423,7 @@ export const Transcript = React.memo(function Transcript({
             aria-label="Session transcript"
             className="mx-auto flex w-full max-w-3xl flex-col gap-1"
           >
-            {rows.length === 0 ? <EmptyTranscript cwd={cwd} onPrompt={onPrompt} /> : null}
+            {rows.length === 0 ? <EmptyTranscript cwd={cwd} /> : null}
             {hiddenCount > 0 ? (
               <div className="mb-2 flex justify-center">
                 <button
@@ -535,31 +535,7 @@ function JumpToNewest({
  * messages, so it has no log and no row in the sidebar, and without its folder's
  * name here the screen would look exactly as it did before the tap.
  */
-const STARTER_PROMPTS = [
-  {
-    title: "Summarize repository",
-    prompt: "Summarize this repository and its key files",
-    icon: FileCode,
-  },
-  {
-    title: "Git status & commits",
-    prompt: "Show recent git commits and current status",
-    icon: GitBranch,
-  },
-  {
-    title: "Tests & checks",
-    prompt: "What tests or checks can I run here?",
-    icon: Terminal,
-  },
-];
-
-function EmptyTranscript({
-  cwd,
-  onPrompt,
-}: {
-  cwd: string;
-  onPrompt: (text: string) => void;
-}): React.ReactElement {
+function EmptyTranscript({ cwd }: { cwd: string }): React.ReactElement {
   const folder = cwd ? directoryLabel(cwd) : "";
   return (
     <div className="flex flex-col items-center gap-4 py-16 text-center">
@@ -571,26 +547,6 @@ function EmptyTranscript({
           Send a prompt to start, or press <kbd className="rounded-md border border-border bg-surface-secondary/80 px-1.5 py-0.5 font-mono text-xs text-foreground shadow-2xs">/</kbd> for commands.
         </p>
       </div>
-      {folder ? (
-        <div className="mt-3 grid w-full max-w-xl grid-cols-1 gap-2.5 sm:grid-cols-3">
-          {STARTER_PROMPTS.map((item) => (
-            <button
-              key={item.title}
-              type="button"
-              onClick={() => onPrompt(item.prompt)}
-              className="group flex cursor-pointer flex-col items-start gap-1 rounded-xl border border-border/70 bg-surface/50 p-3 text-left transition-all duration-150 hover:border-accent/40 hover:bg-surface-secondary hover:shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
-            >
-              <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground group-hover:text-accent">
-                <item.icon aria-hidden="true" className="size-3.5 shrink-0 text-muted group-hover:text-accent" />
-                <span>{item.title}</span>
-              </div>
-              <p className="text-[11px] leading-snug text-muted line-clamp-2">
-                {item.prompt}
-              </p>
-            </button>
-          ))}
-        </div>
-      ) : null}
     </div>
   );
 }

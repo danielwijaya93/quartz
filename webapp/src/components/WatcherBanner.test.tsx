@@ -30,7 +30,6 @@ describe("WatcherBanner", () => {
     render(
       <WatcherBanner
         watcher={makeWatcher({ status: "countdown", countdownRemaining: 24 })}
-        onConfigure={vi.fn()}
         onAction={onAction}
       />,
     );
@@ -43,28 +42,12 @@ describe("WatcherBanner", () => {
     expect(onAction).toHaveBeenCalledWith("cancel_countdown");
   });
 
-  it("opens popover and submits updated watcher configuration", () => {
-    const onConfigure = vi.fn();
-    render(
-      <WatcherBanner
-        watcher={makeWatcher({ configured: false, status: "inactive" })}
-        onConfigure={onConfigure}
-        onAction={vi.fn()}
-      />,
+  it("renders nothing when idle and never renders Watch pill or Pause button", () => {
+    const { container } = render(
+      <WatcherBanner watcher={makeWatcher({ status: "idle" })} onAction={vi.fn()} />,
     );
-
-    fireEvent.click(screen.getByRole("button", { name: "Turn Watcher controls" }));
-    expect(screen.getByRole("dialog", { name: "Session Turn Watcher Settings" })).toBeInTheDocument();
-
-    fireEvent.change(screen.getByLabelText("Session watcher mode"), { target: { value: "goal" } });
-    fireEvent.change(screen.getByLabelText("Session goal"), { target: { value: "Make tests green" } });
-    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
-
-    expect(onConfigure).toHaveBeenCalledWith(
-      expect.objectContaining({
-        mode: "goal",
-        goal: "Make tests green",
-      }),
-    );
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByRole("button", { name: "Turn Watcher controls" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Pause|Resume/i })).not.toBeInTheDocument();
   });
 });

@@ -88,11 +88,14 @@ describe("Transcript", () => {
     expect(liveRegion === undefined ? true : log.contains(liveRegion)).toBe(false);
   });
 
-  it("names the folder in an empty session, so starting one is acknowledged", () => {
+  it("names the folder in an empty session, so starting one is acknowledged without starter templates", () => {
     renderRows([]);
     expect(screen.getByText("New session in gkyz-experiment")).toBeInTheDocument();
     expect(screen.getByText(/Send a prompt to start/)).toBeInTheDocument();
     expect(screen.getByText(/for commands/)).toBeInTheDocument();
+    expect(screen.queryByText("Summarize repository")).not.toBeInTheDocument();
+    expect(screen.queryByText("Git status & commits")).not.toBeInTheDocument();
+    expect(screen.queryByText("Tests & checks")).not.toBeInTheDocument();
   });
 
   it("falls back to a plain empty state when the folder is not known yet", () => {
