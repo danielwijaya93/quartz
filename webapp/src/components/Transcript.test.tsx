@@ -111,75 +111,33 @@ describe("Transcript", () => {
     expect(screen.getByText("hi").tagName).toBe("STRONG");
   });
 
-  it("folds thinking into the tray and keeps it collapsed when the tray opens", async () => {
-    const user = userEvent.setup();
+  it("hides thinking rows once the turn settles", () => {
     renderRows([thinkingRow]);
-
-    // Nothing the turn did is on the page until the tray is opened.
-    expect(screen.queryByRole("button", { name: /Thinking, 3 lines/ })).toBeNull();
-
-    await user.click(screen.getByRole("button", { name: /Thought/ }));
-    const trigger = screen.getByRole("button", { name: /Thinking, 3 lines/ });
-    const body = (): Element | null => document.querySelector("pre");
-    expect(body()).not.toBeVisible();
-    await user.click(trigger);
-    expect(body()).toBeVisible();
-    expect(body()?.textContent).toBe("a\nb\nc");
+    expect(screen.queryByRole("button", { name: /Thought/ })).toBeNull();
+    expect(screen.queryByText("a\nb\nc")).toBeNull();
   });
 
-  it("renders a tool row, folded, with its status and duration", async () => {
-    const user = userEvent.setup();
-    renderRows([toolRow]);
+  it("hides settled tool calls and thinking rows once the turn completes", () => {
+    renderRows([toolRow, assistantRow, turnEndRow]);
 
-    // The run, not the call, is the tray's row: one line for one kind of work.
-    expect(screen.queryByText("Succeeded")).toBeNull();
-    await user.click(screen.getByRole("button", { name: /1 tool/ }));
-    await user.click(screen.getByRole("button", { name: /Used 1 tool/ }));
-
-    expect(screen.getByText("Succeeded")).toBeInTheDocument();
-    expect(screen.getByText("12ms")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /tool/i })).toBeNull();
+    expect(screen.queryByTestId("living-waveform")).toBeNull();
+    expect(screen.getByText("hi").tagName).toBe("STRONG");
   });
 
-  it("renders a failed tool row with the error output visible", async () => {
-    const user = userEvent.setup();
-    renderRows([{ ...toolRow, status: "failed", output: "NameError: x" } as Row]);
-
-    // The failure is visible before anything is opened: the header counts it.
-    expect(screen.getByText("1 failed")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /1 tool/ }));
-    await user.click(screen.getByRole("button", { name: /Used 1 tool/ }));
-    expect(screen.getByText("Failed")).toBeInTheDocument();
-    expect(screen.getByText("NameError: x")).toBeVisible();
-  });
-
-  it("expands a tool row that carries an image, since the image is the output", async () => {
-    const user = userEvent.setup();
+  it("keeps intermediate agent progress updates visible alongside the final reply", () => {
     renderRows([
-      {
-        ...toolRow,
-        images: [{ mimeType: "image/png", data: "abc" }],
-      } as Row,
+      thinkingRow,
+      toolRow,
+      { kind: "assistant", id: "a-interim", text: "Found cause #1, checking #2...", formState: null } as Row,
+      { ...toolRow, id: "t2" } as Row,
+      assistantRow,
+      turnEndRow,
     ]);
-    await user.click(screen.getByRole("button", { name: /1 tool/ }));
-    await user.click(screen.getByRole("button", { name: /Used 1 tool/ }));
 
-    expect(screen.getByAltText("Tool output image 1")).toHaveAttribute(
-      "src",
-      "data:image/png;base64,abc",
-    );
-  });
-
-  it("renders action chips as text, not colour", async () => {
-    const user = userEvent.setup();
-    renderRows([{ ...toolRow, actions: { wrote: "plot.png", cells: 4 } } as Row]);
-    await user.click(screen.getByRole("button", { name: /1 tool/ }));
-    await user.click(screen.getByRole("button", { name: /Used 1 tool/ }));
-    await user.click(screen.getByRole("button", { name: /Tool call, Succeeded/ }));
-
-    expect(screen.getByRole("list", { name: "Side effects" })).toBeInTheDocument();
-    expect(screen.getByText("wrote: plot.png")).toBeInTheDocument();
-    expect(screen.getByText("cells: 4")).toBeInTheDocument();
+    expect(screen.getByText("Found cause #1, checking #2...")).toBeInTheDocument();
+    expect(screen.getByText("hi").tagName).toBe("STRONG");
+    expect(screen.queryByRole("button", { name: /tool/i })).toBeNull();
   });
 
   it("renders a bash notice, a steering row and a compaction marker", () => {
@@ -255,7 +213,7 @@ describe("Transcript", () => {
     expect(log.children).toHaveLength(10);
   });
 
-  it("folds a turn's work into one closed tray above the answer", () => {
+  it("hides thinking and tools once settled while keeping the answer at full width", () => {
     renderRows([
       userRow,
       { kind: "thinking", id: "k1", text: "look" } as Row,
@@ -266,22 +224,16 @@ describe("Transcript", () => {
       turnEndRow,
     ]);
 
-    // The old shape was one card per thinking block and per tool call.
     expect(screen.queryByText("Succeeded")).toBeNull();
-
-    // Thinking plus one folded run of three calls: two steps, not four cards, and
-    // the header names the work rather than counting the steps.
-    const tray = screen.getByRole("button", { name: /Thought, 3 tools/ });
-    expect(tray).toHaveAttribute("aria-expanded", "false");
-    // The answer is on the page, at full width, in the reading column.
+    expect(screen.queryByRole("button", { name: /Thought, 3 tools/ })).toBeNull();
     expect(screen.getByText("hi").tagName).toBe("STRONG");
-    // No redundant speaker label above assistant replies.
     expect(screen.queryByText("Quartz")).toBeNull();
   });
 
-  it("renders a turn with no answer as just its tray", () => {
-    renderRows([{ kind: "thinking", id: "k1", text: "thinking only" } as Row]);
-    expect(screen.getByRole("button", { name: /Thought/ })).toBeInTheDocument();
+  it("renders a live turn with no answer as the living waveform progress indicator", () => {
+    render(transcript([{ kind: "thinking", id: "k1", text: "thinking only" } as Row], true));
+    expect(screen.getByTestId("living-waveform")).toBeInTheDocument();
+    expect(screen.getByTestId("turn-tray-status")).toHaveTextContent("Thinking");
     expect(screen.queryByText("Quartz")).toBeNull();
   });
 

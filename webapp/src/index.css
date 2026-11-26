@@ -391,3 +391,25 @@ dialog::backdrop {
   overflow: hidden;
   overscroll-behavior: contain;
 }
+
+/* Living Waveform: calm staggered bars for live turn progress. */
+@keyframes quartz-waveform {
+  0%,
+  100% {
+    transform: scaleY(0.32);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+.quartz-waveform-bar {
+  width: 2px;
+  height: 12px;
+  border-radius: 9999px;
+  background-color: var(--accent);
+  transform-origin: center;
+  animation: quartz-waveform 1.1s ease-in-out infinite;
+}
