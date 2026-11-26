@@ -1,7 +1,7 @@
 {
   "name": "quartz-webapp",
   "private": true,
-  "version": "0.22.3",
+  "version": "0.22.4",
   "type": "module",
   "description": "Quartz web client SPA (Vite + React) served by `quartz web`.",
   "scripts": {

@@ -203,6 +203,29 @@ def _apply_settings_without_session(arg: str) -> Any:
     return cmd_settings(cast(Any, stub), arg)
 
 
+def _apply_batch_without_session(updates: Mapping[str, Any]) -> tuple[bool, str]:
+    last_message = "Saved."
+    for raw_k, raw_v in updates.items():
+        key = str(raw_k).strip()
+        if key in WEB_PRICING_KEYS:
+            err = _apply_web_pricing_key(key, raw_v)
+            if err is not None:
+                return False, err
+            last_message = "Saved."
+            continue
+        val_str = "" if key == "reset" else str(raw_v if raw_v is not None else "").strip()
+        arg = "reset" if key == "reset" else f"{key} {val_str}".strip()
+        if not arg:
+            return False, "Missing setting key"
+        res = _apply_settings_without_session(arg)
+        ok = res is not None and getattr(res, "kind", None) != "error"
+        msg = getattr(res, "message", None) or ("Saved." if ok else "Invalid setting")
+        if not ok:
+            return False, msg
+        last_message = msg
+    return True, last_message
+
+
 def _mcp_snapshot() -> McpSnapshotPayload:
     from quartz.mcp.client import default_mcp_config_path, load_raw_mcp_config
 
