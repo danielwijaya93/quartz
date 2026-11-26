@@ -9,7 +9,6 @@ import {
   focusTileByIndex,
   openNewEmptySessionTile,
   openSessionInNewTile,
-  openWorkerInNewTile,
   promoteTileToPrimary,
   readPersistedTilingState,
   resetSplitRatios,
@@ -118,30 +117,11 @@ describe("tiling state engine", () => {
     expect(afterClose.maximizedTileId).toBeNull();
   });
 
-  it("opens worker tail tiles, deduplicates by (sessionId, pid), and flips 3-tile orientation", () => {
+  it("flips 3-tile orientation and promotes a tile to primary slot", () => {
     let state = createInitialTilingState();
-    state = openWorkerInNewTile(state, {
-      sessionId: "s1",
-      pid: "4201",
-      label: "worker-grid",
-      command: "quartz -p worker",
-    });
-    expect(state.tiles).toHaveLength(2);
-    expect(state.tiles[1]).toMatchObject({ kind: "worker", sessionId: "s1", pid: "4201" });
-
-    // Re-opening same worker focuses existing tile instead of duplicating
-    state = focusTileByIndex(state, 0);
-    const deduped = openWorkerInNewTile(state, {
-      sessionId: "s1",
-      pid: "4201",
-      label: "worker-grid",
-      command: "quartz -p worker",
-    });
-    expect(deduped.tiles).toHaveLength(2);
-    expect(deduped.focusedTileId).toBe(state.tiles[1]!.id);
-
-    // 3-tile flip + promote to primary slot
-    let s3 = openNewEmptySessionTile(deduped, "/repo");
+    state = openNewEmptySessionTile(state, "/repo-a");
+    let s3 = openNewEmptySessionTile(state, "/repo-b");
+    expect(s3.tiles).toHaveLength(3);
     expect(s3.threeOrientation).toBe("top");
     s3 = flipThreeOrientation(s3);
     expect(s3.threeOrientation).toBe("bottom");

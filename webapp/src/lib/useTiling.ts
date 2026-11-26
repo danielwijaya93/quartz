@@ -8,7 +8,6 @@ import {
   focusTileByIndex,
   openNewEmptySessionTile,
   openSessionInNewTile,
-  openWorkerInNewTile,
   promoteTileToPrimary,
   readPersistedTilingState,
   resetSplitRatios,
@@ -22,7 +21,6 @@ import {
   type TileBadge,
   type TileCount,
   type TilingState,
-  type WorkerTileDescriptor,
 } from "./tiling";
 
 const RATIO_PERSIST_DEBOUNCE_MS = 200;
@@ -34,7 +32,6 @@ export interface UseTilingApi {
   selectSession: (sessionId: string) => void;
   openSessionInNewTile: (sessionId: string) => void;
   openNewTile: (initialCwd?: string) => void;
-  openWorkerInTile: (worker: Omit<WorkerTileDescriptor, "id" | "kind">) => void;
   setTileCount: (count: TileCount, defaultCwd?: string) => void;
   closeTile: (tileId: string) => void;
   focusTile: (tileId: string) => void;
@@ -119,13 +116,6 @@ export function useTiling({
   const openNewTile = React.useCallback((initialCwd?: string) => {
     setState((prev) => openNewEmptySessionTile(prev, initialCwd ?? defaultCwdRef.current));
   }, []);
-
-  const openWorkerInTile = React.useCallback(
-    (worker: Omit<WorkerTileDescriptor, "id" | "kind">) => {
-      setState((prev) => openWorkerInNewTile(prev, worker));
-    },
-    [],
-  );
 
   const setTileCountCb = React.useCallback((count: TileCount, cwd?: string) => {
     setState((prev) => setTileCount(prev, count, cwd ?? defaultCwdRef.current));
@@ -213,7 +203,6 @@ export function useTiling({
       selectSession,
       openSessionInNewTile: openSessionInNewTileCb,
       openNewTile,
-      openWorkerInTile,
       setTileCount: setTileCountCb,
       closeTile: closeTileCb,
       focusTile: focusTileCb,
@@ -232,7 +221,6 @@ export function useTiling({
       selectSession,
       openSessionInNewTileCb,
       openNewTile,
-      openWorkerInTile,
       setTileCountCb,
       closeTileCb,
       focusTileCb,

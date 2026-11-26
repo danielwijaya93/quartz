@@ -6,6 +6,7 @@ import { fetchModels, selectModel, type ModelProvider, type ModelsPayload } from
 export interface ModelPickerDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  sessionId?: string;
   currentModel?: string;
   currentEffort?: string;
   onSuccess?: (provider: string, model: string, effort: string) => void;
@@ -14,6 +15,7 @@ export interface ModelPickerDialogProps {
 export function ModelPickerDialog({
   open,
   onOpenChange,
+  sessionId,
   currentModel,
   currentEffort,
   onSuccess,
@@ -34,7 +36,7 @@ export function ModelPickerDialog({
     setLoading(true);
     setError(null);
     try {
-      const payload = await fetchModels();
+      const payload = await fetchModels(sessionId);
       setData(payload);
       if (payload.current) {
         setSelectedProviderId(payload.current.provider || "");
@@ -46,7 +48,7 @@ export function ModelPickerDialog({
     } finally {
       setLoading(false);
     }
-  }, [currentModel, currentEffort]);
+  }, [sessionId, currentModel, currentEffort]);
 
   React.useEffect(() => {
     if (open) {
@@ -100,7 +102,7 @@ export function ModelPickerDialog({
     setSubmitting(true);
     setActionError(null);
     try {
-      const res = await selectModel(activeProvider.id, selectedModel, selectedEffort);
+      const res = await selectModel(activeProvider.id, selectedModel, selectedEffort, sessionId);
       if (!res.ok) {
         setActionError(res.error || "Failed to switch model");
         return;

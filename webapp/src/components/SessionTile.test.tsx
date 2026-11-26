@@ -75,7 +75,6 @@ function baseProps(overrides: Partial<React.ComponentProps<typeof SessionTile>> 
     onOpenBotHistory: vi.fn(),
     onEditBot: vi.fn(),
     onRerunBot: vi.fn(),
-    onOpenWorkerTile: vi.fn(),
     ...overrides,
   };
 }

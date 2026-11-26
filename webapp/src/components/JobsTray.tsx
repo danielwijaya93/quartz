@@ -3,7 +3,7 @@ import { authFetch } from "../lib/authToken";
 import { useJobActions } from "../lib/jobsApi";
 import { apiUrl } from "../lib/serverUrl";
 import { Button } from "@heroui/react";
-import { Columns2, Eye, RefreshCw, Square, X } from "lucide-react";
+import { Eye, RefreshCw, Square, X } from "lucide-react";
 
 interface JobItem {
   pid: number | string;
@@ -23,12 +23,10 @@ export function JobsTray({
   open,
   onClose,
   sessionId,
-  onOpenInTile,
 }: {
   open: boolean;
   onClose: () => void;
   sessionId?: string;
-  onOpenInTile?: (job: { pid: string; label: string; command: string }) => void;
 }): React.ReactElement | null {
   const [jobs, setJobs] = React.useState<JobItem[]>([]);
   const [fetchedAt, setFetchedAt] = React.useState<number>(() => Date.now());
@@ -137,19 +135,6 @@ export function JobsTray({
                         </p>
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5">
-                        {onOpenInTile ? (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onPress={() =>
-                              onOpenInTile({ pid, label: job.label, command: job.command })
-                            }
-                            className="h-7 text-xs"
-                          >
-                            <Columns2 aria-hidden="true" className="size-3" />
-                            Open in Tile
-                          </Button>
-                        ) : null}
                         <Button
                           size="sm"
                           variant="outline"

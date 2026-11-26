@@ -14,8 +14,6 @@ import { AuthGate } from "./components/AuthGate";
 import { TileGrid } from "./components/TileGrid";
 import { MobileTileBar, TileLayoutSwitcher } from "./components/TileLayoutSwitcher";
 import { SessionTile, type SessionTileHandle } from "./components/SessionTile";
-import { WorkerTailTile } from "./components/WorkerTailTile";
-import { GlobalJobsButton } from "./components/GlobalJobsButton";
 import { authFetch } from "./lib/authToken";
 import { apiUrl } from "./lib/serverUrl";
 import { useCommandPalette } from "./lib/useCommandPalette";
@@ -224,17 +222,6 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     () => Object.values(handles).some((h) => h.turnRunning),
     [handles],
   );
-  const totalBgCount = React.useMemo(() => {
-    const seen = new Set<string>();
-    let sum = 0;
-    for (const h of Object.values(handles)) {
-      const sid = h.session.sessionId || h.tileId;
-      if (seen.has(sid)) continue;
-      seen.add(sid);
-      sum += h.session.bgCount ?? 0;
-    }
-    return sum;
-  }, [handles]);
 
   const rawActiveSessions =
     serverActiveSessions.length > 0
@@ -474,21 +461,9 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
   );
   const focusedTileTitle = React.useMemo(() => {
     if (!focusedTileDescriptor) return "Session";
-    if (focusedTileDescriptor.kind === "worker") {
-      return `${focusedTileDescriptor.label} (pid ${focusedTileDescriptor.pid})`;
-    }
     const sid = focusedTileDescriptor.sessionId ?? activeSession.sessionId;
     return (sid && titleBySessionId.get(sid)) || "New session";
   }, [focusedTileDescriptor, activeSession.sessionId, titleBySessionId]);
-
-  const handleOpenWorkerFromHeader = React.useCallback(
-    (job: { sessionId: string; pid: string; label: string; command: string }) => {
-      setSettingsOpen(false);
-      setMcpOpen(false);
-      tiling.openWorkerInTile(job);
-    },
-    [tiling.openWorkerInTile],
-  );
 
   const handleSetTileCount = React.useCallback(
     (count: 1 | 2 | 3 | 4) => {
@@ -508,25 +483,16 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
   );
 
   const tileControls = React.useMemo(
-    () => (
-      <div className="flex items-center gap-1.5">
-        <GlobalJobsButton
-          bgCountHint={totalBgCount}
-          onOpenWorkerTile={handleOpenWorkerFromHeader}
+    () =>
+      !narrow ? (
+        <TileLayoutSwitcher
+          tiles={tiling.state.tiles}
+          threeOrientation={tiling.state.threeOrientation}
+          onSetCount={handleSetTileCount}
+          onFlipThree={tiling.flipThreeOrientation}
         />
-        {!narrow ? (
-          <TileLayoutSwitcher
-            tiles={tiling.state.tiles}
-            threeOrientation={tiling.state.threeOrientation}
-            onSetCount={handleSetTileCount}
-            onFlipThree={tiling.flipThreeOrientation}
-          />
-        ) : null}
-      </div>
-    ),
+      ) : null,
     [
-      totalBgCount,
-      handleOpenWorkerFromHeader,
       narrow,
       tiling.state.tiles,
       tiling.state.threeOrientation,
@@ -601,26 +567,6 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
               const maximized = tile.id === tiling.state.maximizedTileId;
               const canClose = tiling.state.tiles.length > 1;
 
-              if (tile.kind === "worker") {
-                return (
-                  <WorkerTailTile
-                    tileNumber={tileNumber}
-                    focused={focused}
-                    maximized={maximized}
-                    canClose={canClose}
-                    sessionId={tile.sessionId}
-                    pid={tile.pid}
-                    label={tile.label}
-                    command={tile.command}
-                    onFocus={() => tiling.focusTile(tile.id)}
-                    onClose={() => tiling.closeTile(tile.id)}
-                    onToggleMaximize={() => tiling.toggleMaximize(tile.id)}
-                    onPromote={() => tiling.promoteTile(tile.id)}
-                    onOpenParentSession={tiling.openSessionInNewTile}
-                  />
-                );
-              }
-
               const resolvedTitle = tile.sessionId
                 ? titleBySessionId.get(tile.sessionId)
                 : undefined;
@@ -660,7 +606,6 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
                   onOpenBotHistory={openBotHistory}
                   onEditBot={editBannerBot}
                   onRerunBot={rerunBannerBot}
-                  onOpenWorkerTile={tiling.openWorkerInTile}
                 />
               );
             }}
