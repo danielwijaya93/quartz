@@ -144,17 +144,29 @@ const TurnView = React.memo(
     onFormState: (id: string, state: Record<string, unknown>) => void;
   }): React.ReactElement {
     const attachedFiles = turn.files ?? [];
+    const interimTexts = turn.steps.filter(
+      (step): step is Extract<(typeof turn.steps)[number], { kind: "text" }> =>
+        step.kind === "text",
+    );
+    const hasProgress = turn.live && turn.steps.length > 0;
     return (
       <div
         className={
-          turn.answer !== null || attachedFiles.length > 0
+          turn.answer !== null || interimTexts.length > 0 || attachedFiles.length > 0
             ? "mb-2 flex flex-col gap-1.5"
             : "flex flex-col gap-1"
         }
       >
-        {turn.steps.length > 0 ? (
-          <TurnTray turn={turn} richUi={richUi} onPrompt={onPrompt} onFormState={onFormState} />
-        ) : null}
+        {interimTexts.map((step) => (
+          <AssistantRowView
+            key={step.id}
+            row={step.row}
+            streaming={false}
+            richUi={richUi}
+            onPrompt={onPrompt}
+            onFormState={onFormState}
+          />
+        ))}
         {turn.answer !== null ? (
           <AssistantRowView
             row={turn.answer}
@@ -164,6 +176,7 @@ const TurnView = React.memo(
             onFormState={onFormState}
           />
         ) : null}
+        {hasProgress ? <TurnTray turn={turn} /> : null}
         {attachedFiles.length > 0 ? <FileAttachments files={attachedFiles} /> : null}
       </div>
     );

@@ -1,7 +1,6 @@
 import * as React from "react";
 import { describe, expect, it } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { render, screen } from "@testing-library/react";
 import { TurnTray } from "./TurnTray";
 import {
   groupTurns,
@@ -33,11 +32,6 @@ const tool = (id: string, status: ToolRow["status"] = "ok", code = `run_${id}()`
   actions: null,
 });
 
-/**
- * Build the turn the way the transcript does, rather than hand-assembling one:
- * a tray is only ever rendered over `groupTurns` output, and a hand-built turn
- * could pass while the grouping it depends on is broken.
- */
 function turnOf(rows: Row[], running = false): Turn {
   const turn = groupTurns(rows, { running }).find(isTurn);
   if (turn === undefined) throw new Error("test rows produced no turn");
@@ -45,263 +39,69 @@ function turnOf(rows: Row[], running = false): Turn {
 }
 
 function tray(turn: Turn): React.ReactElement {
-  return (
-    <TurnTray turn={turn} richUi={false} onPrompt={() => {}} onFormState={() => {}} />
-  );
+  return <TurnTray turn={turn} richUi={false} onPrompt={() => {}} onFormState={() => {}} />;
 }
 
 describe("TurnTray", () => {
-  it("is collapsed by default, with its header wired to the region it controls", async () => {
-    const user = userEvent.setup();
-    render(tray(turnOf([thinking("k1", "a"), tool("t1"), assistant("a1", "answer")])));
-
-    const header = screen.getByRole("button", { name: /Thought, 1 tool/ });
-    expect(header).toHaveAttribute("aria-expanded", "false");
-
-    const panelId = header.getAttribute("aria-controls");
-    expect(panelId).toBeTruthy();
-    const panel = document.getElementById(String(panelId));
-    expect(panel).toHaveAttribute("role", "region");
-    expect(panel).not.toBeVisible();
-    // Nothing inside is mounted while closed: a fresh page never pays for a
-    // transcript's worth of tool output.
-    expect(screen.queryByRole("button", { name: /Used 1 tool/ })).toBeNull();
-
-    await user.click(header);
-    expect(header).toHaveAttribute("aria-expanded", "true");
-    expect(panel).toBeVisible();
-    expect(screen.getByRole("button", { name: /Used 1 tool/ })).toBeInTheDocument();
-  });
-
-  it("never opens itself, not even when the turn settles", () => {
-    const { rerender } = render(tray(turnOf([thinking("k1", "a"), tool("t1")], true)));
-    const header = screen.getByRole("button", { name: /Used 1 tool/ });
-    expect(header).toHaveAttribute("aria-expanded", "false");
-
-    rerender(tray(turnOf([thinking("k1", "a"), tool("t1"), assistant("a1", "done")])));
-    expect(screen.getByRole("button", { name: /Thought, 1 tool/ })).toHaveAttribute(
-      "aria-expanded",
-      "false",
-    );
-  });
-
-  it("shows the current step in its header while the turn runs", () => {
+  it("renders the living waveform and current step label while the turn is live", () => {
     const { rerender } = render(tray(turnOf([thinking("k1", "a")], true)));
-    expect(screen.getByRole("button", { name: /Thinking/ })).toBeInTheDocument();
+    expect(screen.getByTestId("living-waveform")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Thinking");
+    expect(screen.queryByRole("button")).toBeNull();
 
-    // One busy line per turn: the tool's own short label, not a spinner per call.
     rerender(tray(turnOf([thinking("k1", "a"), tool("t1", "running", "read_csv('x')")], true)));
-    expect(screen.getByRole("button", { name: /Running read_csv/ })).toBeInTheDocument();
-    // No settled summary either: the header is still reporting the live step.
-    expect(screen.queryByRole("button", { name: /Thought/ })).toBeNull();
-  });
+    expect(screen.getByTestId("living-waveform")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Running read_csv");
 
-  it("settles to what the turn did, not to how many steps it took", () => {
-    render(
-      tray(
-        turnOf([
-          thinking("k1", "a"),
-          tool("t1"),
-          tool("t2"),
-          assistant("a1", "narration"),
-          thinking("k2", "b"),
-          assistant("a2", "answer"),
-        ]),
-      ),
-    );
-    // Six rows became four steps, which is not a fact about anything: two tools
-    // ran and the model thought first. One count, in the unit of the work.
-    expect(screen.getByRole("button", { name: /Thought, 2 tools/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /step/ })).toBeNull();
-  });
-
-  it("surfaces failed tools in the collapsed header, without expanding", () => {
-    render(
-      tray(
-        turnOf([
-          tool("t1", "failed"),
-          tool("t2", "failed"),
-          tool("t3"),
-          assistant("a1", "answer"),
-        ]),
-      ),
-    );
-
-    // The count is part of the header's accessible name: an aria-label would
-    // have hidden it from a screen reader.
-    const header = screen.getByRole("button", { name: /3 tools.*2 failed/ });
-    expect(header).toHaveAttribute("aria-expanded", "false");
-    const failed = within(header).getByText("2 failed");
-    // Silent failure is the one thing this design may not do, so the count is
-    // colour-coded as well as counted.
-    expect(failed.className).toContain("text-danger");
-  });
-
-  it("keeps one step open at a time", async () => {
-    const user = userEvent.setup();
-    render(
-      tray(
-        turnOf([
-          tool("t1"),
-          assistant("a1", "one down"),
-          tool("t2"),
-          assistant("a2", "answer"),
-        ]),
-      ),
-    );
-
-    await user.click(screen.getByRole("button", { name: /2 tools/ }));
-    const [first, second] = screen.getAllByRole("button", { name: /Used 1 tool/ });
-    expect(first).toBeDefined();
-    expect(second).toBeDefined();
-
-    await user.click(first!);
-    expect(first).toHaveAttribute("aria-expanded", "true");
-    // The open run's card is mounted; the closed one's is not.
-    expect(screen.getAllByText("Succeeded")).toHaveLength(1);
-
-    await user.click(second!);
-    expect(second).toHaveAttribute("aria-expanded", "true");
-    expect(first).toHaveAttribute("aria-expanded", "false");
-  });
-
-  it("draws a run of thinking rows as one line, not one per row", async () => {
-    const user = userEvent.setup();
-    render(tray(turnOf([thinking("k1", "first thought"), thinking("k2", "second thought")])));
-
-    // Two rows, one step, one line: the tray folds the boundary the stream made.
-    expect(screen.queryByRole("button", { name: /Thinking, 2 lines/ })).toBeNull();
-    await user.click(screen.getByRole("button", { name: /Thought/ }));
-
-    const line = screen.getByRole("button", { name: /Thinking, 3 lines/ });
-    await user.click(line);
-    expect(document.querySelector("pre")?.textContent).toBe("first thought\n\nsecond thought");
-  });
-
-  it("closes an open thinking step when another step opens", async () => {
-    const user = userEvent.setup();
-    render(
-      tray(turnOf([thinking("k1", "a"), tool("t1"), assistant("a1", "answer")])),
-    );
-
-    await user.click(screen.getByRole("button", { name: /Thought, 1 tool/ }));
-    const thought = screen.getByRole("button", { name: /Thinking, 1 lines/ });
-    await user.click(thought);
-    expect(thought).toHaveAttribute("aria-expanded", "true");
-
-    await user.click(screen.getByRole("button", { name: /Used 1 tool/ }));
-    expect(thought).toHaveAttribute("aria-expanded", "false");
-  });
-
-  it("lists the steps in run order and keeps the answer out of the tray", async () => {
-    const user = userEvent.setup();
-    render(
-      tray(
-        turnOf([thinking("k1", "a"), tool("t1"), assistant("a1", "The mean is 4.")]),
-      ),
-    );
-
-    await user.click(screen.getByRole("button", { name: /Thought, 1 tool/ }));
-    const steps = screen.getByTestId("turn-tray-steps");
-
-    expect(steps.children).toHaveLength(2);
-    expect(steps.children[0]?.textContent).toContain("Thinking");
-    expect(steps.children[1]?.textContent).toContain("Used 1 tool");
-    // The answer is the column's, not the tray's.
-    expect(screen.queryByText("The mean is 4.")).toBeNull();
-    // ...and nothing in the tray repeats the turn's one speaker label.
-    expect(screen.queryByText("Quartz")).toBeNull();
-  });
-
-  it("announces the current step, not the token stream", () => {
-    const { rerender } = render(tray(turnOf([tool("t1")], true)));
-    const status = screen.getByRole("status");
-    expect(status).toHaveTextContent("Used 1 tool");
-
-    // The answer streaming below the tray must not reach the live region: that is
-    // the per-token firehose the announcer exists to avoid.
-    rerender(tray(turnOf([tool("t1"), assistant("a1", "The")], true)));
+    rerender(tray(turnOf([thinking("k1", "a"), tool("t1", "ok", "read_csv('x')")], true)));
     expect(screen.getByRole("status")).toHaveTextContent("Used 1 tool");
-    rerender(tray(turnOf([tool("t1"), assistant("a1", "The mean is four")], true)));
-    expect(screen.getByRole("status").textContent).not.toContain("The mean is four");
   });
 
-  it("names a failure in the live region too, not just in the header", () => {
-    render(tray(turnOf([tool("t1", "failed"), tool("t2", "running")], true)));
-    expect(screen.getByRole("status")).toHaveTextContent("Running run_t2, 1 failed");
+  it("disappears once the turn settles", () => {
+    const { container, rerender } = render(
+      tray(turnOf([thinking("k1", "a"), tool("t1", "running")], true)),
+    );
+    expect(screen.getByTestId("living-waveform")).toBeInTheDocument();
+
+    rerender(tray(turnOf([thinking("k1", "a"), tool("t1", "ok"), assistant("a1", "done")], false)));
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByTestId("living-waveform")).toBeNull();
   });
 
-  it("has no live region once the turn settles", () => {
-    const { rerender } = render(tray(turnOf([tool("t1")], true)));
-    expect(screen.queryByRole("status")).not.toBeNull();
+  it("disappears as soon as the final reply begins streaming", () => {
+    const { container, rerender } = render(
+      tray(turnOf([thinking("k1", "a"), tool("t1", "ok")], true)),
+    );
+    expect(screen.getByTestId("living-waveform")).toBeInTheDocument();
 
-    rerender(tray(turnOf([tool("t1"), assistant("a1", "done")])));
-    expect(screen.queryByRole("status")).toBeNull();
+    rerender(tray(turnOf([thinking("k1", "a"), tool("t1", "ok"), assistant("a1", "Hi")], true)));
+    expect(container.firstChild).toBeNull();
   });
 
-  it("follows the newest step while live, unless the reader scrolled up", async () => {
-    const user = userEvent.setup();
-    const live = (rows: Row[]): Turn => turnOf(rows, true);
-
-    const { rerender } = render(tray(live([thinking("k1", "a")])));
-    await user.click(screen.getByRole("button", { name: /Thinking/ }));
-
-    const node = screen.getByTestId("turn-tray-steps");
-    expect(node.className).toContain("overflow-y-auto");
-
-    const setMetrics = (scrollTop: number): void => {
-      Object.defineProperty(node, "scrollHeight", { configurable: true, value: 600 });
-      Object.defineProperty(node, "clientHeight", { configurable: true, value: 200 });
-      Object.defineProperty(node, "scrollTop", {
-        configurable: true,
-        writable: true,
-        value: scrollTop,
-      });
-    };
-
-    // 10px from the bottom counts as pinned, so the next step is followed.
-    setMetrics(390);
-    fireEvent.scroll(node);
-    rerender(tray(live([thinking("k1", "a"), tool("t1")])));
-    expect(node.scrollTop).toBe(600);
-
-    // A reader who scrolled up is asking to stop being dragged.
-    setMetrics(0);
-    fireEvent.scroll(node);
-    rerender(tray(live([thinking("k1", "a"), tool("t1"), assistant("a1", "more")])));
-    expect(node.scrollTop).toBe(0);
+  it("stays visible if another tool is running after an interim progress update", () => {
+    render(
+      tray(
+        turnOf(
+          [
+            thinking("k1", "a"),
+            tool("t1", "ok", "rg('x')"),
+            assistant("a1", "Found #1, checking #2..."),
+            tool("t2", "running", "read('b.ts')"),
+          ],
+          true,
+        ),
+      ),
+    );
+    expect(screen.getByTestId("living-waveform")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Running read");
   });
 
-  it("shows elapsed time and diff stats in the settled header and color-codes unified diffs", async () => {
-    const user = userEvent.setup();
-    const diffOutput = [
-      "--- a/file.ts",
-      "+++ b/file.ts",
-      "@@ -1,2 +1,2 @@",
-      "-old line",
-      "+new line",
-    ].join("\n");
-    const diffTool: ToolRow = {
-      kind: "tool",
-      id: "tdiff",
-      code: "edit_file()",
-      status: "ok",
-      output: diffOutput,
-      durationMs: 50,
-      images: [],
-      actions: null,
-    };
-    const settled = { ...turnOf([diffTool]), elapsedMs: 4200 };
-    render(tray(settled));
-
-    const header = screen.getByRole("button", { name: /1 tool/ });
-    expect(header).toHaveTextContent("4.2s");
-    expect(header).toHaveTextContent("+1 -1");
-
-    await user.click(header);
-    await user.click(screen.getByRole("button", { name: /Used 1 tool/ }));
-    await user.click(screen.getByRole("button", { name: /Tool call, Succeeded/ }));
-    expect(screen.getByText("+new line").className).toContain("text-success");
-    expect(screen.getByText("-old line").className).toContain("text-danger");
+  it("keeps the live status region with the failure count when a running turn has failures", () => {
+    render(
+      tray(turnOf([tool("t1", "failed"), tool("t2", "running", "retry()")], true)),
+    );
+    const status = screen.getByTestId("turn-tray-status");
+    expect(status).toHaveTextContent("Running retry, 1 failed");
   });
 });
