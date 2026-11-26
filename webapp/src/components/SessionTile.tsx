@@ -14,7 +14,6 @@ import { Transcript } from "./Transcript";
 import { StatusLine } from "./StatusLine";
 import { JobsTray } from "./JobsTray";
 import { PermissionPromptCard } from "./PermissionPromptCard";
-import { WatcherBanner } from "./WatcherBanner";
 import { Composer } from "./Composer";
 import { TrustFolderDialog } from "./TrustFolderDialog";
 import { ModelPickerDialog } from "./ModelPickerDialog";
@@ -527,11 +526,6 @@ export const SessionTile = React.memo(function SessionTile({
           onRespond={qRespondPermission}
         />
       ) : null}
-
-      <WatcherBanner
-        watcher={quartz.state.session.watcher}
-        onAction={quartz.watcherAction}
-      />
 
       <Composer
         connection={quartz.status}
