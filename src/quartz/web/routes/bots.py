@@ -9,7 +9,7 @@ import json
 import re
 import time
 import uuid
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -30,14 +30,25 @@ from quartz.bots import (
 )
 from quartz.web.context import AppContext, bad_request, json_body
 from quartz.web.schemas import BotCreateRequest, BotToggleRequest, BotUpdateRequest
+from quartz.web.types import (
+    BotRunPayload,
+    DeletedBotPayload,
+    QueuedTriggerPayload,
+    SerializedBotPayload,
+)
 
 
-def _serialize_bot(bot: BotConfig, state: BotState, queued: list[QueuedTrigger]) -> dict[str, Any]:
-    return {
-        **bot.to_dict(),
-        "state": state.to_dict(),
-        "queueDepth": len(queued),
-    }
+def _serialize_bot(
+    bot: BotConfig, state: BotState, queued: list[QueuedTrigger]
+) -> SerializedBotPayload:
+    return cast(
+        SerializedBotPayload,
+        {
+            **bot.to_dict(),
+            "state": state.to_dict(),
+            "queueDepth": len(queued),
+        },
+    )
 
 
 def _generate_bot_id(name: str) -> str:
@@ -211,14 +222,14 @@ def create_router(ctx: AppContext) -> APIRouter:
         history = _history_store(store)
         bounded_limit = max(1, min(limit, 500))
 
-        def _read() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        def _read() -> tuple[list[BotRunPayload], list[DeletedBotPayload]]:
             runs = [
-                r.to_dict()
+                cast(BotRunPayload, r.to_dict())
                 for r in history.list_runs(
                     bot_id=bot_id, status=status, session_id=session_id, limit=bounded_limit
                 )
             ]
-            deleted = [d.to_dict() for d in history.list_deleted_bots()]
+            deleted = [cast(DeletedBotPayload, d.to_dict()) for d in history.list_deleted_bots()]
             return runs, deleted
 
         runs, deleted = await asyncio.to_thread(_read)
@@ -229,7 +240,7 @@ def create_router(ctx: AppContext) -> APIRouter:
         store, queue = _stores()
         history = _history_store(store)
 
-        def _restore() -> dict[str, Any] | None:
+        def _restore() -> SerializedBotPayload | None:
             record = history.pop_deleted_bot(bot_id)
             if record is None:
                 return None
@@ -268,7 +279,7 @@ def create_router(ctx: AppContext) -> APIRouter:
 
     @router.get("/api/bots")
     async def list_bots() -> JSONResponse:
-        def _load() -> list[dict[str, Any]]:
+        def _load() -> list[SerializedBotPayload]:
             store, queue = _stores()
             return [
                 _serialize_bot(bot, store.get_state(bot.id), queue.peek_bot_queue(bot.id))
@@ -288,7 +299,7 @@ def create_router(ctx: AppContext) -> APIRouter:
         config = _config_from_create(req)
         store, _ = _stores()
 
-        def _create() -> dict[str, Any]:
+        def _create() -> SerializedBotPayload:
             created = store.create_bot(config)
             return _serialize_bot(created, store.get_state(created.id), [])
 
@@ -322,7 +333,7 @@ def create_router(ctx: AppContext) -> APIRouter:
         except ValueError as exc:
             return bad_request(str(exc))
 
-        def _read_after() -> dict[str, Any]:
+        def _read_after() -> SerializedBotPayload:
             return _serialize_bot(
                 updated,
                 store.get_state(bot_id),
@@ -360,7 +371,7 @@ def create_router(ctx: AppContext) -> APIRouter:
         except ValidationError as exc:
             return bad_request(str(exc))
 
-        def _toggle() -> tuple[dict[str, Any], bool] | None:
+        def _toggle() -> tuple[SerializedBotPayload, bool] | None:
             existing = store.get_bot(bot_id)
             if existing is None:
                 return None
@@ -407,10 +418,10 @@ def create_router(ctx: AppContext) -> APIRouter:
     async def get_bot_queue(bot_id: str) -> JSONResponse:
         store, queue = _stores()
 
-        def _peek() -> list[dict[str, Any]] | None:
+        def _peek() -> list[QueuedTriggerPayload] | None:
             if store.get_bot(bot_id) is None:
                 return None
-            return [item.to_dict() for item in queue.peek_bot_queue(bot_id)]
+            return [cast(QueuedTriggerPayload, item.to_dict()) for item in queue.peek_bot_queue(bot_id)]
 
         items = await asyncio.to_thread(_peek)
         if items is None:

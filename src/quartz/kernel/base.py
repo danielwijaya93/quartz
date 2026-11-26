@@ -8,7 +8,7 @@ import contextlib
 import dataclasses
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -247,7 +247,7 @@ class BaseKernel:
         notice, self._restart_notice = self._restart_notice, None
         return notice
 
-    def _format_exec_response(self, resp: dict[str, Any], *, include_notice: bool = False) -> CellResult:
+    def _format_exec_response(self, resp: Mapping[str, Any], *, include_notice: bool = False) -> CellResult:
         notice = self.consume_restart_notice() if include_notice else None
         prefix = f"{notice}\n" if notice else ""
         if resp.get("type") == "error":

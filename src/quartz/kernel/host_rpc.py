@@ -10,7 +10,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -126,7 +126,7 @@ class HostRpcHandler:
 
     async def handle_request(
         self,
-        msg: dict[str, Any],
+        msg: Mapping[str, Any],
         write_frame: Callable[[dict[str, Any]], None],
     ) -> None:
         req_id = str(msg.get("id") or "")

@@ -13,8 +13,9 @@ import threading
 import time
 import uuid
 from collections import deque
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from quartz.kernel.base import BaseKernel, CellResult
 from quartz.kernel.bridge import PermissionHandler
@@ -32,6 +33,15 @@ from quartz.kernel.sandbox import (
     wrap_command,
 )
 from quartz.kernel.snapshots import sign_snapshot_dir, verify_snapshot_dir
+from quartz.kernel.types import (
+    BashJobInfo,
+    HelperListResult,
+    HostRpcParams,
+    HostRpcResult,
+    KernelRpcFrame,
+    RestoreResult,
+    SnapshotManifest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +127,7 @@ class KernelClient(BaseKernel):
         self._rpc_tasks: set[asyncio.Task[None]] = set()
         self._ready_fut: asyncio.Future[bool] | None = None
         self._pending_async: dict[
-            str, tuple[asyncio.AbstractEventLoop, asyncio.Future[dict[str, Any]]]
+            str, tuple[asyncio.AbstractEventLoop, asyncio.Future[KernelRpcFrame]]
         ] = {}
         self._pending_lock = threading.Lock()
         self._write_lock = threading.Lock()
@@ -195,9 +205,12 @@ class KernelClient(BaseKernel):
         return get_kernel_io_loop()
 
     def _exec_bridge_sync(
-        self, params: dict[str, Any], *, cancel_event: threading.Event | None = None
-    ) -> dict[str, Any]:
-        return self._host_rpc.exec_bridge_sync(params, cancel_event=cancel_event)
+        self, params: HostRpcParams | Mapping[str, Any], *, cancel_event: threading.Event | None = None
+    ) -> HostRpcResult:
+        return cast(
+            HostRpcResult,
+            self._host_rpc.exec_bridge_sync(dict(params), cancel_event=cancel_event),
+        )
 
     def _build_spawn_cmd_and_env(self) -> tuple[list[str], dict[str, str]]:
         if self._sandbox_config.enabled:
@@ -232,7 +245,7 @@ class KernelClient(BaseKernel):
         return cmd, env
 
     def _write_frame_on_io_loop(
-        self, payload: dict[str, Any], *, best_effort: bool = False
+        self, payload: KernelRpcFrame | Mapping[str, Any], *, best_effort: bool = False
     ) -> None:
         proc = self._raw_proc
         if proc is None or proc.stdin is None or proc.stdin.is_closing():
@@ -250,7 +263,7 @@ class KernelClient(BaseKernel):
                 raise
             logger.debug("Failed to write kernel frame", exc_info=True)
 
-    def _write_frame(self, payload: dict[str, Any], *, best_effort: bool = False) -> None:
+    def _write_frame(self, payload: KernelRpcFrame | Mapping[str, Any], *, best_effort: bool = False) -> None:
         loop = self._io_loop
         if loop is None or loop.is_closed():
             if not best_effort:
@@ -283,7 +296,7 @@ class KernelClient(BaseKernel):
         except Exception:
             logger.debug("Kernel stderr reader stopped", exc_info=True)
 
-    def _dispatch_host_request(self, msg: dict[str, Any]) -> None:
+    def _dispatch_host_request(self, msg: KernelRpcFrame) -> None:
         loop = self._io_loop
         if loop is None or loop.is_closed():
             return
@@ -424,7 +437,7 @@ class KernelClient(BaseKernel):
     async def _apush_configure(self) -> None:
         if not self._is_alive():
             return
-        payload: dict[str, Any] = {
+        payload: KernelRpcFrame = {
             "type": "configure",
             "headless": self._headless,
             "background_check_every": self._background_check_every,
@@ -484,11 +497,11 @@ class KernelClient(BaseKernel):
             await self.astart()
 
     async def _request_async(
-        self, payload: dict[str, Any], timeout: float | None
-    ) -> dict[str, Any]:
+        self, payload: KernelRpcFrame, timeout: float | None
+    ) -> KernelRpcFrame:
         await self._ensure_started_async()
         loop = asyncio.get_running_loop()
-        fut: asyncio.Future[dict[str, Any]] = loop.create_future()
+        fut: asyncio.Future[KernelRpcFrame] = loop.create_future()
         req_id = uuid.uuid4().hex
         payload["id"] = req_id
         with self._pending_lock:
@@ -524,7 +537,7 @@ class KernelClient(BaseKernel):
             with self._pending_lock:
                 self._pending_async.pop(req_id, None)
 
-    def _request(self, payload: dict[str, Any], timeout: float | None) -> dict[str, Any]:
+    def _request(self, payload: KernelRpcFrame, timeout: float | None) -> KernelRpcFrame:
         if not self._is_alive():
             if self._raw_proc is not None:
                 self._note_unexpected_exit()
@@ -542,7 +555,7 @@ class KernelClient(BaseKernel):
         resp = await self._request_async({"type": "exec", "code": code}, timeout=timeout)
         return self._format_exec_response(resp, include_notice=True)
 
-    async def alist_helpers(self, timeout: float = 5.0) -> dict[str, Any]:
+    async def alist_helpers(self, timeout: float = 5.0) -> HelperListResult:
         if not self._is_alive():
             return {"helpers": [], "warnings": []}
         resp = await self._request_async({"type": "list_helpers"}, timeout=timeout)
@@ -551,7 +564,7 @@ class KernelClient(BaseKernel):
             "warnings": list(resp.get("warnings", [])),
         }
 
-    def list_helpers(self, timeout: float = 5.0) -> dict[str, Any]:
+    def list_helpers(self, timeout: float = 5.0) -> HelperListResult:
         if not self._is_alive():
             return {"helpers": [], "warnings": []}
         resp = self._request({"type": "list_helpers"}, timeout=timeout)
@@ -572,7 +585,7 @@ class KernelClient(BaseKernel):
         resp = self._request({"type": "list_vars"}, timeout=timeout)
         return resp.get("vars", {}) if isinstance(resp.get("vars"), dict) else {}
 
-    async def asnapshot(self, snapshot_dir: Path, timeout: float = 30.0) -> dict[str, Any]:
+    async def asnapshot(self, snapshot_dir: Path, timeout: float = 30.0) -> SnapshotManifest:
         if not self._is_alive():
             return {"saved": [], "skipped": []}
         resp = await self._request_async(
@@ -580,9 +593,9 @@ class KernelClient(BaseKernel):
         )
         self.dirty = False
         signed = await asyncio.to_thread(sign_snapshot_dir, snapshot_dir)
-        return signed if signed is not None else resp.get("manifest", {"saved": [], "skipped": []})
+        return cast(SnapshotManifest, signed) if signed is not None else resp.get("manifest", {"saved": [], "skipped": []})
 
-    def snapshot(self, snapshot_dir: Path, timeout: float = 30.0) -> dict[str, Any]:
+    def snapshot(self, snapshot_dir: Path, timeout: float = 30.0) -> SnapshotManifest:
         if not self._is_alive():
             return {"saved": [], "skipped": []}
         resp = self._request(
@@ -590,14 +603,14 @@ class KernelClient(BaseKernel):
         )
         self.dirty = False
         signed = sign_snapshot_dir(snapshot_dir)
-        return signed if signed is not None else resp.get("manifest", {"saved": [], "skipped": []})
+        return cast(SnapshotManifest, signed) if signed is not None else resp.get("manifest", {"saved": [], "skipped": []})
 
     async def arestore(
         self, snapshot_dir: Path, timeout: float = 30.0, root: Path | None = None
-    ) -> dict[str, list[str]]:
+    ) -> RestoreResult:
         await self._ensure_started_async()
         allow_pickle, reject_reason = await asyncio.to_thread(verify_snapshot_dir, snapshot_dir)
-        frame: dict[str, Any] = {
+        frame: KernelRpcFrame = {
             "type": "restore",
             "dir": str(snapshot_dir),
             "allow_pickle": allow_pickle,
@@ -614,11 +627,11 @@ class KernelClient(BaseKernel):
 
     def restore(
         self, snapshot_dir: Path, timeout: float = 30.0, root: Path | None = None
-    ) -> dict[str, list[str]]:
+    ) -> RestoreResult:
         if not self._is_alive():
             self.start()
         allow_pickle, reject_reason = verify_snapshot_dir(snapshot_dir)
-        frame: dict[str, Any] = {
+        frame: KernelRpcFrame = {
             "type": "restore",
             "dir": str(snapshot_dir),
             "allow_pickle": allow_pickle,
@@ -657,9 +670,9 @@ class KernelClient(BaseKernel):
         del timeout
         return self._running_bash_count if self._is_alive() else 0
 
-    def running_bash_jobs(self) -> list[dict[str, Any]]:
+    def running_bash_jobs(self) -> list[BashJobInfo]:
         """Return snapshots of currently running bash() jobs with live elapsed_s."""
-        return self._live_bash_jobs() if self._is_alive() else []
+        return cast(list[BashJobInfo], self._live_bash_jobs()) if self._is_alive() else []
 
     async def abash_tail(
         self, pid: int, lines: int = 50, timeout: float = 5.0
@@ -691,11 +704,11 @@ class KernelClient(BaseKernel):
         resp = self._request({"type": "kill_bash", "pid": pid}, timeout=timeout)
         return bool(resp.get("killed"))
 
-    def wait_for_events(self, timeout: float | None = None) -> list[dict[str, Any]]:
+    def wait_for_events(self, timeout: float | None = None) -> list[KernelRpcFrame]:
         with self._events_cond:
             if not self._events and not self._worker_exited and self._is_alive():
                 self._events_cond.wait(timeout=timeout)
-            events = list(self._events)
+            events = cast(list[KernelRpcFrame], list(self._events))
             self._events.clear()
         return events
 

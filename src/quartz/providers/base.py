@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from typing import Any, Protocol, cast
 
 from quartz.errors import ProviderError, is_context_overflow, provider_error
@@ -81,8 +81,8 @@ class LLMProvider(Protocol):
     async def stream(
         self,
         model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] | None = None,
         *,
         effort: str | None = None,
     ) -> StreamHandle: ...
@@ -90,8 +90,8 @@ class LLMProvider(Protocol):
     async def complete(
         self,
         model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] | None = None,
         *,
         effort: str | None = None,
     ) -> CompletionResult: ...

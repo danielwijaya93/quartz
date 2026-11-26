@@ -6,7 +6,8 @@ import asyncio
 import contextlib
 import dataclasses
 import json
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import Any, cast
 
 from quartz.core.background import format_bash_events
 from quartz.core.compact import (
@@ -31,6 +32,7 @@ from quartz.providers.base import (
     Usage,
     UsageEvent,
 )
+from quartz.providers.types import ChatMessage, ToolCallAccumulator, ToolCallDict, ToolDef
 
 __all__ = [
     "TOOLS",
@@ -130,7 +132,7 @@ class TurnUsage:
         )
 
 
-TOOLS = [
+TOOLS: list[ToolDef] = [
     {
         "type": "function",
         "function": {
@@ -169,15 +171,15 @@ def drain_bash_events(kernel: CellExecutor, messages: list[dict[str, Any]]) -> s
     return notice
 
 
-def _completion_to_dict(result: CompletionResult) -> dict[str, Any]:
-    out: dict[str, Any] = {
+def _completion_to_dict(result: CompletionResult) -> ChatMessage:
+    out: ChatMessage = {
         "role": "assistant",
         "content": result.text if result.text else None,
     }
     if result.tool_calls:
-        tc_list: list[dict[str, Any]] = []
+        tc_list: list[ToolCallDict] = []
         for tc in result.tool_calls:
-            tc_obj: dict[str, Any] = {
+            tc_obj: ToolCallDict = {
                 "id": tc.id,
                 "type": "function",
                 "function": {
@@ -290,14 +292,14 @@ async def _sleep_interruptible(
 async def _call_model(
     client: LLMProvider,
     model: str,
-    full_messages: list[dict[str, Any]],
+    full_messages: Sequence[Mapping[str, Any]],
     *,
     stream: bool,
     observer: TurnObserver = NO_OBSERVER,
     effort: str | None = None,
     abort_event: asyncio.Event | None = None,
     steering_queue: asyncio.Queue[str] | None = None,
-) -> tuple[dict[str, Any], Usage | None]:
+) -> tuple[ChatMessage, Usage | None]:
     """Async provider call with bounded exponential backoff on transient 429/5xx errors."""
     for attempt in range(_MAX_TRANSIENT_RETRIES + 1):
         emitted = [False]
@@ -340,7 +342,7 @@ async def _call_model(
 async def _call_model_once(
     client: LLMProvider,
     model: str,
-    full_messages: list[dict[str, Any]],
+    full_messages: Sequence[Mapping[str, Any]],
     *,
     stream: bool,
     observer: TurnObserver = NO_OBSERVER,
@@ -348,7 +350,7 @@ async def _call_model_once(
     abort_event: asyncio.Event | None = None,
     steering_queue: asyncio.Queue[str] | None = None,
     emitted: list[bool] | None = None,
-) -> tuple[dict[str, Any], Usage | None]:
+) -> tuple[ChatMessage, Usage | None]:
     """Execute a single async provider call (streaming or non-streaming)."""
     if abort_event is not None and abort_event.is_set():
         raise TurnAborted()
@@ -373,7 +375,7 @@ async def _call_model_once(
     aborted_stream = False
     content_parts: list[str] = []
     thinking_parts: list[str] = []
-    tool_calls_acc: dict[int, dict[str, Any]] = {}
+    tool_calls_acc: dict[int, ToolCallAccumulator] = {}
     usage: Usage | None = None
     preempt_task: asyncio.Task[str] | None = None
     try:
@@ -494,7 +496,7 @@ async def _call_model_once(
         content_parts.clear()
         thinking_parts.clear()
 
-    assistant_dict: dict[str, Any] = {
+    assistant_dict: ChatMessage = {
         "role": "assistant",
         "content": "".join(content_parts) if content_parts else None,
     }
@@ -502,9 +504,9 @@ async def _call_model_once(
     if reasoning_text:
         assistant_dict["reasoning"] = reasoning_text
     if tool_calls_acc:
-        tc_list: list[dict[str, Any]] = []
+        tc_list: list[ToolCallDict] = []
         for _, entry in sorted(tool_calls_acc.items()):
-            tc_obj: dict[str, Any] = {
+            tc_obj: ToolCallDict = {
                 "id": entry["id"],
                 "type": "function",
                 "function": {"name": entry["name"], "arguments": entry["arguments"]},
@@ -618,25 +620,27 @@ async def agent_loop(
         ):
             continue
 
-        answered = bool((assistant_dict.get("content") or "").strip())
+        raw_content = assistant_dict.get("content")
+        text_content = raw_content if isinstance(raw_content, str) else ""
+        answered = bool(text_content.strip())
         progress.settle(updated=answered)
         if not answered:
             refusal = progress.refuse()
             if refusal is not None:
                 if tool_calls:
-                    messages.append(assistant_dict)
+                    messages.append(cast(Any, assistant_dict))
                     for tc in tool_calls:
                         messages.append({"role": "tool", "tool_call_id": tc["id"], "content": refusal})
                 else:
                     messages.append({"role": "user", "content": refusal})
                 continue
 
-        messages.append(assistant_dict)
+        messages.append(cast(Any, assistant_dict))
 
         if not tool_calls:
             if _drain_steering(steering_queue, messages, observer):
                 continue
-            return (assistant_dict.get("content") or "").strip(), messages, last_prompt_tokens
+            return text_content.strip(), messages, last_prompt_tokens
 
         parsed_calls: list[tuple[str, str, str | None]] = []
         for tc in tool_calls:

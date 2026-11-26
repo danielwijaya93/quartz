@@ -10,11 +10,11 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from quartz.core.turn import run_interactive_turn
 from quartz.web.attachments import AttachedFileRegistry
 from quartz.web.bridge import Frame, Push
+from quartz.web.types import ActiveSessionEntry, ActiveSessionWireItem
 from quartz.web.web_session import BuildRuntime, TurnRunner, WebSession, validate_session_id
 
 _validate_session_id = validate_session_id
@@ -53,7 +53,7 @@ class SessionManager:
         self._system_prompt_append = ""
         self._global_sinks: set[Push] = set()
         self._notification_listeners: set[Push] = set()
-        self._active_sessions: dict[str, dict[str, Any]] = {}
+        self._active_sessions: dict[str, ActiveSessionEntry] = {}
         self._active_sessions_seq = 0
         self._idle_hours_override = idle_hours
         self._max_live_sessions_override = max_live_sessions
@@ -308,8 +308,8 @@ class SessionManager:
 
     def _make_active_entry(
         self, sid: str, ws: WebSession, kind: str, *, seq: int, preview: str | None = None
-    ) -> dict[str, Any]:
-        entry: dict[str, Any] = {
+    ) -> ActiveSessionEntry:
+        entry: ActiveSessionEntry = {
             "sessionId": sid,
             "cwd": str(ws.runtime.cwd),
             "title": self._session_title(ws),
@@ -324,7 +324,7 @@ class SessionManager:
             entry["preview"] = _clip(preview, 120)
         return entry
 
-    def active_sessions_items(self) -> list[dict[str, Any]]:
+    def active_sessions_items(self) -> list[ActiveSessionWireItem]:
         with self._lock:
             by_id = dict(self._active_sessions)
             for ws in self._sessions.values():
@@ -338,18 +338,23 @@ class SessionManager:
             items = list(by_id.values())
 
         items.sort(key=lambda item: (_KIND_PRIORITY.get(str(item.get("kind", "")), 2), -int(item.get("_seq", 0))))
-        return [
-            {
+        out: list[ActiveSessionWireItem] = []
+        for item in items:
+            wire: ActiveSessionWireItem = {
                 "sessionId": item["sessionId"],
                 "cwd": item["cwd"],
-                **({"title": item["title"]} if item.get("title") else {}),
                 "kind": item["kind"],
                 "read": bool(item.get("read", False)),
                 "updatedAt": item["updatedAt"],
-                **({"preview": item["preview"]} if item.get("preview") else {}),
             }
-            for item in items
-        ]
+            title = item.get("title")
+            if title:
+                wire["title"] = title
+            preview = item.get("preview")
+            if preview:
+                wire["preview"] = preview
+            out.append(wire)
+        return out
 
     def dismiss_active_session(self, session_id: str) -> bool:
         with self._lock:

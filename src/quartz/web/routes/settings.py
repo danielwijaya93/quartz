@@ -3,18 +3,26 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import Any, cast
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from quartz.web.context import AppContext, bad_request, json_body
+from quartz.web.types import (
+    McpServerEntry,
+    McpServerSpec,
+    McpSnapshotPayload,
+    ProviderDescriptorPayload,
+    SessionJobEntry,
+    SettingsValuesPayload,
+)
 
 EnsureSessionFn = Callable[[Request, str | None], Awaitable[Any]]
 
 
-def _settings_values(loaded: Any, rt: Any | None = None) -> dict[str, Any]:
+def _settings_values(loaded: Any, rt: Any | None = None) -> SettingsValuesPayload:
     src = rt if rt is not None else loaded
     return {
         "reserve": src.compact_reserve_tokens,
@@ -57,16 +65,16 @@ def _fail(error: str, status_code: int = 400) -> JSONResponse:
     return JSONResponse({"ok": False, "error": error}, status_code=status_code)
 
 
-def _mcp_snapshot() -> dict[str, Any]:
+def _mcp_snapshot() -> McpSnapshotPayload:
     from quartz.mcp.client import default_mcp_config_path, load_raw_mcp_config
 
     cfg_path = default_mcp_config_path()
-    servers: list[dict[str, Any]] = []
+    servers: list[McpServerEntry] = []
     for name, spec in sorted(load_raw_mcp_config(cfg_path).items()):
         is_http = "url" in spec
         raw_headers, raw_env = spec.get("headers"), spec.get("env")
-        headers: dict[str, Any] = raw_headers if isinstance(raw_headers, dict) else {}
-        env: dict[str, Any] = raw_env if isinstance(raw_env, dict) else {}
+        headers = raw_headers if isinstance(raw_headers, dict) else {}
+        env = raw_env if isinstance(raw_env, dict) else {}
         servers.append({
             "name": name,
             "enabled": spec.get("enabled", True) is not False,
@@ -322,9 +330,9 @@ def _register_settings_routes(router: APIRouter, ctx: AppContext) -> None:
         })
 
 
-def _build_mcp_spec(body: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+def _build_mcp_spec(body: Mapping[str, Any]) -> tuple[McpServerSpec | None, str | None]:
     transport = str(body.get("transport") or "stdio").strip().lower()
-    spec: dict[str, Any] = {}
+    spec: McpServerSpec = {}
     if transport == "http":
         url = str(body.get("url") or "").strip()
         if not url:
@@ -366,7 +374,7 @@ def _register_mcp_routes(router: APIRouter, ctx: AppContext) -> None:
         if not isinstance(enabled, bool):
             return _fail("enabled must be boolean")
 
-        def _apply_and_snapshot() -> tuple[bool, bool, dict[str, Any]]:
+        def _apply_and_snapshot() -> tuple[bool, bool, McpSnapshotPayload | None]:
             cfg_path = default_mcp_config_path()
             if body.get("all") is True:
                 names = sorted(load_raw_mcp_config(cfg_path).keys())
@@ -374,7 +382,7 @@ def _register_mcp_routes(router: APIRouter, ctx: AppContext) -> None:
                 name = str(body.get("name") or "").strip()
                 names = [name] if name else []
             if body.get("all") is not True and not names:
-                return False, False, {}
+                return False, False, None
             updated = any([set_mcp_server_enabled(item, enabled, cfg_path) for item in names])
             if updated:
                 _reload_session_mcp(manager)
@@ -383,7 +391,7 @@ def _register_mcp_routes(router: APIRouter, ctx: AppContext) -> None:
         valid_name, found, snapshot = await asyncio.to_thread(_apply_and_snapshot)
         if not valid_name:
             return _fail("Missing server name")
-        if not found:
+        if not found or snapshot is None:
             return _fail("Server not found", 404)
         return JSONResponse({"ok": True, **snapshot})
 
@@ -399,8 +407,8 @@ def _register_mcp_routes(router: APIRouter, ctx: AppContext) -> None:
         if spec is None:
             return _fail(err or "Invalid MCP server config")
 
-        def _save_and_snapshot() -> dict[str, Any]:
-            add_mcp_server(name, spec, default_mcp_config_path())
+        def _save_and_snapshot() -> McpSnapshotPayload:
+            add_mcp_server(name, dict(spec), default_mcp_config_path())
             _reload_session_mcp(manager)
             return _mcp_snapshot()
 
@@ -415,31 +423,31 @@ def _register_mcp_routes(router: APIRouter, ctx: AppContext) -> None:
         if not name:
             return _fail("Missing server name")
 
-        def _rm_and_snapshot() -> tuple[bool, dict[str, Any]]:
+        def _rm_and_snapshot() -> tuple[bool, McpSnapshotPayload | None]:
             removed = remove_mcp_server(name, default_mcp_config_path())
             if removed:
                 _reload_session_mcp(manager)
-            return removed, (_mcp_snapshot() if removed else {})
+            return removed, (_mcp_snapshot() if removed else None)
 
         removed, snapshot = await asyncio.to_thread(_rm_and_snapshot)
-        if not removed:
+        if not removed or snapshot is None:
             return _fail(f"Server '{name}' not found", 404)
         return JSONResponse({"ok": True, **snapshot})
 
 
-def _collect_session_jobs(manager: Any, ws: Any, include_session: bool) -> list[dict[str, Any]]:
+def _collect_session_jobs(manager: Any, ws: Any, include_session: bool) -> list[SessionJobEntry]:
     from quartz.kernel.actions import describe_job_label
 
     if ws is None or not ws.built:
         return []
     jobs_fn = getattr(ws.runtime.kernel, "running_bash_jobs", None)
-    raw_jobs = list(cast(Iterable[dict[str, Any]], jobs_fn())) if callable(jobs_fn) else []
+    raw_jobs = list(cast(Iterable[Mapping[str, Any]], jobs_fn())) if callable(jobs_fn) else []
     sid = ws.runtime.active_session.id
     title = manager.session_title(ws) if include_session else None
-    out: list[dict[str, Any]] = []
+    out: list[SessionJobEntry] = []
     for job in raw_jobs:
         cmd = str(job.get("command", ""))
-        entry: dict[str, Any] = {
+        entry: SessionJobEntry = {
             "pid": job.get("pid", "?"),
             "command": cmd,
             "label": describe_job_label(cmd),
@@ -513,7 +521,7 @@ def _register_jobs_routes(router: APIRouter, ctx: AppContext) -> None:
         return JSONResponse({"pid": pid, "killed": killed})
 
 
-def _load_provider_descriptor(pname: str, spec: Any) -> dict[str, Any]:
+def _load_provider_descriptor(pname: str, spec: Any) -> ProviderDescriptorPayload:
     from quartz.providers.registry import discover_models, discovered_efforts, policy_efforts
     from quartz.providers.selection import _provider_ready, _provider_status_label
 
