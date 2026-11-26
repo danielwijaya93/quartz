@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, cast
 
 import httpx2
@@ -261,8 +261,8 @@ class OpenAIProvider:
         self,
         *,
         model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] | None,
         stream: bool,
         effort: str | None,
     ) -> dict[str, Any]:
@@ -295,8 +295,8 @@ class OpenAIProvider:
     async def stream(
         self,
         model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] | None = None,
         *,
         effort: str | None = None,
     ) -> StreamHandle:
@@ -335,8 +335,8 @@ class OpenAIProvider:
     async def complete(
         self,
         model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] | None = None,
         *,
         effort: str | None = None,
     ) -> CompletionResult:

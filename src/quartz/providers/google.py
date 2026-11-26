@@ -9,6 +9,7 @@ import os
 import secrets
 import threading
 import time
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 import httpx2
@@ -36,6 +37,18 @@ from quartz.providers.base import (
 )
 from quartz.providers.config import resolve_cloudcode_endpoint, resolve_http_timeout
 from quartz.providers.http_pool import get_shared_async_http_client
+from quartz.providers.types import (
+    CloudCodeCatalogPayload,
+    CloudCodeContent,
+    CloudCodeEnvelope,
+    CloudCodeFunctionDeclaration,
+    CloudCodeGenerationConfig,
+    CloudCodeModelInfo,
+    CloudCodePart,
+    CloudCodeRequestBody,
+    CloudCodeSsePayload,
+    ThinkingConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +237,7 @@ def parse_model_suffix(runtime_id: str) -> tuple[str, str | None]:
     return runtime_id, None
 
 
-def is_selectable_runtime_id(model_id: str, info: dict[str, Any]) -> bool:
+def is_selectable_runtime_id(model_id: str, info: CloudCodeModelInfo | Mapping[str, Any]) -> bool:
     """Filter out internal, image-only, disabled, and completion/tab models."""
     if model_id.endswith("-disabled") or info.get("disabled") is True:
         return False
@@ -235,7 +248,7 @@ def is_selectable_runtime_id(model_id: str, info: dict[str, Any]) -> bool:
     return not ("image" in model_id.lower() or "image" in str(info.get("displayName", "")).lower())
 
 
-def register_discovered_model_enums(raw_models: dict[str, Any]) -> None:
+def register_discovered_model_enums(raw_models: Mapping[str, Any]) -> None:
     """Update dynamic enum cache from backend discovery response."""
     for wire_id, info in raw_models.items():
         if isinstance(info, dict) and isinstance(info.get("model"), str) and info["model"]:
@@ -270,7 +283,7 @@ def get_max_output_tokens(model: str, runtime_model: str) -> int:
 
 def get_thinking_config(
     model: str, runtime_model: str, effort: str | None = None
-) -> dict[str, Any] | None:
+) -> ThinkingConfig | None:
     """Format thinkingConfig with wire-compliant thinkingBudget integer and thinkingLevel."""
     if not effort or effort.lower() == "off":
         if (
@@ -316,7 +329,7 @@ def fetch_available_models_catalog(
     access_token: str,
     project_id: str,
     timeout: float = 8.0,
-) -> dict[str, Any]:
+) -> CloudCodeCatalogPayload:
     """Fetch live model catalog from Cloud Code Assist endpoints."""
     endpoints = [
         "https://daily-cloudcode-pa.googleapis.com",
@@ -340,7 +353,7 @@ def fetch_available_models_catalog(
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, dict) and isinstance(data.get("models"), dict):
-                    return data
+                    return cast(CloudCodeCatalogPayload, data)
         except Exception:
             logger.debug("Cloud Code Assist model fetch failed", exc_info=True)
             continue
@@ -472,14 +485,14 @@ def _parameters_schema(schema: Any) -> Any:
 def build_cloudcode_request(
     model: str,
     project_id: str,
-    messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]] | None = None,
+    messages: Sequence[Mapping[str, Any]],
+    tools: Sequence[Mapping[str, Any]] | None = None,
     effort: str | None = None,
-) -> dict[str, Any]:
+) -> CloudCodeEnvelope:
     """Translate OpenAI chat messages + tools into a Cloud Code Assist envelope."""
     runtime_model, model_enum = resolve_antigravity_runtime(model, effort)
 
-    system_parts: list[dict[str, str]] = [
+    system_parts: list[CloudCodePart] = [
         {"text": ANTIGRAVITY_SYSTEM_INSTRUCTION},
         {"text": f"Please ignore following [ignore]{ANTIGRAVITY_SYSTEM_INSTRUCTION}[/ignore]"},
     ]
@@ -493,8 +506,8 @@ def build_cloudcode_request(
                 if tc_id and fn_name:
                     id_to_name[str(tc_id)] = str(fn_name)
 
-    contents: list[dict[str, Any]] = []
-    pending_tool_parts: list[dict[str, Any]] = []
+    contents: list[CloudCodeContent] = []
+    pending_tool_parts: list[CloudCodePart] = []
 
     def _flush_tool_parts() -> None:
         if pending_tool_parts:
@@ -526,7 +539,7 @@ def build_cloudcode_request(
 
         if role == "user":
             if isinstance(content, list):
-                user_parts: list[dict[str, Any]] = []
+                user_parts: list[CloudCodePart] = []
                 for block in content:
                     if not isinstance(block, dict):
                         continue
@@ -547,7 +560,7 @@ def build_cloudcode_request(
             else:
                 contents.append({"role": "user", "parts": [{"text": str(content or "")}]})
         elif role == "assistant":
-            parts: list[dict[str, Any]] = []
+            parts: list[CloudCodePart] = []
             if content:
                 parts.append({"text": str(content)})
             for tc in msg.get("tool_calls") or []:
@@ -572,10 +585,10 @@ def build_cloudcode_request(
     _flush_tool_parts()
 
     inline_system = os.getenv("QUARTZ_INLINE_SYSTEM", "0").lower() in ("1", "true", "on")
-    request_body: dict[str, Any] = {"contents": contents}
+    request_body: CloudCodeRequestBody = {"contents": contents}
 
     if inline_system:
-        sys_text = "\n\n".join(p["text"] for p in system_parts if p.get("text"))
+        sys_text = "\n\n".join(t for p in system_parts if (t := p.get("text")))
         if sys_text:
             if contents and contents[0].get("role") == "user":
                 contents[0]["parts"] = [{"text": sys_text}, *contents[0].get("parts", [])]
@@ -585,7 +598,7 @@ def build_cloudcode_request(
         request_body["systemInstruction"] = {"role": "user", "parts": system_parts}
 
     if tools:
-        declarations = [
+        declarations: list[CloudCodeFunctionDeclaration] = [
             {
                 "name": t["function"]["name"],
                 "description": t["function"].get("description", ""),
@@ -597,7 +610,7 @@ def build_cloudcode_request(
         if declarations:
             request_body["tools"] = [{"functionDeclarations": declarations}]
 
-    generation_config: dict[str, Any] = {}
+    generation_config: CloudCodeGenerationConfig = {}
     thinking_cfg = get_thinking_config(model, runtime_model, effort)
     if thinking_cfg:
         generation_config["thinkingConfig"] = thinking_cfg
@@ -636,7 +649,7 @@ def build_cloudcode_request(
     }
 
 
-def parse_sse_payload(payload: dict[str, Any], tc_counter: list[int]) -> list[StreamEvent]:
+def parse_sse_payload(payload: CloudCodeSsePayload | Mapping[str, Any], tc_counter: list[int]) -> list[StreamEvent]:
     """Parse one Cloud Code Assist SSE JSON object into unified StreamEvents."""
     events: list[StreamEvent] = []
     resp = payload.get("response", payload)
@@ -718,8 +731,8 @@ class GoogleAntigravityProvider:
     async def stream(
         self,
         model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] | None = None,
         *,
         effort: str | None = None,
     ) -> StreamHandle:
@@ -782,8 +795,8 @@ class GoogleAntigravityProvider:
     async def complete(
         self,
         model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] | None = None,
         *,
         effort: str | None = None,
     ) -> CompletionResult:
