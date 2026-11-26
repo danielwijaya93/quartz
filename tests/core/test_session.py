@@ -521,3 +521,24 @@ def test_load_repairs_dangling_tool_calls_and_heals_on_next_save(tmp_path: Path)
 
     _, reloaded = Session.load(s.id, sessions_dir=sessions_dir)
     assert [m["role"] for m in reloaded] == ["user", "user", "assistant"]
+
+
+def test_session_records_and_updates_sandbox_in_meta(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    s = Session.create(tmp_path, sessions_dir=sessions_dir)
+
+    assert Session.recorded_sandbox(s.id, sessions_dir=sessions_dir) is None
+    assert Session.recorded_sandbox("missing-id", sessions_dir=sessions_dir) is None
+
+    # Setting sandbox before the first message is saved updates pending meta.
+    s.set_sandbox(False)
+    s.save_messages([{"role": "user", "content": "hi"}])
+    assert Session.recorded_sandbox(s.id, sessions_dir=sessions_dir) is False
+
+    # Updating sandbox after the JSONL exists rewrites the meta line on disk.
+    s.set_sandbox(True)
+    assert Session.recorded_sandbox(s.id, sessions_dir=sessions_dir) is True
+
+    # Corrupt JSONL returns None gracefully.
+    (sessions_dir / "corrupt.jsonl").write_text("{not json\n", encoding="utf-8")
+    assert Session.recorded_sandbox("corrupt", sessions_dir=sessions_dir) is None
