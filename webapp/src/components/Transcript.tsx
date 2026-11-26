@@ -7,12 +7,13 @@ import {
   isTurn,
   lastUserRowId,
   sameConversation,
+  segmentTurn,
   type Row,
   type Turn,
 } from "@/lib/transcript";
 import { TranscriptAnnouncer } from "./TranscriptAnnouncer";
 import { FileAttachments } from "./FileAttachments";
-import { TurnTray } from "./TurnTray";
+import { WorkSegmentRow } from "./TurnTray";
 import { UserRowView } from "./rows/UserRowView";
 import { AssistantRowView } from "./rows/AssistantRowView";
 import { ThinkingRowView } from "./rows/ThinkingRowView";
@@ -144,39 +145,30 @@ const TurnView = React.memo(
     onFormState: (id: string, state: Record<string, unknown>) => void;
   }): React.ReactElement {
     const attachedFiles = turn.files ?? [];
-    const interimTexts = turn.steps.filter(
-      (step): step is Extract<(typeof turn.steps)[number], { kind: "text" }> =>
-        step.kind === "text",
-    );
-    const hasProgress = turn.live && turn.steps.length > 0;
+    const segments = segmentTurn(turn);
+    const hasMessages = segments.some((seg) => seg.kind === "message");
     return (
       <div
         className={
-          turn.answer !== null || interimTexts.length > 0 || attachedFiles.length > 0
+          hasMessages || attachedFiles.length > 0
             ? "mb-2 flex flex-col gap-1.5"
             : "flex flex-col gap-1"
         }
       >
-        {interimTexts.map((step) => (
-          <AssistantRowView
-            key={step.id}
-            row={step.row}
-            streaming={false}
-            richUi={richUi}
-            onPrompt={onPrompt}
-            onFormState={onFormState}
-          />
-        ))}
-        {turn.answer !== null ? (
-          <AssistantRowView
-            row={turn.answer}
-            streaming={streaming}
-            richUi={richUi}
-            onPrompt={onPrompt}
-            onFormState={onFormState}
-          />
-        ) : null}
-        {hasProgress ? <TurnTray turn={turn} /> : null}
+        {segments.map((seg) =>
+          seg.kind === "work" ? (
+            <WorkSegmentRow key={seg.id} segment={seg} />
+          ) : (
+            <AssistantRowView
+              key={seg.id}
+              row={seg.row}
+              streaming={streaming && seg.streaming}
+              richUi={richUi}
+              onPrompt={onPrompt}
+              onFormState={onFormState}
+            />
+          ),
+        )}
         {attachedFiles.length > 0 ? <FileAttachments files={attachedFiles} /> : null}
       </div>
     );

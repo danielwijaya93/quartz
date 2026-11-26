@@ -57,26 +57,31 @@ describe("TurnTray", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Used 1 tool");
   });
 
-  it("disappears once the turn settles", () => {
-    const { container, rerender } = render(
-      tray(turnOf([thinking("k1", "a"), tool("t1", "running")], true)),
+  it("settles into a single-sentence summary once the turn settles", () => {
+    const { rerender } = render(
+      tray(turnOf([thinking("k1", "a"), tool("t1", "running", "run('pytest')")], true)),
     );
     expect(screen.getByTestId("living-waveform")).toBeInTheDocument();
 
-    rerender(tray(turnOf([thinking("k1", "a"), tool("t1", "ok"), assistant("a1", "done")], false)));
-    expect(container.firstChild).toBeNull();
-    expect(screen.queryByRole("button")).toBeNull();
+    rerender(
+      tray(turnOf([thinking("k1", "a"), tool("t1", "ok", "run('pytest')"), assistant("a1", "done")], false)),
+    );
     expect(screen.queryByTestId("living-waveform")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByTestId("work-summary")).toHaveTextContent("Ran 1 command");
   });
 
-  it("disappears as soon as the final reply begins streaming", () => {
-    const { container, rerender } = render(
-      tray(turnOf([thinking("k1", "a"), tool("t1", "ok")], true)),
+  it("settles into a summary as soon as the final reply begins streaming", () => {
+    const { rerender } = render(
+      tray(turnOf([thinking("k1", "a"), tool("t1", "ok", "edit('a.ts', '1', '2')")], true)),
     );
     expect(screen.getByTestId("living-waveform")).toBeInTheDocument();
 
-    rerender(tray(turnOf([thinking("k1", "a"), tool("t1", "ok"), assistant("a1", "Hi")], true)));
-    expect(container.firstChild).toBeNull();
+    rerender(
+      tray(turnOf([thinking("k1", "a"), tool("t1", "ok", "edit('a.ts', '1', '2')"), assistant("a1", "Hi")], true)),
+    );
+    expect(screen.queryByTestId("living-waveform")).toBeNull();
+    expect(screen.getByTestId("work-summary")).toHaveTextContent("Edited 1 file");
   });
 
   it("stays visible if another tool is running after an interim progress update", () => {

@@ -15,8 +15,10 @@ import {
   reduceAll,
   resetIdCounter,
   sameConversation,
+  segmentTurn,
   setRowFormState,
   stepLabel,
+  summarizeWorkSteps,
   trayOwnsStatus,
   turnDiffStats,
   turnSummary,
@@ -1331,6 +1333,85 @@ describe("the settled header", () => {
     // what broke, and nothing counted twice.
     expect(turnSummary(turn)).toBe("3 tools");
     expect(failedToolCount(turn)).toBe(2);
+  });
+});
+
+describe("summarizeWorkSteps & segmentTurn", () => {
+  const turnOf = (...rows: Row[]): Turn => groupTurns(rows).find(isTurn)!;
+  const toolWithCode = (id: string, code: string, status: ToolRow["status"] = "ok"): ToolRow => ({
+    kind: "tool",
+    id,
+    code,
+    status,
+    output: "",
+    durationMs: null,
+    images: [],
+    actions: null,
+  });
+
+  it("summarizes commands, edited files, and other tools in one sentence", () => {
+    const turn = turnOf(
+      thinking("k1", "planning"),
+      toolWithCode("t1", 'run("git status")\nbash("pytest -q")'),
+      toolWithCode("t2", 'edit("a.ts", "1", "2")\nwrite("b.ts", "x")\nedit("a.ts", "2", "3")'),
+      toolWithCode("t3", 'rg("foo", "src")'),
+      assistant("a1", "Done"),
+    );
+    const workSteps = turn.steps.filter(
+      (s): s is Extract<(typeof turn.steps)[number], { kind: "thinking" | "tool_run" }> =>
+        s.kind === "thinking" || s.kind === "tool_run",
+    );
+    expect(summarizeWorkSteps(workSteps)).toBe("Ran 2 commands · Edited 2 files · Used 1 tool");
+  });
+
+  it("settles thinking-only work segments to Thought", () => {
+    const turn = turnOf(thinking("k1", "pondering"), assistant("a1", "Answer"));
+    const segments = segmentTurn(turn);
+    expect(segments).toHaveLength(2);
+    expect(segments[0]).toMatchObject({ kind: "work", live: false, summary: "Thought" });
+    expect(segments[1]).toMatchObject({ kind: "message", streaming: false });
+  });
+
+  it("appends failed tool counts inline", () => {
+    const turn = turnOf(
+      toolWithCode("t1", 'run("npm test")', "failed"),
+      assistant("a1", "Tests failed"),
+    );
+    const segments = segmentTurn(turn);
+    expect(segments[0]).toMatchObject({
+      kind: "work",
+      live: false,
+      summary: "Ran 1 command · 1 failed",
+    });
+  });
+
+  it("interleaves settled summaries, progress messages, and live trailing work", () => {
+    const turn = groupTurns(
+      [
+        thinking("k1", "a"),
+        toolWithCode("t1", 'rg("x", "src")'),
+        assistant("a1", "Found the issue, patching now..."),
+        thinking("k2", "b"),
+        toolWithCode("t2", 'edit("src/app.ts", "old", "new")', "running"),
+      ],
+      { running: true },
+    ).find(isTurn)!;
+
+    const segments = segmentTurn(turn);
+    expect(segments.map((s) => s.kind)).toEqual(["work", "message", "work"]);
+    expect(segments[0]).toMatchObject({ kind: "work", live: false, summary: "Used 1 tool" });
+    expect(segments[1]).toMatchObject({ kind: "message", streaming: false });
+    expect(segments[2]).toMatchObject({ kind: "work", live: true });
+  });
+
+  it("settles trailing work when the turn is no longer live (e.g. aborted/errored)", () => {
+    const turn = groupTurns(
+      [thinking("k1", "a"), toolWithCode("t1", 'run("pytest")')],
+      { running: false },
+    ).find(isTurn)!;
+    const segments = segmentTurn(turn);
+    expect(segments).toHaveLength(1);
+    expect(segments[0]).toMatchObject({ kind: "work", live: false, summary: "Ran 1 command" });
   });
 });
 
