@@ -4,12 +4,13 @@ import userEvent from "@testing-library/user-event";
 import { ModelPickerDialog } from "./ModelPickerDialog";
 import type { ModelsPayload } from "@/lib/modelsApi";
 
-const fetchModelsMock = vi.fn<() => Promise<ModelsPayload>>();
-const selectModelMock = vi.fn<(provider: string, model?: string, effort?: string) => Promise<{ ok: boolean; message?: string; error?: string }>>();
+const fetchModelsMock = vi.fn<(sessionId?: string) => Promise<ModelsPayload>>();
+const selectModelMock = vi.fn<(provider: string, model?: string, effort?: string, sessionId?: string) => Promise<{ ok: boolean; message?: string; error?: string }>>();
 
 vi.mock("@/lib/modelsApi", () => ({
-  fetchModels: () => fetchModelsMock(),
-  selectModel: (provider: string, model?: string, effort?: string) => selectModelMock(provider, model, effort),
+  fetchModels: (sessionId?: string) => fetchModelsMock(sessionId),
+  selectModel: (provider: string, model?: string, effort?: string, sessionId?: string) =>
+    selectModelMock(provider, model, effort, sessionId),
 }));
 
 const mockPayload: ModelsPayload = {
@@ -101,6 +102,7 @@ describe("ModelPickerDialog", () => {
       <ModelPickerDialog
         open={true}
         onOpenChange={onOpenChange}
+        sessionId="sess-123"
         currentModel="gemini-3.8-flash-high"
         onSuccess={onSuccess}
       />
@@ -109,6 +111,8 @@ describe("ModelPickerDialog", () => {
     await waitFor(() => {
       expect(screen.getByText("gemini-2.5-pro")).toBeInTheDocument();
     });
+
+    expect(fetchModelsMock).toHaveBeenCalledWith("sess-123");
 
     // Select gemini-2.5-pro
     await user.click(screen.getByText("gemini-2.5-pro"));
@@ -119,7 +123,7 @@ describe("ModelPickerDialog", () => {
     // Click Switch Model
     await user.click(screen.getByRole("button", { name: "Switch Model" }));
 
-    expect(selectModelMock).toHaveBeenCalledWith("google", "gemini-2.5-pro", "low");
+    expect(selectModelMock).toHaveBeenCalledWith("google", "gemini-2.5-pro", "low", "sess-123");
     await waitFor(() => {
       expect(onSuccess).toHaveBeenCalledWith("google", "gemini-2.5-pro", "low");
       expect(onOpenChange).toHaveBeenCalledWith(false);

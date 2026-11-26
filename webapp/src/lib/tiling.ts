@@ -26,16 +26,7 @@ export interface SessionTileDescriptor {
   readonly initialCwd?: string;
 }
 
-export interface WorkerTileDescriptor {
-  readonly id: string;
-  readonly kind: "worker";
-  readonly sessionId: string;
-  readonly pid: string;
-  readonly label: string;
-  readonly command: string;
-}
-
-export type TileDescriptor = SessionTileDescriptor | WorkerTileDescriptor;
+export type TileDescriptor = SessionTileDescriptor;
 
 export interface SplitRatios {
   readonly col: number;
@@ -167,38 +158,6 @@ export function openNewEmptySessionTile(state: TilingState, initialCwd?: string)
     kind: "session",
     sessionId: null,
     ...(initialCwd ? { initialCwd } : {}),
-  };
-  return {
-    ...state,
-    tiles: [...state.tiles, created],
-    focusedTileId: created.id,
-    maximizedTileId: null,
-  };
-}
-
-export function openWorkerInNewTile(
-  state: TilingState,
-  worker: Omit<WorkerTileDescriptor, "id" | "kind">,
-): TilingState {
-  const existing = state.tiles.find(
-    (t): t is WorkerTileDescriptor =>
-      t.kind === "worker" && t.sessionId === worker.sessionId && t.pid === worker.pid,
-  );
-  if (existing) {
-    return focusTile(state, existing.id);
-  }
-  if (state.tiles.length >= MAX_TILES) {
-    const tiles = state.tiles.map((tile): TileDescriptor =>
-      tile.id === state.focusedTileId
-        ? { id: tile.id, kind: "worker", ...worker }
-        : tile,
-    );
-    return { ...state, tiles, maximizedTileId: null };
-  }
-  const created: WorkerTileDescriptor = {
-    id: nextTileId(state.tiles),
-    kind: "worker",
-    ...worker,
   };
   return {
     ...state,
@@ -355,24 +314,6 @@ function sanitizeTile(raw: unknown): TileDescriptor | null {
   const obj = raw as Record<string, unknown>;
   const id = typeof obj.id === "string" && obj.id.trim() ? obj.id.trim() : null;
   if (!id) return null;
-  if (obj.kind === "worker") {
-    if (
-      typeof obj.sessionId === "string" &&
-      typeof obj.pid === "string" &&
-      typeof obj.label === "string" &&
-      typeof obj.command === "string"
-    ) {
-      return {
-        id,
-        kind: "worker",
-        sessionId: obj.sessionId,
-        pid: obj.pid,
-        label: obj.label,
-        command: obj.command,
-      };
-    }
-    return null;
-  }
   if (obj.kind === "session") {
     const sessionId =
       typeof obj.sessionId === "string" && obj.sessionId.trim() ? obj.sessionId.trim() : null;

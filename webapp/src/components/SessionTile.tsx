@@ -79,12 +79,6 @@ export interface SessionTileProps {
   onOpenBotHistory: (botId: string) => void;
   onEditBot: (bot: BotConfig) => void;
   onRerunBot: (botId: string) => void;
-  onOpenWorkerTile: (job: {
-    sessionId: string;
-    pid: string;
-    label: string;
-    command: string;
-  }) => void;
 }
 
 export const SessionTile = React.memo(function SessionTile({
@@ -122,7 +116,6 @@ export const SessionTile = React.memo(function SessionTile({
   onOpenBotHistory,
   onEditBot,
   onRerunBot,
-  onOpenWorkerTile,
 }: SessionTileProps): React.ReactElement {
   const composerRef = React.useRef<HTMLTextAreaElement | null>(null);
   const [jobsOpen, setJobsOpen] = React.useState(false);
@@ -483,14 +476,6 @@ export const SessionTile = React.memo(function SessionTile({
       <JobsTray
         open={jobsOpen}
         sessionId={sessionId || undefined}
-        onOpenInTile={
-          sessionId
-            ? (job) => {
-                setJobsOpen(false);
-                onOpenWorkerTile({ sessionId, ...job });
-              }
-            : undefined
-        }
         onClose={handleCloseJobs}
       />
 
@@ -574,6 +559,7 @@ export const SessionTile = React.memo(function SessionTile({
       <ModelPickerDialog
         open={modelPickerOpen}
         onOpenChange={setModelPickerOpen}
+        sessionId={sessionId || undefined}
         currentModel={qState.session.model}
         currentEffort={qState.session.effort}
       />

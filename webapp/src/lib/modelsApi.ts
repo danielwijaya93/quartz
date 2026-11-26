@@ -22,8 +22,11 @@ export interface ModelsPayload {
   providers: ModelProvider[];
 }
 
-export async function fetchModels(): Promise<ModelsPayload> {
-  const res = await authFetch(apiUrl("/api/models"));
+export async function fetchModels(sessionId?: string): Promise<ModelsPayload> {
+  const path = sessionId
+    ? `/api/models?sessionId=${encodeURIComponent(sessionId)}`
+    : "/api/models";
+  const res = await authFetch(apiUrl(path));
   if (!res.ok) throw new Error(`Failed to fetch models (${res.status})`);
   return res.json() as Promise<ModelsPayload>;
 }
@@ -32,11 +35,12 @@ export async function selectModel(
   provider: string,
   model?: string,
   effort?: string,
+  sessionId?: string,
 ): Promise<{ ok: boolean; message?: string; error?: string }> {
   const res = await authFetch(apiUrl("/api/models/select"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ provider, model, effort }),
+    body: JSON.stringify({ provider, model, effort, ...(sessionId ? { sessionId } : {}) }),
   });
   return res.json() as Promise<{ ok: boolean; message?: string; error?: string }>;
 }
