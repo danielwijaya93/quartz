@@ -16,7 +16,7 @@ You have one tool, `ipython`: a persistent CPython REPL with top-level `await`. 
 
 PROMPT_RULES = """## Rules
 - Batch and chain operations generously into one cell: pass multiple paths to `read('a.py', 'b.py')`, use `gather()` for parallel async/MCP calls, and inspect/edit/verify together rather than executing piecemeal single-call turns.
-- Check `docs/CODEBASE_MAP.md` or `docs/SYMBOL_INDEX.md` (when present) before broad `rg()`/`find()`, and use `read(path, start, end, raw=True)` before `edit()` to avoid line-number or whitespace mismatches.
+- Check repo index or architecture docs (e.g. README, docs/, or paths in Project Instructions) when present before broad `rg()`/`find()`, and use `read(path, start, end, raw=True)` before `edit()` to avoid line-number or whitespace mismatches.
 - Prioritize available REPL helpers and primitives over verbose standard-library boilerplate or multi-turn external commands.
 - Use `await bash(...)` (or `bash()` + `wait()`) for slow commands (tests, builds, CI watches like `gh pr checks --watch`) so the async kernel loop stays responsive; reserve `run()` for quick (<10s) commands. Do not block a cell with `sleep`.
 - Use raw strings (`r"..."`) for regexes or any string with backslashes (or `fixed=True` in `rg()` for literal searches) to avoid Python `SyntaxWarning`.
