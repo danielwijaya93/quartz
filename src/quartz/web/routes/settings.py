@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from quartz.web.context import AppContext, bad_request, json_body
 from quartz.web.routes.settings_ops import (
     WEB_PRICING_KEYS,
+    _apply_batch_without_session,
     _apply_settings_without_session,
     _apply_web_pricing_key,
     _build_mcp_spec,
@@ -107,10 +108,17 @@ def _register_settings_routes(router: APIRouter, ctx: AppContext) -> None:
         if raw_updates is not None:
             if not isinstance(raw_updates, dict) or not raw_updates:
                 return _fail("updates must be a non-empty object")
-            for k, v in raw_updates.items():
-                ok, msg = await _apply_single_setting(ctx, request, str(k).strip(), v)
+            if not manager.current_session.built or all(
+                str(k).strip() in WEB_PRICING_KEYS for k in raw_updates
+            ):
+                ok, msg = await asyncio.to_thread(_apply_batch_without_session, raw_updates)
                 if not ok:
                     return _fail(msg)
+            else:
+                for k, v in raw_updates.items():
+                    ok, msg = await _apply_single_setting(ctx, request, str(k).strip(), v)
+                    if not ok:
+                        return _fail(msg)
         else:
             key = str(payload.get("key") or "").strip()
             if not key:

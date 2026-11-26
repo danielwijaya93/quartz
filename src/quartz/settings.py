@@ -11,6 +11,7 @@ import os
 import re
 import stat
 import tempfile
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -150,15 +151,42 @@ def _config_path(path: Path | None = None) -> Path:
     return config_file_path()
 
 
-def _read_raw(path: Path | None) -> dict[str, Any]:
-    cfg = _config_path(path)
+_SETTINGS_CACHE_LOCK = threading.Lock()
+_SETTINGS_CACHE: dict[Path, tuple[tuple[int, int, int] | None, Settings]] = {}
+
+
+def _stat_fingerprint(cfg: Path) -> tuple[int, int, int] | None:
+    try:
+        st = cfg.stat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+def clear_settings_cache(path: Path | None = None) -> None:
+    """Clear cached Settings for a specific config path or all paths."""
+    with _SETTINGS_CACHE_LOCK:
+        if path is None:
+            _SETTINGS_CACHE.clear()
+        else:
+            _SETTINGS_CACHE.pop(path.expanduser().resolve(), None)
+
+
+def _read_raw_checked(cfg: Path) -> tuple[dict[str, Any], bool]:
     if not cfg.is_file():
-        return {}
+        return {}, True
     try:
         data = json.loads(cfg.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+        return {}, False
+    return (data, True) if isinstance(data, dict) else ({}, False)
+
+
+def _read_raw(path: Path | None) -> dict[str, Any]:
+    data, _ = _read_raw_checked(_config_path(path))
+    return data
 
 
 def _coerce_int_range(value: Any, default: int, lo: int, hi: int) -> int:
@@ -340,9 +368,16 @@ def parse_sandbox_env_passthrough(raw: str) -> tuple[tuple[str, ...] | None, str
 
 
 def load_settings(path: Path | None = None) -> Settings:
-    """Load settings from config.json, falling back to defaults (never raises)."""
-    raw = _read_raw(path)
-    return Settings(
+    """Load settings from config.json with a stat-validated in-memory cache (never raises)."""
+    cfg = _config_path(path).expanduser().resolve()
+    fp = _stat_fingerprint(cfg)
+    with _SETTINGS_CACHE_LOCK:
+        cached = _SETTINGS_CACHE.get(cfg)
+        if cached is not None and cached[0] == fp:
+            return cached[1]
+
+    raw, cacheable = _read_raw_checked(cfg)
+    loaded = Settings(
         compact_reserve_tokens=_coerce_int_range(raw.get("compact_reserve_tokens"), DEFAULT_COMPACT_RESERVE_TOKENS, _MIN_TOKENS, _MAX_TOKENS),
         keep_recent_tokens=_coerce_int_range(raw.get("keep_recent_tokens"), DEFAULT_KEEP_RECENT_TOKENS, _MIN_TOKENS, _MAX_TOKENS),
         progress_every=_coerce_int_range(raw.get("progress_every"), DEFAULT_PROGRESS_EVERY, 0, _MAX_PROGRESS_EVERY),
@@ -376,6 +411,13 @@ def load_settings(path: Path | None = None) -> Settings:
         unpriced_fallback_output_per_m=_coerce_rate(raw.get("unpriced_fallback_output_per_m"), DEFAULT_UNPRICED_FALLBACK_OUTPUT_PER_M),
         model_pricing=_coerce_model_pricing(raw.get("model_pricing")),
     )
+    if cacheable:
+        # Only cache if the file did not change mid-read.
+        after_fp = _stat_fingerprint(cfg)
+        if after_fp == fp:
+            with _SETTINGS_CACHE_LOCK:
+                _SETTINGS_CACHE[cfg] = (after_fp, loaded)
+    return loaded
 
 
 def _valid_int_range(value: int, lo: int, hi: int) -> bool:
@@ -479,6 +521,7 @@ def update_config_json(
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
         raise
+    clear_settings_cache(cfg)
     return cfg
 
 

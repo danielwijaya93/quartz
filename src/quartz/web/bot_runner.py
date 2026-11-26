@@ -245,6 +245,7 @@ class BotRunner:
                 endpoints.append(("pr", f"repos/{repo}/pulls?state=open&sort=created&direction=desc&per_page=20"))
 
         last_error: str | None = None
+        candidates: list[tuple[str, dict[str, Any]]] = []
         for kind, endpoint in endpoints:
             items, err = await self._run_gh_api(endpoint)
             if err is not None:
@@ -256,24 +257,36 @@ class BotRunner:
                 number = item.get("number") or item.get("id")
                 if number is None:
                     continue
-                event_key = f"gh:{kind}:{repo}#{number}"
-                newly_seen = await asyncio.to_thread(self._store.mark_seen, bot.id, event_key)
-                if not newly_seen:
-                    continue
-                trigger = QueuedTrigger(
-                    trigger_id=uuid.uuid4().hex,
-                    bot_id=bot.id,
-                    event_key=event_key,
-                    source="github_poll",
-                    payload=item,
-                    enqueued_at=now_ts,
-                )
-                await asyncio.to_thread(self._queue.enqueue, trigger, bot.max_queue_depth)
+                candidates.append((f"gh:{kind}:{repo}#{number}", item))
 
-        fresh_state = await asyncio.to_thread(self._store.get_state, bot.id)
+        await asyncio.to_thread(
+            self._ingest_github_poll_results, bot, candidates, now_ts, last_error
+        )
+
+    def _ingest_github_poll_results(
+        self,
+        bot: BotConfig,
+        candidates: list[tuple[str, dict[str, Any]]],
+        now_ts: float,
+        last_error: str | None,
+    ) -> None:
+        for event_key, item in candidates:
+            if not self._store.mark_seen(bot.id, event_key):
+                continue
+            trigger = QueuedTrigger(
+                trigger_id=uuid.uuid4().hex,
+                bot_id=bot.id,
+                event_key=event_key,
+                source="github_poll",
+                payload=item,
+                enqueued_at=now_ts,
+            )
+            self._queue.enqueue(trigger, bot.max_queue_depth)
+
+        fresh_state = self._store.get_state(bot.id)
         fresh_state.last_polled_at = now_ts
         fresh_state.last_error = last_error
-        await asyncio.to_thread(self._store.save_state, fresh_state)
+        self._store.save_state(fresh_state)
 
     async def _run_gh_api(self, endpoint: str) -> tuple[list[dict[str, Any]], str | None]:
         try:
@@ -419,14 +432,12 @@ class BotRunner:
         with correlation_context(bot_id=bot.id, run_id=run_id):
             await self._execute_trigger_correlated(bot, trigger, run_id)
 
-    async def _execute_trigger_correlated(
+    def _prepare_trigger_run(
         self, bot: BotConfig, trigger: QueuedTrigger, run_id: str
-    ) -> None:
-        slot_released = False
-        started_monotonic = time.monotonic()
+    ) -> str | None:
+        now_ts = time.time()
         if self._history is not None:
-            await asyncio.to_thread(
-                self._history.record_run_start,
+            self._history.record_run_start(
                 BotRunRecord(
                     run_id=run_id,
                     bot_id=bot.id,
@@ -435,22 +446,31 @@ class BotRunner:
                     event_key=trigger.event_key,
                     source=trigger.source,
                     status="running",
-                    started_at=time.time(),
-                ),
+                    started_at=now_ts,
+                )
             )
+        budget_reason = self._check_budget_exceeded(bot)
+        if budget_reason is not None:
+            self._pause_bot_for_circuit_break(bot, budget_reason, now_ts)
+            if self._history is not None:
+                self._history.record_run_finish(
+                    run_id,
+                    status="budget_exceeded",
+                    finished_at=now_ts,
+                    error=budget_reason,
+                )
+        return budget_reason
+
+    async def _execute_trigger_correlated(
+        self, bot: BotConfig, trigger: QueuedTrigger, run_id: str
+    ) -> None:
+        slot_released = False
+        started_monotonic = time.monotonic()
         try:
-            budget_reason = await asyncio.to_thread(self._check_budget_exceeded, bot)
+            budget_reason = await asyncio.to_thread(
+                self._prepare_trigger_run, bot, trigger, run_id
+            )
             if budget_reason is not None:
-                now_ts = time.time()
-                await asyncio.to_thread(self._pause_bot_for_circuit_break, bot, budget_reason, now_ts)
-                if self._history is not None:
-                    await asyncio.to_thread(
-                        self._history.record_run_finish,
-                        run_id,
-                        status="budget_exceeded",
-                        finished_at=now_ts,
-                        error=budget_reason,
-                    )
                 await self._notify_circuit_break(bot, budget_reason)
                 return
 
