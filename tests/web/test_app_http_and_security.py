@@ -405,3 +405,85 @@ def test_set_sandbox_toggles_per_session_without_changing_new_sessions(
         assert err_frames[-1]["fatal"] is False
 
     assert calls == [None, False, None]
+
+
+def test_set_sandbox_persists_across_eviction_and_reload(
+    tmp_path: Path, wire: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from conftest import make_runtime  # type: ignore[import-not-found]
+    from fastapi.testclient import TestClient
+
+    from quartz.core.session import Session
+    from quartz.web.app import create_app
+
+    sessions_dir = tmp_path / "sessions"
+    monkeypatch.setattr("quartz.core.session.default_sessions_dir", lambda: sessions_dir)
+
+    def build(
+        session_id: str | None, cwd: Path | None = None, *, sandbox: bool | None = None
+    ) -> tuple[Any, bool]:
+        effective = True if sandbox is None else sandbox
+        rt = make_runtime(cwd or tmp_path)
+        if session_id is not None:
+            rt.active_session, _ = Session.load(session_id, sessions_dir=sessions_dir)
+        else:
+            rt.active_session = Session.create(cwd or tmp_path, sessions_dir=sessions_dir, origin="web")
+        rt.kernel._sandbox_config = SimpleNamespace(enabled=effective)
+        return rt, session_id is not None
+
+    app = create_app(build=build, cwd=tmp_path)
+    # Force LRU eviction when a second session is opened.
+    app.state.manager._max_live_sessions_override = 1
+    client = TestClient(app)
+
+    with client.websocket_connect("/ws") as socket:
+        initial = wire.hello(socket)
+        session_a_id = initial["sessionId"]
+        assert initial["sandboxed"] is True
+
+        # Persist a message so Session A exists on disk and can be reloaded.
+        app.state.manager.get_session(session_a_id).runtime.active_session.save_messages(
+            [{"role": "user", "content": "hello"}]
+        )
+
+        # Turn sandbox off, then open another session (evicts Session A from memory).
+        socket.send_json({"type": "set_sandbox", "enabled": False})
+        toggled = wire.drain(socket, until="session_state")[-1]
+        assert toggled["sandboxed"] is False
+
+        socket.send_json({"type": "new_session"})
+        session_b = wire.drain(socket, until="session_state")[-1]
+        session_b_id = session_b["sessionId"]
+        assert session_b_id != session_a_id
+        assert session_b["sandboxed"] is True
+        app.state.manager.get_session(session_b_id).runtime.active_session.save_messages(
+            [{"role": "user", "content": "other"}]
+        )
+
+        # Opening a third session triggers eviction of now-detached Session A.
+        socket.send_json({"type": "new_session"})
+        wire.drain(socket, until="session_state")
+        assert session_a_id not in app.state.manager._sessions
+
+        # Reload Session A from disk: sandbox must still be off.
+        socket.send_json({"type": "load_session", "sessionId": session_a_id})
+        reloaded = wire.drain(socket, until="session_state")[-1]
+        assert reloaded["sessionId"] == session_a_id
+        assert reloaded["sandboxed"] is False
+
+        # Turn sandbox back on, evict again, and reload: sandbox must stay on.
+        socket.send_json({"type": "set_sandbox", "enabled": True})
+        re_enabled = wire.drain(socket, until="session_state")[-1]
+        assert re_enabled["sandboxed"] is True
+
+        socket.send_json({"type": "load_session", "sessionId": session_b_id})
+        wire.drain(socket, until="session_state")
+        socket.send_json({"type": "new_session"})
+        wire.drain(socket, until="session_state")
+        assert session_a_id not in app.state.manager._sessions
+
+        socket.send_json({"type": "load_session", "sessionId": session_a_id})
+        reloaded_on = wire.drain(socket, until="session_state")[-1]
+        assert reloaded_on["sandboxed"] is True

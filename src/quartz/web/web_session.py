@@ -186,7 +186,9 @@ class WebSession:
     def load_session(self, session_id: str) -> None:
         cleaned = validate_session_id(session_id)
         self._retire()
-        self._swap(*self._build(cleaned, self._resume_cwd(cleaned)))
+        recorded_sandbox = Session.recorded_sandbox(cleaned)
+        self._sandbox_override = recorded_sandbox
+        self._swap(*self._call_build(cleaned, self._resume_cwd(cleaned), sandbox=recorded_sandbox))
 
     async def aload_session(self, session_id: str) -> None:
         self.bind_loop(asyncio.get_running_loop())
@@ -233,8 +235,10 @@ class WebSession:
             raise TurnBusyError("Cannot toggle sandbox while a turn is running.")
         if bool(getattr(getattr(self.runtime.kernel, "_sandbox_config", None), "enabled", False)) == enabled:
             self._sandbox_override = enabled
+            self.runtime.active_session.set_sandbox(enabled)
             return
         self._rebuild_active(busy_msg="Cannot toggle sandbox while a turn is running.", sandbox=enabled)
+        self.runtime.active_session.set_sandbox(enabled)
 
     async def aset_sandbox(self, enabled: bool) -> None:
         self.bind_loop(asyncio.get_running_loop())

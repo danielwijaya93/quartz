@@ -175,6 +175,7 @@ class _SessionFacts:
     cwd: str | None
     origin: str
     preview: str = ""
+    sandbox: bool | None = None
 
 
 _SESSION_FACTS_LOCK = threading.Lock()
@@ -324,13 +325,10 @@ class Session:
         }
         return session
 
-    def set_origin(self, origin: str) -> None:
-        """Update this session's origin in memory, pending meta, and persisted JSONL."""
-        if origin not in _ORIGINS:
-            raise ValueError(f"Unsupported session origin: {origin!r}")
-        self.origin = origin
+    def _update_meta_field(self, key: str, value: Any) -> None:
+        """Update a field in pending meta and the persisted JSONL `meta` record."""
         if self._pending_meta is not None:
-            self._pending_meta["origin"] = origin
+            self._pending_meta[key] = value
         if not self.jsonl_path.is_file():
             return
         lines = self.jsonl_path.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -344,7 +342,7 @@ class Session:
             except json.JSONDecodeError:
                 continue
             if rec.get("type") == "meta":
-                rec["origin"] = origin
+                rec[key] = value
                 lines[idx] = json.dumps(rec) + "\n"
                 updated = True
                 break
@@ -358,6 +356,19 @@ class Session:
                 with contextlib.suppress(OSError):
                     os.unlink(tmp_name)
                 raise
+            with _SESSION_FACTS_LOCK:
+                _SESSION_FACTS_CACHE.pop(str(self.jsonl_path), None)
+
+    def set_origin(self, origin: str) -> None:
+        """Update this session's origin in memory, pending meta, and persisted JSONL."""
+        if origin not in _ORIGINS:
+            raise ValueError(f"Unsupported session origin: {origin!r}")
+        self.origin = origin
+        self._update_meta_field("origin", origin)
+
+    def set_sandbox(self, enabled: bool) -> None:
+        """Persist this session's sandbox toggle in pending meta and JSONL."""
+        self._update_meta_field("sandbox", bool(enabled))
 
     @classmethod
     def _read_session_facts(cls, jsonl_path: Path) -> _SessionFacts:
@@ -367,6 +378,7 @@ class Session:
         origin = ORIGIN_CLI
         seen_meta = False
         preview = ""
+        sandbox: bool | None = None
         try:
             with jsonl_path.open("r", encoding="utf-8") as fh:
                 for raw_line in fh:
@@ -380,6 +392,8 @@ class Session:
                         session_cwd = rec.get("cwd")
                         raw_origin = rec.get("origin")
                         origin = raw_origin if raw_origin in _ORIGINS else ORIGIN_CLI
+                        raw_sandbox = rec.get("sandbox")
+                        sandbox = raw_sandbox if isinstance(raw_sandbox, bool) else None
                     elif rec_type == "message":
                         has_msgs = True
                         if not preview:
@@ -395,7 +409,7 @@ class Session:
                         break
         except (OSError, json.JSONDecodeError):
             return _SessionFacts(False, None, ORIGIN_CLI, "")
-        return _SessionFacts(has_msgs, session_cwd, origin, preview)
+        return _SessionFacts(has_msgs, session_cwd, origin, preview, sandbox)
 
     @classmethod
     def _inspect_session(cls, jsonl_path: Path) -> _SessionFacts:
@@ -434,6 +448,15 @@ class Session:
         if not path.is_file():
             return None
         return cls._inspect_session(path).cwd
+
+    @classmethod
+    def recorded_sandbox(cls, session_id: str, sessions_dir: Path | None = None) -> bool | None:
+        """The ``sandbox`` boolean a session's own `meta` record names, or ``None``."""
+        root = (sessions_dir or default_sessions_dir()).resolve()
+        path, _ = _resolve_session_paths(session_id, root)
+        if not path.is_file():
+            return None
+        return cls._inspect_session(path).sandbox
 
     @classmethod
     def latest_id(
