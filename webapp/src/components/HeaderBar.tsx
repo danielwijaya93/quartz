@@ -2,9 +2,11 @@ import * as React from "react";
 import { Button, Chip, cn } from "@heroui/react";
 import { GitBranch, PanelLeft, Shield } from "lucide-react";
 import { RichUiToggle } from "./RichUiToggle";
+import { WatcherControl, type WatcherConfigUpdate } from "./WatcherControl";
 import type { ConnectionStatus } from "@/lib/connection";
 import type { RichUiMode } from "@/lib/richUi";
 import type { SessionMeta } from "@/lib/transcript";
+import type { WatcherAction, WatcherState } from "@/protocol";
 
 const STATUS_COPY: Record<
   ConnectionStatus,
@@ -29,6 +31,10 @@ export const HeaderBar = React.memo(function HeaderBar({
   onToggleSidebar,
   fullWidth = false,
   tileControls,
+  watcher,
+  onConfigureWatcher,
+  onWatcherAction,
+  onOpenSettings,
 }: {
   session: SessionMeta;
   status: ConnectionStatus;
@@ -44,6 +50,10 @@ export const HeaderBar = React.memo(function HeaderBar({
   fullWidth?: boolean;
   /** Optional tiling layout switcher & global worker indicator. */
   tileControls?: React.ReactNode;
+  watcher?: WatcherState | null;
+  onConfigureWatcher?: (config: WatcherConfigUpdate) => void;
+  onWatcherAction?: (action: WatcherAction) => void;
+  onOpenSettings?: () => void;
 }): React.ReactElement {
   const copy = STATUS_COPY[status];
 
@@ -168,6 +178,14 @@ export const HeaderBar = React.memo(function HeaderBar({
               </Chip>
             )}
           </span>
+          {watcher && onConfigureWatcher && onWatcherAction ? (
+            <WatcherControl
+              watcher={watcher}
+              onConfigure={onConfigureWatcher}
+              onAction={onWatcherAction}
+              onOpenSettings={onOpenSettings}
+            />
+          ) : null}
           {tileControls}
           <RichUiToggle mode={richUiMode} onChange={onRichUiModeChange} />
         </div>

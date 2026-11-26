@@ -22,7 +22,8 @@ import { useQuartz } from "@/useQuartz";
 import { directoryLabel, type SessionActivity } from "@/lib/sidebar";
 import type { ConnectionStatus } from "@/lib/connection";
 import type { SessionMeta } from "@/lib/transcript";
-import type { ActiveSessionItem, ImageAttachment, ServerMessage } from "@/protocol";
+import type { ActiveSessionItem, ImageAttachment, ServerMessage, WatcherAction } from "@/protocol";
+import type { WatcherConfigUpdate } from "./WatcherControl";
 import type { BotConfig, BotRunRecord } from "@/types/bots";
 
 export interface SessionTileHandle {
@@ -42,6 +43,8 @@ export interface SessionTileHandle {
   focusComposer: () => void;
   openJobs: () => void;
   openModelPicker: () => void;
+  configureWatcher: (config: WatcherConfigUpdate) => void;
+  watcherAction: (action: WatcherAction) => void;
 }
 
 export interface SessionTileProps {
@@ -279,6 +282,8 @@ export const SessionTile = React.memo(function SessionTile({
         setJobsOpen(true);
       },
       openModelPicker: () => setModelPickerOpen(true),
+      configureWatcher: quartz.configureWatcher,
+      watcherAction: quartz.watcherAction,
     }),
     [
       tileId,
@@ -294,6 +299,8 @@ export const SessionTile = React.memo(function SessionTile({
       qClearReadActiveSessions,
       qMarkNotificationsRead,
       qClearBgFailed,
+      quartz.configureWatcher,
+      quartz.watcherAction,
     ],
   );
 
@@ -523,9 +530,7 @@ export const SessionTile = React.memo(function SessionTile({
 
       <WatcherBanner
         watcher={quartz.state.session.watcher}
-        onConfigure={quartz.configureWatcher}
         onAction={quartz.watcherAction}
-        onOpenSettings={onOpenSettings}
       />
 
       <Composer

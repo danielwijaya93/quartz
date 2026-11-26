@@ -522,6 +522,10 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
           onToggleSidebar={toggleSidebar}
           fullWidth={showFullWidthHeader}
           tileControls={tileControls}
+          watcher={activeSession.watcher}
+          onConfigureWatcher={focusedHandle?.configureWatcher}
+          onWatcherAction={focusedHandle?.watcherAction}
+          onOpenSettings={openSettings}
         />
 
         {narrow && !settingsOpen && !mcpOpen ? (
