@@ -23,7 +23,9 @@ export type {
   TranscriptState,
   Turn,
   TurnEndRow,
+  TurnSegment,
   TurnStep,
+  TurnWorkStep,
   UserRow,
 } from "./transcript/types";
 
@@ -51,7 +53,9 @@ export {
   lineCount,
   parseDiffStats,
   sameConversation,
+  segmentTurn,
   stepLabel,
+  summarizeWorkSteps,
   toolName,
   toolRunLabel,
   trayOwnsStatus,

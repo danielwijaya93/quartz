@@ -244,6 +244,27 @@ export type TurnStep =
   /** Consecutive tool calls. Folded, because "used 3 tools" is the fact worth reading. */
   | { kind: "tool_run"; id: string; rows: ToolRow[] };
 
+export type TurnWorkStep = Extract<TurnStep, { kind: "thinking" | "tool_run" }>;
+
+/**
+ * Chronological segment inside a turn: either a contiguous work phase
+ * (thinking + tool runs) or an assistant message (progress update or final answer).
+ */
+export type TurnSegment =
+  | {
+      kind: "work";
+      id: string;
+      steps: TurnWorkStep[];
+      live: boolean;
+      summary: string;
+    }
+  | {
+      kind: "message";
+      id: string;
+      row: AssistantRow;
+      streaming: boolean;
+    };
+
 /**
  * One turn of the conversation: its machinery (the steps) and its answer.
  *
@@ -256,6 +277,8 @@ export interface Turn {
   id: string;
   steps: TurnStep[];
   answer: AssistantRow | null;
+  /** Chronological work/message segments for interleaved rendering. */
+  segments?: TurnSegment[];
   /** Files attached by tools during this turn, lifted out for prominent download. */
   files?: FileAttachment[];
   /** The turn is running: the tray header shows the current step instead of a count. */

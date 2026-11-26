@@ -12,7 +12,9 @@ import type {
   ToolRow,
   TranscriptItem,
   Turn,
+  TurnSegment,
   TurnStep,
+  TurnWorkStep,
 } from "./types";
 
 export function isTurn(item: TranscriptItem): item is Turn {
@@ -139,6 +141,124 @@ export function turnSummary(turn: Turn): string {
  * so this count is the design's one non-negotiable: silent failure is worse than
  * any amount of noise.
  */
+const COMMAND_CALL_RE = /(?:^|[^\w.])(?:bash|run)\s*\(/g;
+const EDIT_CALL_RE = /(?:^|[^\w.])(?:edit|write)\s*\(\s*(?:["'`]([^"'`]+)["'`])?/g;
+
+/**
+ * Summarize a contiguous work segment (thinking + tool calls) in one sentence,
+ * e.g. "Ran 2 commands · Edited 9 files · Used 1 tool", "Thought", or
+ * "Ran 1 command · 1 failed".
+ */
+export function summarizeWorkSteps(steps: readonly TurnWorkStep[]): string {
+  let commands = 0;
+  const editedPaths = new Set<string>();
+  let dynamicEdits = 0;
+  let otherTools = 0;
+  let failed = 0;
+
+  for (const step of steps) {
+    if (step.kind !== "tool_run") continue;
+    for (const row of step.rows) {
+      if (row.status === "failed") failed += 1;
+
+      const cmdMatches = row.code.match(COMMAND_CALL_RE);
+      const cmdCount = cmdMatches ? cmdMatches.length : 0;
+      commands += cmdCount;
+
+      let editCount = 0;
+      EDIT_CALL_RE.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = EDIT_CALL_RE.exec(row.code)) !== null) {
+        editCount += 1;
+        const filePath = match[1]?.trim();
+        if (filePath) editedPaths.add(filePath);
+        else dynamicEdits += 1;
+      }
+
+      if (cmdCount === 0 && editCount === 0) {
+        otherTools += 1;
+      }
+    }
+  }
+
+  const editedFiles = editedPaths.size + dynamicEdits;
+  const parts: string[] = [];
+  if (commands > 0) parts.push(`Ran ${commands} ${commands === 1 ? "command" : "commands"}`);
+  if (editedFiles > 0) parts.push(`Edited ${editedFiles} ${editedFiles === 1 ? "file" : "files"}`);
+  if (otherTools > 0) parts.push(`Used ${otherTools} ${otherTools === 1 ? "tool" : "tools"}`);
+  if (parts.length === 0) parts.push("Thought");
+  if (failed > 0) parts.push(`${failed} failed`);
+  return parts.join(" · ");
+}
+
+/**
+ * Group a turn's steps and answer into chronological work segments and assistant messages.
+ * A work segment is live only when it is the trailing segment of a live turn with no answer yet.
+ */
+function buildSegmentsFromSteps(
+  steps: readonly TurnStep[],
+  answer: AssistantRow | null,
+  live: boolean,
+): TurnSegment[] {
+  const segments: TurnSegment[] = [];
+  let pendingWork: TurnWorkStep[] = [];
+
+  const flushWork = (isTrailing: boolean): void => {
+    if (pendingWork.length === 0) return;
+    segments.push({
+      kind: "work",
+      id: `work-${pendingWork[0]!.id}`,
+      steps: pendingWork,
+      live: isTrailing && live,
+      summary: summarizeWorkSteps(pendingWork),
+    });
+    pendingWork = [];
+  };
+
+  for (const step of steps) {
+    if (step.kind === "text") {
+      flushWork(false);
+      if (step.row.text.trim() !== "") {
+        segments.push({
+          kind: "message",
+          id: step.id,
+          row: step.row,
+          streaming: false,
+        });
+      }
+    } else {
+      pendingWork.push(step);
+    }
+  }
+
+  if (answer !== null) {
+    flushWork(false);
+    segments.push({
+      kind: "message",
+      id: answer.id,
+      row: answer,
+      streaming: live,
+    });
+  } else {
+    flushWork(true);
+  }
+
+  return segments;
+}
+
+export function segmentTurn(turn: Turn): TurnSegment[] {
+  if (turn.segments !== undefined) {
+    if (!turn.live) return turn.segments;
+    return turn.segments.map((seg, idx) => {
+      const isLast = idx === turn.segments!.length - 1;
+      if (!isLast) return seg;
+      if (seg.kind === "work") return { ...seg, live: true };
+      return { ...seg, streaming: true };
+    });
+  }
+  return buildSegmentsFromSteps(turn.steps, turn.answer, turn.live);
+}
+
 export function failedToolCount(turn: Turn): number {
   let failed = 0;
   for (const step of turn.steps) {
@@ -227,6 +347,7 @@ function buildTurn(rows: readonly (AssistantRow | ThinkingRow | ToolRow)[]): Tur
     id: `turn-${rows[0]!.id}`,
     steps: foldSteps(rows, answerIndex),
     answer: answerIndex === -1 ? null : (rows[answerIndex] as AssistantRow),
+    segments: buildSegmentsFromSteps(foldSteps(rows, -1), null, false),
     files,
     live: false,
   };

@@ -260,6 +260,93 @@ describe("Transcript", () => {
     // An answer-only turn has no machinery, so it gets no tray.
     expect(screen.queryAllByRole("button", { name: /Thought|tools/ })).toHaveLength(0);
   });
+
+  it("interleaves settled work summaries, progress messages, and live trailing work in order", () => {
+    const { rerender } = render(
+      transcript(
+        [
+          { kind: "thinking", id: "k1", text: "step 1" } as Row,
+          {
+            kind: "tool",
+            id: "t1",
+            code: 'run("git status")',
+            status: "ok",
+            output: "",
+            durationMs: 10,
+            images: [],
+            actions: null,
+          } as Row,
+          { kind: "assistant", id: "a1", text: "Checking files now", formState: null } as Row,
+          {
+            kind: "tool",
+            id: "t2",
+            code: 'edit("src/app.ts", "a", "b")',
+            status: "running",
+            output: "",
+            durationMs: null,
+            images: [],
+            actions: null,
+          } as Row,
+        ],
+        true,
+      ),
+    );
+
+    const summaries = screen.getAllByTestId("work-summary");
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toHaveTextContent("Ran 1 command");
+    expect(screen.getByText("Checking files now")).toBeInTheDocument();
+    expect(screen.getByTestId("living-waveform")).toBeInTheDocument();
+
+    // Verify DOM order: summary 1 -> progress message -> live waveform
+    const logText = screen.getByRole("log").textContent ?? "";
+    expect(logText.indexOf("Ran 1 command")).toBeLessThan(logText.indexOf("Checking files now"));
+    expect(logText.indexOf("Checking files now")).toBeLessThan(logText.indexOf("Running edit"));
+
+    // Now finish tool 2 and emit final report
+    rerender(
+      transcript(
+        [
+          { kind: "thinking", id: "k1", text: "step 1" } as Row,
+          {
+            kind: "tool",
+            id: "t1",
+            code: 'run("git status")',
+            status: "ok",
+            output: "",
+            durationMs: 10,
+            images: [],
+            actions: null,
+          } as Row,
+          { kind: "assistant", id: "a1", text: "Checking files now", formState: null } as Row,
+          {
+            kind: "tool",
+            id: "t2",
+            code: 'edit("src/app.ts", "a", "b")',
+            status: "ok",
+            output: "",
+            durationMs: 20,
+            images: [],
+            actions: null,
+          } as Row,
+          { kind: "assistant", id: "a2", text: "All done!", formState: null } as Row,
+        ],
+        false,
+      ),
+    );
+
+    expect(screen.queryByTestId("living-waveform")).toBeNull();
+    const settled = screen.getAllByTestId("work-summary");
+    expect(settled.map((el) => el.textContent)).toEqual(["Ran 1 command", "Edited 1 file"]);
+    const finalLogText = screen.getByRole("log").textContent ?? "";
+    expect(finalLogText.indexOf("Ran 1 command")).toBeLessThan(
+      finalLogText.indexOf("Checking files now"),
+    );
+    expect(finalLogText.indexOf("Checking files now")).toBeLessThan(
+      finalLogText.indexOf("Edited 1 file"),
+    );
+    expect(finalLogText.indexOf("Edited 1 file")).toBeLessThan(finalLogText.indexOf("All done!"));
+  });
 });
 
 /** The same props every time; only the rows change in these tests. */
