@@ -116,6 +116,7 @@ async def maybe_auto_rename_session(
 
     title = _clean_title(getattr(result, "text", "") or "")
     if not title:
+        logger.warning("Web auto-rename returned empty title for session %s (%s/%s)", sid, provider, model)
         return False
 
     if not sidebar.rename_if_unset(sid, title):
