@@ -39,49 +39,31 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    sourcemap: true,
+    sourcemap: process.env.VITE_SOURCEMAP === "true",
     rollupOptions: {
       output: {
         /**
-         * Three chunks instead of one 680 kB bundle: the highlight.js language
-         * pack is by far the heaviest dependency and changes least often, so
-         * splitting it keeps the app chunk small and cacheable.
-         *
-         * There is no `markdown` chunk either, though one existed. Splitting the
-         * markdown pipeline out created a `markdown <-> vendor` cycle, which was
-         * harmless until the OpenUI renderer -- itself a `react-markdown` consumer
-         * -- joined the graph, at which point the production bundle threw
-         * `Cannot access '<sym>' before initialization` on load: a chunk needed
-         * bindings from a chunk that had not finished initialising. One fewer
-         * hand-cut boundary is worth more than the cache granularity it bought.
-         *
-         * The OpenUI renderer is likewise left out of `vendor`, so Rollup places it
-         * in the lazy chunk that imports it rather than in the eager one.
-         *
-         * What is deferred, concretely: the renderer module (`React.lazy`), its
-         * 356 kB stylesheet (imported by that module rather than by `index.css`),
-         * its chart/table dependencies, and the generated spec + prompt (86 kB,
-         * imported only when Rich UI is on).
+         * Split `highlight.js` into its own cacheable chunk and let Rollup's
+         * natural graph-based splitting keep OpenUI's heavy transitive
+         * dependencies (`refractor`, `katex`, `zod`, `react-syntax-highlighter`,
+         * `react-day-picker`, `date-fns`, and dynamic `lucide-react` icons)
+         * inside the lazy `OpenUISurface` chunk instead of hoisting them into
+         * an eager catch-all `vendor` bundle.
          */
         manualChunks: (id: string) => {
-          if (
-            id.includes("node_modules/@openuidev") ||
-            id.includes("node_modules/recharts") ||
-            id.includes("node_modules/d3-") ||
-            id.includes("node_modules/lodash-es") ||
-            id.includes("node_modules/goober") ||
-            id.includes("node_modules/@radix-ui") ||
-            id.includes("node_modules/@tanstack")
-          ) {
-            return undefined;
-          }
           if (id.includes("commonjsHelpers")) {
             return "commonjs";
           }
           if (id.includes("node_modules/highlight.js")) {
             return "highlight";
           }
-          if (id.includes("node_modules")) return "vendor";
+          if (
+            id.includes("node_modules/react/") ||
+            id.includes("node_modules/react-dom/") ||
+            id.includes("node_modules/scheduler/")
+          ) {
+            return "react-vendor";
+          }
           return undefined;
         },
       },

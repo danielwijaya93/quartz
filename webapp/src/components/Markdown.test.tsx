@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Markdown, closeUnterminatedFence } from "./Markdown";
+import { Markdown, closeUnterminatedFence, splitMarkdownBlocks } from "./Markdown";
 
 describe("closeUnterminatedFence", () => {
   it("leaves balanced fences alone", () => {
@@ -26,6 +26,22 @@ describe("closeUnterminatedFence", () => {
   it("does not close a balanced pair in the middle of a longer stream", () => {
     const markdown = "```\na\n```\n\nprose\n\n```\nb\n```\n";
     expect(closeUnterminatedFence(markdown)).toBe(markdown);
+  });
+});
+
+describe("splitMarkdownBlocks", () => {
+  it("splits paragraphs on blank lines while keeping fenced code blocks intact", () => {
+    const md = "First paragraph.\n\n```python\na = 1\n\nb = 2\n```\n\nSecond paragraph.";
+    expect(splitMarkdownBlocks(md)).toEqual([
+      "First paragraph.",
+      "```python\na = 1\n\nb = 2\n```",
+      "Second paragraph.",
+    ]);
+  });
+
+  it("handles empty string and single block", () => {
+    expect(splitMarkdownBlocks("")).toEqual([]);
+    expect(splitMarkdownBlocks("hello world")).toEqual(["hello world"]);
   });
 });
 

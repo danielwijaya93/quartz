@@ -72,6 +72,9 @@ export function buildActionUserMessage(event: ActionEvent): string {
   return event.humanFriendlyMessage ? built : built.slice(built.indexOf("\n") + 1);
 }
 
+/** Minimum interval between OpenUI full-program re-parses while tokens stream. */
+const STREAM_THROTTLE_MS = 80;
+
 export const OpenUISurface = React.memo(function OpenUISurface({
   response,
   isStreaming,
@@ -80,6 +83,51 @@ export const OpenUISurface = React.memo(function OpenUISurface({
   onOpenUrl,
   onStateUpdate,
 }: OpenUISurfaceProps): React.ReactElement {
+  const [renderedResponse, setRenderedResponse] = React.useState(response);
+  const lastFlushRef = React.useRef<number>(Date.now());
+  const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  React.useEffect(() => {
+    if (!isStreaming) {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      lastFlushRef.current = Date.now();
+      setRenderedResponse(response);
+      return;
+    }
+
+    const elapsed = Date.now() - lastFlushRef.current;
+    if (elapsed >= STREAM_THROTTLE_MS) {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      lastFlushRef.current = Date.now();
+      setRenderedResponse(response);
+      return;
+    }
+
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+    }
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      lastFlushRef.current = Date.now();
+      setRenderedResponse(response);
+    }, STREAM_THROTTLE_MS - elapsed);
+
+    return () => {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [response, isStreaming]);
+
+  const effectiveResponse = isStreaming ? renderedResponse : response;
+
   const handleAction = React.useCallback(
     (event: ActionEvent) => {
       if (event.type === BuiltinActionType.ContinueConversation) {
@@ -94,7 +142,7 @@ export const OpenUISurface = React.memo(function OpenUISurface({
   return (
     <div className="openui-surface" data-testid="openui-surface">
       <Renderer
-        response={response}
+        response={effectiveResponse}
         library={openuiLibrary}
         isStreaming={isStreaming}
         onAction={handleAction}
