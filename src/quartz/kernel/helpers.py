@@ -22,7 +22,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from quartz.kernel.outline import outline, read_symbol
+from quartz.kernel.outline import outline
 from quartz.kernel.pycheck import check_python_source
 from quartz.media import load_image_file
 from quartz.settings import is_project_trusted
@@ -690,7 +690,6 @@ BUILTIN_HELPERS: dict[str, Callable[..., Any]] = {
     "find": find,
     "rg": rg,
     "outline": outline,
-    "read_symbol": read_symbol,
     "read": read,
     "edit": edit,
     "write": write,
@@ -863,8 +862,8 @@ def format_helpers_for_prompt(loaded: LoadedHelpers) -> str:
         "In `-p` runs, `bash()` runs synchronously and `launch_worker` is refused.",
         "- `ls(path='.')`, `find(pattern='*', path='.', limit=200)`, `rg(pattern, path='.', glob=None, max_hits=100, fixed=False, context=0)` "
         "(use raw strings r'...' for regex patterns with backslashes, fixed=True for literal string search, context=3 for surrounding lines)",
-        "- `outline(path)` (compact class/function line map), `read_symbol(path, name, raw=False)` (read exact function/class/`Class.method` span; pass `raw=True` before `edit()`), "
-        "`read(*paths, start=1, end=200, raw=False)` (pass multiple paths to batch), `edit(path, old, new)`, `write(path, content)`, `view_image(path)`, `attach_file(path, label=None)`, `find_skills(query='', limit=20)`, `gather(*coros)`",
+        "- `outline(path)` (compact class/function line-range map for navigating files before reading), "
+        "`read(*paths, start=1, end=200, raw=False)` (pass multiple paths to batch; pass `raw=True` for unnumbered lines before `edit()`), `edit(path, old, new)`, `write(path, content)`, `view_image(path)`, `attach_file(path, label=None)`, `find_skills(query='', limit=20)`, `gather(*coros)`",
         "- Python stdlib modules (e.g. `Path`, `os`, `json`, `re`, `datetime`, `subprocess`, `collections`, etc.) "
         "are auto-imported on attribute access in `<ipython>` cells, while explicit imports are still required "
         "when writing or editing project `.py` files.",

@@ -20,7 +20,7 @@ PROMPT_RULES = """## Rules
 - Prioritize available REPL helpers and primitives over verbose standard-library boilerplate or multi-turn external commands.
 - Use `await bash(...)` (or `bash()` + `wait()`) for slow commands (tests, builds, CI watches like `gh pr checks --watch`) so the async kernel loop stays responsive; reserve `run()` for quick (<10s) commands. Do not block a cell with `sleep`.
 - Use raw strings (`r"..."`) for regexes or any string with backslashes (or `fixed=True` in `rg()` for literal searches) to avoid Python `SyntaxWarning`.
-- Keep tool outputs lean: use `outline(path)` + `read_symbol(path, name, raw=True)` or `rg(..., context=3)` instead of paginating whole files, and use `git diff --stat` before full diffs.
+- Keep tool outputs lean: use `outline(path)` + targeted `read(path, start, end, raw=True)` or `rg(..., context=3)` instead of paginating whole files, and use `git diff --stat` before full diffs.
 - For tests and builds, prefer quiet flags (e.g. `pytest -q --tb=short`) and inspect failures rather than printing full logs.
 - Follow `## Project Instructions` strictly."""
 

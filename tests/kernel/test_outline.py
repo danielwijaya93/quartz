@@ -1,16 +1,14 @@
-"""Unit tests for `outline()`, `read_symbol()`, and `rg(..., context=)`."""
+"""Unit tests for `outline()` and `rg(..., context=)`."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from quartz.kernel.helpers import rg
-from quartz.kernel.outline import outline, read_symbol
+from quartz.kernel.outline import outline
 
 
-def test_python_outline_and_read_symbol(tmp_path: Path) -> None:
+def test_python_outline(tmp_path: Path) -> None:
     p = tmp_path / "sample.py"
     p.write_text(
         "class Foo:\n"
@@ -25,32 +23,23 @@ def test_python_outline_and_read_symbol(tmp_path: Path) -> None:
     assert "L2-3:   def bar(self, x)" in out
     assert "L5-6: async def top(a, b)" in out
 
-    sym = read_symbol(p, "Foo.bar")
-    assert "2:     def bar(self, x: int) -> int:" in sym
-    assert "3:         return x + 1" in sym
 
-    raw = read_symbol(p, "bar", raw=True)
-    assert raw == "    def bar(self, x: int) -> int:\n        return x + 1"
-
-    with pytest.raises(LookupError, match=r"Foo\.bar"):
-        read_symbol(p, "Foo.baz")
-
-
-def test_ts_outline_and_read_symbol(tmp_path: Path) -> None:
+def test_ts_and_md_outline(tmp_path: Path) -> None:
     p = tmp_path / "widget.ts"
     p.write_text(
-        "export interface Config {\n"
-        "  enabled: boolean;\n"
-        "}\n\n"
-        "export function greet(name: string) {\n"
-        "  return `hi ${name}`;\n"
-        "}\n",
+        "export interface Config {\n  enabled: boolean;\n}\n\n"
+        "export function greet(name: string) {\n  return `hi ${name}`;\n}\n",
         encoding="utf-8",
     )
     out = outline(p)
     assert "L1-3: interface Config" in out
     assert "L5-7: function greet" in out
-    assert "return `hi ${name}`;" in read_symbol(p, "greet", raw=True)
+
+    md = tmp_path / "doc.md"
+    md.write_text("# Intro\ntext\n## Details\n", encoding="utf-8")
+    md_out = outline(md)
+    assert "L1: # Intro" in md_out
+    assert "L3: ## Details" in md_out
 
 
 def test_rg_context_lines(tmp_path: Path) -> None:

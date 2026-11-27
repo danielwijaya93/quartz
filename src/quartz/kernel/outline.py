@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import ast
-import difflib
 import re
 from pathlib import Path
 
-__all__ = ["outline", "read_symbol"]
+__all__ = ["outline"]
 
 _MAX_OUTLINE_LINES = 200
-_MAX_SYMBOL_CHARS = 16_000
 _TS_EXTENSIONS = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"})
 _TS_DECL_RE = re.compile(
     r"^(?P<indent>[ \t]*)(?:export\s+(?:default\s+)?)?"
@@ -131,35 +129,3 @@ def outline(path: str | Path) -> str:
     if len(symbols) > _MAX_OUTLINE_LINES:
         out.append(f"... [{len(symbols) - _MAX_OUTLINE_LINES} more symbols]")
     return "\n".join(out)
-
-
-def read_symbol(path: str | Path, name: str, *, raw: bool = False) -> str:
-    """Read the exact line span of a function, class, or `Class.method` from `path`."""
-    p = Path(path).expanduser()
-    if not p.is_file():
-        raise FileNotFoundError(f"No such file: {path}")
-    source = p.read_text(encoding="utf-8", errors="replace")
-    symbols = _extract_symbols(p, source)
-    if not symbols:
-        raise LookupError(f"No indexed symbols in {path}; use read() instead")
-
-    matches = [s for s in symbols if s[0] == name]
-    if not matches and "." not in name:
-        matches = [s for s in symbols if s[0].rsplit(".", 1)[-1] == name]
-
-    if not matches:
-        names = [s[0] for s in symbols]
-        close = difflib.get_close_matches(name, names, n=5, cutoff=0.4)
-        hint = f" (closest: {', '.join(close)})" if close else f" (available: {', '.join(names[:8])})"
-        raise LookupError(f"Symbol {name!r} not found in {path}{hint}")
-    if len(matches) > 1:
-        options = ", ".join(f"{m[0]} (L{m[2]}-{m[3]})" for m in matches[:6])
-        raise LookupError(f"Ambiguous symbol {name!r} in {path}; specify one of: {options}")
-
-    _qname, _display, start, end, _depth = matches[0]
-    all_lines = source.splitlines()
-    chunk = all_lines[start - 1 : end]
-    body = "\n".join(chunk) if raw else "\n".join(f"{idx}: {line}" for idx, line in enumerate(chunk, start))
-    if len(body) > _MAX_SYMBOL_CHARS:
-        body = body[:_MAX_SYMBOL_CHARS] + f"\n... [truncated; use read({str(path)!r}, start={start}, end={end}, raw={raw})]"
-    return body
