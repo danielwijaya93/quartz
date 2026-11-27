@@ -1,0 +1,63 @@
+[
+  {
+    "id": "sandbox-cache-redirect",
+    "category": "bugfix",
+    "base_commit": "bbeda678261ef3b9115d7ff3e746901931e4eda3",
+    "test_commit": "7af9e70d4ee96f5abe805390b621763097f4c39c",
+    "test_paths": [
+      "tests/kernel/test_sandbox.py"
+    ],
+    "verify_cmd": "{python} -m pytest -q --tb=short tests/kernel/test_sandbox.py",
+    "timeout_s": 300,
+    "prompt": "Inside Linux bwrap sandboxes, tools like uv/ruff/npm fail with `os error 30: Read-only file system` when trying to write lockfiles under `~/.cache`. Update `sandbox_env_overrides(existing_env=None, *, cwd=None)` in `src/quartz/kernel/sandbox.py` (and pass `env, cwd=self.cwd` from `src/quartz/kernel/client_transport.py`) so sandboxed kernels redirect `XDG_CACHE_HOME` to `/tmp/quartz-cache`, `UV_CACHE_DIR` to `/tmp/quartz-cache/uv`, `npm_config_cache` to `/tmp/quartz-cache/npm` (unless already pointing inside `/tmp` or `cwd`), and set `UV_LINK_MODE=copy` when unset. Keep unsandboxed kernels untouched. Run sandbox tests to verify."
+  },
+  {
+    "id": "persist-sandbox-toggle",
+    "category": "bugfix",
+    "base_commit": "51fc4c8f200199663d3ef615cd9871f5a9279a81",
+    "test_commit": "ee0191e211046433d601f6b45bcb971d4834d631",
+    "test_paths": [
+      "tests/core/test_session.py",
+      "tests/web/test_app_http_and_security.py"
+    ],
+    "verify_cmd": "{python} -m pytest -q --tb=short tests/core/test_session.py -k sandbox",
+    "timeout_s": 300,
+    "prompt": "Per-session sandbox toggle state in Quartz Web is lost on reload. Add `Session.recorded_sandbox(cls, session_id, sessions_dir=None) -> bool | None` and `session.set_sandbox(enabled: bool) -> None` in `src/quartz/core/session.py` so the `sandbox` boolean is stored in the session JSONL meta line (both before first save and by rewriting the meta line on disk if the file already exists; return `None` for missing/corrupt JSONL). Wire `WebSession` in `src/quartz/web/web_session.py` to persist and restore this toggle. Run session and web tests to verify."
+  },
+  {
+    "id": "unify-read-modes",
+    "category": "feature",
+    "base_commit": "84e45959231d6d49607d4f8b36a0f57b6c21164e",
+    "test_commit": "55b69c0f78bdda63c833046ec36be389f3a47b91",
+    "test_paths": [
+      "tests/kernel/test_helpers.py"
+    ],
+    "verify_cmd": "{python} -m pytest -q --tb=short tests/kernel/test_helpers.py -k unified_read",
+    "timeout_s": 300,
+    "prompt": "Unify built-in `read()` in `src/quartz/kernel/helpers.py` to accept `read(*paths, start=1, end=200, raw=False)` while preserving legacy positional `read(path, start, end)`: 1) `raw=True` omits line numbers so blocks feed directly into `edit()`, and appends a continuation marker mentioning remaining lines and `raw=True` when `end` stops before EOF. 2) `end=None` (or `0`) reads through EOF without a more-lines marker. 3) Passing multiple paths reads them sequentially under the shared `MAX_READ_CHARS` budget with `=== path (start-end of total lines) ===` headers, tolerating missing files inline. Update prompt helper docs in `src/quartz/kernel/helpers.py` and `src/quartz/core/prompt.py`. Run helper tests to verify."
+  },
+  {
+    "id": "settings-stat-cache",
+    "category": "refactor",
+    "base_commit": "2501b03dd94431ffc22f88548b0a776a6b0527b0",
+    "test_commit": "17371457952ff79895020eba438c10345de960e9",
+    "test_paths": [
+      "tests/core/test_settings_cache_and_hotpaths.py"
+    ],
+    "verify_cmd": "{python} -m pytest -q --tb=short tests/core/test_settings_cache_and_hotpaths.py -k settings",
+    "timeout_s": 300,
+    "prompt": "Add a stat-validated in-memory cache (`(st_mtime_ns, st_size, st_ino)`) to `load_settings()` in `src/quartz/settings.py` so repeated calls return the cached `Settings` object without re-reading disk, automatically refreshing when the file changes on disk. Export `clear_settings_cache()` and ensure `save_settings()` and `update_config_json()` invalidate the cache immediately. Run settings tests to verify."
+  },
+  {
+    "id": "closest-path-hints",
+    "category": "feature",
+    "base_commit": "fa9cfd3f81e2ed47ecad53d3cb69bff121c6e766",
+    "test_commit": "09f616c1131b54f0dc7e8cf7a4445079ea7b9c40",
+    "test_paths": [
+      "tests/kernel/test_helpers.py"
+    ],
+    "verify_cmd": "{python} -m pytest -q --tb=short tests/kernel/test_helpers.py -k 'closest_match_hints or module_not_found_hints'",
+    "timeout_s": 300,
+    "prompt": "Improve error ergonomics in Quartz's REPL kernel: 1) In `src/quartz/kernel/helpers.py`, when `read()`, `ls()`, or `rg()` receives a missing path, include a closest-sibling hint (e.g. `did you mean: ...?` via `difflib.get_close_matches`) in the `FileNotFoundError` / `Path not found` message. 2) In `src/quartz/kernel/worker.py`, when cell execution raises `ModuleNotFoundError` and a project `.venv/bin/python` exists (different from `sys.executable`), append a hint to stderr suggesting `.venv/bin/python` or `uv run`. Run helper tests to verify."
+  }
+]
