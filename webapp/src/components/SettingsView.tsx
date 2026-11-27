@@ -70,7 +70,7 @@ const SESSION_FIELDS: readonly SettingFieldDef[] = [
   { apiKey: "keep", valueKey: "keep", label: "Keep recent tokens", hint: (d) => `Default ${(d.keep ?? 32000).toLocaleString()}` },
   { apiKey: "progress", valueKey: "progress", label: "Progress update every (calls)", hint: (d) => `Default ${d.progress ?? 5} · 0 disables` },
   { apiKey: "bg", valueKey: "bg", label: "Background job check (seconds)", hint: (d) => `Default ${d.bg ?? 300}s · 0 disables` },
-  { apiKey: "idle", valueKey: "idle", label: "Idle session reminder (hours)", hint: (d) => `Default ${d.idle ?? 2}h · 0 disables` },
+  { apiKey: "idle", valueKey: "idle", label: "Idle session auto-close (hours)", hint: (d) => `Default ${d.idle ?? 2}h · 0 disables` },
 ];
 
 const BOT_GOVERNANCE_FIELDS: readonly SettingFieldDef[] = [

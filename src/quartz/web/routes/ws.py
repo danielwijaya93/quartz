@@ -29,7 +29,6 @@ from quartz.web.schemas import (
     CancelFrame,
     CommandFrame,
     HelloFrame,
-    IdleSessionResponseFrame,
     LoadSessionFrame,
     NewSessionFrame,
     NotificationsReadFrame,
@@ -147,8 +146,6 @@ async def _dispatch(
             snapshot["watcher"] = manager.watcher.state_payload(session.runtime.active_session.id)
             push(snapshot)
             _replay_live_turn(session, snapshot, push)
-            for idle_frame in manager.pending_idle_prompts():
-                push(idle_frame)
             push({"type": "active_sessions_state", "items": manager.active_sessions_items()})
 
         elif isinstance(frame, PromptFrame):
@@ -235,13 +232,6 @@ async def _dispatch(
                 _err(push, "Missing requestId.")
                 return
             session.resolve_permission(request_id, frame.decision.strip())
-
-        elif isinstance(frame, IdleSessionResponseFrame):
-            session_id = frame.session_id.strip()
-            if not session_id:
-                _err(push, "Missing sessionId.")
-                return
-            await manager.aresolve_idle_prompt(session_id, frame.action.strip())
 
         elif isinstance(frame, ActiveSessionDismissFrame):
             session_id = frame.session_id.strip()

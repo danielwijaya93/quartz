@@ -699,70 +699,34 @@ class SessionManager:
             else:
                 task.cancel()
 
-    @staticmethod
-    def _idle_frame(sid: str, ws: WebSession, idle_seconds: int) -> Frame:
-        return {
-            "type": "idle_session_prompt",
-            "sessionId": sid,
-            "cwd": str(ws.runtime.cwd),
-            "idleSeconds": max(0, idle_seconds),
-        }
-
-    def check_idle_sessions(self, now: float | None = None) -> list[Frame]:
+    def check_idle_sessions(self, now: float | None = None) -> list[str]:
         self.evict_lru_sessions()
         hours = self._idle_hours()
         if hours <= 0:
             return []
         threshold_s = hours * 3600.0
         current_time = time.monotonic() if now is None else now
-        frames: list[Frame] = []
+        to_close: list[tuple[str, WebSession]] = []
         with self._lock:
-            items = list(self._sessions.items())
-        for sid, ws in items:
-            if not ws.built or ws.turn_running or ws.attached or ws.idle_prompted_at is not None:
-                continue
-            idle_s = current_time - ws.last_active_at
-            if idle_s >= threshold_s:
-                ws.idle_prompted_at = current_time
-                frame = self._idle_frame(sid, ws, int(idle_s))
-                frames.append(frame)
-                self._broadcast(frame)
-        return frames
-
-    def pending_idle_prompts(self, now: float | None = None) -> list[Frame]:
-        current_time = time.monotonic() if now is None else now
-        with self._lock:
-            items = list(self._sessions.items())
-        return [
-            self._idle_frame(sid, ws, int(current_time - ws.last_active_at))
-            for sid, ws in items
-            if ws.built and not ws.turn_running and not ws.attached and ws.idle_prompted_at is not None
-        ]
-
-    def resolve_idle_prompt(self, session_id: str, action: str) -> bool:
-        if action not in ("keep", "close"):
-            raise ValueError(f"Invalid idle session action: {action!r}")
-        with self._lock:
-            ws = self._sessions.get(session_id)
-            if ws is None:
-                return False
-            if action == "keep":
-                ws.keep_alive()
-            else:
-                self._sessions.pop(session_id, None)
-                if self._current_id == session_id:
-                    self._current_id = next(iter(self._sessions), None)
-        if action == "close":
-            ws.close()
+            for sid, ws in list(self._sessions.items()):
+                if not ws.built or ws.turn_running or ws.attached:
+                    continue
+                if current_time - ws.last_active_at >= threshold_s:
+                    self._sessions.pop(sid, None)
+                    if self._current_id == sid:
+                        self._current_id = next(iter(self._sessions), None)
+                    to_close.append((sid, ws))
+        closed_ids: list[str] = []
+        removed_active = False
+        for sid, ws in to_close:
+            ws.close(reason="idle timeout")
+            closed_ids.append(sid)
             with self._lock:
-                removed = self._active_sessions.pop(session_id, None) is not None
-            if removed:
-                self._broadcast_active_sessions()
-        self._broadcast({"type": "idle_session_resolved", "sessionId": session_id, "action": action})
-        return True
-
-    async def aresolve_idle_prompt(self, session_id: str, action: str) -> bool:
-        return await asyncio.to_thread(self.resolve_idle_prompt, session_id, action)
+                if self._active_sessions.pop(sid, None) is not None:
+                    removed_active = True
+        if removed_active:
+            self._broadcast_active_sessions()
+        return closed_ids
 
     def close_all(self) -> None:
         with self._lock:

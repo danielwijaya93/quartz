@@ -81,12 +81,6 @@ export interface PermissionResponseFrame {
   decision?: "allow_once" | "allow_session" | "reject";
 }
 
-export interface IdleSessionResponseFrame {
-  type: "idle_session_response";
-  sessionId?: string;
-  action?: "keep" | "close";
-}
-
 export interface ActiveSessionDismissFrame {
   type: "active_session_dismiss";
   sessionId?: string;
@@ -125,7 +119,6 @@ export type GeneratedClientFrame =
   | TrustProjectFrame
   | SetSandboxFrame
   | PermissionResponseFrame
-  | IdleSessionResponseFrame
   | ActiveSessionDismissFrame
   | ActiveSessionsClearReadFrame
   | NotificationsReadFrame

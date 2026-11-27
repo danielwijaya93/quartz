@@ -24,7 +24,6 @@ const stableActions = {
   trustProject: vi.fn(),
   setSandbox: vi.fn(),
   respondPermission: vi.fn(),
-  respondIdleSession: vi.fn(),
   setFormState: vi.fn(),
   clearBgFailed: vi.fn(),
   dismissActiveSession: vi.fn(),

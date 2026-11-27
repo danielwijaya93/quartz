@@ -387,14 +387,6 @@ class WebSession:
     def last_active_at(self) -> float:
         return self._sinks.last_active_at
 
-    @property
-    def idle_prompted_at(self) -> float | None:
-        return self._sinks.idle_prompted_at
-
-    @idle_prompted_at.setter
-    def idle_prompted_at(self, value: float | None) -> None:
-        self._sinks.idle_prompted_at = value
-
     def mark_active(self, now: float | None = None) -> None:
         self._sinks.mark_active(now=now)
 

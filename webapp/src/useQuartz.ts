@@ -36,8 +36,6 @@ export interface QuartzApi {
   /** Toggle OS sandbox for the active session. */
   setSandbox: (enabled: boolean) => void;
   respondPermission: (requestId: string, decision: PermissionDecision) => void;
-  /** Keep alive or close an idle backgrounded session. */
-  respondIdleSession: (sessionId: string, action: "keep" | "close") => void;
   /** Persist an OpenUI surface's form state onto the row that rendered it. */
   setFormState: (id: string, formState: Record<string, unknown>) => void;
   /** Clear the failed background job badge once the user opens /jobs. */
@@ -211,7 +209,6 @@ export function useQuartz(
       ...initialState,
       session: prev.session,
       ...(prev.activeSessions !== undefined ? { activeSessions: prev.activeSessions } : {}),
-      ...(prev.idlePrompts !== undefined ? { idlePrompts: prev.idlePrompts } : {}),
     }));
     connectionRef.current?.sendNewSession(cwd);
   }, []);
@@ -234,13 +231,6 @@ export function useQuartz(
   const respondPermission = React.useCallback(
     (requestId: string, decision: PermissionDecision) => {
       connectionRef.current?.sendPermissionResponse(requestId, decision);
-    },
-    [],
-  );
-
-  const respondIdleSession = React.useCallback(
-    (sessionId: string, action: "keep" | "close") => {
-      connectionRef.current?.sendIdleSessionResponse(sessionId, action);
     },
     [],
   );
@@ -298,7 +288,6 @@ export function useQuartz(
       trustProject,
       setSandbox,
       respondPermission,
-      respondIdleSession,
       setFormState,
       clearBgFailed,
       dismissActiveSession,
@@ -319,7 +308,6 @@ export function useQuartz(
       trustProject,
       setSandbox,
       respondPermission,
-      respondIdleSession,
       setFormState,
       clearBgFailed,
       dismissActiveSession,

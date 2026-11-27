@@ -11,7 +11,6 @@ export type {
   ErrorRow,
   GroupOptions,
   HarnessNotice,
-  IdleSessionPrompt,
   Row,
   RowKind,
   SessionMeta,

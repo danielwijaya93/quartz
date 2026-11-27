@@ -405,10 +405,6 @@ export class Connection {
     return this.send({ type: "load_session", sessionId });
   }
 
-  sendIdleSessionResponse(sessionId: string, action: "keep" | "close"): boolean {
-    return this.send({ type: "idle_session_response", sessionId, action });
-  }
-
   sendActiveSessionDismiss(sessionId: string): boolean {
     return this.send({ type: "active_session_dismiss", sessionId });
   }
