@@ -140,10 +140,10 @@ export const HeaderBar = React.memo(function HeaderBar({
                   <span
                     className={cn(
                       "hidden text-[11px] font-medium sm:inline",
-                      sandboxed ? "text-foreground/85" : "text-danger line-through",
+                      sandboxed ? "text-foreground/85" : "text-danger",
                     )}
                   >
-                    Sandboxed
+                    {sandboxed ? "Sandboxed" : "Sandbox Off"}
                   </span>
                 </Chip>
               );

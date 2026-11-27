@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Input } from "@heroui/react";
 import { Eye } from "lucide-react";
+import { QuartzSelect } from "./QuartzSelect";
 import { fetchModels, type ModelProvider } from "../lib/modelsApi";
 
 export interface TurnWatcherSettingsCardProps {
@@ -72,12 +73,12 @@ export function TurnWatcherSettingsCard({
               Single fast/cheap provider used to inspect finished turns across all sessions. Leave blank to keep inactive.
             </p>
           </div>
-          <select
+          <QuartzSelect
             aria-label="Global watcher provider"
             value={provider}
             disabled={saving}
-            onChange={(e) => {
-              const nextProv = e.target.value;
+            className="w-48 shrink-0"
+            onChange={(nextProv) => {
               onChangeDraft("watcher_provider", nextProv);
               if (!nextProv) {
                 onChangeDraft("watcher_model", "");
@@ -88,18 +89,14 @@ export function TurnWatcherSettingsCard({
                 }
               }
             }}
-            className="h-9 w-48 shrink-0 rounded-lg border border-border bg-surface px-2.5 text-xs text-foreground"
-          >
-            <option value="">(Inactive — not set)</option>
-            {providers.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label}
-              </option>
-            ))}
-            {provider && !providers.some((p) => p.id === provider) ? (
-              <option value={provider}>{provider}</option>
-            ) : null}
-          </select>
+            options={[
+              { value: "", label: "(Inactive — not set)" },
+              ...providers.map((p) => ({ value: p.id, label: p.label })),
+              ...(provider && !providers.some((p) => p.id === provider)
+                ? [{ value: provider, label: provider }]
+                : []),
+            ]}
+          />
         </div>
 
         <div className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between">
@@ -110,23 +107,19 @@ export function TurnWatcherSettingsCard({
             </p>
           </div>
           {modelOptions.length > 0 ? (
-            <select
+            <QuartzSelect
               aria-label="Global watcher model"
               value={model}
               disabled={saving || !provider}
-              onChange={(e) => onChangeDraft("watcher_model", e.target.value)}
-              className="h-9 w-48 shrink-0 rounded-lg border border-border bg-surface px-2.5 font-mono text-xs text-foreground disabled:opacity-50"
-            >
-              <option value="">(Select model)</option>
-              {modelOptions.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-              {model && !modelOptions.includes(model) ? (
-                <option value={model}>{model}</option>
-              ) : null}
-            </select>
+              onChange={(val) => onChangeDraft("watcher_model", val)}
+              className="w-48 shrink-0"
+              triggerClassName="font-mono"
+              options={[
+                { value: "", label: "(Select model)" },
+                ...modelOptions.map((m) => ({ value: m, label: m })),
+                ...(model && !modelOptions.includes(model) ? [{ value: model, label: model }] : []),
+              ]}
+            />
           ) : (
             <Input
               aria-label="Global watcher model"

@@ -13,6 +13,7 @@ import {
   folderBadge,
   formatAge,
   groupArchive,
+  generalChats,
   groupSessions,
   isArchiveFilterActive,
   isVisible,
@@ -640,5 +641,38 @@ describe("sidebar collapse persistence", () => {
     writeSidebarCollapseState(state, storage);
     expect(store.has(SIDEBAR_COLLAPSE_STORAGE_KEY)).toBe(true);
     expect(readSidebarCollapseState(storage)).toEqual(state);
+  });
+});
+
+describe("generalChats", () => {
+  const chatsDir = "/home/u/.quartz/chats";
+  const chat1 = session({
+    sessionId: "c1",
+    cwd: chatsDir,
+    title: "Quick question",
+    updatedAt: "2026-01-02T10:00:00Z",
+  });
+  const chat2 = session({
+    sessionId: "c2",
+    cwd: chatsDir,
+    title: "Another chat",
+    updatedAt: "2026-01-02T12:00:00Z",
+  });
+  const ws = session({
+    sessionId: "w1",
+    cwd: "/work/alpha",
+    title: "Repo work",
+    updatedAt: "2026-01-02T11:00:00Z",
+  });
+
+  it("returns general chats newest-first and excludes them from workspace groups", () => {
+    const data: SidebarPayload = {
+      sessions: [chat1, chat2, ws],
+      sidebar: EMPTY_SIDEBAR,
+      generalChatsDir: chatsDir,
+    };
+    expect(generalChats(data).map((s) => s.sessionId)).toEqual(["c2", "c1"]);
+    const groups = groupSessions(data);
+    expect(groups.map((g) => g.cwd)).toEqual(["/work/alpha"]);
   });
 });

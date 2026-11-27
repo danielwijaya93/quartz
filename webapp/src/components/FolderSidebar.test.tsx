@@ -825,4 +825,44 @@ describe("FolderSidebar section ordering", () => {
     await user.click(screen.getByRole("button", { name: "Close the session sidebar" }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it("renders a 1-click New chat button and Chats section for generalChatsDir", async () => {
+    const user = userEvent.setup();
+    const chatsDir = "/home/u/.quartz/chats";
+    const onNewSession = vi.fn();
+    render(
+      <FolderSidebar
+        data={{
+          ...payload({
+            sessions: [session({ sessionId: "c1", title: "Quick question", cwd: chatsDir })],
+          }),
+          generalChatsDir: chatsDir,
+        }}
+        loading={false}
+        error={null}
+        actionError={null}
+        currentSessionId=""
+        currentCwd=""
+        variant="rail"
+        onClose={vi.fn()}
+        onReload={vi.fn()}
+        onSelectSession={vi.fn()}
+        onNewSession={onNewSession}
+        onNewFolder={vi.fn()}
+        onOpenFolder={vi.fn()}
+        onRename={vi.fn(async () => true)}
+        onHide={vi.fn(async () => true)}
+        onRestore={vi.fn(async () => true)}
+        onOpenArchive={vi.fn()}
+      />,
+    );
+
+    const newChatBtn = screen.getByRole("button", { name: "New chat" });
+    await user.click(newChatBtn);
+    expect(onNewSession).toHaveBeenCalledWith(chatsDir);
+
+    const chatsRegion = screen.getByRole("region", { name: "Chats" });
+    expect(chatsRegion).toBeInTheDocument();
+    expect(screen.getByText("Quick question")).toBeInTheDocument();
+  });
 });

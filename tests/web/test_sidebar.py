@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from quartz.web.sidebar import (
     SIDEBAR_VERSION,
     SidebarState,
@@ -235,3 +237,14 @@ def test_pin_and_unpin_round_trip(tmp_path: Path) -> None:
     assert SidebarStore(path).state.pinned_sessions == ["s2"]
     payload = sidebar_payload([_session("s1"), _session("s2")], SidebarStore(path).state)
     assert payload["sidebar"]["pinnedSessions"] == ["s2"]
+
+
+def test_sidebar_payload_includes_general_chats_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from quartz.web.sidebar import default_chats_dir
+
+    chats_dir = tmp_path / "chats"
+    monkeypatch.setenv("QUARTZ_WEB_CHATS_DIR", str(chats_dir))
+    assert default_chats_dir() == chats_dir.resolve()
+    store = SidebarStore(tmp_path / "sidebar.json")
+    payload = sidebar_payload([], store.state)
+    assert payload["generalChatsDir"] == str(chats_dir.resolve())

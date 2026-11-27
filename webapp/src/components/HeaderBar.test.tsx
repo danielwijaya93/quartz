@@ -85,15 +85,16 @@ describe("HeaderBar", () => {
     expect(screen.getByText("Sandboxed")).toHaveClass("hidden", "sm:inline");
   });
 
-  it("shows Sandboxed in red with strikethrough when sandbox is off and toggles on click", async () => {
+  it("shows Sandbox Off in red without strikethrough when sandbox is off and toggles on click", async () => {
     const user = userEvent.setup();
     const onToggleSandbox = vi.fn();
     renderHeader({ session: { ...SESSION, sandboxed: false }, onToggleSandbox });
 
     const btn = screen.getByRole("button", { name: "Sandbox disabled — click to enable" });
     expect(btn).toHaveAttribute("aria-pressed", "false");
-    const label = screen.getByText("Sandboxed");
-    expect(label).toHaveClass("text-danger", "line-through");
+    const label = screen.getByText("Sandbox Off");
+    expect(label).toHaveClass("text-danger");
+    expect(label).not.toHaveClass("line-through");
 
     await user.click(btn);
     expect(onToggleSandbox).toHaveBeenCalledTimes(1);
@@ -115,7 +116,7 @@ describe("HeaderBar", () => {
     expect(label).not.toHaveClass("text-danger");
   });
 
-  it("renders simplified watcher pill without 'Watch' or Pause button and portals settings dialog", () => {
+  it("renders simplified watcher pill without 'Watch' or Pause button and portals settings dialog", async () => {
     const onConfigureWatcher = vi.fn();
     renderHeader({
       watcher: makeWatcher({ mode: "auto" }),
@@ -135,7 +136,8 @@ describe("HeaderBar", () => {
     fireEvent.pointerDown(dialog);
     expect(screen.getByRole("dialog", { name: "Session Turn Watcher Settings" })).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText("Session watcher mode"), { target: { value: "goal" } });
+    await userEvent.setup().click(screen.getByRole("button", { name: /Session watcher mode/i }));
+    await userEvent.setup().click(screen.getByRole("option", { name: "Goal (/goal)" }));
     fireEvent.change(screen.getByLabelText("Session goal"), { target: { value: "Make tests green" } });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
@@ -145,5 +147,16 @@ describe("HeaderBar", () => {
         goal: "Make tests green",
       }),
     );
+  });
+
+  it("shows 'Sandbox Off' without strikethrough when sandbox is disabled", () => {
+    renderHeader({
+      session: { ...SESSION, sandboxed: false },
+      onToggleSandbox: vi.fn(),
+    });
+    const label = screen.getByText("Sandbox Off");
+    expect(label).toBeInTheDocument();
+    expect(label).not.toHaveClass("line-through");
+    expect(screen.queryByText("Sandboxed")).not.toBeInTheDocument();
   });
 });

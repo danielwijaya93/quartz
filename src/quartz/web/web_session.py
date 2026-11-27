@@ -29,6 +29,7 @@ from quartz.web.attachments import AttachedFileRegistry
 from quartz.web.bg_watcher import BackgroundEventWatcher
 from quartz.web.bridge import Frame, Push
 from quartz.web.permission_gate import DEFAULT_PARK_DELAY_S, PermissionGate
+from quartz.web.sidebar import default_chats_dir
 from quartz.web.sink_hub import SinkHub
 from quartz.web.snapshot import (
     _git_branch,
@@ -176,6 +177,8 @@ class WebSession:
         return await asyncio.to_thread(self.ensure_runtime, cwd)
 
     def new_session(self, cwd: Path | None = None) -> None:
+        if cwd is not None and cwd.resolve() == default_chats_dir():
+            cwd.mkdir(parents=True, exist_ok=True)
         self._retire()
         self._swap(*self._build(None, cwd))
 

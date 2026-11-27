@@ -2,6 +2,7 @@ import * as React from "react";
 import { cn } from "@heroui/react";
 import { ExternalLink, History, RefreshCw, RotateCcw, X } from "lucide-react";
 import { fetchBotsHistory } from "@/lib/botsApi";
+import { QuartzSelect } from "./QuartzSelect";
 import type { BotConfig, BotRunRecord, DeletedBotRecord } from "@/types/bots";
 
 export interface BotsHistoryModalProps {
@@ -223,32 +224,32 @@ export function BotsHistoryModal({
       {tab === "runs" ? (
         <div className="mt-3 space-y-3">
           <div className="flex flex-wrap items-center gap-2">
-            <select
+            <QuartzSelect
               aria-label="Filter by bot"
               value={botFilter}
-              onChange={(e) => setBotFilter(e.target.value)}
-              className="rounded-lg border border-border bg-background px-2.5 py-1 text-xs text-foreground focus:border-accent focus:outline-none"
-            >
-              <option value="">All bots</option>
-              {botOptions.map(([id, name]) => (
-                <option key={id} value={id}>
-                  {name}
-                </option>
-              ))}
-            </select>
-            <select
+              onChange={setBotFilter}
+              className="w-40"
+              triggerClassName="h-8"
+              options={[
+                { value: "", label: "All bots" },
+                ...botOptions.map(([id, name]) => ({ value: id, label: name })),
+              ]}
+            />
+            <QuartzSelect
               aria-label="Filter by status"
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="rounded-lg border border-border bg-background px-2.5 py-1 text-xs text-foreground focus:border-accent focus:outline-none"
-            >
-              <option value="">All statuses</option>
-              <option value="ok">Success</option>
-              <option value="running">Running</option>
-              <option value="waiting_permission">Needs approval</option>
-              <option value="error">Error</option>
-              <option value="cancelled">Cancelled</option>
-            </select>
+              onChange={setStatusFilter}
+              className="w-40"
+              triggerClassName="h-8"
+              options={[
+                { value: "", label: "All statuses" },
+                { value: "ok", label: "Success" },
+                { value: "running", label: "Running" },
+                { value: "waiting_permission", label: "Needs approval" },
+                { value: "error", label: "Error" },
+                { value: "cancelled", label: "Cancelled" },
+              ]}
+            />
           </div>
 
           <div className="max-h-80 space-y-2 overflow-y-auto pr-1">

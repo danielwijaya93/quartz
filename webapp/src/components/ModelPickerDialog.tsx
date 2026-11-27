@@ -121,21 +121,23 @@ export function ModelPickerDialog({
       <Modal.Backdrop variant="blur">
         <Modal.Container size="md" scroll="inside">
           <Modal.Dialog className="p-0">
-            <Modal.Header className="flex items-center justify-between border-b border-separator px-4 py-3">
-              <div className="flex items-center gap-2">
-                <Cpu aria-hidden="true" className="size-4 text-accent" />
-                <Modal.Heading className="text-base font-semibold">Choose Model</Modal.Heading>
+            <Modal.Header className="border-b border-separator px-4 py-3">
+              <div className="flex w-full items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Cpu aria-hidden="true" className="size-4 text-foreground/80" />
+                  <Modal.Heading className="text-base font-semibold">Choose Model</Modal.Heading>
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  isIconOnly
+                  isDisabled={loading}
+                  onPress={() => void load()}
+                  aria-label="Reload model list"
+                >
+                  <RefreshCw aria-hidden="true" className={cn("size-3.5", loading && "animate-spin")} />
+                </Button>
               </div>
-              <Button
-                size="sm"
-                variant="ghost"
-                isIconOnly
-                isDisabled={loading}
-                onPress={() => void load()}
-                aria-label="Reload model list"
-              >
-                <RefreshCw aria-hidden="true" className={cn("size-3.5", loading && "animate-spin")} />
-              </Button>
             </Modal.Header>
 
             <Modal.Body className="flex flex-col gap-3 overflow-hidden px-4 py-3">
@@ -180,8 +182,8 @@ export function ModelPickerDialog({
                         className={cn(
                           "flex cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
                           isSelected
-                            ? "border-accent bg-accent/10 text-accent-foreground font-semibold"
-                            : "border-border bg-surface-secondary/50 text-muted hover:bg-surface-secondary hover:text-foreground",
+                            ? "border-foreground bg-foreground text-background font-semibold"
+                            : "border-border bg-surface-secondary/60 text-foreground/85 hover:bg-surface-secondary hover:text-foreground",
                           !provider.ready && "opacity-60",
                         )}
                       >
@@ -235,7 +237,7 @@ export function ModelPickerDialog({
                             className={cn(
                               "flex cursor-pointer items-center justify-between rounded-md px-2.5 py-1.5 text-xs transition-colors",
                               isSelected
-                                ? "bg-accent text-accent-foreground font-medium"
+                                ? "bg-foreground text-background font-medium"
                                 : "text-foreground hover:bg-surface-secondary",
                             )}
                           >
@@ -276,8 +278,8 @@ export function ModelPickerDialog({
                           className={cn(
                             "cursor-pointer rounded-md border px-2.5 py-1 text-xs font-medium capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
                             isSelected
-                              ? "border-accent bg-accent/15 text-accent-foreground font-semibold"
-                              : "border-border bg-surface-secondary/50 text-muted hover:bg-surface-secondary hover:text-foreground",
+                              ? "border-foreground bg-foreground text-background font-semibold"
+                              : "border-border bg-surface-secondary/60 text-foreground/85 hover:bg-surface-secondary hover:text-foreground",
                           )}
                         >
                           {effort}

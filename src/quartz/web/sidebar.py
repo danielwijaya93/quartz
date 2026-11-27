@@ -39,6 +39,7 @@ __all__ = [
     "SidebarState",
     "SidebarStore",
     "Workspace",
+    "default_chats_dir",
     "default_sidebar_path",
     "is_visible",
     "sidebar_payload",
@@ -46,6 +47,14 @@ __all__ = [
 
 SIDEBAR_VERSION = 1
 """Bumped only when an old client would misread a new file."""
+
+
+def default_chats_dir() -> Path:
+    """Dedicated directory for workspace-free general chats (`~/.quartz/chats`)."""
+    env = os.getenv("QUARTZ_WEB_CHATS_DIR")
+    if env and env.strip():
+        return Path(env.strip()).expanduser().resolve()
+    return (Path.home() / ".quartz" / "chats").resolve()
 
 
 def default_sidebar_path() -> Path:
@@ -344,6 +353,7 @@ def sidebar_payload(rows: list[dict[str, Any]], state: SidebarState) -> dict[str
         )
     return {
         "sessions": rows,
+        "generalChatsDir": str(default_chats_dir()),
         "sidebar": {
             "version": SIDEBAR_VERSION,
             "hiddenSessions": sorted(state.hidden_sessions),

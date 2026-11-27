@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Bot, X } from "lucide-react";
+import { QuartzSelect } from "./QuartzSelect";
 import { fetchModels, type ModelProvider, type ModelsPayload } from "@/lib/modelsApi";
 import type { BotConfig, BotFormValues, WatcherType } from "@/types/bots";
 
@@ -378,19 +379,19 @@ export function CreateBotModal({
         </div>
 
         <div>
-          <label htmlFor={watcherId} className={LABEL_CLASS}>
+          <span id={watcherId} className={LABEL_CLASS}>
             Watcher Type
-          </label>
-          <select
-            id={watcherId}
+          </span>
+          <QuartzSelect
+            aria-labelledby={watcherId}
             value={watcherType}
-            onChange={(e) => setWatcherType(e.target.value as WatcherType)}
-            className={INPUT_CLASS}
-          >
-            <option value="github_poll">GitHub Poll</option>
-            <option value="cron">Cron</option>
-            <option value="webhook">Webhook</option>
-          </select>
+            onChange={(val) => setWatcherType(val as WatcherType)}
+            options={[
+              { value: "github_poll", label: "GitHub Poll" },
+              { value: "cron", label: "Cron" },
+              { value: "webhook", label: "Webhook" },
+            ]}
+          />
         </div>
 
         {watcherType === "github_poll" ? (
@@ -520,14 +521,13 @@ export function CreateBotModal({
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div>
-            <label htmlFor={providerId} className={LABEL_CLASS}>
+            <span id={providerId} className={LABEL_CLASS}>
               Provider
-            </label>
-            <select
-              id={providerId}
+            </span>
+            <QuartzSelect
+              aria-labelledby={providerId}
               value={provider}
-              onChange={(e) => {
-                const next = e.target.value;
+              onChange={(next) => {
                 setProvider(next);
                 if (!next) {
                   setModel("");
@@ -542,29 +542,24 @@ export function CreateBotModal({
                   }
                 }
               }}
-              className={INPUT_CLASS}
-            >
-              <option value="">Default (inherit)</option>
-              {provider && !providers.some((p) => p.id === provider) ? (
-                <option value={provider}>{provider}</option>
-              ) : null}
-              {providers.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.label || p.id}
-                </option>
-              ))}
-            </select>
+              options={[
+                { value: "", label: "Default (inherit)" },
+                ...(provider && !providers.some((p) => p.id === provider)
+                  ? [{ value: provider, label: provider }]
+                  : []),
+                ...providers.map((p) => ({ value: p.id, label: p.label || p.id })),
+              ]}
+            />
           </div>
           <div>
-            <label htmlFor={modelId} className={LABEL_CLASS}>
+            <span id={modelId} className={LABEL_CLASS}>
               Model
-            </label>
-            <select
-              id={modelId}
+            </span>
+            <QuartzSelect
+              aria-labelledby={modelId}
               value={model}
               disabled={!provider && !model}
-              onChange={(e) => {
-                const nextModel = e.target.value;
+              onChange={(nextModel) => {
                 setModel(nextModel);
                 const perModel = nextModel ? activeProvider?.modelEfforts?.[nextModel] : undefined;
                 const nextEfforts =
@@ -573,33 +568,25 @@ export function CreateBotModal({
                   setEffort("");
                 }
               }}
-              className={`${INPUT_CLASS} disabled:opacity-50`}
-            >
-              <option value="">Default</option>
-              {availableModels.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
+              options={[
+                { value: "", label: "Default" },
+                ...availableModels.map((m) => ({ value: m, label: m })),
+              ]}
+            />
           </div>
           <div>
-            <label htmlFor={effortId} className={LABEL_CLASS}>
+            <span id={effortId} className={LABEL_CLASS}>
               Effort
-            </label>
-            <select
-              id={effortId}
+            </span>
+            <QuartzSelect
+              aria-labelledby={effortId}
               value={effort}
-              onChange={(e) => setEffort(e.target.value)}
-              className={INPUT_CLASS}
-            >
-              <option value="">Default</option>
-              {availableEfforts.map((level) => (
-                <option key={level} value={level}>
-                  {level}
-                </option>
-              ))}
-            </select>
+              onChange={setEffort}
+              options={[
+                { value: "", label: "Default" },
+                ...availableEfforts.map((level) => ({ value: level, label: level })),
+              ]}
+            />
           </div>
         </div>
 

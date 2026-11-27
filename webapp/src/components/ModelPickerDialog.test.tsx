@@ -151,4 +151,28 @@ describe("ModelPickerDialog", () => {
 
     expect(screen.getByRole("radio", { name: "xhigh" })).toBeInTheDocument();
   });
+
+  it("uses high-contrast monochrome styling for selected provider, model, and effort", async () => {
+    render(
+      <ModelPickerDialog
+        open={true}
+        onOpenChange={vi.fn()}
+        currentModel="gemini-3.8-flash-high"
+        currentEffort="high"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: /Google/i })).toBeInTheDocument();
+    });
+
+    const selectedProvider = screen.getByRole("tab", { name: /Google/i });
+    expect(selectedProvider).toHaveClass("bg-foreground", "text-background");
+
+    const selectedModel = screen.getByRole("option", { name: /gemini-3.8-flash-high/i });
+    expect(selectedModel).toHaveClass("bg-foreground", "text-background");
+
+    const selectedEffort = screen.getByRole("radio", { name: "high" });
+    expect(selectedEffort).toHaveClass("bg-foreground", "text-background");
+  });
 });
