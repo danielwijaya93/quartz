@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import ast
 import collections
+import concurrent.futures
 import dataclasses
 import json
 import os
@@ -19,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import warnings
 from collections.abc import Callable, Sequence
@@ -216,17 +218,17 @@ def _git_checked(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
 
 
+_GIT_WORKTREE_LOCK = threading.Lock()
+
+
 def _create_worktree(repo_root: Path, ref: str, dest: Path) -> None:
-    _git_checked(["worktree", "add", "--detach", str(dest), ref], cwd=repo_root)
+    with _GIT_WORKTREE_LOCK:
+        _git_checked(["worktree", "add", "--detach", str(dest), ref], cwd=repo_root)
 
 
 def _remove_worktree(repo_root: Path, dest: Path) -> None:
-    subprocess.run(
-        ["git", "worktree", "remove", "--force", str(dest)],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-    )
+    with _GIT_WORKTREE_LOCK:
+        subprocess.run(["git", "worktree", "remove", "--force", str(dest)], cwd=repo_root, capture_output=True, text=True)
     if dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
 
@@ -326,17 +328,11 @@ def run_task_arm(
 def _arm_stats(trials: Sequence[TrialResult]) -> dict[str, Any]:
     n = len(trials)
     if n == 0:
-        return {
-            "runs": 0,
-            "pass_rate_pct": 0.0,
-            "avg_cells": 0.0,
-            "avg_failed_cells": 0.0,
-            "avg_wall_s": 0.0,
-            "avg_prompt_tokens": 0.0,
-            "avg_uncached_tokens": 0.0,
-            "avg_cache_hit_pct": 0.0,
-            "top_helpers": {},
-        }
+        return dict(
+            runs=0, pass_rate_pct=0.0, avg_cells=0.0, avg_failed_cells=0.0,
+            avg_wall_s=0.0, avg_prompt_tokens=0.0, avg_uncached_tokens=0.0,
+            avg_cache_hit_pct=0.0, top_helpers={},
+        )
     helper_totals: collections.Counter[str] = collections.Counter()
     for t in trials:
         helper_totals.update(t.metrics.helper_counts)
@@ -358,13 +354,8 @@ def aggregate_ab_results(runs: Sequence[TrialResult]) -> dict[str, Any]:
     ctrl = _arm_stats([r for r in runs if r.arm == "control"])
     treat = _arm_stats([r for r in runs if r.arm == "treatment"])
     delta_keys = (
-        "pass_rate_pct",
-        "avg_cells",
-        "avg_failed_cells",
-        "avg_wall_s",
-        "avg_prompt_tokens",
-        "avg_uncached_tokens",
-        "avg_cache_hit_pct",
+        "pass_rate_pct", "avg_cells", "avg_failed_cells",
+        "avg_wall_s", "avg_prompt_tokens", "avg_uncached_tokens", "avg_cache_hit_pct",
     )
     delta = {k: round(float(treat[k]) - float(ctrl[k]), 2) for k in delta_keys}
     return {"control": ctrl, "treatment": treat, "delta": delta}
@@ -419,6 +410,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--control", default="main", help="Git ref or local repo path for Control (A)")
     p.add_argument("--treatment", default="HEAD", help="Git ref or local repo path for Treatment (B)")
     p.add_argument("--repeats", type=int, default=1, help="Repeats per (arm, task)")
+    p.add_argument("--workers", type=int, default=1, help="Concurrent trials (e.g. 2 runs Control+Treatment together)")
     p.add_argument("--provider", default=None, help="Quartz LLM provider override")
     p.add_argument("--model", default=None, help="Quartz model override")
     p.add_argument("--effort", default=None, help="Quartz effort override")
@@ -462,14 +454,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             for name, src_dir in (("control", ctrl_src), ("treatment", treat_src))
         ]
-        for task in tasks:
-            for rep in range(1, max(1, args.repeats) + 1):
-                for arm_name, runner in arm_runners:
-                    print(f"[eval] arm={arm_name} task={task.id} rep={rep} ...", flush=True)
-                    trial = run_task_arm(task, arm=arm_name, repeat=rep, repo_root=REPO_ROOT, agent_runner=runner, python_exe=py_exe)
-                    runs.append(trial)
-                    status = "PASS" if trial.passed else "FAIL"
-                    print(f"       -> {status} | cells={trial.metrics.cells} | wall={trial.wall_s:.1f}s | uncached={trial.metrics.uncached_tokens:,}", flush=True)
+        jobs = [
+            (task, rep, arm_name, runner)
+            for task in tasks
+            for rep in range(1, max(1, args.repeats) + 1)
+            for arm_name, runner in arm_runners
+        ]
+        max_workers = max(1, int(args.workers))
+        if max_workers == 1:
+            for task, rep, arm_name, runner in jobs:
+                print(f"[eval] arm={arm_name} task={task.id} rep={rep} ...", flush=True)
+                trial = run_task_arm(task, arm=arm_name, repeat=rep, repo_root=REPO_ROOT, agent_runner=runner, python_exe=py_exe)
+                runs.append(trial)
+                print(f"       -> {'PASS' if trial.passed else 'FAIL'} | cells={trial.metrics.cells} | wall={trial.wall_s:.1f}s | uncached={trial.metrics.uncached_tokens:,}", flush=True)
+        else:
+            def _exec(job: tuple[EvalTask, int, str, AgentRunnerFn]) -> TrialResult:
+                task, rep, arm_name, runner = job
+                print(f"[eval] start arm={arm_name} task={task.id} rep={rep}", flush=True)
+                trial = run_task_arm(task, arm=arm_name, repeat=rep, repo_root=REPO_ROOT, agent_runner=runner, python_exe=py_exe)
+                print(f"[eval] done  arm={arm_name} task={task.id} rep={rep} -> {'PASS' if trial.passed else 'FAIL'} | cells={trial.metrics.cells} | wall={trial.wall_s:.1f}s | uncached={trial.metrics.uncached_tokens:,}", flush=True)
+                return trial
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+                runs.extend(pool.map(_exec, jobs))
     finally:
         for tmp_wt in (ctrl_tmp, treat_tmp):
             if tmp_wt is not None:

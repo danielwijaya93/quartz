@@ -22,6 +22,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from quartz.kernel.outline import outline
 from quartz.kernel.pycheck import check_python_source
 from quartz.media import load_image_file
 from quartz.settings import is_project_trusted
@@ -186,7 +187,9 @@ def find(
 _RG_TIMEOUT = 15
 
 
-def _rg_external(pattern: str, path: str, glob: str | None, max_hits: int, fixed: bool) -> str:
+def _rg_external(
+    pattern: str, path: str, glob: str | None, max_hits: int, fixed: bool, context: int
+) -> str:
     cmd = [
         "rg",
         "-n",
@@ -200,6 +203,8 @@ def _rg_external(pattern: str, path: str, glob: str | None, max_hits: int, fixed
     ]
     if fixed:
         cmd.append("-F")
+    if context > 0:
+        cmd.extend(["-C", str(context)])
     # Exclude noisy build/vendor artifacts unless the caller explicitly targets one of them.
     path_parts = set(Path(path).parts)
     if not (path_parts & _IGNORE_DIRS):
@@ -213,13 +218,16 @@ def _rg_external(pattern: str, path: str, glob: str | None, max_hits: int, fixed
     except subprocess.TimeoutExpired:
         return f"rg timed out after {_RG_TIMEOUT}s; narrow the pattern or path"
     if proc.returncode == 0:
-        return "\n".join(proc.stdout.strip().splitlines()[:max_hits])
+        line_cap = max_hits * (2 * context + 2) if context > 0 else max_hits
+        return "\n".join(proc.stdout.strip().splitlines()[:line_cap])
     if proc.returncode == 1:
         return "(no matches)"
     return proc.stderr.strip() or f"rg exited with code {proc.returncode}"
 
 
-def _rg_python(pattern: str, path: str, glob: str | None, max_hits: int, fixed: bool) -> str:
+def _rg_python(
+    pattern: str, path: str, glob: str | None, max_hits: int, fixed: bool, context: int
+) -> str:
     try:
         regex = re.compile(re.escape(pattern) if fixed else pattern)
     except re.error as exc:
@@ -227,16 +235,27 @@ def _rg_python(pattern: str, path: str, glob: str | None, max_hits: int, fixed: 
     root = Path(path).expanduser()
     files = [root] if root.is_file() else [root / rel for rel in find(glob or "*", str(root), limit=2000)]
     hits: list[str] = []
+    match_count = 0
     for fpath in files:
         try:
-            text = fpath.read_text(encoding="utf-8", errors="replace")
+            file_lines = fpath.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             continue
-        for idx, line in enumerate(text.splitlines(), 1):
+        emitted: set[int] = set()
+        for idx, line in enumerate(file_lines, 1):
             if regex.search(line):
-                clipped = line if len(line) <= _RG_MAX_COLUMNS else f"{line[:_RG_MAX_COLUMNS]}... [truncated]"
-                hits.append(f"{fpath}:{idx}:{clipped}")
-                if len(hits) >= max_hits:
+                match_count += 1
+                lo = max(1, idx - context)
+                hi = min(len(file_lines), idx + context)
+                for cur in range(lo, hi + 1):
+                    if cur in emitted:
+                        continue
+                    emitted.add(cur)
+                    cur_line = file_lines[cur - 1]
+                    clipped = cur_line if len(cur_line) <= _RG_MAX_COLUMNS else f"{cur_line[:_RG_MAX_COLUMNS]}... [truncated]"
+                    sep = ":" if cur == idx else "-"
+                    hits.append(f"{fpath}:{cur}{sep}{clipped}")
+                if match_count >= max_hits:
                     return "\n".join(hits)
     return "\n".join(hits) if hits else "(no matches)"
 
@@ -247,16 +266,18 @@ def rg(
     glob: str | None = None,
     max_hits: int = 100,
     fixed: bool = False,
+    context: int = 0,
     *,
     cwd: str | Path | None = None,
 ) -> str:
     """Search files for a regex pattern (or literal string if fixed=True) and return `file:line:text` matches."""
+    ctx = max(0, int(context))
     expanded_path = str(Path(_resolve_with_cwd(path, cwd)).expanduser())
     if not Path(expanded_path).exists():
         return f"Path not found: {path}{_closest_path_hint(Path(expanded_path))}"
     if shutil.which("rg"):
-        return _rg_external(pattern, expanded_path, glob, max_hits, fixed)
-    return _rg_python(pattern, expanded_path, glob, max_hits, fixed)
+        return _rg_external(pattern, expanded_path, glob, max_hits, fixed, ctx)
+    return _rg_python(pattern, expanded_path, glob, max_hits, fixed, ctx)
 
 
 def _read_single(
@@ -668,6 +689,7 @@ BUILTIN_HELPERS: dict[str, Callable[..., Any]] = {
     "ls": ls,
     "find": find,
     "rg": rg,
+    "outline": outline,
     "read": read,
     "edit": edit,
     "write": write,
@@ -838,10 +860,10 @@ def format_helpers_for_prompt(loaded: LoadedHelpers) -> str:
         "`.pid`, `.running`, `.tail(n=50)`, `.output()`, `.poll()`, `.kill()`). Emits `[bash-done]` on completion and `[bash-status]` while running "
         "(update user, don't kill). Use `launch_worker(prompt_file, cwd, session_id)` or `bash()` (never `Popen`/`sh()`) for `quartz -p` workers. "
         "In `-p` runs, `bash()` runs synchronously and `launch_worker` is refused.",
-        "- `ls(path='.')`, `find(pattern='*', path='.', limit=200)`, `rg(pattern, path='.', glob=None, max_hits=100, fixed=False)` "
-        "(use raw strings r'...' for regex patterns with backslashes to avoid Python SyntaxWarning, or fixed=True for literal string search)",
-
-        "- `read(*paths, start=1, end=200, raw=False)` (pass multiple paths to batch; pass `raw=True` for unnumbered lines before `edit()`), `edit(path, old, new)`, `write(path, content)`, `view_image(path)`, `attach_file(path, label=None)`, `find_skills(query='', limit=20)`, `gather(*coros)`",
+        "- `ls(path='.')`, `find(pattern='*', path='.', limit=200)`, `rg(pattern, path='.', glob=None, max_hits=100, fixed=False, context=0)` "
+        "(use raw strings r'...' for regex patterns with backslashes, fixed=True for literal string search, context=3 for surrounding lines)",
+        "- `outline(path)` (compact class/function line-range map for navigating files before reading), "
+        "`read(*paths, start=1, end=200, raw=False)` (pass multiple paths to batch; pass `raw=True` for unnumbered lines before `edit()`), `edit(path, old, new)`, `write(path, content)`, `view_image(path)`, `attach_file(path, label=None)`, `find_skills(query='', limit=20)`, `gather(*coros)`",
         "- Python stdlib modules (e.g. `Path`, `os`, `json`, `re`, `datetime`, `subprocess`, `collections`, etc.) "
         "are auto-imported on attribute access in `<ipython>` cells, while explicit imports are still required "
         "when writing or editing project `.py` files.",

@@ -107,7 +107,7 @@ def test_syntax_error_in_helpers_handled_gracefully(tmp_path: Path) -> None:
     bad_file = tmp_path / "bad_helpers.py"
     bad_file.write_text("def broken(:\n", encoding="utf-8")
 
-    loaded = load_helpers(global_helpers_path=bad_file)
+    loaded = load_helpers(cwd=tmp_path, global_helpers_path=bad_file)
     # Builtins should still load despite error
     assert "read" in loaded.functions
     assert len(loaded.warnings) == 1
@@ -143,7 +143,7 @@ def test_helper_file_with_dataclass_loads(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    loaded = load_helpers(global_helpers_path=helper_file)
+    loaded = load_helpers(cwd=tmp_path, global_helpers_path=helper_file)
     mod_name = "_quartz_helpers_global_dc_helpers"
     try:
         assert loaded.warnings == []
@@ -416,10 +416,10 @@ def test_rg_fixed_literal_search(tmp_path: Path) -> None:
         assert "tag item" not in fb_bracket
 
 
-def test_format_helpers_for_prompt_includes_fixed_option() -> None:
-    loaded = load_helpers(global_helpers_path=Path("/nonexistent/helpers.py"))
+def test_format_helpers_for_prompt_includes_fixed_option(tmp_path: Path) -> None:
+    loaded = load_helpers(cwd=tmp_path, global_helpers_path=Path("/nonexistent/helpers.py"))
     prompt = format_helpers_for_prompt(loaded)
-    assert "rg(pattern, path='.', glob=None, max_hits=100, fixed=False)" in prompt
+    assert "rg(pattern, path='.', glob=None, max_hits=100, fixed=False, context=0)" in prompt
     assert "fixed=True for literal string search" in prompt
 
 def test_prompt_rules_include_chaining_and_helper_prioritization() -> None:

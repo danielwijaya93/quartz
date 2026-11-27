@@ -21,10 +21,11 @@ Measure whether a REPL helper, prompt change, or compaction tweak **actually imp
   --repeats 2 \
   --out /tmp/ab-smoke.json
 
-# 3. Full 5-task A/B run (recommended: --repeats 2 or 3)
+# 3. Full 5-task A/B run with parallel arms (--workers 2)
 .venv/bin/python -m evals.ab_runner \
   --control main \
   --treatment feat/my-hypothesis \
   --repeats 2 \
+  --workers 2 \
   --out /tmp/ab-full.json
 ```
