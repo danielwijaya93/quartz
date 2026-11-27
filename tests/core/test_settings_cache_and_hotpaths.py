@@ -13,13 +13,10 @@ import pytest
 
 from quartz.bots import (
     BotConfig,
-    BotHistoryStore,
     BotQueue,
     BotStore,
-    CronConfig,
     GitHubPollConfig,
     QueuedTrigger,
-    UsageStore,
 )
 from quartz.core.turn import TurnStatus
 from quartz.settings import Settings, load_settings, save_settings, update_config_json
@@ -185,67 +182,3 @@ async def test_bot_runner_github_poll_batches_store_and_queue_thread_hops(tmp_pa
     assert to_thread_calls <= 2
     assert len(queue.peek_bot_queue(bot.id)) == 10
     assert store.get_state(bot.id).last_polled_at == 1_700_000_000.0
-
-
-async def test_bot_runner_budget_exceeded_batches_prepare_and_pause_hops(tmp_path: Path) -> None:
-    db = QuartzDB(tmp_path / "quartz.db")
-    store = BotStore(tmp_path, db=db)
-    queue = BotQueue(tmp_path, db=db)
-    history = BotHistoryStore(tmp_path, db=db)
-    usage = UsageStore(db=db)
-    bot = store.create_bot(
-        BotConfig(
-            id="budget-bot",
-            name="Budget Bot",
-            watcher_type="cron",
-            instruction="work",
-            cwd=str(tmp_path),
-            cron=CronConfig(expression="* * * * *"),
-            max_usd_per_day=0.01,
-        )
-    )
-    usage.record_usage(
-        provider="openai",
-        model="gpt-4o",
-        input_tokens=10_000,
-        output_tokens=10_000,
-        cost_usd=0.50,
-        bot_id=bot.id,
-        session_id="s1",
-    )
-
-    called = False
-
-    async def _should_not_run(_bot: BotConfig, _trig: QueuedTrigger) -> TurnStatus:
-        nonlocal called
-        called = True
-        return TurnStatus.OK
-
-    runner = BotRunner(store, queue, run_trigger=_should_not_run, history=history, usage_store=usage)
-    trigger = QueuedTrigger(
-        trigger_id="t1",
-        bot_id=bot.id,
-        event_key="cron:1",
-        source="cron",
-        payload={},
-        enqueued_at=1.0,
-    )
-
-    to_thread_calls = 0
-    real_to_thread = asyncio.to_thread
-
-    async def _counting_to_thread(func: object, /, *args: object, **kwargs: object) -> object:
-        nonlocal to_thread_calls
-        to_thread_calls += 1
-        return await real_to_thread(func, *args, **kwargs)  # type: ignore[arg-type]
-
-    with patch("quartz.web.bot_runner.asyncio.to_thread", _counting_to_thread):
-        await runner._execute_trigger(bot, trigger)
-
-    assert called is False
-    # Prepare + budget-pause + history-finish batched into 1 hop (+1 audit hop in _notify_circuit_break)
-    assert to_thread_calls <= 2
-    refreshed = store.get_bot(bot.id)
-    assert refreshed is not None and refreshed.enabled is False
-    runs = history.list_runs(bot_id=bot.id)
-    assert len(runs) == 1 and runs[0].status == "budget_exceeded"

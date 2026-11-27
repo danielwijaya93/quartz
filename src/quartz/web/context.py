@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-from quartz.bots import BotHistoryStore, BotQueue, BotStore, UsageStore
+from quartz.bots import BotHistoryStore, BotQueue, BotStore
 from quartz.storage import QuartzDB
 from quartz.web.attachments import AttachedFileRegistry
 from quartz.web.bot_runner import BotRunner
@@ -59,7 +59,6 @@ class AppContext:
     bot_queue: BotQueue | None = None
     bot_history: BotHistoryStore | None = None
     bot_runner: BotRunner | None = None
-    usage_store: UsageStore | None = None
     db: QuartzDB | None = None
 
     @property

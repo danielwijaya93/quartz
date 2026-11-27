@@ -295,9 +295,7 @@ class BotCreateRequest(_WireModel):
     enabled: bool = True
     use_worktree: bool = Field(default=False, alias="useWorktree")
     max_queue_depth: int = Field(default=20, alias="maxQueueDepth")
-    max_usd_per_day: float | None = Field(default=None, alias="maxUsdPerDay")
     max_consecutive_errors: int | None = Field(default=None, alias="maxConsecutiveErrors")
-    webhook_rate_limit_per_minute: int | None = Field(default=None, alias="webhookRateLimitPerMinute")
     github: BotGitHubPollPayload | None = None
     cron: BotCronPayload | None = None
     webhook: BotWebhookPayload | None = None
@@ -315,9 +313,7 @@ class BotUpdateRequest(_WireModel):
     enabled: bool | None = None
     use_worktree: bool | None = Field(default=None, alias="useWorktree")
     max_queue_depth: int | None = Field(default=None, alias="maxQueueDepth")
-    max_usd_per_day: float | None = Field(default=None, alias="maxUsdPerDay")
     max_consecutive_errors: int | None = Field(default=None, alias="maxConsecutiveErrors")
-    webhook_rate_limit_per_minute: int | None = Field(default=None, alias="webhookRateLimitPerMinute")
     github: BotGitHubPollPayload | None = None
     cron: BotCronPayload | None = None
     webhook: BotWebhookPayload | None = None

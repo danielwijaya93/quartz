@@ -10,7 +10,7 @@ import logging
 import threading
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from quartz.core.controller import NoActiveTurnError, TurnBusyError
 from quartz.core.images import ImageAttachment, build_user_content
@@ -30,44 +30,6 @@ logger = logging.getLogger(__name__)
 TurnRunner = Callable[..., Awaitable[TurnOutcome] | TurnOutcome]
 
 __all__ = ["TurnCoordinator", "TurnRunner", "_Turn"]
-
-
-def _usage_totals(rt: Any) -> tuple[int, int, int]:
-    stats = getattr(rt, "usage_stats", None)
-    if stats is None:
-        return 0, 0, 0
-    return (
-        int(getattr(stats, "total_prompt_tokens", 0) or 0),
-        int(getattr(stats, "total_completion_tokens", 0) or 0),
-        int(getattr(stats, "total_cached_tokens", 0) or 0),
-    )
-
-
-def _record_chat_turn_usage(rt: Any, before: tuple[int, int, int]) -> None:
-    try:
-        from quartz.bots import UsageStore
-        from quartz.settings import load_settings
-
-        if not load_settings().track_chat_usage:
-            return
-        after = _usage_totals(rt)
-        d_in = max(0, after[0] - before[0])
-        d_out = max(0, after[1] - before[1])
-        d_cached = max(0, after[2] - before[2])
-        if d_in == 0 and d_out == 0 and d_cached == 0:
-            return
-        session_id = getattr(getattr(rt, "active_session", None), "id", None)
-        UsageStore().record_usage(
-            str(getattr(rt, "provider_name", "") or ""),
-            str(getattr(rt, "model", "") or ""),
-            d_in,
-            d_out,
-            cache_read_tokens=d_cached,
-            session_id=str(session_id) if session_id else None,
-            bot_id=None,
-        )
-    except Exception:
-        logger.debug("Failed to record interactive chat turn usage", exc_info=True)
 
 
 @dataclasses.dataclass
@@ -231,8 +193,7 @@ class TurnCoordinator:
 
     async def _run_turn_async(self, turn: _Turn, observer: WebObserver) -> None:
         """Native asyncio turn task. Must always emit exactly one `turn_end`."""
-        rt = self._require_runtime()
-        usage_before = _usage_totals(rt)
+        self._require_runtime()
         outcome: TurnOutcome
         try:
             if inspect.iscoroutinefunction(self._runner):
@@ -255,12 +216,7 @@ class TurnCoordinator:
             outcome = TurnOutcome(TurnStatus.ABORTED)
         except BaseException as exc:
             outcome = TurnOutcome(TurnStatus.ERROR, error=exc)
-        try:
-            await asyncio.to_thread(_record_chat_turn_usage, rt, usage_before)
-        except asyncio.CancelledError:
-            pass
-        finally:
-            self._finalize_turn(turn, outcome)
+        self._finalize_turn(turn, outcome)
 
     def _finalize_turn(self, turn: _Turn, outcome: TurnOutcome) -> None:
         cleared = False

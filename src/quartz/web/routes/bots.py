@@ -13,7 +13,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from quartz.bots import BotConfig, QueuedTrigger, SlidingWindowRateLimiter
+from quartz.bots import BotConfig, QueuedTrigger
 from quartz.web.context import AppContext, bad_request, json_body
 from quartz.web.routes.bots_helpers import (
     _config_from_create,
@@ -260,9 +260,7 @@ def _register_control_routes(router: APIRouter, ctx: AppContext) -> None:
         return JSONResponse({"botId": bot_id, "items": items})
 
 
-def _register_webhook_route(
-    router: APIRouter, ctx: AppContext, webhook_limiter: SlidingWindowRateLimiter
-) -> None:
+def _register_webhook_route(router: APIRouter, ctx: AppContext) -> None:
     @router.post("/api/bots/{bot_id}/webhook")
     async def receive_webhook(bot_id: str, request: Request) -> JSONResponse:
         store, queue = _get_bot_stores(ctx)
@@ -278,16 +276,6 @@ def _register_webhook_route(
             return JSONResponse({"error": "Invalid webhook signature"}, status_code=401)
         if not bot.enabled:
             return JSONResponse({"ok": True, "queued": False, "reason": "disabled"})
-
-        allowed, retry_after = webhook_limiter.check_and_record(
-            bot.id, bot.webhook_rate_limit_per_minute
-        )
-        if not allowed:
-            return JSONResponse(
-                {"error": "Webhook rate limit exceeded"},
-                status_code=429,
-                headers={"Retry-After": str(retry_after)},
-            )
 
         event_name = request.headers.get("x-github-event", "").strip()
         if bot.webhook.event_filter:
@@ -324,9 +312,8 @@ def _register_webhook_route(
 
 def create_router(ctx: AppContext) -> APIRouter:
     router = APIRouter()
-    webhook_limiter = SlidingWindowRateLimiter(window_seconds=60.0)
     _register_history_routes(router, ctx)
     _register_crud_routes(router, ctx)
     _register_control_routes(router, ctx)
-    _register_webhook_route(router, ctx, webhook_limiter)
+    _register_webhook_route(router, ctx)
     return router

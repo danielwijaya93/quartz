@@ -41,16 +41,12 @@ def test_settings_persists_new_governance_and_security_fields(tmp_path: Path) ->
     cfg = tmp_path / "config.json"
     s = Settings(
         sandbox_env_passthrough=("MY_APP_ENV", "CUSTOM_FLAG"),
-        bot_max_usd_per_day=2.5,
         bot_max_consecutive_errors=3,
-        bot_webhook_rate_limit=15,
     )
     save_settings(s, path=cfg)
     loaded = load_settings(path=cfg)
     assert loaded.sandbox_env_passthrough == ("MY_APP_ENV", "CUSTOM_FLAG")
-    assert loaded.bot_max_usd_per_day == 2.5
     assert loaded.bot_max_consecutive_errors == 3
-    assert loaded.bot_webhook_rate_limit == 15
 
 
 def test_sandbox_env_passthrough_honors_config_settings(
@@ -76,22 +72,16 @@ def test_tui_settings_command_updates_validates_and_blocks_host_secrets(
     overview = cmd_settings(rt, "")
     assert overview is not None
     assert "sandbox_env_passthrough" in overview.body
-    assert "bot_max_usd_per_day" in overview.body
+    assert "bot_max_consecutive_errors" in overview.body
 
-    # Update float, int, and passthrough settings
-    r3 = cmd_settings(rt, "bot_budget 3.50")
-    assert r3 is not None and r3.kind != "error"
+    # Update int and passthrough settings
     r4 = cmd_settings(rt, "bot_errors 7")
     assert r4 is not None and r4.kind != "error"
-    r5 = cmd_settings(rt, "bot_rate 45")
-    assert r5 is not None and r5.kind != "error"
     r6 = cmd_settings(rt, "sandbox_env MY_VAR,OTHER_VAR")
     assert r6 is not None and r6.kind != "error"
 
     loaded = load_settings(path=cfg)
-    assert loaded.bot_max_usd_per_day == 3.5
     assert loaded.bot_max_consecutive_errors == 7
-    assert loaded.bot_webhook_rate_limit == 45
     assert loaded.sandbox_env_passthrough == ("MY_VAR", "OTHER_VAR")
 
     # Attempting to add host secret to sandbox_env_passthrough MUST fail validation
@@ -99,14 +89,11 @@ def test_tui_settings_command_updates_validates_and_blocks_host_secrets(
     assert r_bad is not None and r_bad.kind == "error"
     assert "QUARTZ_WEB_TOKEN" in (r_bad.message or r_bad.body)
 
-    # Clear passthrough with "none" and bot_budget with "0"
+    # Clear passthrough with "none"
     r_clr = cmd_settings(rt, "sandbox_env none")
     assert r_clr is not None and r_clr.kind != "error"
-    r_unlim = cmd_settings(rt, "bot_budget 0")
-    assert r_unlim is not None and r_unlim.kind != "error"
     loaded2 = load_settings(path=cfg)
     assert loaded2.sandbox_env_passthrough == ()
-    assert loaded2.bot_max_usd_per_day is None
 
 
 def test_web_api_settings_and_bot_default_inheritance(
@@ -132,17 +119,16 @@ def test_web_api_settings_and_bot_default_inheritance(
         assert r_get.status_code == 200
         body = r_get.json()
         assert body["values"]["botMaxConsecutiveErrors"] == 5
-        assert body["values"]["botWebhookRateLimit"] == 30
 
         r_post = client.post(
             "/api/settings",
             headers=headers,
-            json={"key": "bot_budget", "value": "4.25"},
+            json={"key": "bot_errors", "value": "8"},
         )
         assert r_post.status_code == 200
-        assert r_post.json()["values"]["botMaxUsdPerDay"] == 4.25
+        assert r_post.json()["values"]["botMaxConsecutiveErrors"] == 8
 
-        # Creating a bot without explicit governance fields inherits global Settings defaults!
+        # Creating a bot without explicit max_consecutive_errors inherits global Settings default!
         r_bot = client.post(
             "/api/bots",
             headers=headers,
@@ -155,4 +141,4 @@ def test_web_api_settings_and_bot_default_inheritance(
         )
         assert r_bot.status_code == 201
         created = r_bot.json()["bot"]
-        assert created["max_usd_per_day"] == 4.25
+        assert created["max_consecutive_errors"] == 8

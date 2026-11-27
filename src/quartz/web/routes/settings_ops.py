@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-import dataclasses
 from collections.abc import Iterable, Mapping
 from types import SimpleNamespace
 from typing import Any, cast
@@ -17,8 +15,6 @@ from quartz.web.types import (
     SessionJobEntry,
     SettingsValuesPayload,
 )
-
-WEB_PRICING_KEYS = frozenset({"track_chat_usage", "unpriced_fallback", "model_pricing"})
 
 
 def _settings_values(loaded: Any, rt: Any | None = None) -> SettingsValuesPayload:
@@ -36,23 +32,7 @@ def _settings_values(loaded: Any, rt: Any | None = None) -> SettingsValuesPayloa
         "notifyError": loaded.notify_error,
         "richUi": loaded.rich_ui,
         "sandboxEnvPassthrough": ", ".join(loaded.sandbox_env_passthrough),
-        "botMaxUsdPerDay": loaded.bot_max_usd_per_day,
         "botMaxConsecutiveErrors": loaded.bot_max_consecutive_errors,
-        "botWebhookRateLimit": loaded.bot_webhook_rate_limit,
-        "trackChatUsage": loaded.track_chat_usage,
-        "unpricedFallback": {
-            "inputPerM": loaded.unpriced_fallback_input_per_m,
-            "outputPerM": loaded.unpriced_fallback_output_per_m,
-        },
-        "modelPricing": [
-            {
-                "pattern": r.pattern,
-                "inputPerM": r.input_per_m,
-                "cachedInputPerM": r.cached_input_per_m,
-                "outputPerM": r.output_per_m,
-            }
-            for r in loaded.model_pricing
-        ],
         "watcherProvider": loaded.watcher_provider,
         "watcherModel": loaded.watcher_model,
         "watcherAntistallDefault": loaded.watcher_antistall_default,
@@ -67,8 +47,6 @@ def _settings_defaults() -> SettingsValuesPayload:
     from quartz.settings import (
         DEFAULT_BACKGROUND_CHECK_EVERY,
         DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS,
-        DEFAULT_BOT_MAX_USD_PER_DAY,
-        DEFAULT_BOT_WEBHOOK_RATE_LIMIT,
         DEFAULT_COMPACT_RESERVE_TOKENS,
         DEFAULT_KEEP_RECENT_TOKENS,
         DEFAULT_NOTIFICATIONS_ENABLED,
@@ -78,9 +56,6 @@ def _settings_defaults() -> SettingsValuesPayload:
         DEFAULT_NOTIFY_TURN,
         DEFAULT_PROGRESS_EVERY,
         DEFAULT_RICH_UI,
-        DEFAULT_TRACK_CHAT_USAGE,
-        DEFAULT_UNPRICED_FALLBACK_INPUT_PER_M,
-        DEFAULT_UNPRICED_FALLBACK_OUTPUT_PER_M,
         DEFAULT_WATCHER_ANTISTALL_DEFAULT,
         DEFAULT_WATCHER_ANTISTALL_MAX_NUDGES,
         DEFAULT_WATCHER_DEFAULT_MAX_TURNS,
@@ -104,15 +79,7 @@ def _settings_defaults() -> SettingsValuesPayload:
         "notifyError": DEFAULT_NOTIFY_ERROR,
         "richUi": DEFAULT_RICH_UI,
         "sandboxEnvPassthrough": "",
-        "botMaxUsdPerDay": DEFAULT_BOT_MAX_USD_PER_DAY,
         "botMaxConsecutiveErrors": DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS,
-        "botWebhookRateLimit": DEFAULT_BOT_WEBHOOK_RATE_LIMIT,
-        "trackChatUsage": DEFAULT_TRACK_CHAT_USAGE,
-        "unpricedFallback": {
-            "inputPerM": DEFAULT_UNPRICED_FALLBACK_INPUT_PER_M,
-            "outputPerM": DEFAULT_UNPRICED_FALLBACK_OUTPUT_PER_M,
-        },
-        "modelPricing": [],
         "watcherProvider": DEFAULT_WATCHER_PROVIDER,
         "watcherModel": DEFAULT_WATCHER_MODEL,
         "watcherAntistallDefault": DEFAULT_WATCHER_ANTISTALL_DEFAULT,
@@ -124,21 +91,11 @@ def _settings_defaults() -> SettingsValuesPayload:
 
 
 def _load_settings_and_recent_models(ctx: AppContext) -> tuple[Any, list[dict[str, str]]]:
-    from quartz.bots import UsageStore
     from quartz.settings import load_settings
-    from quartz.storage import get_shared_db
 
     loaded_cfg = load_settings()
     recent: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    with contextlib.suppress(Exception):
-        db = ctx.db if ctx.db is not None else get_shared_db()
-        store = ctx.usage_store if ctx.usage_store is not None else UsageStore(db=db)
-        for item in store.recent_models(limit=20):
-            pair = (item.get("provider", ""), item.get("model", ""))
-            if pair[1] and pair not in seen:
-                seen.add(pair)
-                recent.append({"provider": pair[0], "model": pair[1]})
     for ws in ctx.manager.all_sessions():
         if ws.built:
             prov = str(getattr(ws.runtime, "provider_name", "") or "")
@@ -147,53 +104,6 @@ def _load_settings_and_recent_models(ctx: AppContext) -> tuple[Any, list[dict[st
                 seen.add((prov, mod))
                 recent.append({"provider": prov, "model": mod})
     return loaded_cfg, recent
-
-
-def _apply_web_pricing_key(k: str, v: Any) -> str | None:
-    from quartz.settings import load_settings, parse_model_pricing_payload, save_settings, validate_token_rate
-
-    cur = load_settings()
-    if k == "track_chat_usage":
-        if isinstance(v, bool):
-            enabled = v
-        else:
-            s = str(v or "").strip().lower()
-            if s in {"on", "true", "1", "yes"}:
-                enabled = True
-            elif s in {"off", "false", "0", "no"}:
-                enabled = False
-            else:
-                return "track_chat_usage must be on or off."
-        save_settings(dataclasses.replace(cur, track_chat_usage=enabled))
-        return None
-    if k == "unpriced_fallback":
-        if not isinstance(v, dict):
-            return "unpriced_fallback must be an object with inputPerM and outputPerM."
-        raw_in = v.get("inputPerM", v.get("input_per_m"))
-        raw_out = v.get("outputPerM", v.get("output_per_m"))
-        if raw_in is None or raw_out is None or isinstance(raw_in, bool) or isinstance(raw_out, bool):
-            return "Fallback rates must be valid numbers."
-        try:
-            in_val, out_val = float(raw_in), float(raw_out)
-        except (TypeError, ValueError):
-            return "Fallback rates must be valid numbers."
-        if not (validate_token_rate(in_val) and validate_token_rate(out_val)):
-            return "Fallback rates must be non-negative finite numbers."
-        save_settings(
-            dataclasses.replace(
-                cur,
-                unpriced_fallback_input_per_m=round(in_val, 6),
-                unpriced_fallback_output_per_m=round(out_val, 6),
-            )
-        )
-        return None
-    if k == "model_pricing":
-        rules, err = parse_model_pricing_payload(v)
-        if err is not None or rules is None:
-            return err or "Invalid model pricing rules."
-        save_settings(dataclasses.replace(cur, model_pricing=rules))
-        return None
-    return None
 
 
 def _apply_settings_without_session(arg: str) -> Any:
@@ -216,12 +126,6 @@ def _apply_batch_without_session(updates: Mapping[str, Any]) -> tuple[bool, str]
     last_message = "Saved."
     for raw_k, raw_v in updates.items():
         key = str(raw_k).strip()
-        if key in WEB_PRICING_KEYS:
-            err = _apply_web_pricing_key(key, raw_v)
-            if err is not None:
-                return False, err
-            last_message = "Saved."
-            continue
         val_str = "" if key == "reset" else str(raw_v if raw_v is not None else "").strip()
         arg = "reset" if key == "reset" else f"{key} {val_str}".strip()
         if not arg:

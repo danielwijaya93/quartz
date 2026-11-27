@@ -107,7 +107,7 @@ describe("SettingsView", () => {
     expect(posted).toContainEqual({ key: "notifyBackground", value: "off" });
   });
 
-  it("renders Bots & Budgets with model pricing + unified save bar, and Advanced settings", async () => {
+  it("renders Bots defaults + unified save bar, and Advanced settings", async () => {
     const user = userEvent.setup();
     const posted: Array<Record<string, unknown>> = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
@@ -132,12 +132,7 @@ describe("SettingsView", () => {
               bg: 300,
               idle: 2,
               sandboxEnvPassthrough: "MY_APP_ENV",
-              botMaxUsdPerDay: 10,
-              botMaxConsecutiveErrors: 5,
-              botWebhookRateLimit: 30,
-              trackChatUsage: true,
-              unpricedFallback: { inputPerM: 1, outputPerM: 5 },
-              modelPricing: [{ pattern: "google/gemini-4-hydrogen", inputPerM: 0, cachedInputPerM: 0, outputPerM: 0 }],
+              botMaxConsecutiveErrors: 7,
             },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -152,12 +147,7 @@ describe("SettingsView", () => {
             bg: 300,
             idle: 2,
             sandboxEnvPassthrough: "MY_APP_ENV",
-            botMaxUsdPerDay: 5,
             botMaxConsecutiveErrors: 5,
-            botWebhookRateLimit: 30,
-            trackChatUsage: true,
-            unpricedFallback: { inputPerM: 1, outputPerM: 5 },
-            modelPricing: [],
           },
           defaults: {
             reserve: 16384,
@@ -166,12 +156,7 @@ describe("SettingsView", () => {
             bg: 300,
             idle: 2,
             sandboxEnvPassthrough: "",
-            botMaxUsdPerDay: 5,
             botMaxConsecutiveErrors: 5,
-            botWebhookRateLimit: 30,
-            trackChatUsage: true,
-            unpricedFallback: { inputPerM: 1, outputPerM: 5 },
-            modelPricing: [],
           },
           recentModels: [{ provider: "google", model: "gemini-4-hydrogen" }],
           configPath: "~/.quartz/config.json",
@@ -182,16 +167,12 @@ describe("SettingsView", () => {
 
     render(<SettingsView onBack={vi.fn()} />);
 
-    // Bots & Budgets tab
-    await user.click(await screen.findByRole("tab", { name: "Bots & Budgets" }));
-    const budgetInput = await screen.findByLabelText("Default daily budget (USD)");
-    expect(budgetInput).toHaveValue("5");
-    await user.clear(budgetInput);
-    await user.type(budgetInput, "10");
-
-    // Quick-add recent model
-    await user.click(screen.getByRole("button", { name: "+ google/gemini-4-hydrogen" }));
-    expect(screen.getByLabelText("Model pattern 1")).toHaveValue("google/gemini-4-hydrogen");
+    // Bots tab
+    await user.click(await screen.findByRole("tab", { name: "Bots" }));
+    const errorsInput = await screen.findByLabelText("Default max consecutive errors");
+    expect(errorsInput).toHaveValue("5");
+    await user.clear(errorsInput);
+    await user.type(errorsInput, "7");
 
     // Unified save bar appears and submits batch updates
     await user.click(screen.getByRole("button", { name: "Save changes" }));

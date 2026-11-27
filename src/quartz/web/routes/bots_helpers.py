@@ -72,20 +72,10 @@ def _config_from_create(req: BotCreateRequest) -> BotConfig:
         enabled=req.enabled,
         use_worktree=req.use_worktree,
         max_queue_depth=req.max_queue_depth,
-        max_usd_per_day=(
-            req.max_usd_per_day
-            if "max_usd_per_day" in req.model_fields_set
-            else defaults.bot_max_usd_per_day
-        ),
         max_consecutive_errors=(
             req.max_consecutive_errors
             if req.max_consecutive_errors is not None
             else defaults.bot_max_consecutive_errors
-        ),
-        webhook_rate_limit_per_minute=(
-            req.webhook_rate_limit_per_minute
-            if req.webhook_rate_limit_per_minute is not None
-            else defaults.bot_webhook_rate_limit
         ),
         github=(
             GitHubPollConfig(
@@ -134,18 +124,10 @@ def _merge_update(existing: BotConfig, req: BotUpdateRequest) -> BotConfig:
         max_queue_depth=(
             req.max_queue_depth if req.max_queue_depth is not None else existing.max_queue_depth
         ),
-        max_usd_per_day=(
-            req.max_usd_per_day if "max_usd_per_day" in fields_set else existing.max_usd_per_day
-        ),
         max_consecutive_errors=(
             req.max_consecutive_errors
             if req.max_consecutive_errors is not None
             else existing.max_consecutive_errors
-        ),
-        webhook_rate_limit_per_minute=(
-            req.webhook_rate_limit_per_minute
-            if req.webhook_rate_limit_per_minute is not None
-            else existing.webhook_rate_limit_per_minute
         ),
         github=(
             GitHubPollConfig(

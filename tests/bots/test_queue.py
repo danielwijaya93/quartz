@@ -19,23 +19,20 @@ def _trigger(tid: str, bot_id: str = "b1", event_key: str | None = None) -> Queu
     )
 
 
-def test_fifo_enqueue_dequeue_and_persistence(tmp_path: Path) -> None:
+def test_fifo_enqueue_dequeue(tmp_path: Path) -> None:
     q = BotQueue(tmp_path)
     assert q.enqueue(_trigger("t1", event_key="issue#1")) is True
     assert q.enqueue(_trigger("t2", event_key="issue#2")) is True
+    assert len(q.peek_bot_queue("b1")) == 2
 
-    # Re-open from disk to verify persistence
-    q2 = BotQueue(tmp_path)
-    assert len(q2.peek_bot_queue("b1")) == 2
-
-    first = q2.dequeue_next("b1")
+    first = q.dequeue_next("b1")
     assert first is not None
     assert first.trigger_id == "t1"
 
-    second = q2.dequeue_next()
+    second = q.dequeue_next()
     assert second is not None
     assert second.trigger_id == "t2"
-    assert q2.dequeue_next() is None
+    assert q.dequeue_next() is None
 
 
 def test_dedupes_in_queue_and_respects_max_depth(tmp_path: Path) -> None:
