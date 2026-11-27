@@ -423,44 +423,6 @@ export const FolderSidebar = React.memo(function FolderSidebar({
           </>
         ) : null}
 
-        {error === null && data !== null && visibleChats.length > 0 ? (
-          <section aria-label="Chats" className="mb-3">
-            <div className="flex h-7 items-center gap-1.5 px-1.5">
-              <MessageSquare aria-hidden="true" className="size-3 shrink-0 text-muted" />
-              <h2 className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider text-foreground/90">
-                Chats
-              </h2>
-            </div>
-            <ul className="space-y-0.5">
-              {visibleChats.map((session) => (
-                <SessionRow
-                  key={session.sessionId}
-                  session={session}
-                  sidebar={sidebarState}
-                  current={currentSessionId !== "" && session.sessionId === currentSessionId}
-                  activity={sessionActivity[session.sessionId]}
-                  tileBadge={tileBadges?.get(session.sessionId)}
-                  canOpenInNewTile={canAddTile}
-                  onSelect={() => onSelectSession(session.sessionId)}
-                  onOpenInNewTile={
-                    onOpenSessionInNewTile
-                      ? () => onOpenSessionInNewTile(session.sessionId)
-                      : undefined
-                  }
-                  onRename={(title) =>
-                    void rename(
-                      session.sessionId,
-                      title,
-                      sidebarState.renames[session.sessionId] ?? "",
-                    )
-                  }
-                  onHide={() => void hide(session.sessionId, displayTitle(session, sidebarState))}
-                />
-              ))}
-            </ul>
-          </section>
-        ) : null}
-
         {error === null && data !== null ? (
           <section aria-label="Workspaces">
             <SidebarHeader
@@ -547,6 +509,44 @@ export const FolderSidebar = React.memo(function FolderSidebar({
                 })}
               </ul>
             )}
+          </section>
+        ) : null}
+
+        {error === null && data !== null && visibleChats.length > 0 ? (
+          <section aria-label="Chats" className="mt-3">
+            <div className="flex h-7 items-center gap-1.5 px-1.5">
+              <MessageSquare aria-hidden="true" className="size-3 shrink-0 text-muted" />
+              <h2 className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider text-foreground/90">
+                Chats
+              </h2>
+            </div>
+            <ul className="space-y-0.5">
+              {visibleChats.map((session) => (
+                <SessionRow
+                  key={session.sessionId}
+                  session={session}
+                  sidebar={sidebarState}
+                  current={currentSessionId !== "" && session.sessionId === currentSessionId}
+                  activity={sessionActivity[session.sessionId]}
+                  tileBadge={tileBadges?.get(session.sessionId)}
+                  canOpenInNewTile={canAddTile}
+                  onSelect={() => onSelectSession(session.sessionId)}
+                  onOpenInNewTile={
+                    onOpenSessionInNewTile
+                      ? () => onOpenSessionInNewTile(session.sessionId)
+                      : undefined
+                  }
+                  onRename={(title) =>
+                    void rename(
+                      session.sessionId,
+                      title,
+                      sidebarState.renames[session.sessionId] ?? "",
+                    )
+                  }
+                  onHide={() => void hide(session.sessionId, displayTitle(session, sidebarState))}
+                />
+              ))}
+            </ul>
           </section>
         ) : null}
       </div>

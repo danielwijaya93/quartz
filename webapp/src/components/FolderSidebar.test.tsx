@@ -862,7 +862,11 @@ describe("FolderSidebar section ordering", () => {
     expect(onNewSession).toHaveBeenCalledWith(chatsDir);
 
     const chatsRegion = screen.getByRole("region", { name: "Chats" });
+    const workspacesRegion = screen.getByRole("region", { name: "Workspaces" });
     expect(chatsRegion).toBeInTheDocument();
     expect(screen.getByText("Quick question")).toBeInTheDocument();
+    expect(
+      Boolean(workspacesRegion.compareDocumentPosition(chatsRegion) & Node.DOCUMENT_POSITION_FOLLOWING),
+    ).toBe(true);
   });
 });
