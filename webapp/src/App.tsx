@@ -1,16 +1,29 @@
 import * as React from "react";
 import { cn } from "@heroui/react";
 import { HeaderBar } from "./components/HeaderBar";
-import { BotsHistoryModal } from "./components/BotsHistoryModal";
-import { CreateBotModal } from "./components/CreateBotModal";
 import { CommandPalette } from "./components/CommandPalette";
 import { FolderSidebar } from "./components/FolderSidebar";
 import { SidebarDrawer } from "./components/SidebarDrawer";
-import { FolderPicker } from "./components/FolderPicker";
-import { SessionArchiveDialog } from "./components/SessionArchiveDialog";
-import { SettingsView } from "./components/SettingsView";
-import { McpView } from "./components/McpView";
 import { AuthGate } from "./components/AuthGate";
+
+const BotsHistoryModal = React.lazy(() =>
+  import("./components/BotsHistoryModal").then((m) => ({ default: m.BotsHistoryModal })),
+);
+const CreateBotModal = React.lazy(() =>
+  import("./components/CreateBotModal").then((m) => ({ default: m.CreateBotModal })),
+);
+const FolderPicker = React.lazy(() =>
+  import("./components/FolderPicker").then((m) => ({ default: m.FolderPicker })),
+);
+const SessionArchiveDialog = React.lazy(() =>
+  import("./components/SessionArchiveDialog").then((m) => ({ default: m.SessionArchiveDialog })),
+);
+const SettingsView = React.lazy(() =>
+  import("./components/SettingsView").then((m) => ({ default: m.SettingsView })),
+);
+const McpView = React.lazy(() =>
+  import("./components/McpView").then((m) => ({ default: m.McpView })),
+);
 import { TileGrid } from "./components/TileGrid";
 import { MobileTileBar, TileLayoutSwitcher } from "./components/TileLayoutSwitcher";
 import { SessionTile, type SessionTileHandle } from "./components/SessionTile";
@@ -58,10 +71,12 @@ function sameActiveSessions(
 }
 
 export function App(): React.ReactElement {
-  const [authState, setAuthState] = React.useState<"checking" | "required" | "ok">("checking");
+  // Optimistically mount the workspace so WebSocket + sidebar requests start
+  // immediately instead of waiting a full RTT on /api/auth/status; both the
+  // parallel auth check and WS_AUTH_CLOSE_CODE flip cleanly to AuthGate if needed.
+  const [authState, setAuthState] = React.useState<"required" | "ok">("ok");
 
   const checkAuth = React.useCallback(async () => {
-    setAuthState("checking");
     try {
       const resp = await authFetch(apiUrl("/api/auth/status"), { credentials: "include" });
       if (resp.status === 404 || !resp.ok) {
@@ -89,13 +104,6 @@ export function App(): React.ReactElement {
     return () => window.removeEventListener("quartz:change-server", onChangeServer);
   }, [checkAuth]);
 
-  if (authState === "checking") {
-    return (
-      <div className="flex min-h-dvh items-center justify-center bg-background text-xs text-muted">
-        Connecting…
-      </div>
-    );
-  }
   if (authState === "required") {
     return <AuthGate onAuthenticated={() => setAuthState("ok")} />;
   }
@@ -540,13 +548,17 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
           />
         ) : null}
 
-        {settingsOpen ? (
-          <SettingsView
-            onBack={() => setSettingsOpen(false)}
-            notifications={notifications}
-          />
-        ) : mcpOpen ? (
-          <McpView onBack={() => setMcpOpen(false)} />
+        {settingsOpen || mcpOpen ? (
+          <React.Suspense fallback={null}>
+            {settingsOpen ? (
+              <SettingsView
+                onBack={() => setSettingsOpen(false)}
+                notifications={notifications}
+              />
+            ) : (
+              <McpView onBack={() => setMcpOpen(false)} />
+            )}
+          </React.Suspense>
         ) : null}
 
         {/* Keep TileGrid mounted while Settings/MCP overlays are open so tiles and WebSockets never reset. */}
@@ -624,50 +636,60 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
         onRun={handlePaletteRun}
       />
 
-      <FolderPicker
-        open={picker !== null}
-        onOpenChange={(open) => {
-          if (!open) setPicker(null);
-        }}
-        title={picker === "workspace" ? "Add a folder" : "New session"}
-        chooseLabel={picker === "workspace" ? "Add to sidebar" : "Start session"}
-        onChoose={(path) => {
-          if (picker === "workspace") void sidebar.addWorkspace(path);
-          else newSessionIn(path);
-        }}
-      />
+      <React.Suspense fallback={null}>
+        {picker !== null ? (
+          <FolderPicker
+            open={true}
+            onOpenChange={(open) => {
+              if (!open) setPicker(null);
+            }}
+            title={picker === "workspace" ? "Add a folder" : "New session"}
+            chooseLabel={picker === "workspace" ? "Add to sidebar" : "Start session"}
+            onChoose={(path) => {
+              if (picker === "workspace") void sidebar.addWorkspace(path);
+              else newSessionIn(path);
+            }}
+          />
+        ) : null}
 
-      <CreateBotModal
-        open={bannerEditBot !== null}
-        initialBot={bannerEditBot}
-        defaultCwd={activeSession.cwd}
-        onClose={() => setBannerEditBot(null)}
-        onSubmit={async (payload) => {
-          if (bannerEditBot) await bots.update(bannerEditBot.id, payload);
-        }}
-      />
+        {bannerEditBot !== null ? (
+          <CreateBotModal
+            open={true}
+            initialBot={bannerEditBot}
+            defaultCwd={activeSession.cwd}
+            onClose={() => setBannerEditBot(null)}
+            onSubmit={async (payload) => {
+              if (bannerEditBot) await bots.update(bannerEditBot.id, payload);
+            }}
+          />
+        ) : null}
 
-      <BotsHistoryModal
-        open={bannerHistoryBotId !== null}
-        bots={bots.bots}
-        initialBotId={bannerHistoryBotId ?? undefined}
-        onClose={() => setBannerHistoryBotId(null)}
-        onOpenSession={selectSession}
-        onRestoreBot={bots.restore}
-      />
+        {bannerHistoryBotId !== null ? (
+          <BotsHistoryModal
+            open={true}
+            bots={bots.bots}
+            initialBotId={bannerHistoryBotId}
+            onClose={() => setBannerHistoryBotId(null)}
+            onOpenSession={selectSession}
+            onRestoreBot={bots.restore}
+          />
+        ) : null}
 
-      <SessionArchiveDialog
-        open={archiveOpen}
-        onOpenChange={setArchiveOpen}
-        data={sidebar.data}
-        loading={sidebar.loading}
-        error={sidebar.error}
-        actionError={sidebar.actionError}
-        onReload={sidebar.reload}
-        onImport={sidebar.importSession}
-        onRestore={sidebar.restore}
-        returnFocusTo={archiveOpener}
-      />
+        {archiveOpen ? (
+          <SessionArchiveDialog
+            open={true}
+            onOpenChange={setArchiveOpen}
+            data={sidebar.data}
+            loading={sidebar.loading}
+            error={sidebar.error}
+            actionError={sidebar.actionError}
+            onReload={sidebar.reload}
+            onImport={sidebar.importSession}
+            onRestore={sidebar.restore}
+            returnFocusTo={archiveOpener}
+          />
+        ) : null}
+      </React.Suspense>
     </div>
   );
 }

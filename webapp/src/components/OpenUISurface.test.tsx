@@ -58,6 +58,32 @@ describe("OpenUISurface", () => {
     expect(container.textContent).toContain("Kernel activity");
   });
 
+  it("flushes immediately when isStreaming flips from true to false", async () => {
+    const initial = 'root = Stack([t])\nt = TextContent("Draft")';
+    const settled = 'root = Stack([t])\nt = TextContent("Final answer")';
+    const { rerender } = render(
+      <OpenUISurface
+        response={initial}
+        isStreaming={true}
+        onContinueConversation={() => {}}
+        onOpenUrl={() => {}}
+        onStateUpdate={() => {}}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("Draft")).toBeInTheDocument());
+
+    rerender(
+      <OpenUISurface
+        response={settled}
+        isStreaming={false}
+        onContinueConversation={() => {}}
+        onOpenUrl={() => {}}
+        onStateUpdate={() => {}}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("Final answer")).toBeInTheDocument());
+  });
+
   it("reports form state to the caller so a re-render cannot reset it", async () => {
     const { onStateUpdate } = renderLang(OPENUI_TURN_LANG);
     // The renderer hydrates defaults on mount; any report is proof the wire is

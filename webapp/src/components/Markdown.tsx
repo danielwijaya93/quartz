@@ -144,6 +144,64 @@ const REHYPE_PLUGINS_STREAMING: [typeof rehypeHighlight, { detect: boolean; igno
   [rehypeHighlight, { detect: false, ignoreMissing: true }],
 ];
 
+/**
+ * Split streaming markdown into top-level blocks separated by blank lines while
+ * never splitting inside a fenced code block (``` or ~~~). Completed earlier
+ * blocks stay referentially stable so React.memo skips re-parsing them on every
+ * incoming token delta.
+ */
+export function splitMarkdownBlocks(markdown: string): string[] {
+  if (!markdown) return [];
+  const lines = markdown.split("\n");
+  const blocks: string[] = [];
+  let current: string[] = [];
+  let fenceMarker: string | null = null;
+
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    if (fenceMarker === null) {
+      if (trimmed.startsWith("```")) {
+        fenceMarker = "```";
+      } else if (trimmed.startsWith("~~~")) {
+        fenceMarker = "~~~";
+      }
+    } else if (trimmed.startsWith(fenceMarker)) {
+      fenceMarker = null;
+    }
+
+    if (fenceMarker === null && line.trim() === "") {
+      if (current.length > 0) {
+        blocks.push(current.join("\n"));
+        current = [];
+      }
+    } else {
+      current.push(line);
+    }
+  }
+  if (current.length > 0) {
+    blocks.push(current.join("\n"));
+  }
+  return blocks;
+}
+
+const MarkdownBlock = React.memo(function MarkdownBlock({
+  source,
+  streaming,
+}: {
+  source: string;
+  streaming: boolean;
+}): React.ReactElement {
+  return (
+    <ReactMarkdown
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={streaming ? REHYPE_PLUGINS_STREAMING : REHYPE_PLUGINS_SETTLED}
+      components={COMPONENTS}
+    >
+      {source}
+    </ReactMarkdown>
+  );
+});
+
 export interface MarkdownProps {
   children: string;
   /** True while deltas are still arriving; enables fence closure. */
@@ -156,16 +214,24 @@ export const Markdown = React.memo(function Markdown({
   streaming = false,
   className,
 }: MarkdownProps): React.ReactElement {
-  const source = streaming ? closeUnterminatedFence(children) : children;
+  const blocks = React.useMemo(
+    () => (streaming ? splitMarkdownBlocks(closeUnterminatedFence(children)) : null),
+    [children, streaming],
+  );
+
+  if (blocks !== null) {
+    return (
+      <div className={cn("transcript-prose", className)}>
+        {blocks.map((block, index) => (
+          <MarkdownBlock key={index} source={block} streaming={true} />
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className={cn("transcript-prose", className)}>
-      <ReactMarkdown
-        remarkPlugins={REMARK_PLUGINS}
-        rehypePlugins={streaming ? REHYPE_PLUGINS_STREAMING : REHYPE_PLUGINS_SETTLED}
-        components={COMPONENTS}
-      >
-        {source}
-      </ReactMarkdown>
+      <MarkdownBlock source={children} streaming={false} />
     </div>
   );
 });
