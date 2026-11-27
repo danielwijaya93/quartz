@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib.util
 import threading
 import weakref
 from typing import Any
@@ -22,6 +23,15 @@ __all__ = [
     "close_shared_async_http_clients",
     "get_shared_async_http_client",
 ]
+
+# Keep TLS connections warm across multi-second pauses between user turns
+# (httpx default keepalive_expiry is only 5s, which drops sockets every turn).
+_POOL_LIMITS = httpx2.Limits(
+    max_connections=64,
+    max_keepalive_connections=20,
+    keepalive_expiry=60.0,
+)
+_HTTP2_AVAILABLE = importlib.util.find_spec("h2") is not None
 
 _ASYNC_POOL_LOCK = threading.Lock()
 _ASYNC_POOL: dict[
@@ -58,7 +68,11 @@ def get_shared_async_http_client(
             loop_ref, client = entry
             if loop_ref() is loop and not getattr(client, "is_closed", False):
                 return client
-        client = httpx2.AsyncClient(timeout=resolved)
+        client = httpx2.AsyncClient(
+            timeout=resolved,
+            limits=_POOL_LIMITS,
+            http2=_HTTP2_AVAILABLE,
+        )
         _ASYNC_POOL[key] = (weakref.ref(loop), client)
         return client
 

@@ -530,6 +530,7 @@ def _handle_web_cli(argv: list[str]) -> None:
                 transport="web",
                 sandbox=args.sandbox if sandbox is None else sandbox,
                 shared_resources=True,
+                lazy_kernel=True,
             )
         )
 
