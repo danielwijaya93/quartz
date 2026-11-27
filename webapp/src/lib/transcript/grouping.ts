@@ -144,10 +144,47 @@ export function turnSummary(turn: Turn): string {
 const COMMAND_CALL_RE = /(?:^|[^\w.])(?:bash|run)\s*\(/g;
 const EDIT_CALL_RE = /(?:^|[^\w.])(?:edit|write)\s*\(\s*(?:["'`]([^"'`]+)["'`])?/g;
 
+/** Format a settled work duration concisely (e.g. "450ms", "3.2s", "1m 5s"). */
+export function formatWorkDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const totalSecs = Math.round(ms / 1000);
+  const mins = Math.floor(totalSecs / 60);
+  const secs = totalSecs % 60;
+  return `${mins}m ${secs}s`;
+}
+
+/** Collect the earliest start timestamp and total recorded duration for a work segment. */
+function workStepsTiming(steps: readonly TurnWorkStep[]): {
+  startedAt?: number;
+  durationMs?: number;
+} {
+  let startedAt: number | undefined;
+  let totalMs = 0;
+  let hasDuration = false;
+
+  for (const step of steps) {
+    for (const row of step.rows) {
+      if (row.startedAt !== undefined) {
+        startedAt = startedAt === undefined ? row.startedAt : Math.min(startedAt, row.startedAt);
+      }
+      if (row.durationMs !== undefined && row.durationMs !== null && row.durationMs > 0) {
+        totalMs += row.durationMs;
+        hasDuration = true;
+      }
+    }
+  }
+
+  return {
+    ...(startedAt !== undefined ? { startedAt } : {}),
+    ...(hasDuration ? { durationMs: totalMs } : {}),
+  };
+}
+
 /**
  * Summarize a contiguous work segment (thinking + tool calls) in one sentence,
- * e.g. "Ran 2 commands · Edited 9 files · Used 1 tool", "Thought", or
- * "Ran 1 command · 1 failed".
+ * e.g. "Ran 2 commands · Edited 9 files · 4.5s", "Thought for 3.2s", or
+ * "Ran 1 command · 1 failed · 2.1s".
  */
 export function summarizeWorkSteps(steps: readonly TurnWorkStep[]): string {
   let commands = 0;
@@ -181,13 +218,24 @@ export function summarizeWorkSteps(steps: readonly TurnWorkStep[]): string {
     }
   }
 
+  const { durationMs } = workStepsTiming(steps);
   const editedFiles = editedPaths.size + dynamicEdits;
   const parts: string[] = [];
   if (commands > 0) parts.push(`Ran ${commands} ${commands === 1 ? "command" : "commands"}`);
   if (editedFiles > 0) parts.push(`Edited ${editedFiles} ${editedFiles === 1 ? "file" : "files"}`);
   if (otherTools > 0) parts.push(`Used ${otherTools} ${otherTools === 1 ? "tool" : "tools"}`);
-  if (parts.length === 0) parts.push("Thought");
+  if (parts.length === 0) {
+    if (failed === 0 && durationMs !== undefined) {
+      parts.push(`Thought for ${formatWorkDuration(durationMs)}`);
+    } else {
+      parts.push("Thought");
+      if (failed > 0) parts.push(`${failed} failed`);
+      if (durationMs !== undefined) parts.push(formatWorkDuration(durationMs));
+    }
+    return parts.join(" · ");
+  }
   if (failed > 0) parts.push(`${failed} failed`);
+  if (durationMs !== undefined) parts.push(formatWorkDuration(durationMs));
   return parts.join(" · ");
 }
 
@@ -205,12 +253,14 @@ function buildSegmentsFromSteps(
 
   const flushWork = (isTrailing: boolean): void => {
     if (pendingWork.length === 0) return;
+    const timing = workStepsTiming(pendingWork);
     segments.push({
       kind: "work",
       id: `work-${pendingWork[0]!.id}`,
       steps: pendingWork,
       live: isTrailing && live,
       summary: summarizeWorkSteps(pendingWork),
+      ...timing,
     });
     pendingWork = [];
   };

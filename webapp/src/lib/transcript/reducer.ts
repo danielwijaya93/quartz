@@ -114,10 +114,24 @@ function withRows(state: TranscriptState, rows: Row[]): TranscriptState {
   return next;
 }
 
+/**
+ * Stamp `durationMs` onto an open thinking row when a non-thinking event
+ * closes it, so settled work summaries know how long thinking took.
+ */
+function finalizeOpenThinking(rows: Row[]): Row[] {
+  const last = rows[rows.length - 1];
+  if (last?.kind === "thinking" && last.startedAt !== undefined && last.durationMs === undefined) {
+    const updated = { ...last, durationMs: Math.max(0, Date.now() - last.startedAt) };
+    return [...rows.slice(0, -1), updated];
+  }
+  return rows;
+}
+
 /** Append one row unless its id is already rendered. */
 function appendRow(state: TranscriptState, row: Row): TranscriptState {
   if (state.seen.has(row.id)) return state;
-  const next = withRows(state, [...state.rows, row]);
+  const baseRows = state.openRowId !== null ? finalizeOpenThinking(state.rows) : state.rows;
+  const next = withRows(state, [...baseRows, row]);
   return { ...next, openRowId: null };
 }
 
@@ -142,8 +156,9 @@ function appendToTrailing<K extends RowKind>(
     rows.push(updated);
     return { ...state, rows, seen: state.seen };
   }
+  const baseRows = state.openRowId !== null ? finalizeOpenThinking(state.rows) : state.rows;
   const fresh = apply(make(), chunk);
-  const next = withRows(state, [...state.rows, fresh]);
+  const next = withRows(state, [...baseRows, fresh]);
   return { ...next, openRowId: fresh.id };
 }
 
@@ -571,7 +586,7 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
       return appendToTrailing(
         state,
         "thinking",
-        () => ({ kind: "thinking", id: makeId("thinking"), text: "" }),
+        () => ({ kind: "thinking", id: makeId("thinking"), text: "", startedAt: Date.now() }),
         (row, chunk) => ({ ...row, text: row.text + chunk }),
         message.text,
       );
@@ -583,6 +598,7 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
         code: message.code,
         status: "running",
         output: "",
+        startedAt: Date.now(),
         durationMs: null,
         images: [],
         files: [],

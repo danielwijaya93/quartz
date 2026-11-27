@@ -337,7 +337,7 @@ describe("Transcript", () => {
 
     expect(screen.queryByTestId("living-waveform")).toBeNull();
     const settled = screen.getAllByTestId("work-summary");
-    expect(settled.map((el) => el.textContent)).toEqual(["Ran 1 command", "Edited 1 file"]);
+    expect(settled.map((el) => el.textContent)).toEqual(["Ran 1 command · 10ms", "Edited 1 file · 20ms"]);
     const finalLogText = screen.getByRole("log").textContent ?? "";
     expect(finalLogText.indexOf("Ran 1 command")).toBeLessThan(
       finalLogText.indexOf("Checking files now"),
