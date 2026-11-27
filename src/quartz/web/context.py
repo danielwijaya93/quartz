@@ -15,7 +15,6 @@ from fastapi.responses import JSONResponse
 
 from quartz.bots import BotHistoryStore, BotQueue, BotStore, UsageStore
 from quartz.storage import QuartzDB
-from quartz.telemetry import AuditLogger, MetricsRegistry
 from quartz.web.attachments import AttachedFileRegistry
 from quartz.web.bot_runner import BotRunner
 from quartz.web.push import PushStore
@@ -61,8 +60,6 @@ class AppContext:
     bot_history: BotHistoryStore | None = None
     bot_runner: BotRunner | None = None
     usage_store: UsageStore | None = None
-    audit_logger: AuditLogger | None = None
-    metrics: MetricsRegistry | None = None
     db: QuartzDB | None = None
 
     @property

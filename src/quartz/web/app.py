@@ -17,7 +17,6 @@ from fastapi.staticfiles import StaticFiles
 
 from quartz.bots import BotConfig, BotHistoryStore, BotQueue, BotStore, QueuedTrigger, UsageStore
 from quartz.core.turn import TurnStatus, run_interactive_turn
-from quartz.telemetry import get_audit_logger, get_metrics_registry
 from quartz.web.auth import extract_request_token, verify_token
 from quartz.web.bot_executor import run_bot_trigger
 from quartz.web.bot_runner import BotRunner
@@ -30,7 +29,7 @@ from quartz.web.context import (
     is_allowed_origin as _is_allowed_origin,
 )
 from quartz.web.push import PushStore, default_push_path, format_push_payload, should_send_push
-from quartz.web.routes import auth, bots, files, metrics, push, sessions, settings, ws
+from quartz.web.routes import auth, bots, files, push, sessions, settings, ws
 from quartz.web.session import BuildRuntime, SessionManager, TurnRunner, WebSession
 from quartz.web.sidebar import SidebarStore, default_sidebar_path
 
@@ -233,8 +232,6 @@ def create_app(
         bot_history=bot_history,
         bot_runner=bot_runner,
         usage_store=usage_store,
-        audit_logger=get_audit_logger(),
-        metrics=get_metrics_registry(),
     )
     app.state.ctx = ctx
 
@@ -278,7 +275,6 @@ def create_app(
     app.include_router(settings.create_router(ctx))
     app.include_router(sessions.create_router(ctx))
     app.include_router(files.create_router(ctx))
-    app.include_router(metrics.create_router(ctx))
     app.include_router(ws.create_router(ctx))
 
     allowed = sorted(native_origins())

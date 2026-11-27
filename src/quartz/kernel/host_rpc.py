@@ -26,7 +26,6 @@ from quartz.kernel.bridge import (
     validate_bridge_cwd,
 )
 from quartz.settings import resolve_bridge_timeout
-from quartz.telemetry import AuditLogger, MetricsRegistry, get_audit_logger, get_metrics_registry
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +67,6 @@ class HostRpcHandler:
         permission_handler: PermissionHandler | None = None,
         preapproved_scopes: set[str] | None = None,
         shared_host_mcp: bool = False,
-        audit_logger: AuditLogger | None = None,
-        metrics: MetricsRegistry | None = None,
     ) -> None:
         self.cwd = cwd
         self.permission_policy = PermissionPolicy(preapproved_scopes=preapproved_scopes)
@@ -81,8 +78,6 @@ class HostRpcHandler:
         self._cancel_lock = threading.Lock()
         self.shared_host_mcp = shared_host_mcp
         self._host_mcp: Any = None
-        self._audit = audit_logger if audit_logger is not None else get_audit_logger()
-        self._metrics = metrics if metrics is not None else get_metrics_registry()
 
     @staticmethod
     def _dispatch_host_image(img: dict[str, str]) -> None:
@@ -208,14 +203,7 @@ class HostRpcHandler:
         argv = [str(a) for a in raw_argv] if isinstance(raw_argv, list) else []
         validation_error = validate_bridge_command(tool, argv)
         if validation_error is not None:
-            self._metrics.inc("bridge_requests_total", labels={"tool": tool, "outcome": "rejected"})
-            self._audit.record(
-                "bridge_rejected",
-                actor="sandbox",
-                decision="rejected",
-                summary=validation_error,
-                details={"tool": tool, "argv": argv[:20]},
-            )
+            logger.warning("Host bridge rejected tool=%s argv=%s: %s", tool, argv[:20], validation_error)
             return _bridge_err(126, f"{validation_error}\n")
         target_cwd = validate_bridge_cwd(params.get("cwd"), self.cwd)
         scope = classify_bridge_scope(tool, argv)
@@ -251,14 +239,7 @@ class HostRpcHandler:
                 allowed = self.permission_policy.record(scope, decision)
 
         if not allowed:
-            self._metrics.inc("bridge_requests_total", labels={"tool": tool, "outcome": "denied"})
-            self._audit.record(
-                "bridge_denied",
-                actor="user",
-                decision="denied",
-                summary=req.command_display,
-                details={"tool": tool, "scope": scope},
-            )
+            logger.info("Host bridge denied by user: %s (scope=%s)", req.command_display, scope)
             return _bridge_err(126, f"Permission rejected by user: '{req.command_display}'\n")
         if cancel_event is not None and cancel_event.is_set():
             return _bridge_err(126, "Host bridge request cancelled.\n")
@@ -296,17 +277,7 @@ class HostRpcHandler:
             except subprocess.TimeoutExpired:
                 continue
         exit_code = proc.returncode if proc.returncode is not None else 1
-        self._metrics.inc(
-            "bridge_requests_total",
-            labels={"tool": tool, "outcome": "ok" if exit_code == 0 else "error"},
-        )
-        self._audit.record(
-            "bridge_exec",
-            actor="sandbox",
-            decision="allow",
-            summary=req.command_display,
-            details={"tool": tool, "scope": scope, "exit_code": exit_code},
-        )
+        logger.info("Host bridge exec: %s (scope=%s, exit_code=%d)", req.command_display, scope, exit_code)
         return {
             "exit_code": exit_code,
             "stdout": stdout or "",

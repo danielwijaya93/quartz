@@ -3,7 +3,6 @@ import { ServerUrlCard } from "./ServerUrlCard";
 import { apiUrl, isNativeCapacitor } from "../lib/serverUrl";
 import { NativePlugin } from "../lib/nativeBridge";
 import { BiometricLockCard } from "./BiometricLockCard";
-import { SystemDiagnosticsCard } from "./SystemDiagnosticsCard";
 import { TurnWatcherSettingsCard } from "./TurnWatcherSettingsCard";
 import {
   ModelPricingSection,
@@ -23,7 +22,7 @@ const SETTINGS_TABS: readonly { id: SettingsTabId; label: string }[] = [
   { id: "general", label: "General & Alerts" },
   { id: "bots", label: "Bots & Budgets" },
   { id: "session", label: "Session & Context" },
-  { id: "advanced", label: "Advanced & Audit" },
+  { id: "advanced", label: "Advanced" },
 ];
 
 const NOTIFICATION_CATEGORIES: readonly {
@@ -639,7 +638,7 @@ export function SettingsView({
       ) : null}
 
       {activeTab === "advanced" ? (
-        <div role="tabpanel" aria-label="Advanced & Audit" className="space-y-4">
+        <div role="tabpanel" aria-label="Advanced" className="space-y-4">
           {data ? (
             <>
               <TurnWatcherSettingsCard
@@ -725,7 +724,6 @@ export function SettingsView({
             </>
           ) : null}
 
-          <SystemDiagnosticsCard />
         </div>
       ) : null}
 

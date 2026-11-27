@@ -107,7 +107,7 @@ describe("SettingsView", () => {
     expect(posted).toContainEqual({ key: "notifyBackground", value: "off" });
   });
 
-  it("renders Bots & Budgets with model pricing + unified save bar, and Advanced & Audit with diagnostics", async () => {
+  it("renders Bots & Budgets with model pricing + unified save bar, and Advanced settings", async () => {
     const user = userEvent.setup();
     const posted: Array<Record<string, unknown>> = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
@@ -117,33 +117,6 @@ describe("SettingsView", () => {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
-      }
-      if (url.endsWith("/api/metrics")) {
-        return new Response(
-          JSON.stringify({
-            db: { healthy: true, schemaVersion: 2 },
-            sessions: { active: 2 },
-            usage24h: { events: 4, inputTokens: 12000, outputTokens: 3000, costUsd: 0.1234, botCostUsd: 0.10, chatCostUsd: 0.0234 },
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }
-      if (url.includes("/api/audit")) {
-        return new Response(
-          JSON.stringify({
-            events: [
-              {
-                id: 1,
-                ts: 1750000000,
-                eventType: "bridge_rejected",
-                actor: "sandbox",
-                decision: "rejected",
-                summary: "blocked git -c",
-              },
-            ],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
       }
       if (init?.method === "POST") {
         const body = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>;
@@ -236,12 +209,10 @@ describe("SettingsView", () => {
     await user.click(screen.getByRole("button", { name: "Save changes" }));
     expect(posted.some((p) => typeof p.updates === "object" && p.updates !== null)).toBe(true);
 
-    // Advanced & Audit tab
-    await user.click(screen.getByRole("tab", { name: "Advanced & Audit" }));
+    // Advanced tab
+    await user.click(screen.getByRole("tab", { name: "Advanced" }));
     expect(await screen.findByLabelText("Kernel memory cap (MiB)")).toHaveValue("4096");
     expect(screen.getByLabelText("Sandbox env passthrough")).toHaveValue("MY_APP_ENV");
-    expect(await screen.findByText(/Healthy \(v2\)/)).toBeInTheDocument();
-    expect(screen.getByText("blocked git -c")).toBeInTheDocument();
 
     const strictSwitch = screen.getByRole("switch", { name: "Strict snapshot verification" });
     expect(strictSwitch).toHaveAttribute("aria-checked", "true");
