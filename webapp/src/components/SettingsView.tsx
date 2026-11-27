@@ -537,7 +537,7 @@ export function SettingsView({
                 role="switch"
                 aria-checked={data.values.autoRenameEnabled ?? true}
                 aria-label="Auto-rename web sessions"
-                disabled={saving !== null}
+                disabled={saving}
                 onClick={() =>
                   void saveSingleKey(
                     "auto_rename_enabled",
