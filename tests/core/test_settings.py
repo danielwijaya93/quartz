@@ -112,6 +112,7 @@ def test_settings_as_dict() -> None:
         "watcher_default_max_turns": 10,
         "watcher_antistall_max_nudges": 3,
         "watcher_default_prompt": "Continue with the next step you mentioned.",
+        "auto_rename_enabled": True,
     }
 
 
