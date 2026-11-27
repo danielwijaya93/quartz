@@ -529,7 +529,9 @@ class SessionManager:
                 self.event_bus.publish(SessionEvent(kind="turn_cancelled", session_id=sid))
             elif status == "error":
                 self.event_bus.publish(SessionEvent(kind="turn_error", session_id=sid))
-        if self._push_hook is not None:
+        # Push notifications only fire on terminal/alert events; gating here keeps
+        # per-token text_delta/thinking_delta frames off load_settings() disk stat().
+        if self._push_hook is not None and kind in ("turn_end", "permission_request", "bash_notice", "error"):
             with contextlib.suppress(Exception):
                 self._push_hook(ws, frame)
 

@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -263,7 +264,14 @@ def create_app(
             )
             if not verify_token(candidate, ctx.auth_token):
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
-        return await call_next(request)
+        response = await call_next(request)
+        if request.method == "GET" and response.status_code == 200:
+            path = request.url.path
+            if path.startswith("/assets/"):
+                response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+            elif path in ("/", "/index.html"):
+                response.headers.setdefault("Cache-Control", "no-cache")
+        return response
 
     app.include_router(auth.create_router(ctx))
     app.include_router(bots.create_router(ctx))
@@ -274,6 +282,7 @@ def create_app(
     app.include_router(ws.create_router(ctx))
 
     allowed = sorted(native_origins())
+    app.add_middleware(GZipMiddleware, minimum_size=500)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed,

@@ -7,6 +7,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -41,11 +43,27 @@ class _ParsedSession:
     updated_at: float
 
 
+_DIR_CACHE_TTL_S = 5.0
+_DIR_CACHE_MAX = 512
+_DIR_CACHE_LOCK = threading.Lock()
+_DIR_CACHE: dict[str, tuple[float, bool]] = {}
+
+
 def _is_dir(path: str) -> bool:
+    now = time.monotonic()
+    with _DIR_CACHE_LOCK:
+        cached = _DIR_CACHE.get(path)
+        if cached is not None and cached[0] > now:
+            return cached[1]
     try:
-        return Path(path).is_dir()
+        exists = Path(path).is_dir()
     except OSError:
-        return False
+        exists = False
+    with _DIR_CACHE_LOCK:
+        if len(_DIR_CACHE) >= _DIR_CACHE_MAX:
+            _DIR_CACHE.clear()
+        _DIR_CACHE[path] = (now + _DIR_CACHE_TTL_S, exists)
+    return exists
 
 
 def _extract_preview(msg: Any) -> str:
@@ -169,6 +187,15 @@ class SessionIndex:
 
     def __init__(self, db: QuartzDB) -> None:
         self._db = db
+        self._cache_lock = threading.Lock()
+        self._existing_cache_dir: Path | None = None
+        self._existing_cache: dict[str, tuple[int, int]] | None = None
+
+    def invalidate_cache(self) -> None:
+        """Drop the in-memory stat cache so the next sync_dir reloads from SQLite."""
+        with self._cache_lock:
+            self._existing_cache_dir = None
+            self._existing_cache = None
 
     def sync_dir(self, sessions_dir: Path) -> None:
         """Incrementally sync ``sessions_index`` and ``sessions_fts`` with ``sessions_dir``."""
@@ -190,12 +217,22 @@ class SessionIndex:
                 logger.debug("Failed to scan sessions directory %s", root, exc_info=True)
                 return
 
-        existing_rows = self._db.read_connection().execute(
-            "SELECT session_id, mtime_ns, file_size FROM sessions_index"
-        ).fetchall()
-        existing: dict[str, tuple[int, int]] = {
-            str(r["session_id"]): (int(r["mtime_ns"]), int(r["file_size"])) for r in existing_rows
-        }
+        with self._cache_lock:
+            if self._existing_cache is not None and self._existing_cache_dir == root:
+                existing = dict(self._existing_cache)
+            else:
+                existing = None
+
+        if existing is None:
+            existing_rows = self._db.read_connection().execute(
+                "SELECT session_id, mtime_ns, file_size FROM sessions_index"
+            ).fetchall()
+            existing = {
+                str(r["session_id"]): (int(r["mtime_ns"]), int(r["file_size"])) for r in existing_rows
+            }
+            with self._cache_lock:
+                self._existing_cache_dir = root
+                self._existing_cache = dict(existing)
 
         deleted_ids = [sid for sid in existing if sid not in disk_files]
         dirty: list[tuple[Path, os.stat_result]] = []
@@ -251,6 +288,14 @@ class SessionIndex:
                         "INSERT INTO sessions_fts (session_id, title, content) VALUES (?, ?, ?)",
                         (item.session_id, item.title, item.content),
                     )
+
+        for sid in deleted_ids:
+            existing.pop(sid, None)
+        for item in parsed_updates:
+            existing[item.session_id] = (item.mtime_ns, item.file_size)
+        with self._cache_lock:
+            self._existing_cache_dir = root
+            self._existing_cache = existing
 
     def list_all(
         self,

@@ -152,6 +152,8 @@ class BootstrapOptions:
     client_factory: Callable[[], tuple[Any, ...]] | None = None
     kernel_factory: Any | None = None
     lazy_provider: bool = False
+    #: Defer spawning the kernel subprocess until first cell execution (used by `quartz web`).
+    lazy_kernel: bool = False
     sandbox: bool | None = None
     #: Share process-wide host MCPManager + provider httpx2 connection pool (used by `quartz web`).
     shared_resources: bool = False
@@ -230,8 +232,10 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
         except BaseException as exc:
             kernel_err.append(exc)
 
-    kernel_thread = threading.Thread(target=_start_kernel, daemon=True)
-    kernel_thread.start()
+    kernel_thread: threading.Thread | None = None
+    if not options.lazy_kernel:
+        kernel_thread = threading.Thread(target=_start_kernel, daemon=True)
+        kernel_thread.start()
     try:
         try:
             if options.lazy_provider:
@@ -291,7 +295,8 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
                 max_context_tokens = options.max_context_tokens or max_ctx
             system_prompt = build_system_prompt(cwd, headless=options.headless)
         finally:
-            kernel_thread.join()
+            if kernel_thread is not None:
+                kernel_thread.join()
         # A kernel that failed to start surfaces here rather than on its thread,
         # so the caller sees the original traceback.
         if kernel_err:
@@ -308,9 +313,12 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
             else:
                 active_session, messages = Session.load(target_id)
             resumed = True
-            restored_notice = active_session.restore_kernel(kernel, root=cwd)
-            if restored_notice:
-                messages.append({"role": "user", "content": restored_notice})
+            if options.lazy_kernel and hasattr(kernel, "set_pending_restore"):
+                kernel.set_pending_restore(active_session.snapshot_dir, root=cwd)
+            else:
+                restored_notice = active_session.restore_kernel(kernel, root=cwd)
+                if restored_notice:
+                    messages.append({"role": "user", "content": restored_notice})
         else:
             active_session = Session.create(cwd, origin=options.origin)
 

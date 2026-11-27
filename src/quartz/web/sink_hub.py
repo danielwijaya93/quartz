@@ -29,7 +29,7 @@ class SinkHub:
         self._sinks: set[Push] = set()
         # What the turn in flight has said so far, so a tab that reconnects mid-answer
         # can be caught up without asking the kernel to say it again.
-        self._streaming = ""
+        self._streaming_chunks: list[str] = []
         self._status: str | None = None
         self._last_active_at: float = time.monotonic()
         self._idle_prompted_at: float | None = None
@@ -81,23 +81,32 @@ class SinkHub:
         with self._lock:
             return self._status
 
+    def _joined_streaming_locked(self) -> str:
+        if not self._streaming_chunks:
+            return ""
+        if len(self._streaming_chunks) > 1:
+            joined = "".join(self._streaming_chunks)
+            self._streaming_chunks = [joined]
+            return joined
+        return self._streaming_chunks[0]
+
     def pending_text(self) -> str:
         """The answer this turn has written so far but not yet settled into a step."""
         with self._lock:
-            return self._streaming
+            return self._joined_streaming_locked()
 
     def settled_streaming_text(self) -> str:
         """Return trimmed streaming text for interrupted-turn persistence."""
         with self._lock:
-            return self._streaming.strip()
+            return self._joined_streaming_locked().strip()
 
     def streaming_for_snapshot(self, turn_running: bool) -> str:
         with self._lock:
-            return self._streaming if turn_running else ""
+            return self._joined_streaming_locked() if turn_running else ""
 
     def reset_turn_buffer(self) -> None:
         with self._lock:
-            self._streaming = ""
+            self._streaming_chunks.clear()
             self._status = None
             self._last_active_at = time.monotonic()
             self._idle_prompted_at = None
@@ -117,9 +126,11 @@ class SinkHub:
         kind = frame.get("type")
         with self._lock:
             if kind == "text_delta":
-                self._streaming += str(frame.get("text") or "")
+                chunk = str(frame.get("text") or "")
+                if chunk:
+                    self._streaming_chunks.append(chunk)
             elif kind == "tool_call":
-                self._streaming = ""
+                self._streaming_chunks.clear()
             elif kind == "status":
                 label = frame.get("label")
                 self._status = label if isinstance(label, str) else None

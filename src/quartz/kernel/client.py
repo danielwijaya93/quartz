@@ -83,6 +83,7 @@ class KernelClient(KernelClientTransport):
         self._sandbox_config = sandbox_config or SandboxConfig(enabled=sandbox)
         self._host_mcp_override = host_mcp
         self._host_bridge_override = host_bridge
+        self._pending_restore: tuple[Path, Path | None] | None = None
         self._host_rpc = HostRpcHandler(
             cwd=self.cwd,
             permission_handler=permission_handler,
@@ -113,6 +114,11 @@ class KernelClient(KernelClientTransport):
     def enable_sandbox(self, config: SandboxConfig | None = None) -> None:
         """Enable OS-level sandboxing for the kernel subprocess (must be called before start)."""
         self._sandbox_config = config or SandboxConfig(enabled=True)
+
+    def set_pending_restore(self, snapshot_dir: Path, root: Path | None = None) -> None:
+        """Defer snapshot restore until the lazy kernel actually boots."""
+        if snapshot_dir.is_dir():
+            self._pending_restore = (snapshot_dir, root)
 
     def _get_host_mcp(self) -> Any:
         return self._host_rpc.get_host_mcp()
@@ -229,6 +235,14 @@ class KernelClient(KernelClientTransport):
         )
 
     async def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
+        pending = self._pending_restore
+        if pending is not None:
+            self._pending_restore = None
+            snap_dir, snap_root = pending
+            try:
+                await self.arestore(snap_dir, root=snap_root)
+            except Exception:
+                logger.debug("Deferred kernel snapshot restore failed", exc_info=True)
         self.dirty = True
         if self._headless:
             timeout = None
