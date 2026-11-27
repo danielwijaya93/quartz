@@ -155,12 +155,6 @@ export interface SessionMeta {
   watcher?: WatcherState | null;
 }
 
-export interface IdleSessionPrompt {
-  sessionId: string;
-  cwd: string;
-  idleSeconds: number;
-}
-
 export interface TranscriptState {
   rows: Row[];
   /** Current turn, or null between turns. */
@@ -182,7 +176,6 @@ export interface TranscriptState {
    */
   openRowId: string | null;
   session: SessionMeta;
-  idlePrompts?: IdleSessionPrompt[];
   activeSessions?: ActiveSessionItem[];
 }
 

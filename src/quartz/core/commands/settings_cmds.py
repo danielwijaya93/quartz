@@ -106,7 +106,7 @@ _INT_SETTINGS: dict[str, _IntSettingSpec] = {
     "idle": _IntSettingSpec(
         "web_idle_hours", None, validate_web_idle_hours,
         "an integer hour count", "between 0 and 8,760 hours",
-        "Usage: /settings idle <hours> (0 disables idle prompts)",
+        "Usage: /settings idle <hours> (0 disables idle auto-close)",
         lambda v: f"Saved. web_idle_hours = {v}h ({'off' if v == 0 else f'every {v}h'}).",
     ),
     "bot_errors": _IntSettingSpec(

@@ -32,28 +32,16 @@ class SinkHub:
         self._streaming_chunks: list[str] = []
         self._status: str | None = None
         self._last_active_at: float = time.monotonic()
-        self._idle_prompted_at: float | None = None
 
     @property
     def last_active_at(self) -> float:
         with self._lock:
             return self._last_active_at
 
-    @property
-    def idle_prompted_at(self) -> float | None:
-        with self._lock:
-            return self._idle_prompted_at
-
-    @idle_prompted_at.setter
-    def idle_prompted_at(self, value: float | None) -> None:
-        with self._lock:
-            self._idle_prompted_at = value
-
     def mark_active(self, now: float | None = None) -> None:
-        """Record user or turn activity and clear any pending idle prompt."""
+        """Record user or turn activity."""
         with self._lock:
             self._last_active_at = time.monotonic() if now is None else now
-            self._idle_prompted_at = None
 
     def attach(self, push: Push) -> None:
         """Register a socket sink and record activity."""
@@ -61,7 +49,6 @@ class SinkHub:
         with self._lock:
             self._sinks.add(push)
             self._last_active_at = time.monotonic()
-            self._idle_prompted_at = None
         self.notify_event({"type": "_attached"})
 
     def detach(self, push: Push) -> None:
@@ -109,7 +96,6 @@ class SinkHub:
             self._streaming_chunks.clear()
             self._status = None
             self._last_active_at = time.monotonic()
-            self._idle_prompted_at = None
 
     def notify_event(self, frame: Frame) -> None:
         cb = self._on_event

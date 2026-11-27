@@ -169,7 +169,7 @@ def test_two_tabs_can_view_different_sessions_independently(
         assert wire.drain(tab2, until="turn_end")[-1]["status"] == "ok"
 
 
-def test_idle_watcher_prompts_and_handles_keep_or_close(tmp_path: Path) -> None:
+def test_idle_watcher_silently_closes_idle_unattached_sessions(tmp_path: Path) -> None:
     def build(session_id: str | None, cwd: Path | None = None) -> tuple[Any, bool]:
         del session_id
         return make_runtime(cwd or tmp_path), False
@@ -180,44 +180,34 @@ def test_idle_watcher_prompts_and_handles_keep_or_close(tmp_path: Path) -> None:
 
     ws1 = manager.ensure_default_session()
     sid1 = ws1.runtime.active_session.id
+    kernel1 = ws1.runtime.kernel
     ws2 = manager.create_session()
     sid2 = ws2.runtime.active_session.id
+    ws3 = manager.create_session()
+    sid3 = ws3.runtime.active_session.id
 
-    # Pretend ws2 is attached (user is viewing it), ws1 is backgrounded and idle for 3h.
+    # ws2 is attached (user is viewing it); ws3 is unattached but only idle 1h;
+    # ws1 is unattached and idle for 3h -> only ws1 should be silently closed.
     ws2.attach(lambda _f: None)
     now = time.monotonic()
     ws1.mark_active(now=now - 3 * 3600)
     ws2.mark_active(now=now - 3 * 3600)
+    ws3.mark_active(now=now - 1 * 3600)
 
-    prompts = manager.check_idle_sessions(now=now)
-    assert len(prompts) == 1
-    assert prompts[0]["type"] == "idle_session_prompt"
-    assert prompts[0]["sessionId"] == sid1
-
-    # Running check again does not spam or auto-close unanswered sessions
-    assert manager.check_idle_sessions(now=now + 600) == []
-    assert manager.get_session(sid1) is ws1
-    assert ws1.runtime.kernel.closed is False
-
-    # User chooses "keep" -> timer resets and session stays alive
-    assert manager.resolve_idle_prompt(sid1, "keep") is True
-    assert manager.get_session(sid1) is ws1
-    assert ws1.idle_prompted_at is None
-    assert received[-1] == {"type": "idle_session_resolved", "sessionId": sid1, "action": "keep"}
-
-    # Later ws1 becomes idle again; user chooses "close" -> kernel closes & session removed
-    kernel1 = ws1.runtime.kernel
-    ws1.mark_active(now=now - 3 * 3600)
-    prompts2 = manager.check_idle_sessions(now=now)
-    assert len(prompts2) == 1
-    assert manager.resolve_idle_prompt(sid1, "close") is True
+    closed = manager.check_idle_sessions(now=now)
+    assert closed == [sid1]
     assert manager.get_session(sid1) is None
     assert kernel1.closed is True
-    assert received[-1] == {"type": "idle_session_resolved", "sessionId": sid1, "action": "close"}
+    assert not any(f.get("type") == "idle_session_prompt" for f in received)
 
-    # ws2 was attached the whole time, so it was never prompted or closed
+    # Running check again does nothing for already-closed or still-fresh sessions
+    assert manager.check_idle_sessions(now=now + 600) == []
+
+    # ws2 (attached) and ws3 (idle < 2h) remain alive
     assert manager.get_session(sid2) is ws2
     assert ws2.runtime.kernel.closed is False
+    assert manager.get_session(sid3) is ws3
+    assert ws3.runtime.kernel.closed is False
     manager.close_all()
 
 

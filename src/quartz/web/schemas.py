@@ -19,7 +19,6 @@ def _coerce_optional_str(value: Any) -> str | None:
 # ------------------------------------------------------------------ shared types
 
 PermissionDecision = Literal["allow_once", "allow_session", "reject"]
-IdleSessionAction = Literal["keep", "close"]
 CommandResultKind = Literal["text", "list", "error", "needs_terminal"]
 BotWatcherType = Literal["cron", "github_poll", "webhook"]
 
@@ -117,12 +116,6 @@ class PermissionResponseFrame(_WireModel):
     decision: PermissionDecision = "reject"
 
 
-class IdleSessionResponseFrame(_WireModel):
-    type: Literal["idle_session_response"]
-    session_id: str = Field(default="", alias="sessionId")
-    action: IdleSessionAction = "keep"
-
-
 class ActiveSessionDismissFrame(_WireModel):
     type: Literal["active_session_dismiss"]
     session_id: str = Field(default="", alias="sessionId")
@@ -161,7 +154,6 @@ ClientFrame = Annotated[
     | TrustProjectFrame
     | SetSandboxFrame
     | PermissionResponseFrame
-    | IdleSessionResponseFrame
     | ActiveSessionDismissFrame
     | ActiveSessionsClearReadFrame
     | NotificationsReadFrame
@@ -182,7 +174,6 @@ CLIENT_FRAME_TYPES: frozenset[str] = frozenset(
         "trust_project",
         "set_sandbox",
         "permission_response",
-        "idle_session_response",
         "active_session_dismiss",
         "active_sessions_clear_read",
         "notifications_read",

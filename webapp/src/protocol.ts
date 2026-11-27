@@ -155,7 +155,6 @@ export type ClientMessage =
   | { type: "trust_project" }
   | { type: "set_sandbox"; enabled: boolean }
   | { type: "permission_response"; requestId: string; decision: PermissionDecision }
-  | { type: "idle_session_response"; sessionId: string; action: "keep" | "close" }
   | { type: "active_session_dismiss"; sessionId: string }
   | { type: "active_sessions_clear_read" }
   | { type: "notifications_read" }
@@ -262,13 +261,6 @@ export type ServerMessage =
       scope: string;
     }
   | { type: "permission_resolved"; requestId: string; decision: PermissionDecision }
-  | {
-      type: "idle_session_prompt";
-      sessionId: string;
-      cwd: string;
-      idleSeconds: number;
-    }
-  | { type: "idle_session_resolved"; sessionId: string; action: "keep" | "close" }
   | { type: "active_sessions_state"; items: ActiveSessionItem[] }
   | {
       type: "settings_state";
@@ -316,8 +308,6 @@ const SERVER_MESSAGE_TYPES: ReadonlySet<string> = new Set<ServerMessageType>([
   "turn_end",
   "permission_request",
   "permission_resolved",
-  "idle_session_prompt",
-  "idle_session_resolved",
   "active_sessions_state",
   "settings_state",
   "notifications_cleared",
