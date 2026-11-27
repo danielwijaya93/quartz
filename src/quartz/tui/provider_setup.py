@@ -19,6 +19,11 @@ from quartz.auth.google import (
     load_google_credentials,
     login_google_interactive,
 )
+from quartz.auth.google_ai_plan import login_google_ai_plan_interactive
+from quartz.auth.store import (
+    delete_google_ai_plan_credentials,
+    load_google_ai_plan_credentials,
+)
 from quartz.providers.registry import (
     PROVIDERS,
     delete_provider_auth,
@@ -56,30 +61,7 @@ def _login_provider(target_provider: str | None = None) -> str | None:
 
     spec = PROVIDERS[target_provider]
     if spec.auth_type == "oauth":
-        in_dock = get_active_dock() is not None
-
-        def _on_url(auth_url: str) -> None:
-            console_print(Text("Open this URL in your browser to sign in with Google:\n"))
-            console_print(Text(f"  {auth_url}\n"))
-            console_print(Text(f"Waiting for browser callback on http://localhost:{CALLBACK_PORT} ..."))
-            if not in_dock:
-                console_print(
-                    Text("(If on a remote machine, paste the final redirect URL here and press Enter)")
-                )
-
-        try:
-            creds = login_google_interactive(
-                on_url=_on_url,
-                interactive_paste=not in_dock,
-            )
-        except Exception as exc:
-            console.print(f"[red]Login failed: {escape(str(exc))}[/red]")
-            return None
-        console.print(
-            f"[green]Logged in to Google (OAuth)![/green] Project: [bold]{escape(creds.project_id)}[/bold] "
-            f"(saved to {auth_file_path()})"
-        )
-        return target_provider
+        return _login_oauth_provider(target_provider)
 
     api_key = _prompt_input(f"{target_provider} API key: ", secret=True)
     if not api_key:
@@ -126,13 +108,54 @@ def _logout_provider(target_provider: str | None = None) -> bool:
             console.print("[dim]Cancelled.[/dim]")
             return False
 
-    removed = delete_google_credentials() if target_provider == "google" else delete_provider_auth(target_provider)
+    if target_provider == "google":
+        removed = delete_google_credentials()
+    elif target_provider == "google-ai-plan":
+        removed = delete_google_ai_plan_credentials()
+    else:
+        removed = delete_provider_auth(target_provider)
 
     if removed:
         console.print(f"[green]Logged out from [bold]{escape(target_provider)}[/bold].[/green]")
     else:
         console.print(f"[dim]No stored credentials found for {escape(target_provider)}.[/dim]")
     return removed
+
+
+def _login_oauth_provider(target_provider: str) -> str | None:
+    in_dock = get_active_dock() is not None
+
+    def _on_url(auth_url: str) -> None:
+        console_print(Text("Open this URL in your browser to sign in with Google:\n"))
+        console_print(Text(f"  {auth_url}\n"))
+        if target_provider == "google-ai-plan":
+            console_print(Text("Waiting for browser callback on http://127.0.0.1 ..."))
+        else:
+            console_print(Text(f"Waiting for browser callback on http://localhost:{CALLBACK_PORT} ..."))
+        if not in_dock:
+            console_print(
+                Text("(If on a remote machine, paste the final redirect URL here and press Enter)")
+            )
+
+    try:
+        if target_provider == "google-ai-plan":
+            login_google_ai_plan_interactive(on_url=_on_url, interactive_paste=not in_dock)
+            console.print(
+                f"[green]Logged in to Google AI Plan (OAuth + DPoP)![/green] (saved to {auth_file_path()})"
+            )
+            return target_provider
+        creds = login_google_interactive(
+            on_url=_on_url,
+            interactive_paste=not in_dock,
+        )
+    except Exception as exc:
+        console.print(f"[red]Login failed: {escape(str(exc))}[/red]")
+        return None
+    console.print(
+        f"[green]Logged in to Google (OAuth)![/green] Project: [bold]{escape(creds.project_id)}[/bold] "
+        f"(saved to {auth_file_path()})"
+    )
+    return target_provider
 
 
 def show_auth_status() -> None:
@@ -145,6 +168,12 @@ def show_auth_status() -> None:
         console.print(
             f"[green]google (oauth): logged in[/green] | project: [bold]{creds.project_id}[/bold] | token: {status}"
         )
+    ai_creds = load_google_ai_plan_credentials()
+    if ai_creds is None:
+        console.print(f"[dim]google-ai-plan (oauth): not logged in ({auth_file_path()})[/dim]")
+    else:
+        status = "expired (will auto-refresh)" if ai_creds.is_expired() else "active"
+        console.print(f"[green]google-ai-plan (oauth): logged in[/green] | token: {status}")
     for pname, pspec in PROVIDERS.items():
         if pspec.auth_type == "oauth":
             continue
