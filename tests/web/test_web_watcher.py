@@ -77,7 +77,7 @@ def test_watcher_settings_api_roundtrip(tmp_path: Path, monkeypatch: Any) -> Non
         vals = r0.json()["values"]
         assert vals["watcherProvider"] == ""
         assert vals["watcherModel"] == ""
-        assert vals["watcherAntistallDefault"] is True
+        assert vals["watcherAntistallDefault"] is False
         assert vals["watcherDelaySeconds"] == 30
         assert vals["watcherDefaultMaxTurns"] == 10
         assert vals["watcherAntistallMaxNudges"] == 3

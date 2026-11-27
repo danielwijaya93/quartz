@@ -1209,7 +1209,7 @@ wheels = [
 
 [[package]]
 name = "quartz-agent"
-version = "0.31.1"
+version = "0.32.1"
 source = { editable = "." }
 dependencies = [
     { name = "dill" },

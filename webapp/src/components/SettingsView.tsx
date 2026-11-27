@@ -565,7 +565,7 @@ export function SettingsView({
               <TurnWatcherSettingsCard
                 provider={drafts.watcher_provider ?? data.values.watcherProvider ?? ""}
                 model={drafts.watcher_model ?? data.values.watcherModel ?? ""}
-                antistallDefault={data.values.watcherAntistallDefault ?? true}
+                antistallDefault={data.values.watcherAntistallDefault ?? false}
                 delaySeconds={drafts.watcher_delay_seconds ?? String(data.values.watcherDelaySeconds ?? 30)}
                 defaultMaxTurns={drafts.watcher_default_max_turns ?? String(data.values.watcherDefaultMaxTurns ?? 10)}
                 antistallMaxNudges={drafts.watcher_antistall_max_nudges ?? String(data.values.watcherAntistallMaxNudges ?? 3)}
@@ -575,7 +575,7 @@ export function SettingsView({
                 onToggleAntistall={() =>
                   void saveSingleKey(
                     "watcher_antistall_default",
-                    (data.values.watcherAntistallDefault ?? true) ? "off" : "on",
+                    (data.values.watcherAntistallDefault ?? false) ? "off" : "on",
                   )
                 }
               />

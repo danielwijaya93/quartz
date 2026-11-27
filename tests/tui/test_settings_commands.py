@@ -121,7 +121,7 @@ def test_settings_progress_edit_preserves_compaction_values(
         "bot_max_consecutive_errors": 5,
         "watcher_provider": "",
         "watcher_model": "",
-        "watcher_antistall_default": True,
+        "watcher_antistall_default": False,
         "watcher_delay_seconds": 30,
         "watcher_default_max_turns": 10,
         "watcher_antistall_max_nudges": 3,

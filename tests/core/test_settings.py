@@ -107,7 +107,7 @@ def test_settings_as_dict() -> None:
         "bot_max_consecutive_errors": 5,
         "watcher_provider": "",
         "watcher_model": "",
-        "watcher_antistall_default": True,
+        "watcher_antistall_default": False,
         "watcher_delay_seconds": 30,
         "watcher_default_max_turns": 10,
         "watcher_antistall_max_nudges": 3,

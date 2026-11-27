@@ -9,7 +9,7 @@ import pytest
 
 from quartz.core.event_bus import EventBus, SessionEvent
 from quartz.core.watcher import TurnWatcherService
-from quartz.core.watcher_eval import parse_watcher_decision, truncate_recent_messages
+from quartz.core.watcher_eval import clean_openui_for_watcher, parse_watcher_decision, truncate_recent_messages
 from quartz.core.watcher_types import (
     DEFAULT_WATCHER_PROMPT,
     WatcherDecision,
@@ -59,13 +59,44 @@ def test_truncate_recent_messages_limits_count_and_chars() -> None:
         {"role": "user", "content": "msg0"},
         {"role": "assistant", "content": "msg1"},
         {"role": "user", "content": "msg2"},
-        {"role": "assistant", "content": "x" * 5000},
+        {"role": "assistant", "content": "HEAD_" + ("x" * 5000) + "_TAIL"},
     ]
     trimmed = truncate_recent_messages(messages, limit=3, max_chars_per_message=200)
     assert len(trimmed) == 3
     assert trimmed[0]["content"] == "msg1"
-    assert len(trimmed[2]["content"]) <= 220
-    assert trimmed[2]["content"].endswith("…")
+    assert len(trimmed[2]["content"]) <= 200
+    assert "…" in trimmed[2]["content"]
+    assert trimmed[2]["content"].startswith("HEAD_")
+    assert trimmed[2]["content"].endswith("_TAIL")
+
+
+def test_truncate_recent_messages_preserves_user_prompt_and_cleans_openui() -> None:
+    openui = (
+        'root = Stack([hdr, card])\n'
+        'hdr = InlineHeader("Market Summary", "Nov 27, 2026 — 5:31 AM ET")\n'
+        'card = Callout("info", "All Done", "Markets close at 1:00 PM ET.")\n'
+        'btn = Button("More", @ToAssistant("Tell me more about oil"), "secondary")'
+    )
+    messages = [
+        {"role": "user", "content": "What is the pre-market news?"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+        {"role": "tool", "content": "search results"},
+        {"role": "assistant", "content": openui},
+    ]
+    trimmed = truncate_recent_messages(messages, limit=3)
+    assert len(trimmed) == 3
+    assert trimmed[0] == {"role": "user", "content": "What is the pre-market news?"}
+    assert trimmed[2]["content"].startswith("[Rendered OpenUI response]")
+    assert "Nov 27, 2026 — 5:31 AM ET" in trimmed[2]["content"]
+    assert "Markets close at 1:00 PM ET." in trimmed[2]["content"]
+    assert "Tell me more about oil" not in trimmed[2]["content"]
+    assert clean_openui_for_watcher("Plain markdown answer") == "Plain markdown answer"
+
+
+def test_watcher_defaults_to_off_when_antistall_default_is_false() -> None:
+    bus = EventBus()
+    svc = TurnWatcherService(bus, get_config=lambda: WatcherGlobalConfig(provider="google", model="gemini-2.5-flash"))
+    assert svc.get_state("s-default-off").mode == "off"
 
 
 def test_parse_watcher_decision_handles_json_and_fences() -> None:
