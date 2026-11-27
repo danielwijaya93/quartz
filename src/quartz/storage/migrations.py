@@ -192,9 +192,20 @@ def _apply_v2_governance_schema(conn: sqlite3.Connection) -> None:
         conn.execute(stmt)
 
 
+def _apply_v3_session_name(conn: sqlite3.Connection) -> None:
+    cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(sessions_index)").fetchall()}
+    if "name" not in cols:
+        conn.execute("ALTER TABLE sessions_index ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_cwd_name_updated "
+        "ON sessions_index (cwd, name, updated_at DESC)"
+    )
+
+
 CORE_MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=1, name="core_operational_schema", up=_apply_v1_core_schema),
     Migration(version=2, name="governance_usage_and_audit", up=_apply_v2_governance_schema),
+    Migration(version=3, name="session_name_index", up=_apply_v3_session_name),
 )
 
 

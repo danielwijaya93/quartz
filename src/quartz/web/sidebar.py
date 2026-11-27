@@ -276,6 +276,18 @@ class SidebarStore:
                 self.state.renames.pop(session_id, None)
             self.save()
 
+    def rename_if_unset(self, session_id: str, title: str) -> bool:
+        """Store an auto-generated title only if no rename is already set."""
+        cleaned = title.strip()
+        if not cleaned:
+            return False
+        with self._lock:
+            if session_id in self.state.renames:
+                return False
+            self.state.renames[session_id] = cleaned
+            self.save()
+            return True
+
     def add_workspace(self, cwd: str, label: str = "") -> None:
         """Add a folder by hand. Idempotent, because the picker can land twice."""
         with self._lock:

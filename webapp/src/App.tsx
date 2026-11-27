@@ -128,8 +128,13 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
   richUiRef.current = richUi;
   const notificationsRef = React.useRef(notifications);
   notificationsRef.current = notifications;
+  const sidebarReloadRef = React.useRef<() => void>(() => {});
 
   const handleGlobalServerMessage = React.useCallback((message: ServerMessage) => {
+    if (message.type === "sidebar_updated") {
+      sidebarReloadRef.current();
+      return;
+    }
     if (message.type === "active_sessions_state") {
       setServerActiveSessions((prev) =>
         sameActiveSessions(prev, message.items) ? prev : message.items,
@@ -158,6 +163,7 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
   }, []);
 
   const sidebar = useSidebar();
+  sidebarReloadRef.current = sidebar.reload;
   const bots = useBots();
   const [bannerHistoryBotId, setBannerHistoryBotId] = React.useState<string | null>(null);
   const [bannerEditBot, setBannerEditBot] = React.useState<BotConfig | null>(null);

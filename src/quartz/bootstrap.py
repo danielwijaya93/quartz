@@ -305,7 +305,10 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
         messages: list[dict[str, Any]] = []
         resumed = False
         if options.cont or options.resume_id:
-            target_id = options.resume_id or Session.latest_id(cwd=cwd)
+            if options.resume_id:
+                target_id = Session.resolve_resume_target(options.resume_id, cwd)
+            else:
+                target_id = Session.latest_id(cwd=cwd)
             if not target_id:
                 raise SessionNotFoundError(cwd)
             if options.fork:

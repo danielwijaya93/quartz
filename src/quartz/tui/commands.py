@@ -148,8 +148,11 @@ def _terminal_paste(rt: AgentRuntime, arg: str) -> None:
 
 def _terminal_session(rt: AgentRuntime, arg: str) -> None:
     del arg
+    session_name = getattr(rt.active_session, "name", None)
+    name_line = f"Name:       [bold]{escape(session_name)}[/bold]\n" if session_name else ""
     console_print(
         f"Session ID: [bold]{escape(rt.active_session.id)}[/bold]\n"
+        f"{name_line}"
         f"Log:        {escape(_short_path(rt.active_session.jsonl_path))}\n"
         f"Snapshot:   {escape(_short_path(rt.active_session.snapshot_dir))}"
     )

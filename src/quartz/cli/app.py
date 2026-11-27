@@ -424,7 +424,12 @@ def main() -> None:
     )
     parser.add_argument("--cwd", type=Path, default=Path.cwd(), help="Working directory for the agent.")
     parser.add_argument("-c", "--continue", dest="cont", action="store_true", help="Resume the most recent session.")
-    parser.add_argument("-r", "--resume", metavar="ID", help="Resume a specific session by ID.")
+    parser.add_argument(
+        "-r",
+        "--resume",
+        metavar="ID_OR_NAME",
+        help="Resume a specific session by ID or name (names are scoped to the current directory).",
+    )
     parser.add_argument("--fork", action="store_true", help="Fork the resumed session into a new session ID.")
     parser.add_argument(
         "--background-check-every",

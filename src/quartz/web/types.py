@@ -63,6 +63,7 @@ class SettingsValuesPayload(TypedDict):
     watcherDefaultMaxTurns: int
     watcherAntistallMaxNudges: int
     watcherDefaultPrompt: str
+    autoRenameEnabled: bool
 
 
 class McpServerEntry(TypedDict):

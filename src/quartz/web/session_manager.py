@@ -10,6 +10,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from quartz.core.event_bus import EventBus, SessionEvent
 from quartz.core.turn import run_interactive_turn
@@ -67,6 +68,9 @@ class SessionManager:
         self._load_inflight: dict[tuple[int, str], asyncio.Future[WebSession]] = {}
         self._closed = False
         self._push_hook: Callable[[WebSession, Frame], None] | None = None
+        self._sidebar_provider: Callable[[], Any] | None = None
+        self._auto_rename_attempted: set[str] = set()
+        self._auto_rename_tasks: set[asyncio.Task[Any]] = set()
         self.file_registry = AttachedFileRegistry()
         self.event_bus = EventBus()
         self.watcher = TurnWatcherService(self.event_bus)
@@ -105,6 +109,9 @@ class SessionManager:
 
     def set_push_hook(self, hook: Callable[[WebSession, Frame], None] | None) -> None:
         self._push_hook = hook
+
+    def set_sidebar_provider(self, provider: Callable[[], Any] | None) -> None:
+        self._sidebar_provider = provider
 
     @property
     def cwd(self) -> Path:
@@ -325,10 +332,15 @@ class SessionManager:
             ws.bind_loop(loop)
         return ws
 
-    @staticmethod
-    def _session_title(ws: WebSession) -> str | None:
+    def _session_title(self, ws: WebSession) -> str | None:
         if not ws.built:
             return None
+        sid = ws.runtime.active_session.id
+        if self._sidebar_provider is not None:
+            with contextlib.suppress(Exception):
+                renamed = self._sidebar_provider().state.renames.get(sid)
+                if isinstance(renamed, str) and renamed.strip():
+                    return _clip(renamed.strip(), 80)
         for msg in getattr(ws.runtime, "messages", ()):
             if msg.get("role") != "user":
                 continue
@@ -525,6 +537,7 @@ class SessionManager:
             status = frame.get("status")
             if status == "ok":
                 self.event_bus.publish(SessionEvent(kind="turn_end", session_id=sid))
+                self._maybe_schedule_auto_rename(sid, ws)
             elif status in ("aborted", "cancelled"):
                 self.event_bus.publish(SessionEvent(kind="turn_cancelled", session_id=sid))
             elif status == "error":
@@ -563,6 +576,40 @@ class SessionManager:
     def unregister_sink(self, push: Push) -> None:
         with self._lock:
             self._global_sinks.discard(push)
+
+    def _maybe_schedule_auto_rename(self, sid: str, ws: WebSession) -> None:
+        if self._sidebar_provider is None or self._closed:
+            return
+        with self._lock:
+            if sid in self._auto_rename_attempted:
+                return
+            self._auto_rename_attempted.add(sid)
+        loop = self._active_loop()
+        if loop is None:
+            return
+        sidebar_provider = self._sidebar_provider
+
+        def _on_renamed(renamed_sid: str, title: str) -> None:
+            with self._lock:
+                entry = self._active_sessions.get(renamed_sid)
+                if entry is not None:
+                    entry["title"] = _clip(title, 80)
+            self._broadcast_active_sessions()
+            self._broadcast({"type": "sidebar_updated"})
+
+        async def _run() -> None:
+            from quartz.web.auto_rename import maybe_auto_rename_session
+
+            sidebar = sidebar_provider()
+            await maybe_auto_rename_session(ws, sidebar, on_renamed=_on_renamed)
+
+        def _spawn() -> None:
+            task = loop.create_task(_run(), name=f"quartz-auto-rename-{sid}")
+            self._auto_rename_tasks.add(task)
+            task.add_done_callback(self._auto_rename_tasks.discard)
+
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(_spawn)
 
     def _broadcast(self, frame: Frame) -> None:
         self._fanout(self._global_sinks, frame)

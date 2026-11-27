@@ -40,11 +40,13 @@ def _settings_values(loaded: Any, rt: Any | None = None) -> SettingsValuesPayloa
         "watcherDefaultMaxTurns": loaded.watcher_default_max_turns,
         "watcherAntistallMaxNudges": loaded.watcher_antistall_max_nudges,
         "watcherDefaultPrompt": loaded.watcher_default_prompt,
+        "autoRenameEnabled": loaded.auto_rename_enabled,
     }
 
 
 def _settings_defaults() -> SettingsValuesPayload:
     from quartz.settings import (
+        DEFAULT_AUTO_RENAME_ENABLED,
         DEFAULT_BACKGROUND_CHECK_EVERY,
         DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS,
         DEFAULT_COMPACT_RESERVE_TOKENS,
@@ -87,6 +89,7 @@ def _settings_defaults() -> SettingsValuesPayload:
         "watcherDefaultMaxTurns": DEFAULT_WATCHER_DEFAULT_MAX_TURNS,
         "watcherAntistallMaxNudges": DEFAULT_WATCHER_ANTISTALL_MAX_NUDGES,
         "watcherDefaultPrompt": DEFAULT_WATCHER_DEFAULT_PROMPT,
+        "autoRenameEnabled": DEFAULT_AUTO_RENAME_ENABLED,
     }
 
 

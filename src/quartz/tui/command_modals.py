@@ -159,7 +159,13 @@ def _terminal_model(rt: AgentRuntime, arg: str) -> None:
 def _terminal_continue(rt: AgentRuntime, arg: str) -> None:
     c = _cmds()
     if arg:
-        chosen_id = arg
+        resolved = Session.resolve_resume_target(arg, rt.cwd)
+        if not resolved:
+            c.console.print(
+                f"[red]No session found matching '{escape(arg)}' in {escape(_short_path(rt.cwd))}.[/red]"
+            )
+            return
+        chosen_id = resolved
     else:
         sessions_list = Session.list_for_cwd(rt.cwd)
         if not sessions_list:
@@ -168,7 +174,8 @@ def _terminal_continue(rt: AgentRuntime, arg: str) -> None:
         session_opts = [
             (
                 item["id"],
-                f"{item['id']} | {item['updated_at']} | {item['message_count']} msgs"
+                f"{item['name'] + ' (' + item['id'] + ')' if item.get('name') else item['id']}"
+                f" | {item['updated_at']} | {item['message_count']} msgs"
                 f"{' (current)' if item['id'] == rt.active_session.id else ''}"
                 f"{' — ' + item['preview'] if item['preview'] else ''}",
             )

@@ -574,9 +574,11 @@ class InteractiveDock:
         if self.rt.messages:
             from quartz.tui.render import console
 
+            name = getattr(self.rt.active_session, "name", None)
+            resume_arg = f'"{escape(name)}"' if name else escape(self.rt.active_session.id)
             console.print(
                 f"[dim]Session {escape(self.rt.active_session.id)} saved · "
-                f"resume with: quartz -r {escape(self.rt.active_session.id)}[/dim]"
+                f"resume with: quartz -r {resume_arg}[/dim]"
             )
 
     async def _run_async(self) -> None:

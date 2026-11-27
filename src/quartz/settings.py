@@ -42,6 +42,7 @@ DEFAULT_WATCHER_DELAY_SECONDS = 30
 DEFAULT_WATCHER_DEFAULT_MAX_TURNS = 10
 DEFAULT_WATCHER_ANTISTALL_MAX_NUDGES = 3
 DEFAULT_WATCHER_DEFAULT_PROMPT = "Continue with the next step you mentioned."
+DEFAULT_AUTO_RENAME_ENABLED = True
 
 FORBIDDEN_PASSTHROUGH_ENV: frozenset[str] = frozenset(
     {
@@ -88,6 +89,7 @@ _PERSISTED_FIELDS = (
     "watcher_default_max_turns",
     "watcher_antistall_max_nudges",
     "watcher_default_prompt",
+    "auto_rename_enabled",
 )
 _OPTIONAL_FIELDS = ("bridge_timeout_s", "bridge_worker_timeout_s")
 
@@ -121,6 +123,7 @@ class Settings:
     watcher_default_max_turns: int = DEFAULT_WATCHER_DEFAULT_MAX_TURNS
     watcher_antistall_max_nudges: int = DEFAULT_WATCHER_ANTISTALL_MAX_NUDGES
     watcher_default_prompt: str = DEFAULT_WATCHER_DEFAULT_PROMPT
+    auto_rename_enabled: bool = DEFAULT_AUTO_RENAME_ENABLED
 
 
 def _config_path(path: Path | None = None) -> Path:
@@ -287,6 +290,7 @@ def load_settings(path: Path | None = None) -> Settings:
             if isinstance(raw.get("watcher_default_prompt"), str) and str(raw.get("watcher_default_prompt")).strip()
             else DEFAULT_WATCHER_DEFAULT_PROMPT
         ),
+        auto_rename_enabled=_coerce_bool(raw.get("auto_rename_enabled"), DEFAULT_AUTO_RENAME_ENABLED),
     )
     if cacheable:
         # Only cache if the file did not change mid-read.

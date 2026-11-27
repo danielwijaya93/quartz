@@ -295,6 +295,7 @@ class Session:
         # record by `create`/`load`, and read by a fresh session created in the
         # same seat (`/new` must not turn a browser session into a terminal one).
         self.origin = ORIGIN_CLI
+        self.name: str | None = None
         self.snapshot_dir = snapshot_dir
         self._persisted_count = 0
         self._persisted_refs: list[dict[str, Any]] = []
@@ -328,7 +329,10 @@ class Session:
     def _update_meta_field(self, key: str, value: Any) -> None:
         """Update a field in pending meta and the persisted JSONL `meta` record."""
         if self._pending_meta is not None:
-            self._pending_meta[key] = value
+            if value is None:
+                self._pending_meta.pop(key, None)
+            else:
+                self._pending_meta[key] = value
         if not self.jsonl_path.is_file():
             return
         lines = self.jsonl_path.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -342,7 +346,10 @@ class Session:
             except json.JSONDecodeError:
                 continue
             if rec.get("type") == "meta":
-                rec[key] = value
+                if value is None:
+                    rec.pop(key, None)
+                else:
+                    rec[key] = value
                 lines[idx] = json.dumps(rec) + "\n"
                 updated = True
                 break
@@ -369,6 +376,14 @@ class Session:
     def set_sandbox(self, enabled: bool) -> None:
         """Persist this session's sandbox toggle in pending meta and JSONL."""
         self._update_meta_field("sandbox", bool(enabled))
+
+    def set_name(self, name: str) -> str | None:
+        """Set or clear this session's human-readable name in meta and JSONL."""
+        cleaned = " ".join(name.split())
+        normalized: str | None = cleaned if cleaned else None
+        self.name = normalized
+        self._update_meta_field("name", normalized)
+        return normalized
 
     @classmethod
     def _read_session_facts(cls, jsonl_path: Path) -> _SessionFacts:
@@ -459,6 +474,30 @@ class Session:
         return cls._inspect_session(path).sandbox
 
     @classmethod
+    def resolve_resume_target(
+        cls,
+        target: str,
+        cwd: Path,
+        sessions_dir: Path | None = None,
+    ) -> str | None:
+        """Resolve a resume target (exact session ID anywhere, or session name in *cwd*)."""
+        cleaned = target.strip()
+        if not cleaned:
+            return None
+        root = (sessions_dir or default_sessions_dir()).resolve()
+        if not root.is_dir():
+            return None
+        try:
+            jsonl_path, _ = _resolve_session_paths(cleaned, root)
+            if jsonl_path.is_file():
+                return cleaned
+        except ValueError:
+            pass
+        from quartz.core.session_index import get_session_index
+
+        return get_session_index(sessions_dir).resolve_by_name(root, cleaned, cwd)
+
+    @classmethod
     def latest_id(
         cls, cwd: Path | None = None, sessions_dir: Path | None = None
     ) -> str | None:
@@ -487,6 +526,7 @@ class Session:
         results: list[dict[str, Any]] = []
         for f, mtime_val in _sorted_jsonl_files(root):
             session_cwd: str | None = None
+            session_name = ""
             msgs: list[dict[str, Any]] = []
             try:
                 with f.open("r", encoding="utf-8") as fh:
@@ -500,6 +540,9 @@ class Session:
                             session_cwd = rec.get("cwd")
                             if session_cwd != target_cwd:
                                 break
+                            raw_name = rec.get("name")
+                            if isinstance(raw_name, str) and raw_name.strip():
+                                session_name = raw_name.strip()
                         elif rec_type == "message":
                             msgs.append(rec["message"])
                         elif rec_type == "compaction":
@@ -520,14 +563,15 @@ class Session:
                 "",
             )
             mtime = datetime.fromtimestamp(mtime_val).strftime("%Y-%m-%d %H:%M")
-            results.append(
-                {
-                    "id": f.stem,
-                    "updated_at": mtime,
-                    "message_count": len(msgs),
-                    "preview": (last_user[:70] + "...") if len(last_user) > 70 else last_user,
-                }
-            )
+            entry: dict[str, Any] = {
+                "id": f.stem,
+                "updated_at": mtime,
+                "message_count": len(msgs),
+                "preview": (last_user[:70] + "...") if len(last_user) > 70 else last_user,
+            }
+            if session_name:
+                entry["name"] = session_name
+            results.append(entry)
         return results
 
     @classmethod
@@ -603,6 +647,8 @@ class Session:
             if rec_type == "meta":
                 raw_origin = record.get("origin")
                 session.origin = raw_origin if raw_origin in _ORIGINS else ORIGIN_CLI
+                raw_name = record.get("name")
+                session.name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else None
             elif rec_type == "message" and isinstance(record.get("message"), dict):
                 messages.append(record["message"])
                 ui_meta = record.get("ui_meta")
