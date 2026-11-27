@@ -108,10 +108,10 @@ async def maybe_auto_rename_session(
             timeout=timeout_s,
         )
     except TimeoutError:
-        logger.debug("Web auto-rename timed out for session %s", sid)
+        logger.warning("Web auto-rename timed out for session %s (%s/%s)", sid, provider, model)
         return False
     except Exception:
-        logger.debug("Web auto-rename failed for session %s", sid, exc_info=True)
+        logger.warning("Web auto-rename failed for session %s (%s/%s)", sid, provider, model, exc_info=True)
         return False
 
     title = _clean_title(getattr(result, "text", "") or "")
