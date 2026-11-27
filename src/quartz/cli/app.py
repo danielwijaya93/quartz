@@ -493,6 +493,9 @@ def main() -> None:
     if args.fork and not args.resume and not args.cont:
         parser.error("--fork requires -r <session-id> (or -c)")
 
+    from quartz.logging_config import configure_logging
+
+    configure_logging()
     _maybe_prompt_project_trust(args)
     rt, resumed = _build_runtime(args)
     try:

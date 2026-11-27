@@ -533,7 +533,10 @@ def _handle_web_cli(argv: list[str]) -> None:
             )
         )
 
+    from quartz.logging_config import configure_logging
     from quartz.web.app import create_app
+
+    configure_logging()
     from quartz.web.auth import default_web_token_path, load_or_create_web_token
 
     auth_token: str | None = None
