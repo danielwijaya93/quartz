@@ -20,7 +20,7 @@ __all__ = ["maybe_auto_rename_session"]
 _AUTO_RENAME_TIMEOUT_S = 10.0
 _MAX_TITLE_CHARS = 60
 _AUTO_RENAME_SYSTEM = (
-    "Generate a concise 3 to 6 word title summarizing this conversation. "
+    "Generate a concise title of at most 3 words summarizing this conversation. "
     "Return only the plain title text with no quotes, markdown, or trailing punctuation."
 )
 
