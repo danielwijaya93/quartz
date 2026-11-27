@@ -17,20 +17,97 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "DEFAULT_EVAL_TIMEOUT_S",
     "DEFAULT_MAX_CHARS_PER_MSG",
+    "clean_openui_for_watcher",
     "evaluate_turn_with_model",
     "parse_watcher_decision",
     "truncate_recent_messages",
 ]
 
 DEFAULT_EVAL_TIMEOUT_S = 15.0
-DEFAULT_MAX_CHARS_PER_MSG = 1_500
+DEFAULT_MAX_CHARS_PER_MSG = 2_400
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
+_STRING_LIT_RE = re.compile(r'"((?:\\.|[^"\\])*)"')
+_ACTION_CALL_RE = re.compile(r"@(?:ToAssistant|OpenUrl)\([^)]*\)")
+_OPENUI_IDENT_RE = re.compile(r"[a-z0-9_-]+")
+_OPENUI_STOP_TOKENS = frozenset(
+    {
+        "horizontal",
+        "vertical",
+        "row",
+        "column",
+        "wrap",
+        "neutral",
+        "info",
+        "warning",
+        "success",
+        "danger",
+        "error",
+        "primary",
+        "secondary",
+        "tertiary",
+        "normal",
+        "destructive",
+        "number",
+        "text",
+        "metric",
+        "string",
+        "action",
+        "card",
+        "sunk",
+        "clear",
+        "pie",
+        "donut",
+        "circular",
+        "semiCircular",
+        "grouped",
+        "stacked",
+        "linear",
+        "natural",
+        "step",
+        "single",
+        "multiple",
+        "continuous",
+        "discrete",
+        "xs",
+        "s",
+        "m",
+        "l",
+        "xl",
+        "2xl",
+        "sm",
+        "md",
+        "lg",
+        "default",
+        "small",
+        "large",
+        "small-heavy",
+        "large-heavy",
+        "extra-small",
+        "medium",
+        "start",
+        "center",
+        "end",
+        "stretch",
+        "baseline",
+        "between",
+        "around",
+        "evenly",
+        "none",
+        "grid",
+        "carousel",
+        "filled",
+        "soft",
+        "inverted",
+    }
+)
 
 _ANTISTALL_SYSTEM = (
     "You are a lightweight turn-watcher judge. Inspect the last few messages of a coding-agent "
     "session and decide whether the agent stalled mid-plan or finished cleanly.\n"
     'Respond ONLY with a JSON object: {"decision": "continue" | "stop", "reason": "<short reason>"}.\n'
+    "Note: Long messages may have their middle elided with '…[truncated]…'—truncation is NOT a stall. "
+    "Messages prefixed with '[Rendered OpenUI response]' are complete UI answers rendered for the user.\n"
     "Return 'continue' ONLY if the assistant clearly stated it will do a next step (e.g. run tests, "
     "edit a file, verify something) and stopped without calling a tool.\n"
     "Return 'stop' if the assistant answered the user, asked the user a question/decision, "
@@ -65,24 +142,72 @@ def _flatten_content(content: Any) -> str:
     return str(content)
 
 
+def clean_openui_for_watcher(text: str) -> str:
+    """Extract readable text from an OpenUI-lang payload so the watcher judge sees content, not DSL syntax."""
+    stripped = text.lstrip()
+    if not stripped.startswith("root = Stack("):
+        return text
+    extracted: list[str] = []
+    seen: set[str] = set()
+    for line in stripped.splitlines():
+        if "= Icon(" in line:
+            continue
+        cleaned_line = _ACTION_CALL_RE.sub("", line)
+        for match in _STRING_LIT_RE.finditer(cleaned_line):
+            raw = match.group(1)
+            try:
+                val = str(json.loads(f'"{raw}"'))
+            except (json.JSONDecodeError, ValueError):
+                val = raw.replace('\\"', '"').replace("\\n", "\n")
+            val = val.strip()
+            if not val or val in _OPENUI_STOP_TOKENS:
+                continue
+            if len(val) < 20 and " " not in val and _OPENUI_IDENT_RE.fullmatch(val):
+                continue
+            if val not in seen:
+                seen.add(val)
+                extracted.append(val)
+    if not extracted:
+        return "[Rendered OpenUI response]"
+    return "[Rendered OpenUI response]\n" + "\n".join(extracted)
+
+
+def _truncate_head_tail(text: str, max_chars: int) -> str:
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    marker = "\n…[truncated]…\n" if max_chars >= 300 else "…"
+    budget = max(2, max_chars - len(marker))
+    head_len = budget // 3
+    tail_len = budget - head_len
+    return f"{text[:head_len]}{marker}{text[-tail_len:]}"
+
+
 def truncate_recent_messages(
     messages: Sequence[Mapping[str, Any]],
     *,
     limit: int = 3,
     max_chars_per_message: int = DEFAULT_MAX_CHARS_PER_MSG,
 ) -> list[dict[str, str]]:
-    """Return up to ``limit`` recent messages with role + capped text content."""
+    """Return up to ``limit`` recent messages with role + head/tail-capped text content."""
     if limit <= 0:
         return []
-    recent = list(messages)[-limit:]
+    msg_list = list(messages)
+    recent = msg_list[-limit:]
+    # Preserve the latest real user prompt when tool calls pushed it out of the tail window.
+    if limit >= 2 and not any(str(m.get("role") or "") == "user" for m in recent):
+        for earlier in reversed(msg_list[:-limit]):
+            if str(earlier.get("role") or "") == "user":
+                recent = [earlier, *recent[1:]]
+                break
     out: list[dict[str, str]] = []
     for msg in recent:
         role = str(msg.get("role") or "unknown")
         text = _flatten_content(msg.get("content")).strip()
         if not text and msg.get("tool_calls"):
             text = "[called tools]"
-        if len(text) > max_chars_per_message:
-            text = f"{text[:max_chars_per_message]}…"
+        if role == "assistant" and text:
+            text = clean_openui_for_watcher(text)
+        text = _truncate_head_tail(text, max_chars_per_message)
         out.append({"role": role, "content": text})
     return out
 

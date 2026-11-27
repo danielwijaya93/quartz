@@ -45,7 +45,7 @@ class WatcherGlobalConfig:
 
     provider: str = ""
     model: str = ""
-    antistall_default: bool = True
+    antistall_default: bool = False
     delay_seconds: float = 30.0
     default_max_turns: int = 10
     antistall_max_nudges: int = 3
