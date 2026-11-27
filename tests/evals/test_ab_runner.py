@@ -36,11 +36,43 @@ def test_load_tasks_reads_repo_tasks_and_rejects_invalid(tmp_path: Path) -> None
         ab.load_tasks(bad)
 
 
-def test_validate_tasks_succeeds_for_repo_tasks() -> None:
+def test_validate_tasks_on_fixture_and_full_clone(tmp_path: Path) -> None:
     ab = _import_runner()
-    tasks = ab.load_tasks(REPO_ROOT / "evals" / "tasks.json")
-    errors = ab.validate_tasks(tasks, repo_root=REPO_ROOT)
-    assert errors == [], f"Task validation failed: {errors}"
+    repo, base_sha, fix_sha = _init_mini_repo(tmp_path)
+    valid_task = ab.EvalTask(
+        id="mini",
+        category="bugfix",
+        base_commit=base_sha,
+        test_commit=fix_sha,
+        test_paths=("test_app.py",),
+        verify_cmd="{python} -m pytest -q test_app.py",
+        prompt="Fix add()",
+    )
+    assert ab.validate_tasks([valid_task], repo_root=repo) == []
+
+    broken_task = ab.EvalTask(
+        id="bad",
+        category="bugfix",
+        base_commit="0" * 40,
+        test_commit=fix_sha,
+        test_paths=("nonexistent_test.py",),
+        verify_cmd="{python} -m pytest -q",
+        prompt="x",
+    )
+    errs = ab.validate_tasks([broken_task], repo_root=repo)
+    assert any("base_commit" in e for e in errs)
+    assert any("nonexistent_test.py" in e for e in errs)
+
+    # Validate repo tasks.json commits when running in a full (non-shallow) clone.
+    shallow = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if shallow.returncode == 0 and shallow.stdout.strip() != "true":
+        repo_tasks = ab.load_tasks(REPO_ROOT / "evals" / "tasks.json")
+        assert ab.validate_tasks(repo_tasks, repo_root=REPO_ROOT) == []
 
 
 def test_parse_session_metrics_extracts_cells_tokens_and_helpers(tmp_path: Path) -> None:
