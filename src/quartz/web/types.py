@@ -68,10 +68,6 @@ class SettingsValuesPayload(TypedDict):
     notifyBackground: bool
     notifyError: bool
     richUi: bool
-    kernelMemMb: int
-    kernelMaxOpenFiles: int
-    kernelMaxProcesses: int
-    strictSnapshots: bool
     sandboxEnvPassthrough: str
     botMaxUsdPerDay: float | None
     botMaxConsecutiveErrors: int

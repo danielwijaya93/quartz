@@ -139,12 +139,6 @@ class KernelClientTransport(BaseKernel):
         env["PYTHONPATH"] = f"{pkg_root}{os.pathsep}{existing_pp}" if existing_pp else pkg_root
 
         cmd = [sys.executable, "-u", "-m", "quartz.kernel.worker"]
-        from quartz.kernel.limits import ResourceLimits
-
-        limits = ResourceLimits.from_env()
-        env.setdefault("QUARTZ_KERNEL_MAX_MEM_MB", str(limits.max_memory_mb))
-        env.setdefault("QUARTZ_KERNEL_MAX_NOFILE", str(limits.max_open_files))
-        env.setdefault("QUARTZ_KERNEL_MAX_NPROC", str(limits.max_processes))
 
         if self._sandbox_config.enabled:
             cmd = wrap_command(cmd, self.cwd, self._sandbox_config)

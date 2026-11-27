@@ -131,10 +131,6 @@ describe("SettingsView", () => {
               progress: 5,
               bg: 300,
               idle: 2,
-              kernelMemMb: 4096,
-              kernelMaxOpenFiles: 4096,
-              kernelMaxProcesses: 256,
-              strictSnapshots: body.key === "strict_snapshots" ? body.value === "on" : true,
               sandboxEnvPassthrough: "MY_APP_ENV",
               botMaxUsdPerDay: 10,
               botMaxConsecutiveErrors: 5,
@@ -155,10 +151,6 @@ describe("SettingsView", () => {
             progress: 5,
             bg: 300,
             idle: 2,
-            kernelMemMb: 4096,
-            kernelMaxOpenFiles: 4096,
-            kernelMaxProcesses: 256,
-            strictSnapshots: true,
             sandboxEnvPassthrough: "MY_APP_ENV",
             botMaxUsdPerDay: 5,
             botMaxConsecutiveErrors: 5,
@@ -173,10 +165,6 @@ describe("SettingsView", () => {
             progress: 5,
             bg: 300,
             idle: 2,
-            kernelMemMb: 4096,
-            kernelMaxOpenFiles: 4096,
-            kernelMaxProcesses: 256,
-            strictSnapshots: true,
             sandboxEnvPassthrough: "",
             botMaxUsdPerDay: 5,
             botMaxConsecutiveErrors: 5,
@@ -211,12 +199,6 @@ describe("SettingsView", () => {
 
     // Advanced tab
     await user.click(screen.getByRole("tab", { name: "Advanced" }));
-    expect(await screen.findByLabelText("Kernel memory cap (MiB)")).toHaveValue("4096");
-    expect(screen.getByLabelText("Sandbox env passthrough")).toHaveValue("MY_APP_ENV");
-
-    const strictSwitch = screen.getByRole("switch", { name: "Strict snapshot verification" });
-    expect(strictSwitch).toHaveAttribute("aria-checked", "true");
-    await user.click(strictSwitch);
-    expect(posted).toContainEqual({ key: "strict_snapshots", value: "off" });
+    expect(await screen.findByLabelText("Sandbox env passthrough")).toHaveValue("MY_APP_ENV");
   });
 });

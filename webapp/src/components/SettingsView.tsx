@@ -11,7 +11,7 @@ import {
 } from "./ModelPricingSection";
 import { authFetch } from "../lib/authToken";
 import { Button, Input } from "@heroui/react";
-import { Bell, Bot, Cpu, MessageSquare, RotateCcw, Save, Shield } from "lucide-react";
+import { Bell, Bot, MessageSquare, RotateCcw, Save, Shield } from "lucide-react";
 import type { NotificationCategory } from "../lib/notifications";
 import { useNotifications, type NotificationsController } from "../lib/useNotifications";
 import { CanvasPage } from "./CanvasPage";
@@ -49,10 +49,6 @@ interface SettingsValues {
   progress: number;
   bg: number;
   idle?: number;
-  kernelMemMb?: number;
-  kernelMaxOpenFiles?: number;
-  kernelMaxProcesses?: number;
-  strictSnapshots?: boolean;
   sandboxEnvPassthrough?: string;
   botMaxUsdPerDay?: number | null;
   botMaxConsecutiveErrors?: number;
@@ -95,27 +91,6 @@ const SESSION_FIELDS: readonly SettingFieldDef[] = [
   { apiKey: "idle", valueKey: "idle", label: "Idle session reminder (hours)", hint: (d) => `Default ${d.idle ?? 2}h · 0 disables` },
 ];
 
-const KERNEL_QUOTA_FIELDS: readonly SettingFieldDef[] = [
-  {
-    apiKey: "kernel_mem",
-    valueKey: "kernelMemMb",
-    label: "Kernel memory cap (MiB)",
-    hint: (d) => `Default ${d.kernelMemMb ? `${d.kernelMemMb.toLocaleString()} MiB` : "0 (unlimited)"} · opt-in RLIMIT_AS (next kernel start)`,
-  },
-  {
-    apiKey: "kernel_files",
-    valueKey: "kernelMaxOpenFiles",
-    label: "Max open files (NOFILE)",
-    hint: (d) => `Default ${(d.kernelMaxOpenFiles ?? 4096).toLocaleString()} · 0 = unlimited`,
-  },
-  {
-    apiKey: "kernel_procs",
-    valueKey: "kernelMaxProcesses",
-    label: "Max processes (NPROC)",
-    hint: (d) => `Default ${d.kernelMaxProcesses ? d.kernelMaxProcesses : "0 (unlimited)"} · opt-in per-UID RLIMIT_NPROC`,
-  },
-];
-
 const BOT_GOVERNANCE_FIELDS: readonly SettingFieldDef[] = [
   {
     apiKey: "bot_budget",
@@ -142,7 +117,6 @@ const BOT_GOVERNANCE_FIELDS: readonly SettingFieldDef[] = [
 
 const ALL_FIELD_DEFS: readonly SettingFieldDef[] = [
   ...SESSION_FIELDS,
-  ...KERNEL_QUOTA_FIELDS,
   ...BOT_GOVERNANCE_FIELDS,
 ];
 
@@ -159,9 +133,6 @@ function draftsFromValues(values: SettingsValues, defaults: SettingsValues): Rec
     progress: formatValueForDraft(values.progress, defaults.progress ?? 5),
     bg: formatValueForDraft(values.bg, defaults.bg ?? 300),
     idle: formatValueForDraft(values.idle, defaults.idle ?? 2),
-    kernel_mem: formatValueForDraft(values.kernelMemMb, defaults.kernelMemMb ?? 0),
-    kernel_files: formatValueForDraft(values.kernelMaxOpenFiles, defaults.kernelMaxOpenFiles ?? 4096),
-    kernel_procs: formatValueForDraft(values.kernelMaxProcesses, defaults.kernelMaxProcesses ?? 0),
     sandbox_env: formatValueForDraft(values.sandboxEnvPassthrough, defaults.sandboxEnvPassthrough ?? ""),
     bot_budget: formatValueForDraft(values.botMaxUsdPerDay, defaults.botMaxUsdPerDay ?? 5),
     bot_errors: formatValueForDraft(values.botMaxConsecutiveErrors, defaults.botMaxConsecutiveErrors ?? 5),
@@ -422,7 +393,6 @@ export function SettingsView({
   };
 
   const notifActive = notifications.enabled && notifications.env.permission === "granted";
-  const strictSnapshots = data?.values.strictSnapshots ?? true;
   const trackChatUsage = data?.values.trackChatUsage ?? true;
   const sandboxEnvCurrent = data?.values.sandboxEnvPassthrough ?? "";
   const sandboxEnvDraft = drafts.sandbox_env ?? sandboxEnvCurrent;
@@ -660,19 +630,6 @@ export function SettingsView({
               />
 
               <section
-                aria-label="Kernel Resource Quotas"
-                className="rounded-xl border border-border bg-surface/50 px-4 py-3"
-              >
-                <div className="mb-3 flex items-center gap-1.5 border-b border-separator pb-2">
-                  <Cpu aria-hidden="true" className="size-3.5 text-muted" />
-                  <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">
-                    Kernel Resource Quotas
-                  </h2>
-                </div>
-                {renderFieldRows(KERNEL_QUOTA_FIELDS)}
-              </section>
-
-              <section
                 aria-label="Security and Sandbox"
                 className="rounded-xl border border-border bg-surface/50 px-4 py-3"
               >
@@ -683,28 +640,7 @@ export function SettingsView({
                   </h2>
                 </div>
                 <div className="divide-y divide-separator">
-                  <div className="flex items-center justify-between gap-3 pb-3">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-foreground">Strict snapshot verification</p>
-                      <p className="text-xs text-muted">
-                        Reject unsigned pickle/dill snapshots by default (JSON variables always restore safely).
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={strictSnapshots}
-                      aria-label="Strict snapshot verification"
-                      disabled={saving}
-                      onClick={() => void saveSingleKey("strict_snapshots", strictSnapshots ? "off" : "on")}
-                      className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                        strictSnapshots ? "bg-accent text-white" : "border border-border text-foreground"
-                      } disabled:opacity-50`}
-                    >
-                      {strictSnapshots ? "On" : "Off"}
-                    </button>
-                  </div>
-                  <div className="flex flex-col gap-2 pt-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-foreground">Sandbox env passthrough</p>
                       <p className="text-xs text-muted">

@@ -34,10 +34,6 @@ DEFAULT_NOTIFY_ERROR = True
 DEFAULT_RICH_UI = False
 DEFAULT_BRIDGE_TIMEOUT_S = 290
 DEFAULT_BRIDGE_WORKER_TIMEOUT_S = 1800
-DEFAULT_KERNEL_MAX_MEM_MB = 0
-DEFAULT_KERNEL_MAX_OPEN_FILES = 4096
-DEFAULT_KERNEL_MAX_PROCESSES = 0
-DEFAULT_STRICT_SNAPSHOTS = True
 DEFAULT_BOT_MAX_USD_PER_DAY: float | None = 5.0
 DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS = 5
 DEFAULT_BOT_WEBHOOK_RATE_LIMIT = 30
@@ -69,9 +65,6 @@ _MAX_BACKGROUND_CHECK_EVERY = 86_400
 _MAX_RETENTION_DAYS = 3_650
 _MAX_WEB_IDLE_HOURS = 8_760
 _MAX_WEB_MAX_LIVE_SESSIONS = 100
-_MAX_KERNEL_MEM_MB = 1_048_576
-_MAX_KERNEL_OPEN_FILES = 1_048_576
-_MAX_KERNEL_PROCESSES = 65_536
 _MAX_BOT_USD_PER_DAY = 10_000.0
 _MAX_BOT_CONSECUTIVE_ERRORS = 1_000
 _MAX_BOT_WEBHOOK_RATE_LIMIT = 10_000
@@ -94,10 +87,6 @@ _PERSISTED_FIELDS = (
     "notify_background",
     "notify_error",
     "rich_ui",
-    "kernel_max_mem_mb",
-    "kernel_max_open_files",
-    "kernel_max_processes",
-    "strict_snapshots",
     "sandbox_env_passthrough",
     "bot_max_consecutive_errors",
     "bot_webhook_rate_limit",
@@ -146,10 +135,6 @@ class Settings:
     rich_ui: bool = DEFAULT_RICH_UI
     bridge_timeout_s: int | None = None
     bridge_worker_timeout_s: int | None = None
-    kernel_max_mem_mb: int = DEFAULT_KERNEL_MAX_MEM_MB
-    kernel_max_open_files: int = DEFAULT_KERNEL_MAX_OPEN_FILES
-    kernel_max_processes: int = DEFAULT_KERNEL_MAX_PROCESSES
-    strict_snapshots: bool = DEFAULT_STRICT_SNAPSHOTS
     sandbox_env_passthrough: tuple[str, ...] = ()
     bot_max_usd_per_day: float | None = DEFAULT_BOT_MAX_USD_PER_DAY
     bot_max_consecutive_errors: int = DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS
@@ -418,10 +403,6 @@ def load_settings(path: Path | None = None) -> Settings:
         rich_ui=_coerce_bool(raw.get("rich_ui"), DEFAULT_RICH_UI),
         bridge_timeout_s=_coerce_bridge_timeout(raw.get("bridge_timeout_s")),
         bridge_worker_timeout_s=_coerce_bridge_timeout(raw.get("bridge_worker_timeout_s")),
-        kernel_max_mem_mb=_coerce_int_range(raw.get("kernel_max_mem_mb"), DEFAULT_KERNEL_MAX_MEM_MB, 0, _MAX_KERNEL_MEM_MB),
-        kernel_max_open_files=_coerce_int_range(raw.get("kernel_max_open_files"), DEFAULT_KERNEL_MAX_OPEN_FILES, 0, _MAX_KERNEL_OPEN_FILES),
-        kernel_max_processes=_coerce_int_range(raw.get("kernel_max_processes"), DEFAULT_KERNEL_MAX_PROCESSES, 0, _MAX_KERNEL_PROCESSES),
-        strict_snapshots=_coerce_bool(raw.get("strict_snapshots"), DEFAULT_STRICT_SNAPSHOTS),
         sandbox_env_passthrough=_coerce_env_passthrough(raw.get("sandbox_env_passthrough")),
         bot_max_usd_per_day=(
             _coerce_optional_usd(raw["bot_max_usd_per_day"])
@@ -481,18 +462,6 @@ def validate_web_max_live_sessions(value: int) -> bool:
 
 def validate_bridge_timeout(value: int | float) -> bool:
     return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value) and value > 0
-
-
-def validate_kernel_max_mem_mb(value: int) -> bool:
-    return _valid_int_range(value, 0, _MAX_KERNEL_MEM_MB)
-
-
-def validate_kernel_max_open_files(value: int) -> bool:
-    return _valid_int_range(value, 0, _MAX_KERNEL_OPEN_FILES)
-
-
-def validate_kernel_max_processes(value: int) -> bool:
-    return _valid_int_range(value, 0, _MAX_KERNEL_PROCESSES)
 
 
 def validate_bot_max_usd_per_day(value: float) -> bool:

@@ -77,8 +77,6 @@ class KernelRpcFrame(TypedDict, total=False):
     code: str
     dir: str
     sign: bool
-    allow_pickle: bool
-    pickle_reject_reason: str
     root: str
     headless: bool
     background_check_every: float
