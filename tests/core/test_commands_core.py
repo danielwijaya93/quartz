@@ -108,6 +108,7 @@ def test_the_registry_lists_every_command_once() -> None:
         "/login",
         "/logout",
         "/model",
+        "/rename",
         "/continue",
         "/image",
         "/paste",

@@ -126,6 +126,7 @@ def test_settings_progress_edit_preserves_compaction_values(
         "watcher_default_max_turns": 10,
         "watcher_antistall_max_nudges": 3,
         "watcher_default_prompt": "Continue with the next step you mentioned.",
+        "auto_rename_enabled": True,
     }
 
 

@@ -262,6 +262,7 @@ export type ServerMessage =
     }
   | { type: "permission_resolved"; requestId: string; decision: PermissionDecision }
   | { type: "active_sessions_state"; items: ActiveSessionItem[] }
+  | { type: "sidebar_updated" }
   | {
       type: "settings_state";
       notifications: boolean;
@@ -309,6 +310,7 @@ const SERVER_MESSAGE_TYPES: ReadonlySet<string> = new Set<ServerMessageType>([
   "permission_request",
   "permission_resolved",
   "active_sessions_state",
+  "sidebar_updated",
   "settings_state",
   "notifications_cleared",
   "watcher_state",

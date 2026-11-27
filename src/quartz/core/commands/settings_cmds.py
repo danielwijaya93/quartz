@@ -57,6 +57,7 @@ _SETTING_ALIASES: dict[str, str] = {
     "watcher_max_turns": "watcher_default_max_turns", "watcher_default_max_turns": "watcher_default_max_turns", "watcherDefaultMaxTurns": "watcher_default_max_turns", "watcher-max-turns": "watcher_default_max_turns",
     "watcher_max_nudges": "watcher_antistall_max_nudges", "watcher_antistall_max_nudges": "watcher_antistall_max_nudges", "watcherAntistallMaxNudges": "watcher_antistall_max_nudges", "watcher-max-nudges": "watcher_antistall_max_nudges",
     "watcher_prompt": "watcher_default_prompt", "watcher_default_prompt": "watcher_default_prompt", "watcherDefaultPrompt": "watcher_default_prompt", "watcher-prompt": "watcher_default_prompt",
+    "auto_rename": "auto_rename_enabled", "auto_rename_enabled": "auto_rename_enabled", "autoRenameEnabled": "auto_rename_enabled", "auto-rename": "auto_rename_enabled",
 }
 
 _SETTINGS_USAGE = (
@@ -143,6 +144,7 @@ _BOOL_SETTINGS: dict[str, tuple[str, str | None]] = {
     "notify_error": ("notify_error", None),
     "rich_ui": ("rich_ui", None),
     "watcher_antistall_default": ("watcher_antistall_default", None),
+    "auto_rename_enabled": ("auto_rename_enabled", None),
 }
 
 

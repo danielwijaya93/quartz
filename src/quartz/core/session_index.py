@@ -35,6 +35,7 @@ class _ParsedSession:
     session_id: str
     cwd: str | None
     origin: str
+    name: str
     title: str
     has_messages: bool
     content: str
@@ -93,6 +94,7 @@ def _parse_jsonl_for_index(jsonl_path: Path, st: os.stat_result) -> _ParsedSessi
     session_id = jsonl_path.stem
     cwd: str | None = None
     origin = _ORIGIN_CLI
+    name = ""
     seen_meta = False
     has_messages = False
     title = ""
@@ -118,6 +120,8 @@ def _parse_jsonl_for_index(jsonl_path: Path, st: os.stat_result) -> _ParsedSessi
                     cwd = raw_cwd if isinstance(raw_cwd, str) and raw_cwd else None
                     raw_origin = rec.get("origin")
                     origin = raw_origin if raw_origin in _ORIGINS else _ORIGIN_CLI
+                    raw_name = rec.get("name")
+                    name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else ""
                 elif rec_type == "message":
                     has_messages = True
                     msg = rec.get("message")
@@ -151,6 +155,7 @@ def _parse_jsonl_for_index(jsonl_path: Path, st: os.stat_result) -> _ParsedSessi
             session_id=session_id,
             cwd=None,
             origin=_ORIGIN_CLI,
+            name="",
             title="",
             has_messages=False,
             content="",
@@ -163,6 +168,7 @@ def _parse_jsonl_for_index(jsonl_path: Path, st: os.stat_result) -> _ParsedSessi
         session_id=session_id,
         cwd=cwd,
         origin=origin,
+        name=name,
         title=title,
         has_messages=has_messages,
         content="\n".join(chunks),
@@ -260,11 +266,12 @@ class SessionIndex:
                 conn.execute(
                     """
                     INSERT INTO sessions_index
-                        (session_id, cwd, origin, title, has_messages, mtime_ns, file_size, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        (session_id, cwd, origin, name, title, has_messages, mtime_ns, file_size, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(session_id) DO UPDATE SET
                         cwd = excluded.cwd,
                         origin = excluded.origin,
+                        name = excluded.name,
                         title = excluded.title,
                         has_messages = excluded.has_messages,
                         mtime_ns = excluded.mtime_ns,
@@ -275,6 +282,7 @@ class SessionIndex:
                         item.session_id,
                         item.cwd or "",
                         item.origin,
+                        item.name,
                         item.title,
                         1 if item.has_messages and item.cwd else 0,
                         item.mtime_ns,
@@ -315,7 +323,7 @@ class SessionIndex:
         if target_cwd is not None:
             rows = self._db.read_connection().execute(
                 """
-                SELECT session_id, cwd, origin, title, updated_at
+                SELECT session_id, cwd, origin, name, title, updated_at
                 FROM sessions_index
                 WHERE has_messages = 1 AND cwd = ?
                 ORDER BY updated_at DESC, session_id DESC
@@ -325,7 +333,7 @@ class SessionIndex:
         else:
             rows = self._db.read_connection().execute(
                 """
-                SELECT session_id, cwd, origin, title, updated_at
+                SELECT session_id, cwd, origin, name, title, updated_at
                 FROM sessions_index
                 WHERE has_messages = 1 AND cwd != ''
                 ORDER BY updated_at DESC, session_id DESC
@@ -351,6 +359,9 @@ class SessionIndex:
                 "origin": str(row["origin"]),
                 "cwdExists": cwd_exists_cache.setdefault(row_cwd, _is_dir(row_cwd)),
             }
+            name = str(row["name"] or "")
+            if name:
+                entry["name"] = name
             title = str(row["title"] or "")
             if title:
                 entry["title"] = title
@@ -360,6 +371,33 @@ class SessionIndex:
                 next_cursor = results[-1]["sessionId"] if results else None
                 break
         return results, next_cursor
+
+    def resolve_by_name(
+        self,
+        sessions_dir: Path,
+        name: str,
+        cwd: Path,
+    ) -> str | None:
+        """Return the newest session ID matching *name* in *cwd*, or None."""
+        cleaned = name.strip()
+        if not cleaned:
+            return None
+        root = sessions_dir.resolve()
+        if not root.is_dir():
+            return None
+        self.sync_dir(root)
+        target_cwd = str(cwd.resolve())
+        row = self._db.read_connection().execute(
+            """
+            SELECT session_id
+            FROM sessions_index
+            WHERE has_messages = 1 AND cwd = ? AND name = ?
+            ORDER BY updated_at DESC, session_id DESC
+            LIMIT 1
+            """,
+            (target_cwd, cleaned),
+        ).fetchone()
+        return str(row["session_id"]) if row is not None else None
 
     def search(
         self,

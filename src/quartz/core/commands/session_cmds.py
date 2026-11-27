@@ -21,9 +21,32 @@ __all__ = ["cmd_compact", "cmd_jobs", "parse_expand_range"]
 
 
 @COMMAND_REGISTRY.register(
+    "/rename",
+    "Name or rename the current session (or /rename clear)",
+    usage="<name | clear>",
+)
+def _cmd_rename(rt: AgentRuntime, arg: str) -> CommandResult | None:
+    raw = arg.strip()
+    if not raw:
+        current = getattr(rt.active_session, "name", None)
+        if current:
+            return CommandResult.text(
+                f"Current session name: {current}\nUsage: /rename <name> | /rename clear"
+            )
+        return CommandResult.text("Usage: /rename <name> | /rename clear")
+    if raw.lower() == "clear":
+        rt.active_session.set_name("")
+        return CommandResult.text("Session name cleared.")
+    cleaned = rt.active_session.set_name(raw)
+    if not cleaned:
+        return CommandResult.error("Session name cannot be empty.")
+    return CommandResult.text(f"Session renamed to: {cleaned}")
+
+
+@COMMAND_REGISTRY.register(
     "/continue",
     "Pick and resume a previous session in this directory",
-    usage="[id]",
+    usage="[id | name]",
     needs_terminal=True,
 )
 def _cmd_continue(rt: AgentRuntime, arg: str) -> CommandResult | None:
@@ -121,8 +144,10 @@ def _cmd_helpers(rt: AgentRuntime, arg: str) -> CommandResult | None:
 def _cmd_session(rt: AgentRuntime, arg: str) -> CommandResult | None:
     del arg
     if get_transport(rt) == "web":
+        name_line = f"Name: {rt.active_session.name}\n" if getattr(rt.active_session, "name", None) else ""
         return CommandResult.text(
             f"Session ID: {rt.active_session.id}\n"
+            f"{name_line}"
             f"Log: {rt.active_session.jsonl_path}\n"
             f"Snapshot: {rt.active_session.snapshot_dir}"
         )

@@ -214,6 +214,8 @@ def create_app(
                 store_ref = SidebarStore.load(default_sidebar_path())
             return store_ref
 
+    manager.set_sidebar_provider(store)
+
     normalized_token = (
         auth_token.strip() if isinstance(auth_token, str) and auth_token.strip() else None
     )

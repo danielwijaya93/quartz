@@ -46,6 +46,7 @@ interface SettingsValues {
   watcherDefaultMaxTurns?: number;
   watcherAntistallMaxNudges?: number;
   watcherDefaultPrompt?: string;
+  autoRenameEnabled?: boolean;
 }
 
 interface SettingsPayload {
@@ -523,6 +524,34 @@ export function SettingsView({
               <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">
                 Session &amp; Compaction
               </h2>
+            </div>
+            <div className="mb-2 flex items-center justify-between gap-3 border-b border-separator pb-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-foreground">Auto-rename web sessions</p>
+                <p className="text-xs text-muted">
+                  Automatically generate a title after the first turn using the same model as the Global Turn Watcher. Skipped if you rename the session manually.
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={data.values.autoRenameEnabled ?? true}
+                aria-label="Auto-rename web sessions"
+                disabled={saving !== null}
+                onClick={() =>
+                  void saveSingleKey(
+                    "auto_rename_enabled",
+                    (data.values.autoRenameEnabled ?? true) ? "off" : "on",
+                  )
+                }
+                className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                  (data.values.autoRenameEnabled ?? true)
+                    ? "bg-accent text-white"
+                    : "border border-border text-foreground"
+                } disabled:opacity-50`}
+              >
+                {(data.values.autoRenameEnabled ?? true) ? "On" : "Off"}
+              </button>
             </div>
             {renderFieldRows(SESSION_FIELDS)}
           </section>
