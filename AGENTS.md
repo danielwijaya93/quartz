@@ -25,9 +25,10 @@
    - `uv run pytest`
    - `cd webapp && npm run verify` (whenever `webapp/` changed)
    - `uv run python scripts/gen_index.py` (refresh `docs/SYMBOL_INDEX.md` when symbols/files change)
-3. **Version & Commit**: For `feat/`, `fix/`, `perf/`, `refactor/`, bump version via `uv run python scripts/bump_version.py <X.Y.Z>` (minor for `feat`, patch for `fix`/`perf`/`refactor`; skip for `chore/` or docs). Use Conventional Commits (`feat: ...`, `fix: ...`, `perf: ...`, `refactor: ...`).
-4. **PR & CI**: `git push -u origin <branch>` -> `gh pr create --title "..." --body "..."` -> `gh pr checks --watch`.
-5. **Merge & Post-merge**: `gh pr merge --squash --delete-branch && git checkout main && git pull`.
+3. **Visual Verification (Mandatory for features & user-facing fixes)**: For any `webapp/` change or user-facing web/API flow (skip pure docs or internal refactors), unit tests and CI are not sufficient proof. Before merging, build `webapp/dist`, run real `quartz web`, exercise the actual feature in `invisible_playwright_mcp`, take screenshots (`browser_take_screenshot`), inspect them visually with `view_image(...)`, and attach screenshot proof with `attach_file(...)`.
+4. **Version & Commit**: For `feat/`, `fix/`, `perf/`, `refactor/`, bump version via `uv run python scripts/bump_version.py <X.Y.Z>` (minor for `feat`, patch for `fix`/`perf`/`refactor`; skip for `chore/` or docs). Use Conventional Commits (`feat: ...`, `fix: ...`, `perf: ...`, `refactor: ...`).
+5. **PR & CI**: `git push -u origin <branch>` -> `gh pr create --title "..." --body "..."` -> `gh pr checks --watch`.
+6. **Merge & Post-merge**: Merge once CI and visual verification are clean: `gh pr merge --squash --delete-branch && git checkout main && git pull`.
    - If `webapp/` changed: `cd webapp && npm run build && npm run android:apk`; attach `webapp/android/app/build/outputs/apk/debug/quartz-v*.apk` using `attach_file(...)`.
    - If `src/quartz/` changed: remind user to run `systemctl --user restart quartz-web`.
 - **Docs-only fast track**: Direct commits + push to `main` are allowed for `AGENTS.md` / `README.md` / prompt templates.
@@ -38,9 +39,11 @@
    `cd /abs/path/.worktrees/<branch> && PYTHONPATH=/abs/path/.worktrees/<branch>/src /abs/path/.venv/bin/python -m quartz -p "$(cat /abs/path/.worktrees/.worker-prompt-<name>.md)" --cwd . --provider google --model gemini-4-hydrogen --effort medium`
 3. Do not poll; wait for `[bash-done]`. Workers stop at lint/typecheck/tests/build and **never** verify UI. Clean up with `git worktree remove .worktrees/<branch>`.
 
-## UI Verification (Orchestrator Only)
-- Verify `webapp/` / `quartz web` changes against built `webapp/dist` served by real `quartz web` using **`invisible_playwright_mcp`** (`browser_open`, `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_read_text`, `browser_take_screenshot`), including empty/auth/error states.
-- Never hand-roll headless Chrome/CDP `/tmp` harnesses. Prefer `browser_snapshot` accessible-name assertions. For phone review, serve on Tailscale and verify it is reachable there and refused on LAN/public internet.
+## Visual Verification (Orchestrator Only)
+- Required for all features and user-facing fixes (`webapp/` or user-facing web/API flows). Passing tests, CI, or DOM text snapshots alone is never enough to declare a feature working or fixed.
+- Build `webapp/dist` and run real `quartz web`, then drive the real user flow via **`invisible_playwright_mcp`** (`browser_open`, `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_take_screenshot`), including empty/auth/error states.
+- Use `browser_snapshot` for element targeting, but **always verify visually**: capture screenshots with `browser_take_screenshot`, inspect them directly with `view_image(...)` (checking layout, clipping, overlap, contrast, and actual rendered state), and attach the screenshots via `attach_file(...)` as proof.
+- Never hand-roll headless Chrome/CDP `/tmp` harnesses. For phone review, serve on Tailscale and verify it is reachable there and refused on LAN/public internet.
 
 ## Security & Environment
 - Never commit secrets; load via env vars or secret loaders.
