@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CreateBotModal } from "./CreateBotModal";
 import type { BotConfig } from "@/types/bots";
@@ -49,18 +49,20 @@ describe("CreateBotModal", () => {
     const user = userEvent.setup();
     render(<CreateBotModal open={true} onClose={vi.fn()} onSubmit={vi.fn()} />);
 
-    const watcherSelect = screen.getByLabelText(/Watcher Type/i);
-    expect(watcherSelect).toHaveValue("github_poll");
+    const watcherTrigger = screen.getByRole("button", { name: /Watcher Type/i });
+    expect(watcherTrigger).toHaveTextContent("GitHub Poll");
     expect(screen.getByLabelText(/GitHub Repo/i)).toBeInTheDocument();
     expect(screen.queryByLabelText(/Cron Expression/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/Webhook Secret/i)).not.toBeInTheDocument();
 
-    await user.selectOptions(watcherSelect, "cron");
+    await user.click(watcherTrigger);
+    await user.click(screen.getByRole("option", { name: "Cron" }));
     expect(screen.getByLabelText(/Cron Expression/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/Timezone/i)).toBeInTheDocument();
     expect(screen.queryByLabelText(/GitHub Repo/i)).not.toBeInTheDocument();
 
-    await user.selectOptions(watcherSelect, "webhook");
+    await user.click(screen.getByRole("button", { name: /Watcher Type/i }));
+    await user.click(screen.getByRole("option", { name: "Webhook" }));
     expect(screen.getByLabelText(/Webhook Secret/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/Event Filter/i)).toBeInTheDocument();
     expect(screen.queryByLabelText(/Cron Expression/i)).not.toBeInTheDocument();
@@ -138,7 +140,7 @@ describe("CreateBotModal", () => {
     );
 
     expect(screen.getByLabelText(/Bot Name/i)).toHaveValue("Daily Summary");
-    expect(screen.getByLabelText(/Watcher Type/i)).toHaveValue("cron");
+    expect(screen.getByRole("button", { name: /Watcher Type/i })).toHaveTextContent("Cron");
     expect(screen.getByLabelText(/Cron Expression/i)).toHaveValue("0 9 * * *");
     expect(screen.getByLabelText(/Timezone/i)).toHaveValue("America/New_York");
 
@@ -163,14 +165,15 @@ describe("CreateBotModal", () => {
       <CreateBotModal open={true} defaultCwd="/tmp/repo" onClose={vi.fn()} onSubmit={onSubmit} />,
     );
 
-    const providerSelect = await screen.findByLabelText(/Provider/i);
-    await waitFor(() => {
-      expect(screen.getByRole("option", { name: /OpenAI/i })).toBeInTheDocument();
-    });
+    const providerTrigger = await screen.findByRole("button", { name: /Provider/i });
+    await user.click(providerTrigger);
+    await user.click(await screen.findByRole("option", { name: /OpenAI/i }));
 
-    await user.selectOptions(providerSelect, "openai");
-    await user.selectOptions(screen.getByLabelText(/^Model$/i), "o3");
-    await user.selectOptions(screen.getByLabelText(/Effort/i), "high");
+    await user.click(screen.getByRole("button", { name: /Model/i }));
+    await user.click(screen.getByRole("option", { name: "o3" }));
+
+    await user.click(screen.getByRole("button", { name: /Effort/i }));
+    await user.click(screen.getByRole("option", { name: "high" }));
 
     await user.type(screen.getByLabelText(/Bot Name/i), "Model Bot");
     await user.type(screen.getByLabelText(/GitHub Repo/i), "danielwijaya93/quartz");
@@ -206,12 +209,13 @@ describe("CreateBotModal", () => {
       <CreateBotModal open={true} initialBot={existing} onClose={vi.fn()} onSubmit={onSubmit} />,
     );
 
-    expect(screen.getByLabelText(/Provider/i)).toHaveValue("openai");
-    expect(screen.getByLabelText(/^Model$/i)).toHaveValue("o3");
-    expect(screen.getByLabelText(/Effort/i)).toHaveValue("high");
+    expect(screen.getByRole("button", { name: /Provider/i })).toHaveTextContent(/OpenAI/i);
+    expect(screen.getByRole("button", { name: /Model/i })).toHaveTextContent("o3");
+    expect(screen.getByRole("button", { name: /Effort/i })).toHaveTextContent("high");
 
     // Reset provider back to Default (inherit)
-    await user.selectOptions(screen.getByLabelText(/Provider/i), "");
+    await user.click(screen.getByRole("button", { name: /Provider/i }));
+    await user.click(screen.getByRole("option", { name: "Default (inherit)" }));
     await user.click(screen.getByRole("button", { name: /Save Changes/i }));
 
     expect(onSubmit).toHaveBeenCalledWith(
@@ -229,7 +233,8 @@ describe("CreateBotModal", () => {
     render(<CreateBotModal open={true} onClose={vi.fn()} onSubmit={onSubmit} />);
 
     await user.type(screen.getByLabelText(/Bot Name/i), "Guarded Bot");
-    await user.selectOptions(screen.getByLabelText(/Watcher Type/i), "cron");
+    await user.click(screen.getByRole("button", { name: /Watcher Type/i }));
+    await user.click(screen.getByRole("option", { name: "Cron" }));
     await user.type(screen.getByLabelText(/Cron Expression/i), "0 * * * *");
     await user.type(screen.getByLabelText(/Instruction/i), "check health");
     await user.type(screen.getByLabelText(/Daily USD Budget/i), "2.5");

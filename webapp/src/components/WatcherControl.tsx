@@ -2,6 +2,7 @@ import * as React from "react";
 import { createPortal } from "react-dom";
 import { Button } from "@heroui/react";
 import { Eye, SlidersHorizontal, X } from "lucide-react";
+import { QuartzSelect } from "./QuartzSelect";
 import type { WatcherAction, WatcherMode, WatcherState } from "../protocol";
 
 export interface WatcherConfigUpdate {
@@ -59,7 +60,8 @@ export function WatcherControl({
       const target = e.target as Node;
       if (
         !containerRef.current?.contains(target) &&
-        !dialogRef.current?.contains(target)
+        !dialogRef.current?.contains(target) &&
+        !(target instanceof Element && target.closest('[role="listbox"]'))
       ) {
         setOpen(false);
       }
@@ -148,20 +150,21 @@ export function WatcherControl({
           ) : null}
 
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-            <label className="flex flex-col gap-1 text-[11px] text-muted">
-              Mode
-              <select
+            <div className="flex flex-col gap-1 text-[11px] text-muted">
+              <span>Mode</span>
+              <QuartzSelect
                 aria-label="Session watcher mode"
                 value={modeDraft}
-                onChange={(e) => setModeDraft(e.target.value as WatcherMode)}
-                className="h-8 rounded-lg border border-border bg-surface px-2 text-xs text-foreground"
-              >
-                <option value="auto">Auto (anti-stall)</option>
-                <option value="goal">Goal (/goal)</option>
-                <option value="loop">Turn Loop</option>
-                <option value="off">Off</option>
-              </select>
-            </label>
+                onChange={(val) => setModeDraft(val as WatcherMode)}
+                triggerClassName="h-8"
+                options={[
+                  { value: "auto", label: "Auto (anti-stall)" },
+                  { value: "goal", label: "Goal (/goal)" },
+                  { value: "loop", label: "Turn Loop" },
+                  { value: "off", label: "Off" },
+                ]}
+              />
+            </div>
             <label className="flex flex-col gap-1 text-[11px] text-muted">
               Delay (sec)
               <input

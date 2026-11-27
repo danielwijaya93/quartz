@@ -49,6 +49,7 @@ export interface SidebarState {
 export interface SidebarPayload {
   sessions: SidebarSession[];
   sidebar: SidebarState;
+  generalChatsDir?: string;
 }
 
 export const EMPTY_SIDEBAR: SidebarState = {
@@ -119,8 +120,10 @@ export function parseSidebarPayload(raw: unknown): SidebarPayload {
   if (!Array.isArray(body.sessions)) {
     throw new Error("Malformed sessions response: no sessions array");
   }
+  const generalChatsDir = typeof body.generalChatsDir === "string" ? body.generalChatsDir : undefined;
   return {
     sessions: body.sessions.map(parseSession).filter((session) => session.sessionId !== ""),
+    ...(generalChatsDir ? { generalChatsDir } : {}),
     sidebar: {
       version: typeof state.version === "number" ? state.version : 1,
       hiddenSessions: asStringArray(state.hiddenSessions),
@@ -282,12 +285,28 @@ function timestamp(iso: string): number {
  * paths and no way to begin. Those folders are surfaced by `archiveEntries`
  * instead, which is the one place acting on a missing path makes sense.
  */
+/**
+ * Return visible general chat sessions (those in `generalChatsDir`, e.g. `~/.quartz/chats`),
+ * sorted newest first.
+ */
+export function generalChats(payload: SidebarPayload): SidebarSession[] {
+  const chatsDir = payload.generalChatsDir;
+  if (!chatsDir) return [];
+  return payload.sessions
+    .filter((session) => session.cwd === chatsDir && isVisible(session, payload.sidebar))
+    .sort((a, b) => timestamp(b.updatedAt) - timestamp(a.updatedAt));
+}
+
 export function groupSessions(payload: SidebarPayload): WorkspaceGroup[] {
-  const visible = payload.sessions.filter((session) => isVisible(session, payload.sidebar));
+  const chatsDir = payload.generalChatsDir;
+  const visible = payload.sessions.filter(
+    (session) => isVisible(session, payload.sidebar) && (!chatsDir || session.cwd !== chatsDir),
+  );
   const groups = new Map<string, WorkspaceGroup>();
   const gone = new Set<string>();
 
   for (const workspace of payload.sidebar.workspaces) {
+    if (chatsDir && workspace.cwd === chatsDir) continue;
     groups.set(workspace.cwd, {
       cwd: workspace.cwd,
       label: workspace.label || directoryLabel(workspace.cwd),

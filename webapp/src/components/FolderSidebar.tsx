@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Button, Spinner, cn } from "@heroui/react";
-import { RefreshCw, X } from "lucide-react";
+import { MessageSquare, RefreshCw, SquarePen, X } from "lucide-react";
 import { ActionNotice, type Notice, type NoticeAction } from "./sidebar/ActionNotice";
 import { SidebarFooter } from "./sidebar/SidebarFooter";
 import { ActiveSessionsSection } from "./sidebar/ActiveSessionsSection";
@@ -17,6 +17,7 @@ import {
   EMPTY_SIDEBAR,
   filterWorkspaceGroups,
   folderBadge,
+  generalChats,
   groupSessions,
   NOTICE_TIMEOUT_MS,
   readSidebarCollapseState,
@@ -159,11 +160,19 @@ export const FolderSidebar = React.memo(function FolderSidebar({
   const [searchQuery, setSearchQuery] = React.useState("");
 
   const groups = React.useMemo(() => (data ? groupSessions(data) : []), [data]);
+  const chatSessions = React.useMemo(() => (data ? generalChats(data) : []), [data]);
   const sidebarState = data?.sidebar ?? EMPTY_STATE;
   const visibleGroups = React.useMemo(
     () => filterWorkspaceGroups(groups, searchQuery, sidebarState),
     [groups, searchQuery, sidebarState],
   );
+  const visibleChats = React.useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return chatSessions;
+    return chatSessions.filter((s) =>
+      displayTitle(s, sidebarState).toLowerCase().includes(q),
+    );
+  }, [chatSessions, searchQuery, sidebarState]);
   const searching = searchQuery.trim() !== "";
   const filtering = searching;
   const sessions = React.useMemo(() => data?.sessions ?? [], [data]);
@@ -342,6 +351,23 @@ export const FolderSidebar = React.memo(function FolderSidebar({
           </p>
         ) : null}
 
+        {error === null && data?.generalChatsDir ? (
+          <div className="mb-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              onPress={() => {
+                onNewSession(data.generalChatsDir!);
+                if (drawer) onClose();
+              }}
+              className="h-8 w-full justify-start gap-2 rounded-lg px-2.5 text-xs font-medium text-foreground"
+            >
+              <SquarePen aria-hidden="true" className="size-3.5 shrink-0 text-muted" />
+              <span>New chat</span>
+            </Button>
+          </div>
+        ) : null}
+
         {error === null ? (
           <>
             <ActiveSessionsSection
@@ -397,6 +423,44 @@ export const FolderSidebar = React.memo(function FolderSidebar({
           </>
         ) : null}
 
+        {error === null && data !== null && visibleChats.length > 0 ? (
+          <section aria-label="Chats" className="mb-3">
+            <div className="flex h-7 items-center gap-1.5 px-1.5">
+              <MessageSquare aria-hidden="true" className="size-3 shrink-0 text-muted" />
+              <h2 className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider text-foreground/90">
+                Chats
+              </h2>
+            </div>
+            <ul className="space-y-0.5">
+              {visibleChats.map((session) => (
+                <SessionRow
+                  key={session.sessionId}
+                  session={session}
+                  sidebar={sidebarState}
+                  current={currentSessionId !== "" && session.sessionId === currentSessionId}
+                  activity={sessionActivity[session.sessionId]}
+                  tileBadge={tileBadges?.get(session.sessionId)}
+                  canOpenInNewTile={canAddTile}
+                  onSelect={() => onSelectSession(session.sessionId)}
+                  onOpenInNewTile={
+                    onOpenSessionInNewTile
+                      ? () => onOpenSessionInNewTile(session.sessionId)
+                      : undefined
+                  }
+                  onRename={(title) =>
+                    void rename(
+                      session.sessionId,
+                      title,
+                      sidebarState.renames[session.sessionId] ?? "",
+                    )
+                  }
+                  onHide={() => void hide(session.sessionId, displayTitle(session, sidebarState))}
+                />
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
         {error === null && data !== null ? (
           <section aria-label="Workspaces">
             <SidebarHeader
@@ -404,7 +468,7 @@ export const FolderSidebar = React.memo(function FolderSidebar({
               onNewFolder={onNewFolder}
               onSearchChange={setSearchQuery}
             />
-            {groups.length === 0
+            {groups.length === 0 && chatSessions.length === 0
             ? (
               <EmptySidebar onOpenFolder={onOpenFolder} onOpenArchive={onOpenArchive} />
             )
