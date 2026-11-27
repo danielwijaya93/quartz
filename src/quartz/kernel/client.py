@@ -29,7 +29,6 @@ from quartz.kernel.host_rpc import (
 )
 from quartz.kernel.io_loop import get_kernel_io_loop, run_on_loop
 from quartz.kernel.sandbox import SandboxConfig
-from quartz.kernel.snapshots import sign_snapshot_dir, verify_snapshot_dir
 from quartz.kernel.types import (
     BashJobInfo,
     HelperListResult,
@@ -270,34 +269,25 @@ class KernelClient(KernelClientTransport):
         if not self._is_alive():
             return {"saved": [], "skipped": []}
         resp = await self._request_async(
-            {"type": "snapshot", "dir": str(snapshot_dir), "sign": False}, timeout=timeout
+            {"type": "snapshot", "dir": str(snapshot_dir)}, timeout=timeout
         )
         self.dirty = False
-        signed = await asyncio.to_thread(sign_snapshot_dir, snapshot_dir)
-        return cast(SnapshotManifest, signed) if signed is not None else resp.get("manifest", {"saved": [], "skipped": []})
+        return cast(SnapshotManifest, resp.get("manifest", {"saved": [], "skipped": []}))
 
     def snapshot(self, snapshot_dir: Path, timeout: float = 30.0) -> SnapshotManifest:
         if not self._is_alive():
             return {"saved": [], "skipped": []}
         resp = self._request(
-            {"type": "snapshot", "dir": str(snapshot_dir), "sign": False}, timeout=timeout
+            {"type": "snapshot", "dir": str(snapshot_dir)}, timeout=timeout
         )
         self.dirty = False
-        signed = sign_snapshot_dir(snapshot_dir)
-        return cast(SnapshotManifest, signed) if signed is not None else resp.get("manifest", {"saved": [], "skipped": []})
+        return cast(SnapshotManifest, resp.get("manifest", {"saved": [], "skipped": []}))
 
     async def arestore(
         self, snapshot_dir: Path, timeout: float = 30.0, root: Path | None = None
     ) -> RestoreResult:
         await self._ensure_started_async()
-        allow_pickle, reject_reason = await asyncio.to_thread(verify_snapshot_dir, snapshot_dir)
-        frame: KernelRpcFrame = {
-            "type": "restore",
-            "dir": str(snapshot_dir),
-            "allow_pickle": allow_pickle,
-        }
-        if reject_reason is not None:
-            frame["pickle_reject_reason"] = reject_reason
+        frame: KernelRpcFrame = {"type": "restore", "dir": str(snapshot_dir)}
         if root is not None:
             frame["root"] = str(root)
         resp = await self._request_async(frame, timeout=timeout)
@@ -311,14 +301,7 @@ class KernelClient(KernelClientTransport):
     ) -> RestoreResult:
         if not self._is_alive():
             self.start()
-        allow_pickle, reject_reason = verify_snapshot_dir(snapshot_dir)
-        frame: KernelRpcFrame = {
-            "type": "restore",
-            "dir": str(snapshot_dir),
-            "allow_pickle": allow_pickle,
-        }
-        if reject_reason is not None:
-            frame["pickle_reject_reason"] = reject_reason
+        frame: KernelRpcFrame = {"type": "restore", "dir": str(snapshot_dir)}
         if root is not None:
             frame["root"] = str(root)
         resp = self._request(frame, timeout=timeout)
@@ -326,26 +309,6 @@ class KernelClient(KernelClientTransport):
             "restored": list(resp.get("restored", [])),
             "skipped": list(resp.get("skipped", [])),
         }
-
-    async def ahealth_check(self, timeout: float = 5.0) -> bool:
-        """Send a lightweight ping to the kernel worker; returns False when dead or hung."""
-        if not self._is_alive():
-            return False
-        try:
-            resp = await self._request_async({"type": "ping"}, timeout=timeout)
-            return resp.get("type") == "pong"
-        except Exception:
-            return False
-
-    def health_check(self, timeout: float = 5.0) -> bool:
-        """Synchronous ping health check for CLI/TUI callers."""
-        if not self._is_alive():
-            return False
-        try:
-            resp = self._request({"type": "ping"}, timeout=timeout)
-            return resp.get("type") == "pong"
-        except Exception:
-            return False
 
     def running_bash_count(self, timeout: float = 5.0) -> int:
         del timeout

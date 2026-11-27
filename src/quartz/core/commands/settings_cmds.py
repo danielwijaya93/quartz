@@ -14,9 +14,6 @@ from quartz.settings import (
     DEFAULT_BOT_WEBHOOK_RATE_LIMIT,
     DEFAULT_COMPACT_RESERVE_TOKENS,
     DEFAULT_KEEP_RECENT_TOKENS,
-    DEFAULT_KERNEL_MAX_MEM_MB,
-    DEFAULT_KERNEL_MAX_OPEN_FILES,
-    DEFAULT_KERNEL_MAX_PROCESSES,
     DEFAULT_PROGRESS_EVERY,
     DEFAULT_WATCHER_DEFAULT_PROMPT,
     DEFAULT_WEB_IDLE_HOURS,
@@ -29,9 +26,6 @@ from quartz.settings import (
     validate_bot_max_consecutive_errors,
     validate_bot_max_usd_per_day,
     validate_bot_webhook_rate_limit,
-    validate_kernel_max_mem_mb,
-    validate_kernel_max_open_files,
-    validate_kernel_max_processes,
     validate_progress_every,
     validate_tokens,
     validate_watcher_delay_seconds,
@@ -57,10 +51,6 @@ _SETTING_ALIASES: dict[str, str] = {
     "notify_background": "notify_background", "notifyBackground": "notify_background", "notifybackground": "notify_background", "notify-background": "notify_background",
     "notify_error": "notify_error", "notifyError": "notify_error", "notifyerror": "notify_error", "notify-error": "notify_error",
     "rich_ui": "rich_ui", "richui": "rich_ui", "rich-ui": "rich_ui",
-    "kernel_mem": "kernel_mem", "kernel_max_mem_mb": "kernel_mem", "kernelMemMb": "kernel_mem", "max_mem": "kernel_mem",
-    "kernel_files": "kernel_files", "kernel_max_open_files": "kernel_files", "kernelMaxOpenFiles": "kernel_files", "nofile": "kernel_files",
-    "kernel_procs": "kernel_procs", "kernel_max_processes": "kernel_procs", "kernelMaxProcesses": "kernel_procs", "nproc": "kernel_procs",
-    "strict_snapshots": "strict_snapshots", "strictSnapshots": "strict_snapshots", "strict-snapshots": "strict_snapshots",
     "sandbox_env": "sandbox_env", "sandbox_env_passthrough": "sandbox_env", "sandboxEnvPassthrough": "sandbox_env", "sandbox-env": "sandbox_env",
     "bot_budget": "bot_budget", "bot_max_usd_per_day": "bot_budget", "botMaxUsdPerDay": "bot_budget", "bot-budget": "bot_budget",
     "bot_errors": "bot_errors", "bot_max_consecutive_errors": "bot_errors", "botMaxConsecutiveErrors": "bot_errors", "bot-errors": "bot_errors",
@@ -76,8 +66,7 @@ _SETTING_ALIASES: dict[str, str] = {
 
 _SETTINGS_USAGE = (
     "Usage: /settings reserve|keep <tokens> | progress <n> | bg <seconds> | idle <hours> | "
-    "notifications|rich_ui|strict_snapshots <on|off> | kernel_mem <mb> | kernel_files <n> | "
-    "kernel_procs <n> | sandbox_env <VAR1,VAR2|none> | bot_budget <usd|0> | "
+    "notifications|rich_ui <on|off> | sandbox_env <VAR1,VAR2|none> | bot_budget <usd|0> | "
     "bot_errors <n> | bot_rate <n> | reset | list"
 )
 
@@ -126,24 +115,6 @@ _INT_SETTINGS: dict[str, _IntSettingSpec] = {
         "Usage: /settings idle <hours> (0 disables idle prompts)",
         lambda v: f"Saved. web_idle_hours = {v}h ({'off' if v == 0 else f'every {v}h'}).",
     ),
-    "kernel_mem": _IntSettingSpec(
-        "kernel_max_mem_mb", None, validate_kernel_max_mem_mb,
-        "an integer MiB cap", "between 0 and 1,048,576 MiB",
-        "Usage: /settings kernel_mem <MiB> (0 = unlimited)",
-        lambda v: f"Saved. kernel_max_mem_mb = {'unlimited' if v == 0 else f'{v:,} MiB'}. Applies on next kernel start.",
-    ),
-    "kernel_files": _IntSettingSpec(
-        "kernel_max_open_files", None, validate_kernel_max_open_files,
-        "an integer file-descriptor cap", "between 0 and 1,048,576",
-        "Usage: /settings kernel_files <count> (0 = unlimited)",
-        lambda v: f"Saved. kernel_max_open_files = {'unlimited' if v == 0 else f'{v:,}'}. Applies on next kernel start.",
-    ),
-    "kernel_procs": _IntSettingSpec(
-        "kernel_max_processes", None, validate_kernel_max_processes,
-        "an integer process cap", "between 0 and 65,536",
-        "Usage: /settings kernel_procs <count> (0 = unlimited)",
-        lambda v: f"Saved. kernel_max_processes = {'unlimited' if v == 0 else f'{v:,}'}. Applies on next kernel start.",
-    ),
     "bot_errors": _IntSettingSpec(
         "bot_max_consecutive_errors", None, validate_bot_max_consecutive_errors,
         "an integer error count", "between 0 and 1,000",
@@ -183,7 +154,6 @@ _BOOL_SETTINGS: dict[str, tuple[str, str | None]] = {
     "notify_background": ("notify_background", None),
     "notify_error": ("notify_error", None),
     "rich_ui": ("rich_ui", None),
-    "strict_snapshots": ("strict_snapshots", None),
     "watcher_antistall_default": ("watcher_antistall_default", None),
 }
 
@@ -200,12 +170,7 @@ def _format_settings_overview(current: Settings, cfg_path: str) -> str:
         f"  web_idle_hours: {current.web_idle_hours}h (default {DEFAULT_WEB_IDLE_HOURS}h, 0 disables)\n"
         f"  notifications: {'on' if current.notifications else 'off'} (default on)\n"
         f"  rich_ui: {'on' if current.rich_ui else 'off'} (default off)\n\n"
-        "Kernel Quotas (env vars override config.json):\n"
-        f"  kernel_max_mem_mb: {current.kernel_max_mem_mb} MiB (default {DEFAULT_KERNEL_MAX_MEM_MB}, 0 = unlimited)\n"
-        f"  kernel_max_open_files: {current.kernel_max_open_files} (default {DEFAULT_KERNEL_MAX_OPEN_FILES}, 0 = unlimited)\n"
-        f"  kernel_max_processes: {current.kernel_max_processes} (default {DEFAULT_KERNEL_MAX_PROCESSES}, 0 = unlimited)\n\n"
         "Security & Sandbox:\n"
-        f"  strict_snapshots: {'on' if current.strict_snapshots else 'off'} (default on; rejects unsigned pickle/dill)\n"
         f"  sandbox_env_passthrough: {env_pass}\n\n"
         "Bot Governance Defaults:\n"
         f"  bot_max_usd_per_day: {budget} (0 = unlimited)\n"
@@ -218,7 +183,7 @@ def _format_settings_overview(current: Settings, cfg_path: str) -> str:
 @COMMAND_REGISTRY.register(
     "/settings",
     "Show or update user preferences (stored in ~/.quartz/config.json)",
-    usage="[reserve|keep|progress|bg|idle|kernel_mem|kernel_files|kernel_procs|strict_snapshots|sandbox_env|bot_budget|bot_errors|bot_rate|notifications|reset|list]",
+    usage="[reserve|keep|progress|bg|idle|sandbox_env|bot_budget|bot_errors|bot_rate|notifications|reset|list]",
     immediate=True,
 )
 def cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
@@ -258,7 +223,6 @@ def cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
             setattr(rt, attr, getattr(defaults, attr))
         return CommandResult.text(
             f"Reset all settings to defaults (reserve_tokens={defaults.compact_reserve_tokens:,}, "
-            f"kernel_max_mem_mb={defaults.kernel_max_mem_mb} MiB, strict_snapshots=on, "
             f"bot_errors={defaults.bot_max_consecutive_errors}, bot_rate={defaults.bot_webhook_rate_limit}/min)."
         )
 

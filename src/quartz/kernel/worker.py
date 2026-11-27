@@ -557,37 +557,27 @@ class KernelWorker:
             vars_info[name] = type(val).__name__
         return vars_info
 
-    def snapshot_vars(self, snapshot_dir: str, *, sign: bool = True) -> dict[str, Any]:
-        """Serialize user-defined variables to ``snapshot_dir`` (JSON-first, then pickle/dill) with SHA-256."""
+    def snapshot_vars(self, snapshot_dir: str) -> dict[str, Any]:
+        """Serialize user-defined variables to ``snapshot_dir`` (JSON-first, then pickle/dill)."""
         return snapshot_namespace(
             self._namespace,
             snapshot_dir,
             reserved_names=self._reserved_names,
             default_bindings=self._default_bindings,
             auto_imported=self._auto_imported,
-            sign=sign,
         )
 
     @staticmethod
     def _restore_cwd(saved_cwd: object, root: str | None) -> str | None:
         return restore_cwd(saved_cwd, root)
 
-    def restore_vars(
-        self,
-        snapshot_dir: str,
-        root: str | None = None,
-        *,
-        allow_pickle: bool | None = None,
-        pickle_reject_reason: str | None = None,
-    ) -> dict[str, Any]:
+    def restore_vars(self, snapshot_dir: str, root: str | None = None) -> dict[str, Any]:
         """Restore variables from ``snapshot_dir`` into the kernel namespace."""
         return restore_namespace(
             self._namespace,
             snapshot_dir,
             default_bindings=self._default_bindings,
             root=root,
-            allow_pickle=allow_pickle,
-            pickle_reject_reason=pickle_reject_reason,
         )
 
     def _handle_control_msg(self, msg_type: str, req_id: str, msg: dict[str, Any]) -> None:
@@ -602,8 +592,6 @@ class KernelWorker:
             self._send({"type": "helpers_result", "id": req_id, **self.list_helpers()})
         elif msg_type == "list_vars":
             self._send({"type": "vars_result", "id": req_id, "vars": self.list_vars()})
-        elif msg_type == "ping":
-            self._send({"type": "pong", "id": req_id, "pid": os.getpid()})
         elif msg_type == "running_bash":
             self._send({"type": "running_bash_result", "id": req_id, "count": sum(1 for h in self._handles if h.running)})
         elif msg_type == "bash_tail":
@@ -628,13 +616,11 @@ class KernelWorker:
                     self._send({"type": "kill_bash_result", "id": req_id, "killed": False, "error": str(exc)})
         elif msg_type == "snapshot":
             try:
-                raw_sign = msg.get("sign")
-                should_sign = bool(raw_sign) if isinstance(raw_sign, bool) else True
                 self._send(
                     {
                         "type": "snapshot_result",
                         "id": req_id,
-                        "manifest": self.snapshot_vars(msg.get("dir", ""), sign=should_sign),
+                        "manifest": self.snapshot_vars(msg.get("dir", "")),
                     }
                 )
             except Exception as exc:
@@ -642,13 +628,9 @@ class KernelWorker:
         elif msg_type == "restore":
             try:
                 raw_root = msg.get("root")
-                raw_allow = msg.get("allow_pickle")
-                raw_reason = msg.get("pickle_reject_reason")
                 result = self.restore_vars(
                     msg.get("dir", ""),
                     raw_root if isinstance(raw_root, str) else None,
-                    allow_pickle=raw_allow if isinstance(raw_allow, bool) else None,
-                    pickle_reject_reason=raw_reason if isinstance(raw_reason, str) else None,
                 )
                 self._send({"type": "restore_result", "id": req_id, **result})
             except Exception as exc:
@@ -698,9 +680,6 @@ def _start_stdin_reader(
 
 
 async def _main() -> None:
-    from quartz.kernel.limits import apply_resource_limits
-
-    apply_resource_limits()
     worker = KernelWorker(isolate_stdio=True)
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()

@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import resource
 import time
 from pathlib import Path
 
@@ -14,7 +13,6 @@ from fastapi.testclient import TestClient
 
 from quartz.bots import BotConfig, BotQueue, BotStore, CronConfig, QueuedTrigger, WebhookConfig
 from quartz.core.turn import TurnStatus
-from quartz.kernel.client import KernelClient
 from quartz.storage import QuartzDB
 from quartz.web.app import create_app
 from quartz.web.bot_runner import BotRunner
@@ -34,53 +32,6 @@ def test_migration_v2_creates_usage_events_and_audit_log(tmp_path: Path) -> None
         assert "audit_log" in tables
     finally:
         db.close()
-
-
-def test_resource_limits_from_env_and_clamping(monkeypatch: pytest.MonkeyPatch) -> None:
-    from quartz.kernel.limits import ResourceLimits, apply_resource_limits
-
-    monkeypatch.setenv("QUARTZ_KERNEL_MAX_MEM_MB", "2048")
-    monkeypatch.setenv("QUARTZ_KERNEL_MAX_NOFILE", "512")
-    monkeypatch.setenv("QUARTZ_KERNEL_MAX_NPROC", "0")
-
-    limits = ResourceLimits.from_env()
-    assert limits.max_memory_mb == 2048
-    assert limits.max_open_files == 512
-    assert limits.max_processes == 0
-
-    # Clamping edge case: requesting higher than OS hard limit must clamp cleanly, never raise.
-    applied_calls: list[tuple[int, int, int]] = []
-
-    def _fake_getrlimit(res_id: int) -> tuple[int, int]:
-        return (1024, 2048)
-
-    def _fake_setrlimit(res_id: int, vals: tuple[int, int]) -> None:
-        applied_calls.append((res_id, vals[0], vals[1]))
-
-    monkeypatch.setattr(resource, "getrlimit", _fake_getrlimit)
-    monkeypatch.setattr(resource, "setrlimit", _fake_setrlimit)
-
-    huge = ResourceLimits(max_memory_mb=999_999, max_open_files=100_000, max_processes=0)
-    applied = apply_resource_limits(huge)
-    assert applied["max_open_files"] == 2048
-    assert "max_processes" not in applied
-    for _res_id, soft, hard in applied_calls:
-        assert soft <= hard
-
-
-async def test_kernel_health_check_ping_pong_and_dead_kernel(tmp_path: Path) -> None:
-    client = KernelClient(cwd=tmp_path)
-    # Not started yet -> False without raising
-    assert await client.ahealth_check(timeout=1.0) is False
-
-    await client.astart()
-    try:
-        assert await client.ahealth_check(timeout=5.0) is True
-    finally:
-        await client.aclose()
-
-    # Closed -> False without raising
-    assert await client.ahealth_check(timeout=1.0) is False
 
 
 def test_cost_estimator_and_usage_store_daily_window(tmp_path: Path) -> None:
