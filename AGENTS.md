@@ -19,7 +19,7 @@
 
 ## PR Workflow (Features, Fixes, Refactors)
 1. **Branch**: `git checkout main && git pull && git checkout -b <type>/<short-description>` (`feat/`, `fix/`, `perf/`, `refactor/`, `chore/`).
-2. **Implement & Verify**: Write typed code + unit tests in `tests/`. Before committing, pass:
+2. **Implement & Verify**: Write typed code + unit tests in `tests/`. Before committing, run `await verify("auto", gen_index=True)` (project helper in `.quartz/helpers.py` running `ruff`, `pyright`, `pytest`, and `webapp` verify in parallel), or run individually:
    - `uv run ruff check src tests`
    - `uv run pyright`
    - `uv run pytest`

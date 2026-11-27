@@ -142,7 +142,7 @@ class KernelClientTransport(BaseKernel):
 
         if self._sandbox_config.enabled:
             cmd = wrap_command(cmd, self.cwd, self._sandbox_config)
-            env.update(sandbox_env_overrides())
+            env.update(sandbox_env_overrides(env, cwd=self.cwd))
         for key, enabled in (
             ("QUARTZ_HOST_MCP", self._host_mcp_enabled()),
             ("QUARTZ_HOST_BRIDGE", self._host_bridge_enabled()),

@@ -15,6 +15,7 @@ from quartz.kernel.sandbox import (
     build_seatbelt_command,
     build_seatbelt_profile,
     detect_sandbox_backend,
+    sandbox_env_overrides,
     sandbox_unavailable_message,
     wrap_command,
 )
@@ -275,3 +276,87 @@ def test_bwrap_unavailable_fails_when_required(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("QUARTZ_REQUIRE_BWRAP_TESTS", "1")
     with pytest.raises(pytest.fail.Exception, match="QUARTZ_REQUIRE_BWRAP_TESTS=1"):
         bwrap_unavailable("missing bwrap")
+
+
+def test_sandbox_env_overrides_redirects_caches_to_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("QUARTZ_SANDBOXED", raising=False)
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+
+    # Default: redirects tool caches into writable private sandbox /tmp
+    overrides = sandbox_env_overrides({}, cwd=workspace)
+    assert overrides["QUARTZ_SANDBOXED"] == "1"
+    assert overrides["XDG_CACHE_HOME"] == "/tmp/quartz-cache"
+    assert overrides["UV_CACHE_DIR"] == "/tmp/quartz-cache/uv"
+    assert overrides["UV_LINK_MODE"] == "copy"
+    assert overrides["npm_config_cache"] == "/tmp/quartz-cache/npm"
+
+    # Host paths outside /tmp and cwd (read-only inside bwrap) get redirected
+    ro_env = {
+        "UV_CACHE_DIR": "/home/alice/.cache/uv",
+        "XDG_CACHE_HOME": "/home/alice/.cache",
+        "npm_config_cache": "/home/alice/.npm",
+    }
+    redirected = sandbox_env_overrides(ro_env, cwd=workspace)
+    assert redirected["UV_CACHE_DIR"] == "/tmp/quartz-cache/uv"
+    assert redirected["XDG_CACHE_HOME"] == "/tmp/quartz-cache"
+    assert redirected["npm_config_cache"] == "/tmp/quartz-cache/npm"
+
+    # Explicit writable overrides inside /tmp or cwd are preserved
+    writable_env = {
+        "UV_CACHE_DIR": "/tmp/custom-uv",
+        "XDG_CACHE_HOME": str(workspace / ".cache"),
+        "UV_LINK_MODE": "symlink",
+    }
+    preserved = sandbox_env_overrides(writable_env, cwd=workspace)
+    assert "UV_CACHE_DIR" not in preserved
+    assert "XDG_CACHE_HOME" not in preserved
+    assert "UV_LINK_MODE" not in preserved
+    assert preserved["npm_config_cache"] == "/tmp/quartz-cache/npm"
+
+
+def test_kernel_client_applies_writable_cache_env_only_when_sandboxed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+    monkeypatch.setattr("quartz.kernel.sandbox.detect_sandbox_backend", lambda **_kw: "bwrap")
+    monkeypatch.setattr("quartz.kernel.sandbox.shutil.which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
+
+    _cmd_on, env_on = KernelClient(cwd=tmp_path, sandbox=True)._build_spawn_cmd_and_env()
+    assert env_on["UV_CACHE_DIR"] == "/tmp/quartz-cache/uv"
+    assert env_on["XDG_CACHE_HOME"] == "/tmp/quartz-cache"
+    assert env_on["npm_config_cache"] == "/tmp/quartz-cache/npm"
+    assert env_on["UV_LINK_MODE"] == "copy"
+
+    _cmd_off, env_off = KernelClient(cwd=tmp_path, sandbox=False)._build_spawn_cmd_and_env()
+    assert "UV_CACHE_DIR" not in env_off
+
+
+async def test_kernel_client_bwrap_writable_cache_env(tmp_path: Path) -> None:
+    from _bwrap_helpers import require_bwrap
+
+    require_bwrap()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    kernel = KernelClient(cwd=workspace, sandbox=True)
+    try:
+        kernel.start(timeout=15.0)
+    except Exception as exc:  # pragma: no cover - restricted userns
+        from _bwrap_helpers import bwrap_unavailable
+
+        bwrap_unavailable(f"bwrap cannot start in this environment: {exc}")
+
+    try:
+        res = await kernel.exec_cell(
+            "import os\n"
+            "from pathlib import Path\n"
+            "for var in ('UV_CACHE_DIR', 'XDG_CACHE_HOME', 'npm_config_cache'):\n"
+            "    d = Path(os.environ[var])\n"
+            "    d.mkdir(parents=True, exist_ok=True)\n"
+            "    (d / '.lock-test').write_text('ok')\n"
+            "print('caches_writable')"
+        )
+        assert res.ok, res.stderr
+        assert "caches_writable" in res.stdout
+    finally:
+        kernel.close()
