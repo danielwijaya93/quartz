@@ -112,6 +112,7 @@ export interface TurnEndRow {
   id: string;
   status: TurnEndStatus;
   tokens: number;
+  completionTokens?: number;
   elapsedMs: number;
   error?: string;
 }

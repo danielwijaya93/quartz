@@ -636,6 +636,10 @@ def test_format_turn_timing_and_duration() -> None:
     assert ui._fmt_duration(72.0) == "1m 12s"
     assert ui._format_turn_timing(7.0, 7.0, 1) == "7s · total 7s (1 turn)"
     assert ui._format_turn_timing(12.2, 72.0, 3) == "12s · total 1m 12s (3 turns)"
+    assert ui.format_tok_per_sec(200, 2.0) == "100 tok/s"
+    assert ui.format_tok_per_sec(9, 2.0) == "4.5 tok/s"
+    assert ui.format_tok_per_sec(0, 2.0) is None
+    assert ui.format_tok_per_sec(200, 0.0) is None
 
 
 def test_format_thought_duration_and_stopwatch() -> None:

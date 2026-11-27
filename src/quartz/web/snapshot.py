@@ -219,6 +219,8 @@ def _turn_end_frame(
         "tokens": outcome.tokens,
         "elapsedMs": int(outcome.elapsed_s * 1000),
     }
+    if outcome.completion_tokens > 0:
+        frame["completionTokens"] = outcome.completion_tokens
     if context_pct is not None:
         frame["contextPct"] = context_pct
     if max_context_tokens is not None:

@@ -249,7 +249,12 @@ def _run_interactive(rt: AgentRuntime, resumed: bool) -> None:
         elif outcome.status is TurnStatus.ERROR:
             console.print(f"[red]Error: {escape(str(outcome.error))}[/red]")
         else:
-            timing = _format_turn_timing(outcome.elapsed_s, rt.total_elapsed_s, rt.turn_count)
+            timing = _format_turn_timing(
+                outcome.elapsed_s,
+                rt.total_elapsed_s,
+                rt.turn_count,
+                completion_tokens=outcome.completion_tokens,
+            )
             footer = (
                 f"{timing} · {_format_turn_footer(rt.usage_stats, rt.max_context_tokens)}"
                 if outcome.tokens

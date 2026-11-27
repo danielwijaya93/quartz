@@ -246,6 +246,7 @@ export type ServerMessage =
       type: "turn_end";
       status: TurnEndStatus;
       tokens: number;
+      completionTokens?: number;
       elapsedMs: number;
       contextPct?: number;
       maxContextTokens?: number;

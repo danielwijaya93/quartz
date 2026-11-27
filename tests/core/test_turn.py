@@ -17,7 +17,7 @@ import pytest
 import quartz.core.turn as turn
 from quartz.core.loop import TurnAborted, TurnUsage
 from quartz.core.runtime import AgentRuntime
-from quartz.core.turn import TurnStatus, TurnView, run_interactive_turn
+from quartz.core.turn import TurnOutcome, TurnStatus, TurnView, run_interactive_turn
 
 
 class _View(TurnView):
@@ -306,3 +306,29 @@ async def test_failed_turn_restores_in_memory_messages_on_error(
 
     assert outcome.status is TurnStatus.ERROR
     assert rt.messages == [{"role": "user", "content": "hi"}]
+
+
+@pytest.mark.asyncio
+async def test_run_interactive_turn_tracks_completion_tokens_delta(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    rt = _runtime(tmp_path, [])
+    rt.usage_stats.total_completion_tokens = 100
+
+    async def _loop_with_usage(*args: Any, **kwargs: Any) -> tuple[str, list[dict[str, Any]], int]:
+        kwargs["usage_stats"].total_completion_tokens += 240
+        return "done", [*rt.messages, {"role": "assistant", "content": "done"}], 1500
+
+    monkeypatch.setattr(turn, "agent_loop", _loop_with_usage)
+    outcome = await run_interactive_turn(rt, _View())
+
+    assert outcome.status is TurnStatus.OK
+    assert outcome.tokens == 1500
+    assert outcome.completion_tokens == 240
+
+    from quartz.web.snapshot import _turn_end_frame
+
+    frame = _turn_end_frame(outcome)
+    assert frame["completionTokens"] == 240
+    empty_frame = _turn_end_frame(TurnOutcome(TurnStatus.OK, tokens=100, elapsed_s=1.0))
+    assert "completionTokens" not in empty_frame
