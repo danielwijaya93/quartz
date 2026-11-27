@@ -7,6 +7,14 @@ function formatElapsed(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+function formatTokPerSec(completionTokens: number | undefined, elapsedMs: number): string | null {
+  if (completionTokens === undefined || completionTokens <= 0 || elapsedMs <= 0) {
+    return null;
+  }
+  const tps = completionTokens / (elapsedMs / 1000);
+  return tps >= 10 ? `${Math.round(tps)} tok/s` : `${tps.toFixed(1)} tok/s`;
+}
+
 const STATUS_COPY: Record<
   TurnEndRow["status"],
   { label: string; color: "success" | "warning" | "danger" }
@@ -21,6 +29,7 @@ const STATUS_COPY: Record<
 /** The turn footer: outcome and cost, quiet enough to skip while scanning. */
 export function TurnEndRowView({ row }: { row: TurnEndRow }): React.ReactElement {
   const status = STATUS_COPY[row.status];
+  const tokPerSec = formatTokPerSec(row.completionTokens, row.elapsedMs);
   return (
     <p className="flex flex-wrap items-center gap-2 text-xs text-muted">
       <Chip size="sm" variant="soft" color={status.color}>
@@ -29,6 +38,12 @@ export function TurnEndRowView({ row }: { row: TurnEndRow }): React.ReactElement
       <span className="tabular-nums">{row.tokens.toLocaleString()} tokens</span>
       <span aria-hidden="true">·</span>
       <span className="tabular-nums">{formatElapsed(row.elapsedMs)}</span>
+      {tokPerSec !== null ? (
+        <>
+          <span aria-hidden="true">·</span>
+          <span className="tabular-nums">{tokPerSec}</span>
+        </>
+      ) : null}
       {row.error !== undefined ? <span className="text-danger">{row.error}</span> : null}
     </p>
   );

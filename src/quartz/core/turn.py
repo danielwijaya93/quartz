@@ -73,6 +73,7 @@ class TurnOutcome:
 
     status: TurnStatus
     tokens: int = 0
+    completion_tokens: int = 0
     elapsed_s: float = 0.0
     error: BaseException | None = None
 
@@ -165,6 +166,7 @@ async def run_interactive_turn(
     """Run one turn and keep the session's bookkeeping in step, then report how it ended."""
     started = time.monotonic()
     msg_count = len(rt.messages)
+    start_completion_tokens = rt.usage_stats.total_completion_tokens
     try:
         _, rt.messages, tokens = await run_turn(
             rt,
@@ -190,7 +192,8 @@ async def run_interactive_turn(
         del rt.messages[msg_count:]
         return TurnOutcome(TurnStatus.ERROR, elapsed_s=time.monotonic() - started, error=exc)
     elapsed = time.monotonic() - started
+    completion_tokens = max(0, rt.usage_stats.total_completion_tokens - start_completion_tokens)
     rt.total_elapsed_s += elapsed
     rt.turn_count += 1
     await asyncio.to_thread(rt.persist)
-    return TurnOutcome(TurnStatus.OK, tokens=tokens, elapsed_s=elapsed)
+    return TurnOutcome(TurnStatus.OK, tokens=tokens, completion_tokens=completion_tokens, elapsed_s=elapsed)

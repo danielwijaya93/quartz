@@ -137,7 +137,12 @@ async def execute_dock_turn(dock: DockHost, *, active_printer: Any) -> None:
             active_printer.block(Text(f"Error: {outcome.error}", style="red"))
             dock._notify("Quartz: Turn failed", str(outcome.error or "An error occurred"))
         else:
-            timing = _format_turn_timing(outcome.elapsed_s, dock.rt.total_elapsed_s, dock.rt.turn_count)
+            timing = _format_turn_timing(
+                outcome.elapsed_s,
+                dock.rt.total_elapsed_s,
+                dock.rt.turn_count,
+                completion_tokens=outcome.completion_tokens,
+            )
             active_printer.block(Text(timing, style="dim"))
             dock._notify("Quartz: Turn finished", f"Completed in {outcome.elapsed_s:.1f}s")
     except asyncio.CancelledError:

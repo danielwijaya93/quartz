@@ -720,9 +720,25 @@ def _fmt_stopwatch(elapsed: float) -> str:
     return f"{mins}m {secs}s"
 
 
-def _format_turn_timing(turn_seconds: float, total_seconds: float, turn_count: int) -> str:
+def format_tok_per_sec(completion_tokens: int, elapsed_s: float) -> str | None:
+    if completion_tokens <= 0 or elapsed_s <= 0:
+        return None
+    tps = completion_tokens / elapsed_s
+    return f"{round(tps)} tok/s" if tps >= 10 else f"{tps:.1f} tok/s"
+
+
+def _format_turn_timing(
+    turn_seconds: float,
+    total_seconds: float,
+    turn_count: int,
+    *,
+    completion_tokens: int = 0,
+) -> str:
     unit = "turn" if turn_count == 1 else "turns"
-    return f"{_fmt_duration(turn_seconds)} · total {_fmt_duration(total_seconds)} ({turn_count} {unit})"
+    base = f"{_fmt_duration(turn_seconds)} · total {_fmt_duration(total_seconds)} ({turn_count} {unit})"
+    if tps := format_tok_per_sec(completion_tokens, turn_seconds):
+        return f"{base} · {tps}"
+    return base
 
 
 def _format_turn_footer(usage: TurnUsage, max_context_tokens: int) -> str:

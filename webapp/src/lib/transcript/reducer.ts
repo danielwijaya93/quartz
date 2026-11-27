@@ -695,6 +695,9 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
           id: makeId("turn-end"),
           status: message.status,
           tokens: message.tokens,
+          ...(message.completionTokens === undefined
+            ? {}
+            : { completionTokens: message.completionTokens }),
           elapsedMs: message.elapsedMs,
           ...(message.error === undefined ? {} : { error: message.error }),
         },

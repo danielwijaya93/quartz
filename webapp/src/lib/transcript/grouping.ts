@@ -551,7 +551,7 @@ function spokenText(row: Row): string {
     case "error":
       return row.message;
     case "turn_end":
-      return `${row.status}\u0000${row.tokens}\u0000${row.elapsedMs}`;
+      return `${row.status}\u0000${row.tokens}\u0000${row.completionTokens ?? ""}\u0000${row.elapsedMs}`;
     case "command":
       return `${row.name}\u0000${row.ok}`;
   }
