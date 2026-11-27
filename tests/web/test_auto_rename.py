@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from quartz.core.session import ORIGIN_BOT, ORIGIN_WEB
 from quartz.settings import Settings
@@ -160,3 +163,42 @@ def test_auto_rename_skips_bot_unconfigured_and_multi_turn(tmp_path: Path) -> No
         return_value=Settings(watcher_provider="google", watcher_model="gemini-flash", auto_rename_enabled=False),
     ):
         assert asyncio.run(maybe_auto_rename_session(disabled_ws, sidebar)) is False
+
+
+def test_auto_rename_logs_warning_on_error_and_timeout(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    from quartz.web.auto_rename import maybe_auto_rename_session
+
+    db = QuartzDB(tmp_path / "quartz.db")
+    sidebar = SidebarStore(db=db)
+    settings = Settings(watcher_provider="google", watcher_model="gemini-2.5-flash-lite")
+
+    err_client = MagicMock()
+    err_client.complete = AsyncMock(side_effect=RuntimeError("404 NOT_FOUND"))
+
+    timeout_client = MagicMock()
+    timeout_client.complete = AsyncMock(side_effect=TimeoutError())
+
+    caplog.set_level(logging.WARNING, logger="quartz.web.auto_rename")
+    with (
+        patch("quartz.web.auto_rename.load_settings", return_value=settings),
+        patch(
+            "quartz.web.auto_rename.build_provider",
+            return_value=(err_client, "google", "gemini-2.5-flash-lite", "low"),
+        ),
+    ):
+        assert asyncio.run(maybe_auto_rename_session(_make_fake_ws("s-err"), sidebar)) is False
+
+    with (
+        patch("quartz.web.auto_rename.load_settings", return_value=settings),
+        patch(
+            "quartz.web.auto_rename.build_provider",
+            return_value=(timeout_client, "google", "gemini-2.5-flash-lite", "low"),
+        ),
+    ):
+        assert asyncio.run(maybe_auto_rename_session(_make_fake_ws("s-timeout"), sidebar)) is False
+
+    msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("s-err" in m for m in msgs)
+    assert any("s-timeout" in m for m in msgs)
