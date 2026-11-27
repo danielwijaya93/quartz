@@ -586,6 +586,7 @@ class SessionManager:
             self._auto_rename_attempted.add(sid)
         loop = self._active_loop()
         if loop is None:
+            logger.warning("Skipping web auto-rename for session %s: no active event loop", sid)
             return
         sidebar_provider = self._sidebar_provider
 
@@ -603,13 +604,23 @@ class SessionManager:
             sidebar = sidebar_provider()
             await maybe_auto_rename_session(ws, sidebar, on_renamed=_on_renamed)
 
+        def _on_done(done_task: asyncio.Task[Any]) -> None:
+            self._auto_rename_tasks.discard(done_task)
+            if done_task.cancelled():
+                return
+            exc = done_task.exception()
+            if exc is not None:
+                logger.warning("Web auto-rename task failed for session %s", sid, exc_info=exc)
+
         def _spawn() -> None:
             task = loop.create_task(_run(), name=f"quartz-auto-rename-{sid}")
             self._auto_rename_tasks.add(task)
-            task.add_done_callback(self._auto_rename_tasks.discard)
+            task.add_done_callback(_on_done)
 
-        with contextlib.suppress(RuntimeError):
+        try:
             loop.call_soon_threadsafe(_spawn)
+        except RuntimeError:
+            logger.warning("Failed to schedule web auto-rename for session %s", sid, exc_info=True)
 
     def _broadcast(self, frame: Frame) -> None:
         self._fanout(self._global_sinks, frame)
