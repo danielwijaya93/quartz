@@ -11,7 +11,6 @@ from quartz.core.commands.registry import COMMAND_REGISTRY, CommandResult
 from quartz.settings import (
     DEFAULT_BACKGROUND_CHECK_EVERY,
     DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS,
-    DEFAULT_BOT_WEBHOOK_RATE_LIMIT,
     DEFAULT_COMPACT_RESERVE_TOKENS,
     DEFAULT_KEEP_RECENT_TOKENS,
     DEFAULT_PROGRESS_EVERY,
@@ -24,8 +23,6 @@ from quartz.settings import (
     settings_as_dict,
     validate_background_check_every,
     validate_bot_max_consecutive_errors,
-    validate_bot_max_usd_per_day,
-    validate_bot_webhook_rate_limit,
     validate_progress_every,
     validate_tokens,
     validate_watcher_delay_seconds,
@@ -52,9 +49,7 @@ _SETTING_ALIASES: dict[str, str] = {
     "notify_error": "notify_error", "notifyError": "notify_error", "notifyerror": "notify_error", "notify-error": "notify_error",
     "rich_ui": "rich_ui", "richui": "rich_ui", "rich-ui": "rich_ui",
     "sandbox_env": "sandbox_env", "sandbox_env_passthrough": "sandbox_env", "sandboxEnvPassthrough": "sandbox_env", "sandbox-env": "sandbox_env",
-    "bot_budget": "bot_budget", "bot_max_usd_per_day": "bot_budget", "botMaxUsdPerDay": "bot_budget", "bot-budget": "bot_budget",
     "bot_errors": "bot_errors", "bot_max_consecutive_errors": "bot_errors", "botMaxConsecutiveErrors": "bot_errors", "bot-errors": "bot_errors",
-    "bot_rate": "bot_rate", "bot_webhook_rate_limit": "bot_rate", "botWebhookRateLimit": "bot_rate", "bot-rate": "bot_rate",
     "watcher_provider": "watcher_provider", "watcherProvider": "watcher_provider", "watcher-provider": "watcher_provider",
     "watcher_model": "watcher_model", "watcherModel": "watcher_model", "watcher-model": "watcher_model",
     "watcher_antistall": "watcher_antistall_default", "watcher_antistall_default": "watcher_antistall_default", "watcherAntistallDefault": "watcher_antistall_default", "watcher-antistall": "watcher_antistall_default",
@@ -66,8 +61,7 @@ _SETTING_ALIASES: dict[str, str] = {
 
 _SETTINGS_USAGE = (
     "Usage: /settings reserve|keep <tokens> | progress <n> | bg <seconds> | idle <hours> | "
-    "notifications|rich_ui <on|off> | sandbox_env <VAR1,VAR2|none> | bot_budget <usd|0> | "
-    "bot_errors <n> | bot_rate <n> | reset | list"
+    "notifications|rich_ui <on|off> | sandbox_env <VAR1,VAR2|none> | bot_errors <n> | reset | list"
 )
 
 
@@ -121,12 +115,6 @@ _INT_SETTINGS: dict[str, _IntSettingSpec] = {
         "Usage: /settings bot_errors <count> (0 disables auto-pause)",
         lambda v: f"Saved. bot_max_consecutive_errors = {'disabled' if v == 0 else v} (default for new bots).",
     ),
-    "bot_rate": _IntSettingSpec(
-        "bot_webhook_rate_limit", None, validate_bot_webhook_rate_limit,
-        "an integer requests/minute count", "between 0 and 10,000",
-        "Usage: /settings bot_rate <req/min> (0 = unlimited)",
-        lambda v: f"Saved. bot_webhook_rate_limit = {'unlimited' if v == 0 else f'{v}/min'} (default for new bots).",
-    ),
     "watcher_delay_seconds": _IntSettingSpec(
         "watcher_delay_seconds", None, validate_watcher_delay_seconds,
         "an integer number of seconds", "between 0 and 3,600 seconds",
@@ -160,7 +148,6 @@ _BOOL_SETTINGS: dict[str, tuple[str, str | None]] = {
 
 def _format_settings_overview(current: Settings, cfg_path: str) -> str:
     env_pass = ", ".join(current.sandbox_env_passthrough) if current.sandbox_env_passthrough else "(none)"
-    budget = f"${current.bot_max_usd_per_day:.2f}/day" if current.bot_max_usd_per_day is not None else "unlimited"
     return (
         "Session & UI:\n"
         f"  reserve_tokens: {current.compact_reserve_tokens:,} (default {DEFAULT_COMPACT_RESERVE_TOKENS:,})\n"
@@ -172,10 +159,8 @@ def _format_settings_overview(current: Settings, cfg_path: str) -> str:
         f"  rich_ui: {'on' if current.rich_ui else 'off'} (default off)\n\n"
         "Security & Sandbox:\n"
         f"  sandbox_env_passthrough: {env_pass}\n\n"
-        "Bot Governance Defaults:\n"
-        f"  bot_max_usd_per_day: {budget} (0 = unlimited)\n"
-        f"  bot_max_consecutive_errors: {current.bot_max_consecutive_errors} (default {DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS}, 0 disables)\n"
-        f"  bot_webhook_rate_limit: {current.bot_webhook_rate_limit}/min (default {DEFAULT_BOT_WEBHOOK_RATE_LIMIT}/min, 0 = unlimited)\n\n"
+        "Bot Defaults:\n"
+        f"  bot_max_consecutive_errors: {current.bot_max_consecutive_errors} (default {DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS}, 0 disables)\n\n"
         f"Stored in {cfg_path}\n\n{_SETTINGS_USAGE}"
     )
 
@@ -183,7 +168,7 @@ def _format_settings_overview(current: Settings, cfg_path: str) -> str:
 @COMMAND_REGISTRY.register(
     "/settings",
     "Show or update user preferences (stored in ~/.quartz/config.json)",
-    usage="[reserve|keep|progress|bg|idle|sandbox_env|bot_budget|bot_errors|bot_rate|notifications|reset|list]",
+    usage="[reserve|keep|progress|bg|idle|sandbox_env|bot_errors|notifications|reset|list]",
     immediate=True,
 )
 def cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
@@ -223,7 +208,7 @@ def cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
             setattr(rt, attr, getattr(defaults, attr))
         return CommandResult.text(
             f"Reset all settings to defaults (reserve_tokens={defaults.compact_reserve_tokens:,}, "
-            f"bot_errors={defaults.bot_max_consecutive_errors}, bot_rate={defaults.bot_webhook_rate_limit}/min)."
+            f"bot_errors={defaults.bot_max_consecutive_errors})."
         )
 
     if len(parts) == 2 and parts[0] in _INT_SETTINGS:
@@ -259,29 +244,6 @@ def cmd_settings(rt: AgentRuntime, arg: str) -> CommandResult | None:
         if rt_attr is not None:
             setattr(rt, rt_attr, enabled)
         return CommandResult.text(f"Saved. {parts[0]} = {'on' if enabled else 'off'}.")
-
-    if parts[0] == "bot_budget":
-        raw_val = parts[1].strip() if len(parts) == 2 else ""
-        if not raw_val or raw_val.lower() in ("none", "off", "unlimited", "0", "0.0"):
-            save_settings(dataclasses.replace(current, bot_max_usd_per_day=None))
-            return CommandResult.text("Saved. bot_max_usd_per_day = unlimited (default for new bots).")
-        try:
-            usd = float(raw_val)
-        except ValueError:
-            return CommandResult.error(
-                f"Invalid value {raw_val!r}: expected a USD amount (e.g. 5.00 or 0 for unlimited).",
-                body="Usage: /settings bot_budget <usd|0>",
-            )
-        if not validate_bot_max_usd_per_day(usd):
-            return CommandResult.error(
-                f"Invalid value {usd}: must be between 0 and 10,000 USD/day.",
-                body="Usage: /settings bot_budget <usd|0>",
-            )
-        budget_val = round(usd, 4) if usd > 0 else None
-        save_settings(dataclasses.replace(current, bot_max_usd_per_day=budget_val))
-        return CommandResult.text(
-            f"Saved. bot_max_usd_per_day = {'unlimited' if budget_val is None else f'${budget_val:.2f}/day'} (default for new bots)."
-        )
 
     if parts[0] == "sandbox_env":
         raw_val = parts[1] if len(parts) == 2 else ""

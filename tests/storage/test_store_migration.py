@@ -93,13 +93,6 @@ class TestBotsSqliteMigration:
             json.dumps({"bots": {"gone-bot": del_rec.to_dict()}}), encoding="utf-8"
         )
 
-        q = BotQueue(tmp_path)
-        popped = q.dequeue_next("b1")
-        assert popped is not None
-        assert popped.event_key == "k1"
-        # Must not re-import after dequeue
-        assert BotQueue(tmp_path).dequeue_next("b1") is None
-
         hist = BotHistoryStore(tmp_path)
         runs = hist.list_runs(bot_id="b1")
         assert [r.run_id for r in runs] == ["run-1"]

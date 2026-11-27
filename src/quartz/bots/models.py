@@ -52,9 +52,7 @@ class BotConfig:
     enabled: bool = True
     use_worktree: bool = False
     max_queue_depth: int = 20
-    max_usd_per_day: float | None = None
     max_consecutive_errors: int = 5
-    webhook_rate_limit_per_minute: int = 30
     github: GitHubPollConfig | None = None
     cron: CronConfig | None = None
     webhook: WebhookConfig | None = None
@@ -83,11 +81,7 @@ class BotConfig:
             enabled=bool(raw.get("enabled", True)),
             use_worktree=bool(raw.get("use_worktree", False)),
             max_queue_depth=int(raw.get("max_queue_depth", 20)),
-            max_usd_per_day=(
-                float(raw["max_usd_per_day"]) if raw.get("max_usd_per_day") is not None else None
-            ),
             max_consecutive_errors=int(raw.get("max_consecutive_errors", 5)),
-            webhook_rate_limit_per_minute=int(raw.get("webhook_rate_limit_per_minute", 30)),
             github=GitHubPollConfig(**github_raw) if isinstance(github_raw, dict) else None,
             cron=CronConfig(**cron_raw) if isinstance(cron_raw, dict) else None,
             webhook=WebhookConfig(**webhook_raw) if isinstance(webhook_raw, dict) else None,

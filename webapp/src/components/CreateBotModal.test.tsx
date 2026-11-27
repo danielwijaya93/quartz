@@ -237,18 +237,14 @@ describe("CreateBotModal", () => {
     await user.click(screen.getByRole("option", { name: "Cron" }));
     await user.type(screen.getByLabelText(/Cron Expression/i), "0 * * * *");
     await user.type(screen.getByLabelText(/Instruction/i), "check health");
-    await user.type(screen.getByLabelText(/Daily USD Budget/i), "2.5");
-    await user.type(screen.getByLabelText(/Max Errors/i), "3");
-    await user.type(screen.getByLabelText(/Rate Limit/i), "20");
+    await user.type(screen.getByLabelText(/Max Consecutive Errors/i), "3");
 
     await user.click(screen.getByRole("button", { name: /Create Bot/i }));
 
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
         name: "Guarded Bot",
-        max_usd_per_day: 2.5,
         max_consecutive_errors: 3,
-        webhook_rate_limit_per_minute: 20,
       }),
     );
   });

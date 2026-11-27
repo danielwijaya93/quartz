@@ -4,11 +4,6 @@ import { apiUrl, isNativeCapacitor } from "../lib/serverUrl";
 import { NativePlugin } from "../lib/nativeBridge";
 import { BiometricLockCard } from "./BiometricLockCard";
 import { TurnWatcherSettingsCard } from "./TurnWatcherSettingsCard";
-import {
-  ModelPricingSection,
-  type ModelPricingRuleItem,
-  type RecentModelSuggestion,
-} from "./ModelPricingSection";
 import { authFetch } from "../lib/authToken";
 import { Button, Input } from "@heroui/react";
 import { Bell, Bot, MessageSquare, RotateCcw, Save, Shield } from "lucide-react";
@@ -20,7 +15,7 @@ type SettingsTabId = "general" | "bots" | "session" | "advanced";
 
 const SETTINGS_TABS: readonly { id: SettingsTabId; label: string }[] = [
   { id: "general", label: "General & Alerts" },
-  { id: "bots", label: "Bots & Budgets" },
+  { id: "bots", label: "Bots" },
   { id: "session", label: "Session & Context" },
   { id: "advanced", label: "Advanced" },
 ];
@@ -36,13 +31,6 @@ const NOTIFICATION_CATEGORIES: readonly {
   { key: "error", label: "Errors", description: "Notify on session or runtime errors." },
 ];
 
-interface ApiModelPricingRule {
-  pattern: string;
-  inputPerM: number;
-  cachedInputPerM: number;
-  outputPerM: number;
-}
-
 interface SettingsValues {
   reserve: number;
   keep: number;
@@ -50,12 +38,7 @@ interface SettingsValues {
   bg: number;
   idle?: number;
   sandboxEnvPassthrough?: string;
-  botMaxUsdPerDay?: number | null;
   botMaxConsecutiveErrors?: number;
-  botWebhookRateLimit?: number;
-  trackChatUsage?: boolean;
-  unpricedFallback?: { inputPerM: number; outputPerM: number };
-  modelPricing?: ApiModelPricingRule[];
   watcherProvider?: string;
   watcherModel?: string;
   watcherAntistallDefault?: boolean;
@@ -68,7 +51,6 @@ interface SettingsValues {
 interface SettingsPayload {
   values: SettingsValues;
   defaults: SettingsValues;
-  recentModels?: RecentModelSuggestion[];
   configPath: string;
 }
 
@@ -93,25 +75,10 @@ const SESSION_FIELDS: readonly SettingFieldDef[] = [
 
 const BOT_GOVERNANCE_FIELDS: readonly SettingFieldDef[] = [
   {
-    apiKey: "bot_budget",
-    valueKey: "botMaxUsdPerDay",
-    label: "Default daily budget (USD)",
-    hint: (d) => `Default ${d.botMaxUsdPerDay != null ? `$${d.botMaxUsdPerDay}` : "unlimited"} · applied to new bots (0 = unlimited)`,
-    placeholder: "unlimited",
-    allowEmpty: true,
-    emptySubmitValue: "0",
-  },
-  {
     apiKey: "bot_errors",
     valueKey: "botMaxConsecutiveErrors",
     label: "Default max consecutive errors",
     hint: (d) => `Default ${d.botMaxConsecutiveErrors ?? 5} · auto-pauses bot (0 disables)`,
-  },
-  {
-    apiKey: "bot_rate",
-    valueKey: "botWebhookRateLimit",
-    label: "Default webhook rate limit (/min)",
-    hint: (d) => `Default ${d.botWebhookRateLimit ?? 30}/min · returns HTTP 429 on bursts (0 = unlimited)`,
   },
 ];
 
@@ -134,11 +101,7 @@ function draftsFromValues(values: SettingsValues, defaults: SettingsValues): Rec
     bg: formatValueForDraft(values.bg, defaults.bg ?? 300),
     idle: formatValueForDraft(values.idle, defaults.idle ?? 2),
     sandbox_env: formatValueForDraft(values.sandboxEnvPassthrough, defaults.sandboxEnvPassthrough ?? ""),
-    bot_budget: formatValueForDraft(values.botMaxUsdPerDay, defaults.botMaxUsdPerDay ?? 5),
     bot_errors: formatValueForDraft(values.botMaxConsecutiveErrors, defaults.botMaxConsecutiveErrors ?? 5),
-    bot_rate: formatValueForDraft(values.botWebhookRateLimit, defaults.botWebhookRateLimit ?? 30),
-    fallback_in: formatValueForDraft(values.unpricedFallback?.inputPerM, defaults.unpricedFallback?.inputPerM ?? 1),
-    fallback_out: formatValueForDraft(values.unpricedFallback?.outputPerM, defaults.unpricedFallback?.outputPerM ?? 5),
     watcher_provider: formatValueForDraft(values.watcherProvider, defaults.watcherProvider ?? ""),
     watcher_model: formatValueForDraft(values.watcherModel, defaults.watcherModel ?? ""),
     watcher_delay_seconds: formatValueForDraft(values.watcherDelaySeconds, defaults.watcherDelaySeconds ?? 30),
@@ -146,15 +109,6 @@ function draftsFromValues(values: SettingsValues, defaults: SettingsValues): Rec
     watcher_antistall_max_nudges: formatValueForDraft(values.watcherAntistallMaxNudges, defaults.watcherAntistallMaxNudges ?? 3),
     watcher_default_prompt: formatValueForDraft(values.watcherDefaultPrompt, defaults.watcherDefaultPrompt ?? "Continue with the next step you mentioned."),
   };
-}
-
-function pricingDraftsFromValues(values: SettingsValues): ModelPricingRuleItem[] {
-  return (values.modelPricing ?? []).map((r) => ({
-    pattern: r.pattern,
-    inputPerM: String(r.inputPerM),
-    cachedInputPerM: String(r.cachedInputPerM),
-    outputPerM: String(r.outputPerM),
-  }));
 }
 
 function notificationStatusText(notifications: NotificationsController, isNative: boolean): string {
@@ -190,7 +144,6 @@ export function SettingsView({
   const [activeTab, setActiveTab] = React.useState<SettingsTabId>("general");
   const [data, setData] = React.useState<SettingsPayload | null>(null);
   const [drafts, setDrafts] = React.useState<Record<string, string>>({});
-  const [pricingDrafts, setPricingDrafts] = React.useState<ModelPricingRuleItem[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [status, setStatus] = React.useState<{ ok: boolean; text: string } | null>(null);
@@ -200,7 +153,6 @@ export function SettingsView({
 
   const applyPayloadValues = React.useCallback((values: SettingsValues, defaults: SettingsValues) => {
     setDrafts(draftsFromValues(values, defaults));
-    setPricingDrafts(pricingDraftsFromValues(values));
   }, []);
 
   const load = React.useCallback(async () => {
@@ -303,24 +255,8 @@ export function SettingsView({
         updates[apiKey] = draftVal === "" ? emptyVal : draftVal;
       }
     }
-    const fbInCur = formatValueForDraft(data.values.unpricedFallback?.inputPerM, data.defaults.unpricedFallback?.inputPerM ?? 1);
-    const fbOutCur = formatValueForDraft(data.values.unpricedFallback?.outputPerM, data.defaults.unpricedFallback?.outputPerM ?? 5);
-    const fbInDraft = (drafts.fallback_in ?? fbInCur).trim();
-    const fbOutDraft = (drafts.fallback_out ?? fbOutCur).trim();
-    if (fbInDraft !== fbInCur || fbOutDraft !== fbOutCur) {
-      updates.unpriced_fallback = { inputPerM: fbInDraft, outputPerM: fbOutDraft };
-    }
-    const savedPricing = pricingDraftsFromValues(data.values);
-    if (JSON.stringify(pricingDrafts) !== JSON.stringify(savedPricing)) {
-      updates.model_pricing = pricingDrafts.map((r) => ({
-        pattern: r.pattern.trim(),
-        inputPerM: r.inputPerM.trim(),
-        cachedInputPerM: r.cachedInputPerM.trim() || "0",
-        outputPerM: r.outputPerM.trim(),
-      }));
-    }
     return updates;
-  }, [data, drafts, pricingDrafts]);
+  }, [data, drafts]);
 
   const dirtyCount = Object.keys(dirtyUpdates).length;
 
@@ -393,7 +329,6 @@ export function SettingsView({
   };
 
   const notifActive = notifications.enabled && notifications.env.permission === "granted";
-  const trackChatUsage = data?.values.trackChatUsage ?? true;
   const sandboxEnvCurrent = data?.values.sandboxEnvPassthrough ?? "";
   const sandboxEnvDraft = drafts.sandbox_env ?? sandboxEnvCurrent;
 
@@ -418,7 +353,7 @@ export function SettingsView({
       <div>
         <h1 className="text-lg font-semibold tracking-tight text-foreground">Settings</h1>
         <p className="mt-0.5 text-xs text-muted">
-          Alerts, bot governance &amp; model pricing, session compaction, and sandbox controls.
+          Alerts, bot defaults, session compaction, and sandbox controls.
         </p>
         <p className="mt-1 text-xs text-muted/80">
           App v{import.meta.env.VITE_APP_VERSION || "0.1.0"} (build{" "}
@@ -561,32 +496,19 @@ export function SettingsView({
       ) : null}
 
       {data && activeTab === "bots" ? (
-        <div role="tabpanel" aria-label="Bots & Budgets" className="space-y-4">
+        <div role="tabpanel" aria-label="Bots" className="space-y-4">
           <section
-            aria-label="Bot Governance Defaults"
+            aria-label="Bot Defaults"
             className="rounded-xl border border-border bg-surface/50 px-4 py-3"
           >
             <div className="mb-3 flex items-center gap-1.5 border-b border-separator pb-2">
               <Bot aria-hidden="true" className="size-3.5 text-muted" />
               <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">
-                Bot Governance Defaults
+                Bot Defaults
               </h2>
             </div>
             {renderFieldRows(BOT_GOVERNANCE_FIELDS)}
           </section>
-
-          <ModelPricingSection
-            rules={pricingDrafts}
-            onChangeRules={setPricingDrafts}
-            fallbackInput={drafts.fallback_in ?? "1"}
-            fallbackOutput={drafts.fallback_out ?? "5"}
-            onChangeFallbackInput={(v) => setDrafts((prev) => ({ ...prev, fallback_in: v }))}
-            onChangeFallbackOutput={(v) => setDrafts((prev) => ({ ...prev, fallback_out: v }))}
-            trackChatUsage={trackChatUsage}
-            onToggleTrackChatUsage={() => void saveSingleKey("track_chat_usage", trackChatUsage ? "off" : "on")}
-            recentModels={data.recentModels ?? []}
-            saving={saving}
-          />
         </div>
       ) : null}
 

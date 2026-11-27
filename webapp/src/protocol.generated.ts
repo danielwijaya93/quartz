@@ -200,9 +200,7 @@ export interface BotCreateRequest {
   enabled?: boolean;
   useWorktree?: boolean;
   maxQueueDepth?: number;
-  maxUsdPerDay?: number | null;
   maxConsecutiveErrors?: number | null;
-  webhookRateLimitPerMinute?: number | null;
   github?: BotGitHubPollPayload | null;
   cron?: BotCronPayload | null;
   webhook?: BotWebhookPayload | null;
@@ -220,9 +218,7 @@ export interface BotUpdateRequest {
   enabled?: boolean | null;
   useWorktree?: boolean | null;
   maxQueueDepth?: number | null;
-  maxUsdPerDay?: number | null;
   maxConsecutiveErrors?: number | null;
-  webhookRateLimitPerMinute?: number | null;
   github?: BotGitHubPollPayload | null;
   cron?: BotCronPayload | null;
   webhook?: BotWebhookPayload | null;

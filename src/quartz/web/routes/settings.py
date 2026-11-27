@@ -11,10 +11,8 @@ from fastapi.responses import JSONResponse
 
 from quartz.web.context import AppContext, bad_request, json_body
 from quartz.web.routes.settings_ops import (
-    WEB_PRICING_KEYS,
     _apply_batch_without_session,
     _apply_settings_without_session,
-    _apply_web_pricing_key,
     _build_mcp_spec,
     _collect_session_jobs,
     _load_provider_descriptor,
@@ -58,9 +56,6 @@ def _broadcast_loaded_settings(manager: Any, loaded: Any, *, watcher_changed: bo
 async def _apply_single_setting(
     ctx: AppContext, request: Request, key: str, raw_val: Any
 ) -> tuple[bool, str]:
-    if key in WEB_PRICING_KEYS:
-        err = await asyncio.to_thread(_apply_web_pricing_key, key, raw_val)
-        return (err is None, err or "Saved.")
     val_str = "" if key == "reset" else str(raw_val if raw_val is not None else "").strip()
     arg = "reset" if key == "reset" else f"{key} {val_str}".strip()
     if not arg:
@@ -121,9 +116,7 @@ def _register_settings_routes(router: APIRouter, ctx: AppContext) -> None:
         if raw_updates is not None:
             if not isinstance(raw_updates, dict) or not raw_updates:
                 return _fail("updates must be a non-empty object")
-            if not manager.current_session.built or all(
-                str(k).strip() in WEB_PRICING_KEYS for k in raw_updates
-            ):
+            if not manager.current_session.built:
                 ok, msg = await asyncio.to_thread(_apply_batch_without_session, raw_updates)
                 if not ok:
                     return _fail(msg)

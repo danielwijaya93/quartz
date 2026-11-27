@@ -20,7 +20,6 @@ from quartz.bots import (
     BotRunRecord,
     BotStore,
     QueuedTrigger,
-    UsageStore,
 )
 from quartz.core.turn import TurnStatus
 
@@ -103,7 +102,6 @@ class BotRunner:
         run_trigger: TriggerCallback | None = None,
         *,
         history: BotHistoryStore | None = None,
-        usage_store: UsageStore | None = None,
         on_circuit_break: CircuitBreakCallback | None = None,
         max_concurrent: int = 2,
         tick_interval_s: float = 15.0,
@@ -112,7 +110,6 @@ class BotRunner:
         self._store = store
         self._queue = queue
         self._history = history
-        self._usage_store = usage_store
         self._on_circuit_break = on_circuit_break
         self._run_trigger: TriggerCallback = run_trigger or _default_run_trigger
         self._max_concurrent = max(1, int(max_concurrent))
@@ -332,17 +329,6 @@ class BotRunner:
         except Exception:
             logger.debug("on_circuit_break callback failed for bot %s", bot.id, exc_info=True)
 
-    def _check_budget_exceeded(self, bot: BotConfig) -> str | None:
-        if self._usage_store is None or bot.max_usd_per_day is None or bot.max_usd_per_day <= 0:
-            return None
-        spent = self._usage_store.daily_bot_spend_usd(bot.id)
-        if spent >= bot.max_usd_per_day:
-            return (
-                f"Daily budget exceeded (${spent:.4f} >= ${bot.max_usd_per_day:.2f}/day); "
-                "bot auto-paused"
-            )
-        return None
-
     def _finalize_run_state(
         self,
         bot: BotConfig,
@@ -413,8 +399,7 @@ class BotRunner:
 
     def _prepare_trigger_run(
         self, bot: BotConfig, trigger: QueuedTrigger, run_id: str
-    ) -> str | None:
-        now_ts = time.time()
+    ) -> None:
         if self._history is not None:
             self._history.record_run_start(
                 BotRunRecord(
@@ -425,20 +410,9 @@ class BotRunner:
                     event_key=trigger.event_key,
                     source=trigger.source,
                     status="running",
-                    started_at=now_ts,
+                    started_at=time.time(),
                 )
             )
-        budget_reason = self._check_budget_exceeded(bot)
-        if budget_reason is not None:
-            self._pause_bot_for_circuit_break(bot, budget_reason, now_ts)
-            if self._history is not None:
-                self._history.record_run_finish(
-                    run_id,
-                    status="budget_exceeded",
-                    finished_at=now_ts,
-                    error=budget_reason,
-                )
-        return budget_reason
 
     async def _execute_trigger_correlated(
         self, bot: BotConfig, trigger: QueuedTrigger, run_id: str
@@ -446,12 +420,7 @@ class BotRunner:
         slot_released = False
         started_monotonic = time.monotonic()
         try:
-            budget_reason = await asyncio.to_thread(
-                self._prepare_trigger_run, bot, trigger, run_id
-            )
-            if budget_reason is not None:
-                await self._notify_circuit_break(bot, budget_reason)
-                return
+            await asyncio.to_thread(self._prepare_trigger_run, bot, trigger, run_id)
 
             outcome = await self._run_trigger(bot, trigger)
             run_status = "ok"

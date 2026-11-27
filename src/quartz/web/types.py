@@ -12,13 +12,11 @@ __all__ = [
     "McpServerEntry",
     "McpServerSpec",
     "McpSnapshotPayload",
-    "ModelPricingEntry",
     "ProviderDescriptorPayload",
     "QueuedTriggerPayload",
     "SerializedBotPayload",
     "SessionJobEntry",
     "SettingsValuesPayload",
-    "UnpricedFallbackEntry",
 ]
 
 
@@ -44,18 +42,6 @@ class ActiveSessionWireItem(TypedDict):
     preview: NotRequired[str]
 
 
-class UnpricedFallbackEntry(TypedDict):
-    inputPerM: float
-    outputPerM: float
-
-
-class ModelPricingEntry(TypedDict):
-    pattern: str
-    inputPerM: float
-    cachedInputPerM: float
-    outputPerM: float
-
-
 class SettingsValuesPayload(TypedDict):
     reserve: int
     keep: int
@@ -69,12 +55,7 @@ class SettingsValuesPayload(TypedDict):
     notifyError: bool
     richUi: bool
     sandboxEnvPassthrough: str
-    botMaxUsdPerDay: float | None
     botMaxConsecutiveErrors: int
-    botWebhookRateLimit: int
-    trackChatUsage: bool
-    unpricedFallback: UnpricedFallbackEntry
-    modelPricing: list[ModelPricingEntry]
     watcherProvider: str
     watcherModel: str
     watcherAntistallDefault: bool
@@ -175,9 +156,7 @@ class SerializedBotPayload(TypedDict, total=False):
     enabled: bool
     use_worktree: bool
     max_queue_depth: int
-    max_usd_per_day: float | None
     max_consecutive_errors: int
-    webhook_rate_limit_per_minute: int
     github: dict[str, Any] | None
     cron: dict[str, Any] | None
     webhook: dict[str, Any] | None

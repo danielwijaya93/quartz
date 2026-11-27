@@ -34,12 +34,7 @@ DEFAULT_NOTIFY_ERROR = True
 DEFAULT_RICH_UI = False
 DEFAULT_BRIDGE_TIMEOUT_S = 290
 DEFAULT_BRIDGE_WORKER_TIMEOUT_S = 1800
-DEFAULT_BOT_MAX_USD_PER_DAY: float | None = 5.0
 DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS = 5
-DEFAULT_BOT_WEBHOOK_RATE_LIMIT = 30
-DEFAULT_TRACK_CHAT_USAGE = True
-DEFAULT_UNPRICED_FALLBACK_INPUT_PER_M = 1.0
-DEFAULT_UNPRICED_FALLBACK_OUTPUT_PER_M = 5.0
 DEFAULT_WATCHER_PROVIDER = ""
 DEFAULT_WATCHER_MODEL = ""
 DEFAULT_WATCHER_ANTISTALL_DEFAULT = True
@@ -65,10 +60,7 @@ _MAX_BACKGROUND_CHECK_EVERY = 86_400
 _MAX_RETENTION_DAYS = 3_650
 _MAX_WEB_IDLE_HOURS = 8_760
 _MAX_WEB_MAX_LIVE_SESSIONS = 100
-_MAX_BOT_USD_PER_DAY = 10_000.0
 _MAX_BOT_CONSECUTIVE_ERRORS = 1_000
-_MAX_BOT_WEBHOOK_RATE_LIMIT = 10_000
-_MAX_TOKEN_RATE_PER_M = 10_000.0
 _MAX_WATCHER_DELAY_SECONDS = 3_600
 _MAX_WATCHER_TURNS = 100
 _MAX_WATCHER_NUDGES = 20
@@ -89,11 +81,6 @@ _PERSISTED_FIELDS = (
     "rich_ui",
     "sandbox_env_passthrough",
     "bot_max_consecutive_errors",
-    "bot_webhook_rate_limit",
-    "track_chat_usage",
-    "unpriced_fallback_input_per_m",
-    "unpriced_fallback_output_per_m",
-    "model_pricing",
     "watcher_provider",
     "watcher_model",
     "watcher_antistall_default",
@@ -103,16 +90,6 @@ _PERSISTED_FIELDS = (
     "watcher_default_prompt",
 )
 _OPTIONAL_FIELDS = ("bridge_timeout_s", "bridge_worker_timeout_s")
-
-
-@dataclasses.dataclass(frozen=True)
-class ModelPricingRule:
-    """User-defined per-1M-token USD rates for a model or wildcard pattern."""
-
-    pattern: str
-    input_per_m: float
-    cached_input_per_m: float
-    output_per_m: float
 
 
 @dataclasses.dataclass(frozen=True)
@@ -136,13 +113,7 @@ class Settings:
     bridge_timeout_s: int | None = None
     bridge_worker_timeout_s: int | None = None
     sandbox_env_passthrough: tuple[str, ...] = ()
-    bot_max_usd_per_day: float | None = DEFAULT_BOT_MAX_USD_PER_DAY
     bot_max_consecutive_errors: int = DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS
-    bot_webhook_rate_limit: int = DEFAULT_BOT_WEBHOOK_RATE_LIMIT
-    track_chat_usage: bool = DEFAULT_TRACK_CHAT_USAGE
-    unpriced_fallback_input_per_m: float = DEFAULT_UNPRICED_FALLBACK_INPUT_PER_M
-    unpriced_fallback_output_per_m: float = DEFAULT_UNPRICED_FALLBACK_OUTPUT_PER_M
-    model_pricing: tuple[ModelPricingRule, ...] = ()
     watcher_provider: str = DEFAULT_WATCHER_PROVIDER
     watcher_model: str = DEFAULT_WATCHER_MODEL
     watcher_antistall_default: bool = DEFAULT_WATCHER_ANTISTALL_DEFAULT
@@ -237,106 +208,6 @@ def _coerce_bridge_timeout(value: Any) -> int | None:
     return None
 
 
-def _coerce_optional_usd(value: Any) -> float | None:
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        fval = float(value)
-        return round(fval, 4) if math.isfinite(fval) and 0 < fval <= _MAX_BOT_USD_PER_DAY else None
-    if isinstance(value, str) and value.strip():
-        try:
-            fval = float(value.strip())
-        except ValueError:
-            return None
-        return round(fval, 4) if math.isfinite(fval) and 0 < fval <= _MAX_BOT_USD_PER_DAY else None
-    return None
-
-
-def _coerce_rate(value: Any, default: float) -> float:
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, (int, float)):
-        fval = float(value)
-        return round(fval, 6) if math.isfinite(fval) and 0.0 <= fval <= _MAX_TOKEN_RATE_PER_M else default
-    if isinstance(value, str) and value.strip():
-        try:
-            fval = float(value.strip())
-        except ValueError:
-            return default
-        return round(fval, 6) if math.isfinite(fval) and 0.0 <= fval <= _MAX_TOKEN_RATE_PER_M else default
-    return default
-
-
-def validate_token_rate(value: Any) -> bool:
-    return (
-        not isinstance(value, bool)
-        and isinstance(value, (int, float))
-        and math.isfinite(float(value))
-        and 0.0 <= float(value) <= _MAX_TOKEN_RATE_PER_M
-    )
-
-
-def _coerce_model_pricing(value: Any) -> tuple[ModelPricingRule, ...]:
-    if not isinstance(value, (list, tuple)):
-        return ()
-    out: list[ModelPricingRule] = []
-    seen: set[str] = set()
-    for item in value:
-        if isinstance(item, ModelPricingRule):
-            pat = item.pattern.strip()
-            if not pat or pat.lower() in seen:
-                continue
-            seen.add(pat.lower())
-            out.append(item)
-            continue
-        if not isinstance(item, dict):
-            continue
-        pat = str(item.get("pattern") or "").strip()
-        if not pat or pat.lower() in seen:
-            continue
-        in_r = _coerce_rate(item.get("input_per_m", item.get("inputPerM")), -1.0)
-        cached_r = _coerce_rate(item.get("cached_input_per_m", item.get("cachedInputPerM", 0.0)), 0.0)
-        out_r = _coerce_rate(item.get("output_per_m", item.get("outputPerM")), -1.0)
-        if in_r < 0.0 or out_r < 0.0:
-            continue
-        seen.add(pat.lower())
-        out.append(ModelPricingRule(pat, in_r, cached_r, out_r))
-    return tuple(out)
-
-
-def parse_model_pricing_payload(raw: Any) -> tuple[tuple[ModelPricingRule, ...] | None, str | None]:
-    """Parse and validate a list of `{pattern, inputPerM, cachedInputPerM, outputPerM}` items."""
-    if not isinstance(raw, list):
-        return None, "Model pricing must be a list of rules."
-    out: list[ModelPricingRule] = []
-    seen: set[str] = set()
-    for item in raw:
-        if not isinstance(item, dict):
-            return None, "Each pricing rule must be an object."
-        pat = str(item.get("pattern") or "").strip()
-        if not pat:
-            return None, "Model pricing pattern cannot be empty."
-        key = pat.lower()
-        if key in seen:
-            return None, f"Duplicate model pricing pattern: {pat}"
-        seen.add(key)
-        raw_in = item.get("inputPerM", item.get("input_per_m"))
-        raw_cached = item.get("cachedInputPerM", item.get("cached_input_per_m", 0.0))
-        raw_out = item.get("outputPerM", item.get("output_per_m"))
-        if raw_in is None or raw_out is None or isinstance(raw_in, bool) or isinstance(raw_out, bool) or isinstance(raw_cached, bool):
-            return None, f"Invalid numeric rate for {pat}."
-        try:
-            in_val = float(raw_in)
-            cached_val = float(0.0 if raw_cached is None else raw_cached)
-            out_val = float(raw_out)
-        except (TypeError, ValueError):
-            return None, f"Invalid numeric rate for {pat}."
-        if not (validate_token_rate(in_val) and validate_token_rate(cached_val) and validate_token_rate(out_val)):
-            return None, f"Rates for {pat} must be between 0 and {_MAX_TOKEN_RATE_PER_M:g}."
-        out.append(ModelPricingRule(pat, round(in_val, 6), round(cached_val, 6), round(out_val, 6)))
-    return tuple(out), None
-
-
 def _coerce_env_passthrough(value: Any) -> tuple[str, ...]:
     items: list[str] = []
     if isinstance(value, str):
@@ -404,17 +275,7 @@ def load_settings(path: Path | None = None) -> Settings:
         bridge_timeout_s=_coerce_bridge_timeout(raw.get("bridge_timeout_s")),
         bridge_worker_timeout_s=_coerce_bridge_timeout(raw.get("bridge_worker_timeout_s")),
         sandbox_env_passthrough=_coerce_env_passthrough(raw.get("sandbox_env_passthrough")),
-        bot_max_usd_per_day=(
-            _coerce_optional_usd(raw["bot_max_usd_per_day"])
-            if "bot_max_usd_per_day" in raw
-            else DEFAULT_BOT_MAX_USD_PER_DAY
-        ),
         bot_max_consecutive_errors=_coerce_int_range(raw.get("bot_max_consecutive_errors"), DEFAULT_BOT_MAX_CONSECUTIVE_ERRORS, 0, _MAX_BOT_CONSECUTIVE_ERRORS),
-        bot_webhook_rate_limit=_coerce_int_range(raw.get("bot_webhook_rate_limit"), DEFAULT_BOT_WEBHOOK_RATE_LIMIT, 0, _MAX_BOT_WEBHOOK_RATE_LIMIT),
-        track_chat_usage=_coerce_bool(raw.get("track_chat_usage"), DEFAULT_TRACK_CHAT_USAGE),
-        unpriced_fallback_input_per_m=_coerce_rate(raw.get("unpriced_fallback_input_per_m"), DEFAULT_UNPRICED_FALLBACK_INPUT_PER_M),
-        unpriced_fallback_output_per_m=_coerce_rate(raw.get("unpriced_fallback_output_per_m"), DEFAULT_UNPRICED_FALLBACK_OUTPUT_PER_M),
-        model_pricing=_coerce_model_pricing(raw.get("model_pricing")),
         watcher_provider=str(raw.get("watcher_provider") or "").strip(),
         watcher_model=str(raw.get("watcher_model") or "").strip(),
         watcher_antistall_default=_coerce_bool(raw.get("watcher_antistall_default"), DEFAULT_WATCHER_ANTISTALL_DEFAULT),
@@ -464,16 +325,8 @@ def validate_bridge_timeout(value: int | float) -> bool:
     return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value) and value > 0
 
 
-def validate_bot_max_usd_per_day(value: float) -> bool:
-    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value) and 0.0 <= value <= _MAX_BOT_USD_PER_DAY
-
-
 def validate_bot_max_consecutive_errors(value: int) -> bool:
     return _valid_int_range(value, 0, _MAX_BOT_CONSECUTIVE_ERRORS)
-
-
-def validate_bot_webhook_rate_limit(value: int) -> bool:
-    return _valid_int_range(value, 0, _MAX_BOT_WEBHOOK_RATE_LIMIT)
 
 
 def validate_watcher_delay_seconds(value: int) -> bool:
@@ -612,11 +465,7 @@ def settings_as_dict(settings: Settings) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for k in _PERSISTED_FIELDS:
         val = getattr(settings, k)
-        if k == "model_pricing":
-            out[k] = [dataclasses.asdict(r) for r in val]
-        else:
-            out[k] = list(val) if isinstance(val, tuple) else val
-    out["bot_max_usd_per_day"] = settings.bot_max_usd_per_day
+        out[k] = list(val) if isinstance(val, tuple) else val
     for key in _OPTIONAL_FIELDS:
         val = getattr(settings, key)
         if val is not None:

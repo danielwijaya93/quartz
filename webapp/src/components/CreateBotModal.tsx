@@ -47,9 +47,7 @@ export function CreateBotModal({
   const modelId = React.useId();
   const effortId = React.useId();
   const worktreeId = React.useId();
-  const budgetId = React.useId();
   const maxErrorsId = React.useId();
-  const webhookRateId = React.useId();
 
   const dialogRef = React.useRef<HTMLDialogElement | null>(null);
   const isEditing = Boolean(initialBot);
@@ -65,9 +63,7 @@ export function CreateBotModal({
   const [autoAllowText, setAutoAllowText] = React.useState("");
   const [enabled, setEnabled] = React.useState(true);
   const [useWorktree, setUseWorktree] = React.useState(false);
-  const [maxUsdPerDay, setMaxUsdPerDay] = React.useState("");
   const [maxConsecutiveErrors, setMaxConsecutiveErrors] = React.useState("");
-  const [webhookRateLimit, setWebhookRateLimit] = React.useState("");
 
   // GitHub Poll fields
   const [githubRepo, setGithubRepo] = React.useState("");
@@ -100,14 +96,8 @@ export function CreateBotModal({
       setAutoAllowText(initialBot.permissions.auto_allow.join(", "));
       setEnabled(initialBot.enabled);
       setUseWorktree(initialBot.use_worktree);
-      setMaxUsdPerDay(initialBot.max_usd_per_day != null ? String(initialBot.max_usd_per_day) : "");
       setMaxConsecutiveErrors(
         initialBot.max_consecutive_errors != null ? String(initialBot.max_consecutive_errors) : "",
-      );
-      setWebhookRateLimit(
-        initialBot.webhook_rate_limit_per_minute != null
-          ? String(initialBot.webhook_rate_limit_per_minute)
-          : "",
       );
       setGithubRepo(initialBot.github?.repo ?? "");
       setGithubEvents(initialBot.github?.events.join(", ") ?? "issues");
@@ -127,9 +117,7 @@ export function CreateBotModal({
       setAutoAllowText("");
       setEnabled(true);
       setUseWorktree(false);
-      setMaxUsdPerDay("");
       setMaxConsecutiveErrors("");
-      setWebhookRateLimit("");
       setGithubRepo("");
       setGithubEvents("issues");
       setGithubInterval("900");
@@ -241,18 +229,6 @@ export function CreateBotModal({
     const intervalSeconds = Number.isFinite(parsedInterval) && parsedInterval > 0 ? parsedInterval : 900;
     const parsedEvents = splitList(githubEvents);
 
-    let parsedBudget: number | null | undefined;
-    if (maxUsdPerDay.trim() !== "") {
-      const val = Number.parseFloat(maxUsdPerDay.trim());
-      if (!Number.isFinite(val) || val < 0) {
-        setError("Daily USD Budget must be a non-negative number.");
-        return;
-      }
-      parsedBudget = val > 0 ? val : null;
-    } else if (initialBot) {
-      parsedBudget = null;
-    }
-
     let parsedMaxErrors: number | undefined;
     if (maxConsecutiveErrors.trim() !== "") {
       const val = Number.parseInt(maxConsecutiveErrors.trim(), 10);
@@ -261,16 +237,6 @@ export function CreateBotModal({
         return;
       }
       parsedMaxErrors = val;
-    }
-
-    let parsedWebhookRate: number | undefined;
-    if (webhookRateLimit.trim() !== "") {
-      const val = Number.parseInt(webhookRateLimit.trim(), 10);
-      if (!Number.isFinite(val) || val < 0) {
-        setError("Webhook Rate Limit must be a non-negative integer.");
-        return;
-      }
-      parsedWebhookRate = val;
     }
 
     const payload: BotFormValues = {
@@ -285,9 +251,7 @@ export function CreateBotModal({
       enabled,
       use_worktree: useWorktree,
       max_queue_depth: initialBot?.max_queue_depth ?? 20,
-      ...(parsedBudget !== undefined ? { max_usd_per_day: parsedBudget } : {}),
       ...(parsedMaxErrors !== undefined ? { max_consecutive_errors: parsedMaxErrors } : {}),
-      ...(parsedWebhookRate !== undefined ? { webhook_rate_limit_per_minute: parsedWebhookRate } : {}),
       github:
         watcherType === "github_poll"
           ? {
@@ -619,50 +583,19 @@ export function CreateBotModal({
           />
         </div>
 
-        <div className="grid grid-cols-1 gap-3 rounded-xl border border-separator bg-surface-secondary/30 p-3 sm:grid-cols-3">
-          <div>
-            <label htmlFor={budgetId} className={LABEL_CLASS}>
-              Daily USD Budget
-            </label>
-            <input
-              id={budgetId}
-              type="number"
-              min={0}
-              step="0.5"
-              value={maxUsdPerDay}
-              onChange={(e) => setMaxUsdPerDay(e.target.value)}
-              placeholder="Default"
-              className={INPUT_CLASS}
-            />
-          </div>
-          <div>
-            <label htmlFor={maxErrorsId} className={LABEL_CLASS}>
-              Max Errors
-            </label>
-            <input
-              id={maxErrorsId}
-              type="number"
-              min={0}
-              value={maxConsecutiveErrors}
-              onChange={(e) => setMaxConsecutiveErrors(e.target.value)}
-              placeholder="Default (5)"
-              className={INPUT_CLASS}
-            />
-          </div>
-          <div>
-            <label htmlFor={webhookRateId} className={LABEL_CLASS}>
-              Rate Limit (/min)
-            </label>
-            <input
-              id={webhookRateId}
-              type="number"
-              min={0}
-              value={webhookRateLimit}
-              onChange={(e) => setWebhookRateLimit(e.target.value)}
-              placeholder="Default (30)"
-              className={INPUT_CLASS}
-            />
-          </div>
+        <div className="rounded-xl border border-separator bg-surface-secondary/30 p-3">
+          <label htmlFor={maxErrorsId} className={LABEL_CLASS}>
+            Max Consecutive Errors (auto-pause, 0 disables)
+          </label>
+          <input
+            id={maxErrorsId}
+            type="number"
+            min={0}
+            value={maxConsecutiveErrors}
+            onChange={(e) => setMaxConsecutiveErrors(e.target.value)}
+            placeholder="Default (5)"
+            className={INPUT_CLASS}
+          />
         </div>
 
         <label htmlFor={worktreeId} className="flex cursor-pointer items-center gap-2 text-xs text-foreground">
