@@ -20,7 +20,7 @@ from quartz.web.attachments import AttachedFileRegistry
 from quartz.web.bot_runner import BotRunner
 from quartz.web.push import PushStore
 from quartz.web.session import SessionManager, WebSession
-from quartz.web.sidebar import SidebarStore
+from quartz.web.sidebar import SidebarStore, default_chats_dir
 
 MAX_FRAME_BYTES = 1024 * 1024
 """Largest client frame accepted. The protocol says 1 MiB; see its Security section."""
@@ -117,6 +117,8 @@ def remember_workspace(sidebar: Callable[[], SidebarStore], session: WebSession)
     if not session.built:
         return
     try:
+        if session.runtime.cwd.resolve() == default_chats_dir():
+            return
         sidebar().add_workspace(str(session.runtime.cwd))
     except OSError:
         return

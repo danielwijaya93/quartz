@@ -43,7 +43,7 @@ from quartz.web.schemas import (
     parse_client_frame,
 )
 from quartz.web.session import SessionManager, TurnBusyError, WebSession, resolve_cwd
-from quartz.web.sidebar import SidebarStore
+from quartz.web.sidebar import SidebarStore, default_chats_dir
 
 
 class _ConnState:
@@ -189,6 +189,13 @@ async def _dispatch(
                 push(session.snapshot())
 
         elif isinstance(frame, NewSessionFrame):
+            if frame.cwd is not None:
+                chats_dir = default_chats_dir()
+                try:
+                    if Path(frame.cwd).expanduser().resolve() == chats_dir:
+                        chats_dir.mkdir(parents=True, exist_ok=True)
+                except (OSError, RuntimeError, ValueError):
+                    pass
             resolved_cwd = None if frame.cwd is None else resolve_cwd(frame.cwd, manager.cwd)
             session = await manager.acreate_session(resolved_cwd)
             _switch_connection(conn, session, push, app)
