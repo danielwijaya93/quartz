@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import {
   addUserPrompt,
   approxTokens,
@@ -1688,5 +1688,79 @@ describe("diff parsing and turn elapsed time", () => {
     expect(isTurn(turn)).toBe(true);
     expect(turn.elapsedMs).toBe(4200);
     expect(turnDiffStats(turn)).toEqual({ additions: 2, deletions: 1 });
+  });
+
+  it("records thinking startedAt and finalizes durationMs on the next non-thinking event", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(10_000);
+      let state = reduce(initialState, { type: "turn_start", turnId: "t1" });
+      state = reduce(state, { type: "thinking_delta", text: "hmm" });
+      expect(state.rows[0]).toMatchObject({ kind: "thinking", startedAt: 10_000 });
+
+      vi.setSystemTime(13_200);
+      state = reduce(state, { type: "tool_call", id: "c1", code: "run('ls')" });
+      expect(state.rows[0]).toMatchObject({ kind: "thinking", durationMs: 3200 });
+      expect(state.rows[1]).toMatchObject({ kind: "tool", startedAt: 13_200 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("includes formatted elapsed duration in summarizeWorkSteps", () => {
+    expect(
+      summarizeWorkSteps([
+        { kind: "thinking", id: "k1", rows: [{ kind: "thinking", id: "t1", text: "x", durationMs: 3200 }] },
+      ]),
+    ).toBe("Thought for 3.2s");
+
+    expect(
+      summarizeWorkSteps([
+        { kind: "thinking", id: "k1", rows: [{ kind: "thinking", id: "t1", text: "x", durationMs: 450 }] },
+      ]),
+    ).toBe("Thought for 450ms");
+
+    expect(
+      summarizeWorkSteps([
+        { kind: "thinking", id: "k1", rows: [{ kind: "thinking", id: "t1", text: "x", durationMs: 1200 }] },
+        {
+          kind: "tool_run",
+          id: "r1",
+          rows: [
+            {
+              kind: "tool",
+              id: "c1",
+              code: "run('pytest')",
+              status: "ok",
+              output: "",
+              durationMs: 3300,
+              images: [],
+              actions: null,
+            },
+          ],
+        },
+      ]),
+    ).toBe("Ran 1 command · 4.5s");
+
+    expect(
+      summarizeWorkSteps([
+        {
+          kind: "tool_run",
+          id: "r1",
+          rows: [
+            {
+              kind: "tool",
+              id: "c1",
+              code: "run('pytest')",
+              status: "failed",
+              output: "err",
+              durationMs: 65_000,
+              images: [],
+              actions: null,
+            },
+          ],
+        },
+      ]),
+    ).toBe("Ran 1 command · 1 failed · 1m 5s");
   });
 });

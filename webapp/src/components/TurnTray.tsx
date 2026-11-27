@@ -40,6 +40,29 @@ function segmentFailedCount(steps: WorkSegment["steps"]): number {
   return failed;
 }
 
+function formatLiveElapsed(ms: number): string {
+  const totalSecs = Math.max(0, Math.floor(ms / 1000));
+  const mins = Math.floor(totalSecs / 60);
+  const secs = totalSecs % 60;
+  return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+}
+
+function useLiveElapsed(active: boolean, startedAt: number | undefined): string | null {
+  const [now, setNow] = React.useState(() => Date.now());
+
+  React.useEffect(() => {
+    if (!active || startedAt === undefined) return;
+    setNow(Date.now());
+    const id = window.setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [active, startedAt]);
+
+  if (!active || startedAt === undefined) return null;
+  return formatLiveElapsed(now - startedAt);
+}
+
 function LivingWaveform(): React.ReactElement {
   return (
     <span
@@ -58,8 +81,9 @@ function LivingWaveform(): React.ReactElement {
 /**
  * One contiguous work phase (thinking + tool calls).
  *
- * Shows the Living Waveform alongside the current step while active, and settles
- * in place into a single-sentence summary (e.g. "Ran 2 commands · Edited 3 files")
+ * Shows the Living Waveform alongside the current step and a 1s ticking timer
+ * while active, and settles in place into a single-sentence summary with
+ * total duration (e.g. "Thought for 3.2s", "Ran 2 commands · Edited 3 files · 4.5s")
  * once the phase completes.
  */
 export const WorkSegmentRow = React.memo(function WorkSegmentRow({
@@ -67,6 +91,8 @@ export const WorkSegmentRow = React.memo(function WorkSegmentRow({
 }: {
   segment: WorkSegment;
 }): React.ReactElement {
+  const elapsed = useLiveElapsed(segment.live, segment.startedAt);
+
   if (!segment.live) {
     return (
       <div data-testid="work-summary" className="px-1 py-0.5 text-xs text-muted">
@@ -84,6 +110,11 @@ export const WorkSegmentRow = React.memo(function WorkSegmentRow({
       <LivingWaveform />
       <span aria-hidden="true" className="min-w-0 truncate text-foreground/85">
         {label}
+        {elapsed !== null ? (
+          <span data-testid="work-elapsed" className="ml-1.5 tabular-nums text-muted">
+            {elapsed}
+          </span>
+        ) : null}
       </span>
       <p
         role="status"
@@ -109,6 +140,8 @@ export const TurnTray = React.memo(function TurnTray({
     (seg): seg is WorkSegment => seg.kind === "work",
   );
   const lastWork = workSegments[workSegments.length - 1];
+  const elapsed = useLiveElapsed(lastWork?.live === true, lastWork?.startedAt);
+
   if (lastWork === undefined) return null;
 
   if (lastWork.live) {
@@ -120,6 +153,11 @@ export const TurnTray = React.memo(function TurnTray({
         <LivingWaveform />
         <span aria-hidden="true" className="min-w-0 truncate text-foreground/85">
           {label}
+          {elapsed !== null ? (
+            <span data-testid="work-elapsed" className="ml-1.5 tabular-nums text-muted">
+              {elapsed}
+            </span>
+          ) : null}
         </span>
         <p
           role="status"

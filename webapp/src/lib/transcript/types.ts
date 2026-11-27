@@ -42,6 +42,8 @@ export interface ThinkingRow {
   kind: "thinking";
   id: string;
   text: string;
+  startedAt?: number;
+  durationMs?: number;
 }
 
 export interface ToolRow {
@@ -50,6 +52,7 @@ export interface ToolRow {
   code: string;
   status: "running" | "ok" | "failed";
   output: string;
+  startedAt?: number;
   durationMs: number | null;
   images: ImageAttachment[];
   files?: FileAttachment[];
@@ -250,6 +253,8 @@ export type TurnSegment =
       steps: TurnWorkStep[];
       live: boolean;
       summary: string;
+      startedAt?: number;
+      durationMs?: number;
     }
   | {
       kind: "message";

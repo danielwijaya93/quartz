@@ -1,6 +1,6 @@
 import * as React from "react";
-import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { act, render, screen } from "@testing-library/react";
 import { TurnTray } from "./TurnTray";
 import {
   groupTurns,
@@ -108,5 +108,40 @@ describe("TurnTray", () => {
     );
     const status = screen.getByTestId("turn-tray-status");
     expect(status).toHaveTextContent("Running retry, 1 failed");
+  });
+
+  it("ticks live elapsed time every second when startedAt is present", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(100_000);
+      const liveThinking: ThinkingRow = { kind: "thinking", id: "k1", text: "a", startedAt: 100_000 };
+      render(tray(turnOf([liveThinking], true)));
+      expect(screen.getByTestId("work-elapsed")).toHaveTextContent("0s");
+
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(screen.getByTestId("work-elapsed")).toHaveTextContent("1s");
+
+      act(() => {
+        vi.advanceTimersByTime(64_000);
+      });
+      expect(screen.getByTestId("work-elapsed")).toHaveTextContent("1m 5s");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows settled duration for thinking-only and tool summaries", () => {
+    const settledThinking: ThinkingRow = { kind: "thinking", id: "k1", text: "a", durationMs: 3200 };
+    const { rerender } = render(tray(turnOf([settledThinking, assistant("a1", "done")], false)));
+    expect(screen.getByTestId("work-summary")).toHaveTextContent("Thought for 3.2s");
+
+    const settledTool: ToolRow = {
+      ...tool("t1", "ok", "run('pytest')"),
+      durationMs: 1500,
+    };
+    rerender(tray(turnOf([settledThinking, settledTool, assistant("a1", "done")], false)));
+    expect(screen.getByTestId("work-summary")).toHaveTextContent("Ran 1 command · 4.7s");
   });
 });
