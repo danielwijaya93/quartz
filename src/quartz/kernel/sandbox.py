@@ -388,6 +388,49 @@ def wrap_command(
     raise SandboxUnavailableError(sandbox_unavailable_message(platform=platform))
 
 
-def sandbox_env_overrides() -> dict[str, str]:
-    """Return environment overrides appropriate inside a sandboxed kernel."""
-    return {"QUARTZ_SANDBOXED": "1"} if os.environ.get("QUARTZ_SANDBOXED") != "1" else {}
+_SANDBOX_CACHE_ROOT = "/tmp/quartz-cache"
+_SANDBOX_CACHE_DEFAULTS: tuple[tuple[str, str], ...] = (
+    ("XDG_CACHE_HOME", _SANDBOX_CACHE_ROOT),
+    ("UV_CACHE_DIR", f"{_SANDBOX_CACHE_ROOT}/uv"),
+    ("npm_config_cache", f"{_SANDBOX_CACHE_ROOT}/npm"),
+)
+
+
+def _is_writable_in_sandbox(raw_path: str, cwd: Path | None) -> bool:
+    """True when ``raw_path`` points inside private sandbox ``/tmp`` or ``cwd``."""
+    if not raw_path.strip():
+        return False
+    try:
+        candidate = Path(raw_path).expanduser().resolve()
+    except OSError:
+        return False
+    if candidate.is_relative_to(Path("/tmp").resolve()):
+        return True
+    return cwd is not None and candidate.is_relative_to(cwd.resolve())
+
+
+def sandbox_env_overrides(
+    existing_env: Mapping[str, str] | None = None,
+    *,
+    cwd: Path | None = None,
+) -> dict[str, str]:
+    """Return environment overrides appropriate inside a sandboxed kernel.
+
+    Inside Linux ``bwrap`` (and macOS Seatbelt), ``~/.cache`` is read-only, so
+    tools like ``uv``, ``ruff``, and ``npm`` fail trying to create cache locks
+    (``os error 30: Read-only file system``). Redirect those cache roots into
+    the private writable ``/tmp`` unless the caller already pointed them at a
+    writable sandbox location.
+    """
+    env_view = os.environ if existing_env is None else existing_env
+    overrides: dict[str, str] = {}
+    if env_view.get("QUARTZ_SANDBOXED") != "1":
+        overrides["QUARTZ_SANDBOXED"] = "1"
+    for key, default_dir in _SANDBOX_CACHE_DEFAULTS:
+        current = env_view.get(key, "")
+        if not _is_writable_in_sandbox(current, cwd):
+            overrides[key] = default_dir
+    if not env_view.get("UV_LINK_MODE"):
+        # Avoid cross-device hardlink warnings between /tmp tmpfs and bind-mounted cwd.
+        overrides["UV_LINK_MODE"] = "copy"
+    return overrides

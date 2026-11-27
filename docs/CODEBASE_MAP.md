@@ -41,6 +41,7 @@ For exact class/function line numbers, run `uv run python scripts/gen_index.py` 
 
 ## Fast Verification Commands
 
+- **Parallel all-in-one (REPL)**: `await verify("auto", gen_index=True)` (defined in `.quartz/helpers.py`)
 - **Python lint & types**: `uv run ruff check src tests scripts` and `uv run pyright`
 - **Scoped tests**: `uv run pytest tests/<area>/test_<name>.py -q --tb=short`
 - **Full Python tests**: `uv run pytest -q --tb=short`
