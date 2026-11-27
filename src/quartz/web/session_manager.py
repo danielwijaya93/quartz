@@ -533,11 +533,11 @@ class SessionManager:
             self.event_bus.publish(SessionEvent(kind="session_closed", session_id=sid))
         elif kind == "turn_start":
             self.event_bus.publish(SessionEvent(kind="turn_start", session_id=sid))
+            self._maybe_schedule_auto_rename(sid, ws)
         elif kind == "turn_end":
             status = frame.get("status")
             if status == "ok":
                 self.event_bus.publish(SessionEvent(kind="turn_end", session_id=sid))
-                self._maybe_schedule_auto_rename(sid, ws)
             elif status in ("aborted", "cancelled"):
                 self.event_bus.publish(SessionEvent(kind="turn_cancelled", session_id=sid))
             elif status == "error":

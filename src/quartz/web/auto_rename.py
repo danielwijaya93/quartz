@@ -121,6 +121,7 @@ async def maybe_auto_rename_session(
     if not sidebar.rename_if_unset(sid, title):
         return False
 
+    logger.info("Auto-renamed web session %s to %r", sid, title)
     if on_renamed is not None:
         on_renamed(sid, title)
     return True

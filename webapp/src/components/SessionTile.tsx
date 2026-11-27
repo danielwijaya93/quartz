@@ -132,7 +132,11 @@ export const SessionTile = React.memo(function SessionTile({
       // Forward active_sessions_state from every tile so closing tile 1 never
       // loses the app-level Active Sessions list; all other global frames stay
       // owned by the primary tile to avoid N× duplicate notifications.
-      if (isPrimary || msg.type === "active_sessions_state") {
+      if (
+        isPrimary ||
+        msg.type === "active_sessions_state" ||
+        msg.type === "sidebar_updated"
+      ) {
         onGlobalServerMessage?.(msg);
       }
     },
