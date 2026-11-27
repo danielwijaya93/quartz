@@ -228,12 +228,7 @@ def _create_worktree(repo_root: Path, ref: str, dest: Path) -> None:
 
 def _remove_worktree(repo_root: Path, dest: Path) -> None:
     with _GIT_WORKTREE_LOCK:
-        subprocess.run(
-            ["git", "worktree", "remove", "--force", str(dest)],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-        )
+        subprocess.run(["git", "worktree", "remove", "--force", str(dest)], cwd=repo_root, capture_output=True, text=True)
     if dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
 
@@ -333,17 +328,11 @@ def run_task_arm(
 def _arm_stats(trials: Sequence[TrialResult]) -> dict[str, Any]:
     n = len(trials)
     if n == 0:
-        return {
-            "runs": 0,
-            "pass_rate_pct": 0.0,
-            "avg_cells": 0.0,
-            "avg_failed_cells": 0.0,
-            "avg_wall_s": 0.0,
-            "avg_prompt_tokens": 0.0,
-            "avg_uncached_tokens": 0.0,
-            "avg_cache_hit_pct": 0.0,
-            "top_helpers": {},
-        }
+        return dict(
+            runs=0, pass_rate_pct=0.0, avg_cells=0.0, avg_failed_cells=0.0,
+            avg_wall_s=0.0, avg_prompt_tokens=0.0, avg_uncached_tokens=0.0,
+            avg_cache_hit_pct=0.0, top_helpers={},
+        )
     helper_totals: collections.Counter[str] = collections.Counter()
     for t in trials:
         helper_totals.update(t.metrics.helper_counts)
@@ -365,13 +354,8 @@ def aggregate_ab_results(runs: Sequence[TrialResult]) -> dict[str, Any]:
     ctrl = _arm_stats([r for r in runs if r.arm == "control"])
     treat = _arm_stats([r for r in runs if r.arm == "treatment"])
     delta_keys = (
-        "pass_rate_pct",
-        "avg_cells",
-        "avg_failed_cells",
-        "avg_wall_s",
-        "avg_prompt_tokens",
-        "avg_uncached_tokens",
-        "avg_cache_hit_pct",
+        "pass_rate_pct", "avg_cells", "avg_failed_cells",
+        "avg_wall_s", "avg_prompt_tokens", "avg_uncached_tokens", "avg_cache_hit_pct",
     )
     delta = {k: round(float(treat[k]) - float(ctrl[k]), 2) for k in delta_keys}
     return {"control": ctrl, "treatment": treat, "delta": delta}
