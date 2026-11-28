@@ -543,6 +543,7 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
           contextPct: message.contextPct ?? 0,
           maxContextTokens: message.maxContextTokens ?? 0,
           cacheHitPct: message.cacheHitPct ?? 0,
+          totalCostUsd: message.totalCostUsd ?? 0,
           commands: message.commands,
           projectTrust: message.projectTrust ?? null,
           bgCount: message.bgCount ?? 0,
@@ -680,7 +681,8 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
           session:
             message.contextPct !== undefined ||
             message.maxContextTokens !== undefined ||
-            message.cacheHitPct !== undefined
+            message.cacheHitPct !== undefined ||
+            message.totalCostUsd !== undefined
               ? {
                   ...state.session,
                   ...(message.contextPct !== undefined ? { contextPct: message.contextPct } : {}),
@@ -688,6 +690,7 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
                     ? { maxContextTokens: message.maxContextTokens }
                     : {}),
                   ...(message.cacheHitPct !== undefined ? { cacheHitPct: message.cacheHitPct } : {}),
+                  ...(message.totalCostUsd !== undefined ? { totalCostUsd: message.totalCostUsd } : {}),
                 }
               : state.session,
         },

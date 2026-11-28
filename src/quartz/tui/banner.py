@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from quartz.core.loop import TurnUsage
+from quartz.core.pricing import format_cost_usd
 
 type StyleFragment = tuple[str, str]
 type FormattedLine = list[StyleFragment]
@@ -154,6 +155,7 @@ def _build_metrics_groups(state: BannerState) -> list[FormattedLine]:
     groups: list[FormattedLine] = [
         [(_STYLE_DIM, "ctx "), (_STYLE_METRIC, ctx_value)],
         [(_STYLE_DIM, "CH "), (_STYLE_METRIC, cache_value)],
+        [(_STYLE_METRIC, format_cost_usd(state.usage.total_cost_usd))],
     ]
     if state.bg_count > 0:
         groups.append([(_STYLE_BG, f"bg x{state.bg_count}")])

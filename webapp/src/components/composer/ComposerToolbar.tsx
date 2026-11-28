@@ -16,6 +16,7 @@ export function ComposerToolbar({
   contextPct,
   maxContextTokens,
   cacheHitPct,
+  totalCostUsd,
   onAddFiles,
   onOpenJobs,
   onOpenModelPicker,
@@ -33,6 +34,7 @@ export function ComposerToolbar({
   contextPct?: number;
   maxContextTokens?: number;
   cacheHitPct?: number;
+  totalCostUsd?: number;
   onAddFiles: (files: FileList | null) => void;
   onOpenJobs?: () => void;
   onOpenModelPicker?: () => void;
@@ -120,7 +122,12 @@ export function ComposerToolbar({
           </button>
         ) : null}
         {contextPct !== undefined ? (
-          <ContextRing pct={contextPct} maxTokens={maxContextTokens} cacheHitPct={cacheHitPct} />
+          <ContextRing
+            pct={contextPct}
+            maxTokens={maxContextTokens}
+            cacheHitPct={cacheHitPct}
+            totalCostUsd={totalCostUsd}
+          />
         ) : null}
         {turnRunning ? (
           <Button

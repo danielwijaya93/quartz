@@ -18,10 +18,11 @@ def _make_state(
     prompt_tokens: int = 12_400,
     cached_tokens: int = 6_200,
     max_context_tokens: int = 128_000,
+    total_cost_usd: float = 0.0,
     bg_count: int = 0,
     version: str = "0.1.0",
 ) -> BannerState:
-    usage = TurnUsage(prompt_tokens=prompt_tokens, cached_tokens=cached_tokens)
+    usage = TurnUsage(prompt_tokens=prompt_tokens, cached_tokens=cached_tokens, total_cost_usd=total_cost_usd)
     return BannerState(
         model=model,
         effort=effort,
@@ -43,7 +44,7 @@ def test_wide_one_line_layout():
     assert "gpt-5.4 (high)" in line
     assert "~/workspace/quartz" in line
     assert "ctx 128.0k (9.7%)" in line
-    assert "CH 50.0%" in line
+    assert "CH 50.0% · $0.00" in line
     assert "bg " not in line
     assert len(line) <= 140
 
@@ -54,7 +55,7 @@ def test_narrow_two_line_wrap():
 
     assert len(lines) == 2
     assert lines[0] == "quartz v0.1.0 · gpt-5.4 (high) · ~/workspace/quartz"
-    assert lines[1] == "ctx 128.0k (9.7%) · CH 50.0%"
+    assert lines[1] == "ctx 128.0k (9.7%) · CH 50.0% · $0.00"
     assert all(len(line) <= 70 for line in lines)
 
 
@@ -77,6 +78,13 @@ def test_effort_not_duplicated_when_model_name_ends_with_effort():
     state_diff = _make_state(model="gemini-3.8-flash-high", effort="medium")
     lines_diff = format_banner_plain(state_diff, width=140)
     assert "gemini-3.8-flash-high (medium)" in lines_diff[0]
+
+
+def test_banner_shows_total_cost_right_of_ch():
+    state = _make_state(total_cost_usd=0.0424, bg_count=2)
+    lines = format_banner_plain(state, width=140)
+    assert len(lines) == 1
+    assert "CH 50.0% · $0.042 · bg x2" in lines[0]
 
 
 def test_bg_count_shown_when_positive_on_both_layouts():

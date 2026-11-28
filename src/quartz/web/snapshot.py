@@ -97,6 +97,7 @@ def build_session_snapshot(
     max_ctx = runtime.max_context_tokens
     ctx_pct = round(runtime.usage_stats.context_pct(max_ctx), 1) if max_ctx > 0 else 0.0
     cache_hit_pct = round(float(getattr(runtime.usage_stats, "cache_hit_rate", 0.0)) * 100.0, 1)
+    total_cost_usd = round(float(getattr(runtime.usage_stats, "total_cost_usd", 0.0)), 6)
     raw_cell_meta = getattr(runtime.active_session, "cell_meta", None) or {}
     cell_files = {
         tc_id: list(meta["files"])
@@ -112,6 +113,7 @@ def build_session_snapshot(
         "contextPct": ctx_pct,
         "maxContextTokens": max_ctx,
         "cacheHitPct": cache_hit_pct,
+        "totalCostUsd": total_cost_usd,
         "messages": messages,
         "cellFiles": cell_files,
         "turnRunning": turn_running,
@@ -217,6 +219,7 @@ def _turn_end_frame(
     context_pct: float | None = None,
     max_context_tokens: int | None = None,
     cache_hit_pct: float | None = None,
+    total_cost_usd: float | None = None,
 ) -> Frame:
     frame: Frame = {
         "type": "turn_end",
@@ -232,6 +235,8 @@ def _turn_end_frame(
         frame["maxContextTokens"] = max_context_tokens
     if cache_hit_pct is not None:
         frame["cacheHitPct"] = cache_hit_pct
+    if total_cost_usd is not None:
+        frame["totalCostUsd"] = total_cost_usd
     if outcome.error is not None:
         frame["error"] = str(outcome.error) or outcome.error.__class__.__name__
     return frame

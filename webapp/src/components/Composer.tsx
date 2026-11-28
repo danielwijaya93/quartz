@@ -35,6 +35,7 @@ export interface ComposerProps {
   contextPct?: number;
   maxContextTokens?: number;
   cacheHitPct?: number;
+  totalCostUsd?: number;
   bgCount?: number;
   bgFailed?: number;
   onOpenJobs?: () => void;
@@ -70,6 +71,7 @@ export const Composer = React.memo(function Composer({
   contextPct,
   maxContextTokens,
   cacheHitPct,
+  totalCostUsd,
   bgCount = 0,
   bgFailed = 0,
   onOpenJobs,
@@ -422,6 +424,7 @@ export const Composer = React.memo(function Composer({
             contextPct={contextPct}
             maxContextTokens={maxContextTokens}
             cacheHitPct={cacheHitPct}
+            totalCostUsd={totalCostUsd}
             onAddFiles={addFiles}
             onOpenJobs={onOpenJobs}
             onOpenModelPicker={onOpenModelPicker}

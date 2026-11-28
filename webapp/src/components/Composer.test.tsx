@@ -294,7 +294,7 @@ describe("Composer", () => {
     expect(onOpenModelPicker).toHaveBeenCalledTimes(1);
   });
 
-  it("renders the context usage ring and reveals context and cache hit details on tap", async () => {
+  it("renders the context usage ring and reveals context, cache hit, and total cost details on tap", async () => {
     const user = userEvent.setup();
     setup({
       model: "gemini-4-hydrogen",
@@ -302,10 +302,11 @@ describe("Composer", () => {
       contextPct: 23.5,
       maxContextTokens: 1_000_000,
       cacheHitPct: 82.5,
+      totalCostUsd: 0.0424,
       onOpenModelPicker: vi.fn(),
     });
     const trigger = screen.getByRole("button", {
-      name: "Context: 23.5% of 1.0M · Cache hit: 82.5%",
+      name: "Context: 23.5% of 1.0M · Cache hit: 82.5% · Total cost: $0.042",
     });
     expect(trigger).toBeInTheDocument();
 
@@ -313,6 +314,24 @@ describe("Composer", () => {
     expect(screen.getByText("23.5% of 1.0M")).toBeInTheDocument();
     expect(screen.getByText("Cache hit")).toBeInTheDocument();
     expect(screen.getByText("82.5%")).toBeInTheDocument();
+    expect(screen.getByText("Total cost")).toBeInTheDocument();
+    expect(screen.getByText("$0.042")).toBeInTheDocument();
+  });
+
+  it("displays $0.00 in the context usage ring when total cost is zero", async () => {
+    const user = userEvent.setup();
+    setup({
+      contextPct: 0,
+      maxContextTokens: 128_000,
+      cacheHitPct: 0,
+      totalCostUsd: 0,
+    });
+    const trigger = screen.getByRole("button", {
+      name: "Context: 0.0% of 128k · Cache hit: 0.0% · Total cost: $0.00",
+    });
+    await user.click(trigger);
+    expect(screen.getByText("Total cost")).toBeInTheDocument();
+    expect(screen.getByText("$0.00")).toBeInTheDocument();
   });
 
   it("runs /reset via onRunCommand", async () => {

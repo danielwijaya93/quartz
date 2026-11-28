@@ -534,6 +534,7 @@ export const SessionTile = React.memo(function SessionTile({
         contextPct={quartz.state.session.contextPct}
         maxContextTokens={quartz.state.session.maxContextTokens}
         cacheHitPct={quartz.state.session.cacheHitPct}
+        totalCostUsd={quartz.state.session.totalCostUsd}
         bgCount={quartz.state.session.bgCount}
         bgFailed={quartz.state.session.bgFailed}
         onOpenJobs={handleToggleJobs}

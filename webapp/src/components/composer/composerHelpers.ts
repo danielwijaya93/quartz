@@ -29,6 +29,13 @@ export function formatTokenWindow(tokens: number): string {
   return String(tokens);
 }
 
+export function formatCostUsd(costUsd: number): string {
+  if (costUsd <= 0) return "$0.00";
+  if (costUsd < 0.01) return `$${costUsd.toFixed(4)}`;
+  if (costUsd < 1) return `$${costUsd.toFixed(3)}`;
+  return `$${costUsd.toFixed(2)}`;
+}
+
 /** Read a File as base64 without the `data:` prefix the protocol expects. */
 export async function readAsAttachment(file: File): Promise<ImageAttachment> {
   const dataUrl = await new Promise<string>((resolve, reject) => {

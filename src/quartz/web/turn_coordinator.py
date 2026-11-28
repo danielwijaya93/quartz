@@ -246,12 +246,14 @@ class TurnCoordinator:
         max_ctx = rt.max_context_tokens
         ctx_pct = round(rt.usage_stats.context_pct(max_ctx), 1) if max_ctx > 0 else 0.0
         cache_hit_pct = round(float(getattr(rt.usage_stats, "cache_hit_rate", 0.0)) * 100.0, 1)
+        total_cost_usd = round(float(getattr(rt.usage_stats, "total_cost_usd", 0.0)), 6)
         self._emit(
             _turn_end_frame(
                 outcome,
                 context_pct=ctx_pct,
                 max_context_tokens=max_ctx,
                 cache_hit_pct=cache_hit_pct,
+                total_cost_usd=total_cost_usd,
             )
         )
 
