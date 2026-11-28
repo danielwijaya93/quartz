@@ -1200,7 +1200,7 @@ wheels = [
 
 [[package]]
 name = "quartz-agent"
-version = "0.34.3"
+version = "0.35.2"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
