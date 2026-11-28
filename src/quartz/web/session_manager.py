@@ -4,33 +4,25 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 import threading
-import time
 from collections.abc import Callable
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from quartz.core.event_bus import EventBus, SessionEvent
+from quartz.core.event_bus import EventBus
 from quartz.core.turn import run_interactive_turn
 from quartz.core.watcher import TurnWatcherService
 from quartz.web.attachments import AttachedFileRegistry
 from quartz.web.bridge import Frame, Push
+from quartz.web.session_activity import SessionActivityTracker
+from quartz.web.session_fanout import SessionFanout
+from quartz.web.session_reaper import SessionReaper
 from quartz.web.types import ActiveSessionEntry, ActiveSessionWireItem
 from quartz.web.web_session import BuildRuntime, TurnRunner, WebSession, validate_session_id
 
 _validate_session_id = validate_session_id
 
 __all__ = ["SessionManager"]
-
-logger = logging.getLogger(__name__)
-
-_KIND_PRIORITY = {"permission": 0, "error": 0, "working": 1, "waiting": 1}
-
-
-def _clip(text: str, limit: int) -> str:
-    return text if len(text) <= limit else f"{text[: limit - 1]}…"
 
 
 class SessionManager:
@@ -55,26 +47,73 @@ class SessionManager:
         self._placeholder: WebSession | None = None
         self._system_prompt_append = ""
         self._rich_ui_prompt = ""
-        self._global_sinks: set[Push] = set()
-        self._notification_listeners: set[Push] = set()
-        self._active_sessions: dict[str, ActiveSessionEntry] = {}
-        self._active_sessions_seq = 0
-        self._idle_hours_override = idle_hours
-        self._max_live_sessions_override = max_live_sessions
-        self._check_interval_s = max(0.05, float(check_interval_s))
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._watcher_timer: threading.Timer | None = None
-        self._watcher_task: asyncio.Task[None] | None = None
-        self._watcher_loop: asyncio.AbstractEventLoop | None = None
         self._load_inflight: dict[tuple[int, str], asyncio.Future[WebSession]] = {}
         self._closed = False
-        self._push_hook: Callable[[WebSession, Frame], None] | None = None
-        self._sidebar_provider: Callable[[], Any] | None = None
-        self._auto_rename_attempted: set[str] = set()
-        self._auto_rename_tasks: set[asyncio.Task[Any]] = set()
         self.file_registry = AttachedFileRegistry()
         self.event_bus = EventBus()
         self.watcher = TurnWatcherService(self.event_bus)
+        self._fanout_hub = SessionFanout(self._lock)
+        self._activity = SessionActivityTracker(
+            lock=self._lock,
+            sessions=self._sessions,
+            fanout=self._fanout_hub,
+            event_bus=self.event_bus,
+            active_loop=self._active_loop,
+            is_closed=lambda: self._closed,
+        )
+        self._reaper = SessionReaper(
+            lock=self._lock,
+            sessions=self._sessions,
+            get_current_id=lambda: self._current_id,
+            set_current_id=self._set_current_id,
+            is_closed=lambda: self._closed,
+            active_loop=self._active_loop,
+            on_idle_closed=self._activity.remove_closed_sessions,
+            on_check_idle=lambda: self.check_idle_sessions(),
+            idle_hours=idle_hours,
+            check_interval_s=check_interval_s,
+            max_live_sessions=max_live_sessions,
+        )
+
+    def _set_current_id(self, session_id: str | None) -> None:
+        self._current_id = session_id
+
+    @property
+    def _global_sinks(self) -> set[Push]:
+        return self._fanout_hub._global_sinks
+
+    @property
+    def _notification_listeners(self) -> set[Push]:
+        return self._fanout_hub._notification_listeners
+
+    @property
+    def _active_sessions(self) -> dict[str, ActiveSessionEntry]:
+        return self._activity._active_sessions
+
+    @property
+    def _auto_rename_tasks(self) -> set[asyncio.Task[Any]]:
+        return self._activity._auto_rename_tasks
+
+    @property
+    def _watcher_timer(self) -> threading.Timer | None:
+        return self._reaper._watcher_timer
+
+    @property
+    def _watcher_task(self) -> asyncio.Task[None] | None:
+        return self._reaper._watcher_task
+
+    @property
+    def _max_live_sessions_override(self) -> int | None:
+        return self._reaper.max_live_sessions_override
+
+    @_max_live_sessions_override.setter
+    def _max_live_sessions_override(self, value: int | None) -> None:
+        self._reaper.max_live_sessions_override = value
+
+    @property
+    def _idle_hours_override(self) -> float | None:
+        return self._reaper.idle_hours_override
 
     def bind_loop(
         self, loop: asyncio.AbstractEventLoop | None = None
@@ -108,11 +147,15 @@ class SessionManager:
             return loop
         return None
 
+    @property
+    def _push_hook(self) -> Callable[[WebSession, Frame], None] | None:
+        return self._activity._push_hook
+
     def set_push_hook(self, hook: Callable[[WebSession, Frame], None] | None) -> None:
-        self._push_hook = hook
+        self._activity.set_push_hook(hook)
 
     def set_sidebar_provider(self, provider: Callable[[], Any] | None) -> None:
-        self._sidebar_provider = provider
+        self._activity.set_sidebar_provider(provider)
 
     @property
     def cwd(self) -> Path:
@@ -140,7 +183,7 @@ class SessionManager:
             return list(self._sessions.values())
 
     def session_title(self, ws: WebSession) -> str | None:
-        return self._session_title(ws)
+        return self._activity.session_title(ws)
 
     @property
     def rich_ui_prompt(self) -> str:
@@ -201,18 +244,22 @@ class SessionManager:
         self.evict_lru_sessions(keep_id=sid)
         return ws
 
-    def ensure_default_session(self, cwd: Path | None = None) -> WebSession:
+    def _prepare_default_session(self) -> tuple[WebSession, bool]:
         with self._lock:
             if self._current_id and self._current_id in self._sessions and self._sessions[self._current_id].built:
-                return self._sessions[self._current_id]
+                return self._sessions[self._current_id], True
             if self._sessions:
                 sid, ws = next(iter(self._sessions.items()))
                 self._current_id = sid
-                return ws
+                return ws, True
             ws = self._placeholder or self._new_web_session()
             self._placeholder = None
             ws.set_system_prompt_append(self._system_prompt_append)
-        return self._register_session(ws, cwd)
+            return ws, False
+
+    def ensure_default_session(self, cwd: Path | None = None) -> WebSession:
+        ws, ready = self._prepare_default_session()
+        return ws if ready else self._register_session(ws, cwd)
 
     def create_session(self, cwd: Path | None = None) -> WebSession:
         ws = self._new_web_session()
@@ -257,17 +304,8 @@ class SessionManager:
 
     async def aensure_default_session(self, cwd: Path | None = None) -> WebSession:
         self.bind_loop(asyncio.get_running_loop())
-        with self._lock:
-            if self._current_id and self._current_id in self._sessions and self._sessions[self._current_id].built:
-                return self._sessions[self._current_id]
-            if self._sessions:
-                sid, ws = next(iter(self._sessions.items()))
-                self._current_id = sid
-                return ws
-            ws = self._placeholder or self._new_web_session()
-            self._placeholder = None
-            ws.set_system_prompt_append(self._system_prompt_append)
-        return await self._aregister_session(ws, cwd)
+        ws, ready = self._prepare_default_session()
+        return ws if ready else await self._aregister_session(ws, cwd)
 
     async def acreate_session(self, cwd: Path | None = None) -> WebSession:
         self.bind_loop(asyncio.get_running_loop())
@@ -337,129 +375,34 @@ class SessionManager:
 
     def _new_web_session(self) -> WebSession:
         ws = WebSession(
-            self._build, cwd=self._cwd, runner=self._runner,
-            on_event=self._on_session_event, file_registry=self.file_registry,
+            self._build,
+            cwd=self._cwd,
+            runner=self._runner,
+            on_event=self._on_session_event,
+            file_registry=self.file_registry,
         )
         loop = self._loop
         if loop is not None and not loop.is_closed():
             ws.bind_loop(loop)
         return ws
 
-    def _session_title(self, ws: WebSession) -> str | None:
-        if not ws.built:
-            return None
-        sid = ws.runtime.active_session.id
-        if self._sidebar_provider is not None:
-            with contextlib.suppress(Exception):
-                renamed = self._sidebar_provider().state.renames.get(sid)
-                if isinstance(renamed, str) and renamed.strip():
-                    return _clip(renamed.strip(), 80)
-        for msg in getattr(ws.runtime, "messages", ()):
-            if msg.get("role") != "user":
-                continue
-            content = msg.get("content")
-            if isinstance(content, str):
-                text = content
-            elif isinstance(content, list):
-                text = " ".join(str(p.get("text") or "") for p in content if isinstance(p, dict) and p.get("type") == "text")
-            else:
-                text = ""
-            cleaned = " ".join(text.split())
-            if cleaned:
-                return _clip(cleaned, 80)
-        return None
-
-    def _make_active_entry(
-        self, sid: str, ws: WebSession, kind: str, *, seq: int, preview: str | None = None
-    ) -> ActiveSessionEntry:
-        entry: ActiveSessionEntry = {
-            "sessionId": sid,
-            "cwd": str(ws.runtime.cwd),
-            "title": self._session_title(ws),
-            "kind": kind,
-            "read": False,
-            "updatedAt": datetime.now(UTC).isoformat(),
-            "_seq": seq,
-        }
-        if ws.built and getattr(ws.runtime.active_session, "origin", None) == "bot":
-            entry["isBot"] = True
-        if preview:
-            entry["preview"] = _clip(preview, 120)
-        return entry
+    def _on_session_event(self, ws: WebSession, frame: Frame) -> None:
+        self._activity.on_session_event(ws, frame)
 
     def active_sessions_items(self) -> list[ActiveSessionWireItem]:
-        with self._lock:
-            by_id = dict(self._active_sessions)
-            for ws in self._sessions.values():
-                if ws.built:
-                    sid = ws.runtime.active_session.id
-                    if sid not in by_id:
-                        if ws.turn_running:
-                            by_id[sid] = self._make_active_entry(sid, ws, "working", seq=self._active_sessions_seq)
-                        elif ws.has_running_background_jobs:
-                            by_id[sid] = self._make_active_entry(sid, ws, "waiting", seq=self._active_sessions_seq)
-            items = list(by_id.values())
-
-        items.sort(key=lambda item: (_KIND_PRIORITY.get(str(item.get("kind", "")), 2), -int(item.get("_seq", 0))))
-        out: list[ActiveSessionWireItem] = []
-        for item in items:
-            wire: ActiveSessionWireItem = {
-                "sessionId": item["sessionId"],
-                "cwd": item["cwd"],
-                "kind": item["kind"],
-                "read": bool(item.get("read", False)),
-                "updatedAt": item["updatedAt"],
-            }
-            title = item.get("title")
-            if title:
-                wire["title"] = title
-            preview = item.get("preview")
-            if preview:
-                wire["preview"] = preview
-            out.append(wire)
-        return out
+        return self._activity.active_sessions_items()
 
     def dismiss_active_session(self, session_id: str) -> bool:
-        with self._lock:
-            existing = self._active_sessions.get(session_id)
-            if existing is None or existing["kind"] in ("permission", "working", "waiting"):
-                return False
-            self._active_sessions.pop(session_id, None)
-        self._broadcast_active_sessions()
-        return True
+        return self._activity.dismiss_active_session(session_id)
 
     def clear_read_active_sessions(self) -> int:
-        with self._lock:
-            to_remove = [
-                sid for sid, item in self._active_sessions.items()
-                if item["kind"] not in ("permission", "working", "waiting") and item.get("read")
-            ]
-            for sid in to_remove:
-                self._active_sessions.pop(sid, None)
-        if to_remove:
-            self._broadcast_active_sessions()
-        return len(to_remove)
+        return self._activity.clear_read_active_sessions()
 
     def sync_session_background_jobs(self, ws: WebSession) -> None:
-        if not ws.built:
-            return
-        sid = ws.runtime.active_session.id
-        changed = False
-        with self._lock:
-            existing = self._active_sessions.get(sid)
-            if (
-                existing is not None
-                and existing["kind"] == "waiting"
-                and not ws.turn_running
-                and not ws.has_running_background_jobs
-            ):
-                self._set_active_locked(sid, ws, "done")
-                changed = True
-        if changed:
-            self._broadcast_active_sessions()
+        self._activity.sync_session_background_jobs(ws)
 
     def _broadcast_active_sessions(self) -> None:
-        self._broadcast({"type": "active_sessions_state", "items": self.active_sessions_items()})
+        self._activity.broadcast_active_sessions()
 
     def broadcast_settings_state(
         self,
@@ -471,333 +414,56 @@ class SessionManager:
         notify_background: bool = True,
         notify_error: bool = True,
     ) -> None:
-        frame: Frame = {
-            "type": "settings_state",
-            "notifications": notifications,
-            "notifyTurn": notify_turn,
-            "notifyApproval": notify_approval,
-            "notifyBackground": notify_background,
-            "notifyError": notify_error,
-            "richUi": rich_ui,
-        }
-        self._broadcast(frame)
-        self._broadcast_notification(frame)
+        self._fanout_hub.broadcast_settings_state(
+            notifications=notifications,
+            rich_ui=rich_ui,
+            notify_turn=notify_turn,
+            notify_approval=notify_approval,
+            notify_background=notify_background,
+            notify_error=notify_error,
+        )
 
     def broadcast_notifications_cleared(self) -> None:
-        frame: Frame = {"type": "notifications_cleared"}
-        self._broadcast(frame)
-        self._broadcast_notification(frame)
-
-    def _set_active_locked(self, sid: str, ws: WebSession, kind: str, preview: str | None = None) -> None:
-        self._active_sessions_seq += 1
-        self._active_sessions[sid] = self._make_active_entry(sid, ws, kind, seq=self._active_sessions_seq, preview=preview)
-
-    def _on_session_event(self, ws: WebSession, frame: Frame) -> None:
-        if not ws.built:
-            return
-        sid = ws.runtime.active_session.id
-        kind = frame.get("type")
-        changed = False
-        with self._lock:
-            existing = self._active_sessions.get(sid)
-            if kind == "_closed":
-                changed = self._active_sessions.pop(sid, None) is not None
-            elif kind == "turn_start":
-                self._set_active_locked(sid, ws, "working")
-                changed = True
-            elif kind == "permission_request":
-                tool, command = str(frame.get("tool") or "").strip(), str(frame.get("command") or "").strip()
-                preview = f"{tool}: {command}" if tool and command else (command or tool or "Permission required")
-                self._set_active_locked(sid, ws, "permission", preview)
-                changed = True
-            elif kind == "permission_resolved" and existing is not None and existing["kind"] == "permission":
-                if ws.turn_running:
-                    self._set_active_locked(sid, ws, "working")
-                elif ws.has_running_background_jobs:
-                    self._set_active_locked(sid, ws, "waiting")
-                else:
-                    self._active_sessions.pop(sid, None)
-                changed = True
-            elif kind == "turn_end":
-                status = frame.get("status")
-                if status == "waiting_permission":
-                    if existing is None or existing["kind"] != "permission":
-                        perm = getattr(ws, "_pending_permission", None) or {}
-                        tool = str(perm.get("tool") or "").strip()
-                        command = str(perm.get("command") or "").strip()
-                        preview = f"{tool}: {command}" if tool and command else (command or tool or "Permission required")
-                        self._set_active_locked(sid, ws, "permission", preview)
-                        changed = True
-                elif status == "ok":
-                    next_kind = "waiting" if ws.has_running_background_jobs else "done"
-                    self._set_active_locked(sid, ws, next_kind)
-                    changed = True
-                elif status == "error":
-                    self._set_active_locked(sid, ws, "error", str(frame.get("error") or "").strip() or "Turn failed")
-                    changed = True
-                elif existing is not None and existing["kind"] == "working":
-                    self._active_sessions.pop(sid, None)
-                    changed = True
-        if changed:
-            self._broadcast_active_sessions()
-        if kind in ("turn_end", "permission_request", "bash_notice", "error"):
-            self._broadcast_notification({**frame, "sessionId": sid, "sessionTitle": self._session_title(ws)})
-        if kind == "_closed":
-            self.event_bus.publish(SessionEvent(kind="session_closed", session_id=sid))
-        elif kind == "turn_start":
-            self.event_bus.publish(SessionEvent(kind="turn_start", session_id=sid))
-            self._maybe_schedule_auto_rename(sid, ws)
-        elif kind == "turn_end":
-            status = frame.get("status")
-            if status == "ok":
-                self.event_bus.publish(SessionEvent(kind="turn_end", session_id=sid))
-            elif status in ("aborted", "cancelled"):
-                self.event_bus.publish(SessionEvent(kind="turn_cancelled", session_id=sid))
-            elif status == "error":
-                self.event_bus.publish(SessionEvent(kind="turn_error", session_id=sid))
-        # Push notifications only fire on terminal/alert events; gating here keeps
-        # per-token text_delta/thinking_delta frames off load_settings() disk stat().
-        if self._push_hook is not None and kind in ("turn_end", "permission_request", "bash_notice", "error"):
-            with contextlib.suppress(Exception):
-                self._push_hook(ws, frame)
-
-    def _fanout(self, targets_set: set[Push], frame: Frame) -> None:
-        with self._lock:
-            targets = tuple(targets_set)
-        for target in targets:
-            try:
-                target(frame)
-            except Exception:
-                with self._lock:
-                    targets_set.discard(target)
+        self._fanout_hub.broadcast_notifications_cleared()
 
     def add_notification_listener(self, push: Push) -> None:
-        with self._lock:
-            self._notification_listeners.add(push)
+        self._fanout_hub.add_notification_listener(push)
 
     def remove_notification_listener(self, push: Push) -> None:
-        with self._lock:
-            self._notification_listeners.discard(push)
+        self._fanout_hub.remove_notification_listener(push)
 
     def _broadcast_notification(self, frame: Frame) -> None:
-        self._fanout(self._notification_listeners, frame)
+        self._fanout_hub.broadcast_notification(frame)
 
     def register_sink(self, push: Push) -> None:
-        with self._lock:
-            self._global_sinks.add(push)
+        self._fanout_hub.register_sink(push)
 
     def unregister_sink(self, push: Push) -> None:
-        with self._lock:
-            self._global_sinks.discard(push)
-
-    def _maybe_schedule_auto_rename(self, sid: str, ws: WebSession) -> None:
-        if self._sidebar_provider is None or self._closed:
-            return
-        with self._lock:
-            if sid in self._auto_rename_attempted:
-                return
-            self._auto_rename_attempted.add(sid)
-        loop = self._active_loop()
-        if loop is None:
-            logger.warning("Skipping web auto-rename for session %s: no active event loop", sid)
-            return
-        sidebar_provider = self._sidebar_provider
-
-        def _on_renamed(renamed_sid: str, title: str) -> None:
-            with self._lock:
-                entry = self._active_sessions.get(renamed_sid)
-                if entry is not None:
-                    entry["title"] = _clip(title, 80)
-            self._broadcast_active_sessions()
-            self._broadcast({"type": "sidebar_updated"})
-
-        async def _run() -> None:
-            from quartz.web.auto_rename import maybe_auto_rename_session
-
-            sidebar = sidebar_provider()
-            await maybe_auto_rename_session(ws, sidebar, on_renamed=_on_renamed)
-
-        def _on_done(done_task: asyncio.Task[Any]) -> None:
-            self._auto_rename_tasks.discard(done_task)
-            if done_task.cancelled():
-                return
-            exc = done_task.exception()
-            if exc is not None:
-                logger.warning("Web auto-rename task failed for session %s", sid, exc_info=exc)
-
-        def _spawn() -> None:
-            task = loop.create_task(_run(), name=f"quartz-auto-rename-{sid}")
-            self._auto_rename_tasks.add(task)
-            task.add_done_callback(_on_done)
-
-        try:
-            loop.call_soon_threadsafe(_spawn)
-        except RuntimeError:
-            logger.warning("Failed to schedule web auto-rename for session %s", sid, exc_info=True)
+        self._fanout_hub.unregister_sink(push)
 
     def _broadcast(self, frame: Frame) -> None:
-        self._fanout(self._global_sinks, frame)
+        self._fanout_hub.broadcast(frame)
 
     def _idle_hours(self) -> float:
-        if self._idle_hours_override is not None:
-            return float(self._idle_hours_override)
-        from quartz.settings import load_settings
-
-        return float(load_settings().web_idle_hours)
+        return self._reaper.idle_hours()
 
     def _max_live_sessions(self) -> int:
-        if self._max_live_sessions_override is not None:
-            return int(self._max_live_sessions_override)
-        from quartz.settings import load_settings
-
-        return int(load_settings().web_max_live_sessions)
+        return self._reaper.max_live_sessions()
 
     def evict_lru_sessions(self, *, keep_id: str | None = None) -> list[str]:
-        limit = self._max_live_sessions()
-        if limit <= 0:
-            return []
-        to_evict: list[tuple[str, WebSession]] = []
-        with self._lock:
-            excess = len(self._sessions) - limit
-            if excess <= 0:
-                return []
-            candidates = sorted(
-                (ws.last_active_at, sid, ws)
-                for sid, ws in self._sessions.items()
-                if sid != keep_id and sid != self._current_id and ws.can_hibernate()
-            )
-            for _, sid, ws in candidates[:excess]:
-                self._sessions.pop(sid, None)
-                to_evict.append((sid, ws))
-        hibernated: list[str] = []
-        for sid, ws in to_evict:
-            if ws.hibernate():
-                hibernated.append(sid)
-            else:
-                with self._lock:
-                    self._sessions.setdefault(sid, ws)
-        return hibernated
+        return self._reaper.evict_lru_sessions(keep_id=keep_id)
 
     async def aevict_lru_sessions(self, *, keep_id: str | None = None) -> list[str]:
-        return await asyncio.to_thread(self.evict_lru_sessions, keep_id=keep_id)
-
-    async def _async_watcher_loop(self) -> None:
-        try:
-            while not self._closed:
-                await asyncio.sleep(self._check_interval_s)
-                if self._closed:
-                    break
-                try:
-                    await asyncio.to_thread(self.check_idle_sessions)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.debug("Idle session watcher tick failed", exc_info=True)
-        except asyncio.CancelledError:
-            return
+        return await self._reaper.aevict_lru_sessions(keep_id=keep_id)
 
     def start_watcher(self) -> None:
-        loop = self._active_loop()
-        with self._lock:
-            if self._closed:
-                return
-            if loop is not None:
-                if self._watcher_timer is not None:
-                    self._watcher_timer.cancel()
-                    self._watcher_timer = None
-                if self._watcher_task is not None and not self._watcher_task.done():
-                    return
-                self._watcher_loop = loop
-                try:
-                    running = asyncio.get_running_loop()
-                except RuntimeError:
-                    running = None
-                if running is loop:
-                    self._watcher_task = loop.create_task(
-                        self._async_watcher_loop(), name="quartz-idle-watcher"
-                    )
-                else:
-                    def _spawn() -> None:
-                        with self._lock:
-                            if self._closed or (
-                                self._watcher_task is not None and not self._watcher_task.done()
-                            ):
-                                return
-                            self._watcher_task = loop.create_task(
-                                self._async_watcher_loop(), name="quartz-idle-watcher"
-                            )
-
-                    loop.call_soon_threadsafe(_spawn)
-                return
-            self._schedule_watcher_locked()
-
-    def _schedule_watcher_locked(self) -> None:
-        if self._watcher_timer is not None:
-            self._watcher_timer.cancel()
-        if self._closed:
-            return
-        timer = threading.Timer(self._check_interval_s, self._on_watcher_tick)
-        timer.daemon = True
-        self._watcher_timer = timer
-        timer.start()
-
-    def _on_watcher_tick(self) -> None:
-        try:
-            self.check_idle_sessions()
-        finally:
-            with self._lock:
-                if not self._closed:
-                    self._schedule_watcher_locked()
+        self._reaper.start_watcher()
 
     def stop_watcher(self) -> None:
-        with self._lock:
-            timer, self._watcher_timer = self._watcher_timer, None
-            task, self._watcher_task = self._watcher_task, None
-            watcher_loop, self._watcher_loop = self._watcher_loop, None
-        if timer is not None:
-            timer.cancel()
-        if task is not None and not task.done():
-            if watcher_loop is not None and not watcher_loop.is_closed():
-                try:
-                    running = asyncio.get_running_loop()
-                except RuntimeError:
-                    running = None
-                if running is watcher_loop:
-                    task.cancel()
-                else:
-                    with contextlib.suppress(RuntimeError):
-                        watcher_loop.call_soon_threadsafe(task.cancel)
-            else:
-                task.cancel()
+        self._reaper.stop_watcher()
 
     def check_idle_sessions(self, now: float | None = None) -> list[str]:
-        self.evict_lru_sessions()
-        hours = self._idle_hours()
-        if hours <= 0:
-            return []
-        threshold_s = hours * 3600.0
-        current_time = time.monotonic() if now is None else now
-        to_close: list[tuple[str, WebSession]] = []
-        with self._lock:
-            for sid, ws in list(self._sessions.items()):
-                if not ws.built or ws.turn_running or ws.attached:
-                    continue
-                if current_time - ws.last_active_at >= threshold_s:
-                    self._sessions.pop(sid, None)
-                    if self._current_id == sid:
-                        self._current_id = next(iter(self._sessions), None)
-                    to_close.append((sid, ws))
-        closed_ids: list[str] = []
-        removed_active = False
-        for sid, ws in to_close:
-            ws.close(reason="idle timeout")
-            closed_ids.append(sid)
-            with self._lock:
-                if self._active_sessions.pop(sid, None) is not None:
-                    removed_active = True
-        if removed_active:
-            self._broadcast_active_sessions()
-        return closed_ids
+        return self._reaper.check_idle_sessions(now)
 
     def close_all(self) -> None:
         with self._lock:
@@ -818,15 +484,7 @@ class SessionManager:
             self._sessions.clear()
             placeholder, self._placeholder = self._placeholder, None
             self._current_id = None
-            task, self._watcher_task = self._watcher_task, None
-            timer, self._watcher_timer = self._watcher_timer, None
-            self._watcher_loop = None
-        if timer is not None:
-            timer.cancel()
-        if task is not None and not task.done():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+        await self._reaper.astop_watcher()
         with contextlib.suppress(Exception):
             await self.watcher.aclose()
         targets = sessions + ([placeholder] if placeholder is not None else [])

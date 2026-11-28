@@ -256,3 +256,43 @@ async def test_bot_runner_records_run_history(tmp_path: Path) -> None:
     assert by_bot["bot-ok"].duration_ms is not None
     assert by_bot["bot-err"].status == "error"
     assert by_bot["bot-err"].error == "trigger exploded"
+
+
+def test_github_poll_keeps_unseen_items_when_queue_full(tmp_path: Path) -> None:
+    from quartz.bots.models import GitHubPollConfig
+
+    store = BotStore(tmp_path)
+    queue = BotQueue(tmp_path)
+    bot = store.create_bot(
+        BotConfig(
+            id="gh-full-q",
+            name="GH Full Queue",
+            watcher_type="github_poll",
+            instruction="Check issue",
+            max_queue_depth=1,
+            github=GitHubPollConfig(repo="owner/repo", events=["issues"], interval_seconds=60),
+        )
+    )
+    runner = BotRunner(store, queue)
+
+    candidates = [
+        ("gh:issue:owner/repo#1", {"number": 1}),
+        ("gh:issue:owner/repo#2", {"number": 2}),
+    ]
+    runner._ingest_github_poll_results(bot, candidates, now_ts=100.0, last_error=None)
+
+    first = queue.dequeue_next(bot.id)
+    assert first is not None
+    assert first.event_key == "gh:issue:owner/repo#1"
+    assert queue.dequeue_next(bot.id) is None
+
+    state_after_full = store.get_state(bot.id)
+    assert "gh:issue:owner/repo#1" in state_after_full.seen_event_keys
+    assert "gh:issue:owner/repo#2" not in state_after_full.seen_event_keys
+
+    # Once queue space frees up, the next poll enqueues #2 and marks it seen.
+    runner._ingest_github_poll_results(bot, candidates, now_ts=200.0, last_error=None)
+    second = queue.dequeue_next(bot.id)
+    assert second is not None
+    assert second.event_key == "gh:issue:owner/repo#2"
+    assert "gh:issue:owner/repo#2" in store.get_state(bot.id).seen_event_keys

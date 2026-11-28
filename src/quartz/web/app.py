@@ -29,10 +29,10 @@ from quartz.web.context import (
 from quartz.web.context import (
     is_allowed_origin as _is_allowed_origin,
 )
-from quartz.web.push import PushStore, default_push_path, format_push_payload, should_send_push
+from quartz.web.push import PushStore, format_push_payload, should_send_push
 from quartz.web.routes import auth, bots, files, push, sessions, settings, ws
 from quartz.web.session import BuildRuntime, SessionManager, TurnRunner, WebSession
-from quartz.web.sidebar import SidebarStore, default_sidebar_path
+from quartz.web.sidebar import SidebarStore
 
 __all__ = ["MAX_FRAME_BYTES", "_is_allowed_origin", "create_app", "native_origins", "resolve_static_dir"]
 
@@ -130,7 +130,7 @@ def create_app(
             manager=manager,
             bot_store=bot_store,
             get_sidebar=store,
-            get_push_store=lambda: push_store() if push_ref is not None or default_push_path().is_file() else None,
+            get_push_store=push_store,
         )
 
     bot_runner = BotRunner(
@@ -188,7 +188,7 @@ def create_app(
         nonlocal push_ref
         with push_lock:
             if push_ref is None:
-                push_ref = PushStore(default_push_path())
+                push_ref = PushStore()
             return push_ref
 
     def _on_push_event(_ws: WebSession, frame: dict[str, Any]) -> None:
@@ -200,9 +200,9 @@ def create_app(
         payload = format_push_payload(frame)
         if payload is None:
             return
-        if push_ref is None and not default_push_path().is_file():
-            return
-        push_store().send_async(payload)
+        ps = push_store()
+        if ps.subscription_count() > 0:
+            ps.send_async(payload)
 
     manager.set_push_hook(_on_push_event)
 
@@ -211,7 +211,7 @@ def create_app(
         nonlocal store_ref
         with store_lock:
             if store_ref is None:
-                store_ref = SidebarStore.load(default_sidebar_path())
+                store_ref = SidebarStore.load()
             return store_ref
 
     manager.set_sidebar_provider(store)

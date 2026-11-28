@@ -1,6 +1,6 @@
 [project]
 name = "quartz-agent"
-version = "0.35.2"
+version = "0.35.3"
 description = "Minimal coding agent with a stateless Python execution tool"
 requires-python = ">=3.14"
 dependencies = [
@@ -12,7 +12,6 @@ dependencies = [
     "pywebpush>=2.5.0",
     "rich>=15.0.0",
     "uvicorn[standard]>=0.34",
-    "websockets>=14.0",
 ]
 
 [project.scripts]

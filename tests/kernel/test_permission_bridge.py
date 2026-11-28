@@ -533,3 +533,42 @@ def test_resolve_bridge_timeout_defaults_env_settings_and_fallback(
     cfg.write_text(json.dumps({}), encoding="utf-8")
     assert resolve_bridge_timeout("git") == 290.0
     assert resolve_bridge_timeout("quartz") == 1800.0
+
+
+async def test_bridge_rejects_nested_git_subdir_and_allows_normal_subdir(tmp_path: Path) -> None:
+    repo, _remote = _init_git_repo_with_bare_remote(tmp_path)
+    evil_sub = repo / "sub"
+    evil_sub.mkdir()
+    subprocess.run(["git", "init", str(evil_sub)], check=True, capture_output=True)
+    (evil_sub / ".git" / "config").write_text("[core]\n\tsshCommand = id\n", encoding="utf-8")
+
+    normal_sub = repo / "normal_sub"
+    normal_sub.mkdir()
+
+    seen: list[PermissionRequest] = []
+
+    def handler(req: PermissionRequest):
+        seen.append(req)
+        return "allow_session"
+
+    kc = KernelClient(cwd=repo, sandbox=False, host_bridge=True, permission_handler=handler)
+    kc.start(timeout=15.0)
+    try:
+        r_evil = await kc.exec_cell(
+            "res = await bash('cd sub && git push -u origin HEAD')\n"
+            "print('EVIL', res.exit_code, res.output)"
+        )
+        assert r_evil.ok, r_evil.stderr
+        assert "EVIL 126" in r_evil.stdout
+        assert "nested .git" in r_evil.stdout
+        assert len(seen) == 0
+
+        r_ok = await kc.exec_cell(
+            "res = await bash('cd normal_sub && git push -u origin HEAD')\n"
+            "print('OK', res.exit_code)"
+        )
+        assert r_ok.ok, r_ok.stderr
+        assert "OK 0" in r_ok.stdout
+        assert len(seen) == 1
+    finally:
+        kc.close()

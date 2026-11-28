@@ -1200,7 +1200,7 @@ wheels = [
 
 [[package]]
 name = "quartz-agent"
-version = "0.35.2"
+version = "0.35.3"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
@@ -1211,7 +1211,6 @@ dependencies = [
     { name = "pywebpush" },
     { name = "rich" },
     { name = "uvicorn", extra = ["standard"] },
-    { name = "websockets" },
 ]
 
 [package.dev-dependencies]
@@ -1233,7 +1232,6 @@ requires-dist = [
     { name = "pywebpush", specifier = ">=2.5.0" },
     { name = "rich", specifier = ">=15.0.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
-    { name = "websockets", specifier = ">=14.0" },
 ]
 
 [package.metadata.requires-dev]

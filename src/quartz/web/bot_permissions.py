@@ -7,7 +7,7 @@ from urllib.parse import quote
 
 from quartz.bots.models import BotConfig, PermissionPolicy
 from quartz.bots.store import BotStore
-from quartz.web.push import PushStore
+from quartz.web.push import PushStore, _compact_push_body
 
 __all__ = [
     "PermissionDecision",
@@ -19,7 +19,6 @@ __all__ = [
 PermissionDecision = Literal["allow", "ask"]
 
 _SHELL_CHAIN_TOKENS = ("&&", "||", ";", "|", "$(", "`", "\n", "\r")
-_MAX_BODY_LENGTH = 120
 
 
 def _normalize_command(command: str) -> str:
@@ -35,13 +34,6 @@ def _matches_prefix(normalized_cmd: str, rule: str) -> bool:
 
 def _has_shell_chaining(normalized_cmd: str) -> bool:
     return any(token in normalized_cmd for token in _SHELL_CHAIN_TOKENS)
-
-
-def _compact_body(text: str, max_length: int = _MAX_BODY_LENGTH) -> str:
-    collapsed = " ".join(text.split())
-    if len(collapsed) <= max_length:
-        return collapsed
-    return collapsed[: max(0, max_length - 3)].rstrip() + "..."
 
 
 def evaluate_bot_command(policy: PermissionPolicy, command: str) -> PermissionDecision:
@@ -97,7 +89,7 @@ def notify_bot_parked(
     """Send a Web Push notification when a bot turn parks on a permission prompt."""
     payload: dict[str, str] = {
         "title": f"Quartz Bot: {bot.name} needs approval",
-        "body": _compact_body(f"Allow {command}?"),
+        "body": _compact_push_body(f"Allow {command}?"),
         "tag": f"quartz-bot-parked-{bot.id}-{session_id}",
         "url": f"/?session={quote(session_id, safe='')}",
     }

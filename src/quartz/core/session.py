@@ -181,6 +181,7 @@ class Session:
         self._persisted_count = 0
         self._persisted_refs: list[dict[str, Any]] = []
         self._pending_meta: dict[str, Any] | None = None
+        self._io_lock = threading.RLock()
         self.last_usage: dict[str, int] | None = None
         self.cell_meta: dict[str, dict[str, Any]] = {}
         self.steering_indices: set[int] = set()
@@ -209,43 +210,44 @@ class Session:
 
     def _update_meta_field(self, key: str, value: Any) -> None:
         """Update a field in pending meta and the persisted JSONL `meta` record."""
-        if self._pending_meta is not None:
-            if value is None:
-                self._pending_meta.pop(key, None)
-            else:
-                self._pending_meta[key] = value
-        if not self.jsonl_path.is_file():
-            return
-        lines = self.jsonl_path.read_text(encoding="utf-8").splitlines(keepends=True)
-        updated = False
-        for idx, line in enumerate(lines):
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                rec = json.loads(stripped)
-            except json.JSONDecodeError:
-                continue
-            if rec.get("type") == "meta":
+        with self._io_lock:
+            if self._pending_meta is not None:
                 if value is None:
-                    rec.pop(key, None)
+                    self._pending_meta.pop(key, None)
                 else:
-                    rec[key] = value
-                lines[idx] = json.dumps(rec) + "\n"
-                updated = True
-                break
-        if updated:
-            fd, tmp_name = tempfile.mkstemp(dir=str(self.jsonl_path.parent), prefix=f".{self.id}.", suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    fh.writelines(lines)
-                os.replace(tmp_name, self.jsonl_path)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    os.unlink(tmp_name)
-                raise
-            with _SESSION_FACTS_LOCK:
-                _SESSION_FACTS_CACHE.pop(str(self.jsonl_path), None)
+                    self._pending_meta[key] = value
+            if not self.jsonl_path.is_file():
+                return
+            lines = self.jsonl_path.read_text(encoding="utf-8").splitlines(keepends=True)
+            updated = False
+            for idx, line in enumerate(lines):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    rec = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("type") == "meta":
+                    if value is None:
+                        rec.pop(key, None)
+                    else:
+                        rec[key] = value
+                    lines[idx] = json.dumps(rec) + "\n"
+                    updated = True
+                    break
+            if updated:
+                fd, tmp_name = tempfile.mkstemp(dir=str(self.jsonl_path.parent), prefix=f".{self.id}.", suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        fh.writelines(lines)
+                    os.replace(tmp_name, self.jsonl_path)
+                except BaseException:
+                    with contextlib.suppress(OSError):
+                        os.unlink(tmp_name)
+                    raise
+                with _SESSION_FACTS_LOCK:
+                    _SESSION_FACTS_CACHE.pop(str(self.jsonl_path), None)
 
     def set_origin(self, origin: str) -> None:
         """Update this session's origin in memory, pending meta, and persisted JSONL."""
@@ -609,51 +611,53 @@ class Session:
         return forked, messages
 
     def _ensure_meta_written(self) -> None:
-        if self._pending_meta is not None:
-            self._append_record(self._pending_meta)
-            self._pending_meta = None
+        with self._io_lock:
+            if self._pending_meta is not None:
+                self._append_record(self._pending_meta)
+                self._pending_meta = None
 
     def _append_record(self, record: dict[str, Any]) -> None:
-        with self.jsonl_path.open("a", encoding="utf-8") as f:
+        with self._io_lock, self.jsonl_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def save_messages(self, messages: list[dict[str, Any]], compacted: bool = False) -> None:
-        if not messages and self._persisted_count == 0:
-            return
-        self._ensure_meta_written()
-        prefix_changed = len(messages) < self._persisted_count or any(
-            messages[i] != self._persisted_refs[i]
-            for i in range(self._persisted_count)
-        )
-        if compacted or prefix_changed:
-            self.steering_indices.clear()
-            rec: dict[str, Any] = {"type": "compaction", "messages": messages}
-            if self.cell_meta or self.steering_indices:
-                rec["ui_meta"] = {
-                    "cell_meta": self.cell_meta,
-                    "steering_indices": sorted(self.steering_indices),
-                }
-                self._persisted_ui_meta = (
-                    copy.deepcopy(self.cell_meta),
-                    tuple(sorted(self.steering_indices)),
-                )
-            self._append_record(rec)
-            self._persisted_count = len(messages)
-            self._persisted_refs = [copy.deepcopy(m) for m in messages]
-            return
+        with self._io_lock:
+            if not messages and self._persisted_count == 0:
+                return
+            self._ensure_meta_written()
+            prefix_changed = len(messages) < self._persisted_count or any(
+                messages[i] != self._persisted_refs[i]
+                for i in range(self._persisted_count)
+            )
+            if compacted or prefix_changed:
+                self.steering_indices.clear()
+                rec: dict[str, Any] = {"type": "compaction", "messages": messages}
+                if self.cell_meta or self.steering_indices:
+                    rec["ui_meta"] = {
+                        "cell_meta": self.cell_meta,
+                        "steering_indices": sorted(self.steering_indices),
+                    }
+                    self._persisted_ui_meta = (
+                        copy.deepcopy(self.cell_meta),
+                        tuple(sorted(self.steering_indices)),
+                    )
+                self._append_record(rec)
+                self._persisted_count = len(messages)
+                self._persisted_refs = [copy.deepcopy(m) for m in messages]
+                return
 
-        new_msgs = messages[self._persisted_count :]
-        if new_msgs:
-            lines_list: list[str] = []
-            for offset, msg in enumerate(new_msgs):
-                rec = {"type": "message", "message": msg}
-                if (self._persisted_count + offset) in self.steering_indices:
-                    rec["ui_meta"] = {"is_steering": True}
-                lines_list.append(json.dumps(rec, ensure_ascii=False) + "\n")
-            with self.jsonl_path.open("a", encoding="utf-8") as f:
-                f.write("".join(lines_list))
-        self._persisted_count = len(messages)
-        self._persisted_refs = [copy.deepcopy(m) for m in messages]
+            new_msgs = messages[self._persisted_count :]
+            if new_msgs:
+                lines_list: list[str] = []
+                for offset, msg in enumerate(new_msgs):
+                    rec = {"type": "message", "message": msg}
+                    if (self._persisted_count + offset) in self.steering_indices:
+                        rec["ui_meta"] = {"is_steering": True}
+                    lines_list.append(json.dumps(rec, ensure_ascii=False) + "\n")
+                with self.jsonl_path.open("a", encoding="utf-8") as f:
+                    f.write("".join(lines_list))
+                self._persisted_refs.extend(copy.deepcopy(m) for m in new_msgs)
+            self._persisted_count = len(messages)
 
     def record_cell_meta(self, tool_call_id: str, *, ok: bool, duration_s: float) -> None:
         if tool_call_id:
@@ -673,20 +677,22 @@ class Session:
             self.steering_indices.add(message_index)
 
     def save_ui_meta(self) -> None:
-        snap = (copy.deepcopy(self.cell_meta), tuple(sorted(self.steering_indices)))
-        if snap == self._persisted_ui_meta:
-            return
-        self._ensure_meta_written()
-        self._append_record(
-            {
-                "type": "ui_meta",
-                "cell_meta": self.cell_meta,
-                "steering_indices": sorted(self.steering_indices),
-            }
-        )
-        self._persisted_ui_meta = snap
+        with self._io_lock:
+            snap = (copy.deepcopy(self.cell_meta), tuple(sorted(self.steering_indices)))
+            if snap == self._persisted_ui_meta:
+                return
+            self._ensure_meta_written()
+            self._append_record(
+                {
+                    "type": "ui_meta",
+                    "cell_meta": self.cell_meta,
+                    "steering_indices": sorted(self.steering_indices),
+                }
+            )
+            self._persisted_ui_meta = snap
 
     def save_usage(self, usage: dict[str, int]) -> None:
-        self._ensure_meta_written()
-        self.last_usage = dict(usage)
-        self._append_record({"type": "usage", "usage": self.last_usage})
+        with self._io_lock:
+            self._ensure_meta_written()
+            self.last_usage = dict(usage)
+            self._append_record({"type": "usage", "usage": self.last_usage})
