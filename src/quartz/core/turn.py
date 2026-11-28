@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from quartz.core.events import TurnObserver
 from quartz.core.loop import TurnAborted, agent_loop
+from quartz.storage.usage import UsageRecord, record_usage_event
 
 if TYPE_CHECKING:
     from quartz.core.runtime import AgentRuntime
@@ -124,6 +125,21 @@ async def run_turn(
 
     view.reset()
     cell_start_idx = len(rt.cell_history)
+    def _record_usage(usage: Any, step_cost: float) -> None:
+        record_usage_event(
+            UsageRecord(
+                session_id=rt.active_session.id,
+                provider=rt.provider_name,
+                model=rt.model,
+                input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+                output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+                cache_read_tokens=int(getattr(usage, "cached_tokens", 0) or 0),
+                cost_usd=step_cost,
+            )
+        )
+
+    prev_recorder = rt.usage_stats.recorder
+    rt.usage_stats.recorder = _record_usage
     effective_loop = loop_fn if loop_fn is not None else agent_loop
     try:
         call_res = effective_loop(
@@ -148,6 +164,7 @@ async def run_turn(
         else:
             answer, updated_msgs, tokens = call_res
     finally:
+        rt.usage_stats.recorder = prev_recorder
         view.finish()
     _record_cell_meta(rt, updated_msgs, cell_start_idx)
     if not view.streamed_any[0] and answer:

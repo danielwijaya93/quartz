@@ -30,7 +30,7 @@ from quartz.web.context import (
     is_allowed_origin as _is_allowed_origin,
 )
 from quartz.web.push import PushStore, format_push_payload, should_send_push
-from quartz.web.routes import auth, bots, files, push, sessions, settings, ws
+from quartz.web.routes import auth, bots, files, metrics, push, sessions, settings, ws
 from quartz.web.session import BuildRuntime, SessionManager, TurnRunner, WebSession
 from quartz.web.sidebar import SidebarStore
 
@@ -281,6 +281,7 @@ def create_app(
     app.include_router(settings.create_router(ctx))
     app.include_router(sessions.create_router(ctx))
     app.include_router(files.create_router(ctx))
+    app.include_router(metrics.create_router(ctx))
     app.include_router(ws.create_router(ctx))
 
     allowed = sorted(native_origins())
