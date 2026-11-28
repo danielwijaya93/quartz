@@ -248,4 +248,21 @@ describe("CreateBotModal", () => {
       }),
     );
   });
+
+  it("closes on Escape and backdrop click, and renders nothing when closed", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const { rerender } = render(<CreateBotModal open={false} onClose={onClose} onSubmit={vi.fn()} />);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    rerender(<CreateBotModal open={true} onClose={onClose} onSubmit={vi.fn()} />);
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.tagName).not.toBe("DIALOG");
+
+    await user.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    await user.click(dialog.parentElement!);
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
 });

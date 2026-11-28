@@ -52,9 +52,8 @@ export function BotsHistoryModal({
   onClose,
   onOpenSession,
   onRestoreBot,
-}: BotsHistoryModalProps): React.ReactElement {
+}: BotsHistoryModalProps): React.ReactElement | null {
   const headingId = React.useId();
-  const dialogRef = React.useRef<HTMLDialogElement | null>(null);
 
   const [tab, setTab] = React.useState<"runs" | "deleted">("runs");
   const [botFilter, setBotFilter] = React.useState<string>(initialBotId ?? "");
@@ -91,36 +90,21 @@ export function BotsHistoryModal({
   }, [botFilter, statusFilter]);
 
   React.useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
     if (open) {
-      if (!dialog.open) {
-        if (typeof dialog.showModal === "function") {
-          dialog.showModal();
-        } else {
-          dialog.setAttribute("open", "");
-        }
-      }
       void loadHistory();
-    } else if (dialog.open || dialog.hasAttribute("open")) {
-      if (typeof dialog.close === "function") {
-        dialog.close();
-      } else {
-        dialog.removeAttribute("open");
-      }
     }
   }, [open, loadHistory]);
 
   React.useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    const handleCancel = (event: Event) => {
-      event.preventDefault();
-      onClose();
+    if (!open) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented) {
+        onClose();
+      }
     };
-    dialog.addEventListener("cancel", handleCancel);
-    return () => dialog.removeEventListener("cancel", handleCancel);
-  }, [onClose]);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open, onClose]);
 
   const handleRestore = async (id: string) => {
     if (!onRestoreBot) return;
@@ -148,12 +132,21 @@ export function BotsHistoryModal({
     return Array.from(map.entries());
   }, [bots, deletedBots, runs]);
 
+  if (!open) return null;
+
   return (
-    <dialog
-      ref={dialogRef}
-      aria-labelledby={headingId}
-      className="m-auto w-[min(42rem,calc(100vw-2rem))] rounded-2xl border border-border bg-surface p-6 text-foreground shadow-2xl backdrop:bg-black/50 backdrop:backdrop-blur-xs"
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center overflow-y-auto bg-black/50 p-4 backdrop-blur-xs"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={headingId}
+        className="my-auto w-[min(42rem,calc(100vw-2rem))] rounded-2xl border border-border bg-surface p-6 text-foreground shadow-2xl"
+      >
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">
           <div className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-accent/15 text-accent">
@@ -347,6 +340,7 @@ export function BotsHistoryModal({
           )}
         </div>
       )}
-    </dialog>
+      </div>
+    </div>
   );
 }

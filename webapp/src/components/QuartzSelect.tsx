@@ -61,7 +61,7 @@ export function QuartzSelect({
         <Select.Value className="truncate text-foreground" />
         <Select.Indicator className="text-muted" />
       </Select.Trigger>
-      <Select.Popover className="min-w-[var(--trigger-width)] rounded-xl border border-border bg-surface p-1 shadow-lg">
+      <Select.Popover className="z-50 min-w-[var(--trigger-width)] rounded-xl border border-border bg-surface p-1 shadow-lg">
         <ListBox className="max-h-60 overflow-y-auto outline-none">
           {options.map((opt) => (
             <ListBoxItem
