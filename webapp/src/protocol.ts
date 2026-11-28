@@ -154,6 +154,7 @@ export type ClientMessage =
   | { type: "load_session"; sessionId: string }
   | { type: "trust_project" }
   | { type: "set_sandbox"; enabled: boolean }
+  | { type: "set_rich_ui"; enabled: boolean; systemPromptAppend?: string }
   | { type: "permission_response"; requestId: string; decision: PermissionDecision }
   | { type: "active_session_dismiss"; sessionId: string }
   | { type: "active_sessions_clear_read" }
@@ -202,6 +203,7 @@ export interface SessionStateMessage {
   bgCount?: number;
   gitBranch?: string | null;
   sandboxed?: boolean;
+  richUi?: boolean;
   pendingPermission?: PendingPermission | null;
   watcher?: WatcherState | null;
   settings?: {

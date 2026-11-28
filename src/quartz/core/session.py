@@ -62,6 +62,7 @@ class _SessionFacts:
     origin: str
     preview: str = ""
     sandbox: bool | None = None
+    rich_ui: bool | None = None
 
 
 _SESSION_FACTS_LOCK = threading.Lock()
@@ -176,6 +177,7 @@ class Session:
         # same seat (`/new` must not turn a browser session into a terminal one).
         self.origin = ORIGIN_CLI
         self.name: str | None = None
+        self.rich_ui: bool | None = None
         self._persisted_count = 0
         self._persisted_refs: list[dict[str, Any]] = []
         self._pending_meta: dict[str, Any] | None = None
@@ -256,6 +258,12 @@ class Session:
         """Persist this session's sandbox toggle in pending meta and JSONL."""
         self._update_meta_field("sandbox", bool(enabled))
 
+    def set_rich_ui(self, enabled: bool) -> None:
+        """Persist this session's Rich UI toggle in memory, pending meta, and JSONL."""
+        flag = bool(enabled)
+        self.rich_ui = flag
+        self._update_meta_field("rich_ui", flag)
+
     def set_name(self, name: str) -> str | None:
         """Set or clear this session's human-readable name in meta and JSONL."""
         cleaned = " ".join(name.split())
@@ -273,6 +281,7 @@ class Session:
         seen_meta = False
         preview = ""
         sandbox: bool | None = None
+        rich_ui: bool | None = None
         try:
             with jsonl_path.open("r", encoding="utf-8") as fh:
                 for raw_line in fh:
@@ -288,6 +297,8 @@ class Session:
                         origin = raw_origin if raw_origin in _ORIGINS else ORIGIN_CLI
                         raw_sandbox = rec.get("sandbox")
                         sandbox = raw_sandbox if isinstance(raw_sandbox, bool) else None
+                        raw_rich_ui = rec.get("rich_ui")
+                        rich_ui = raw_rich_ui if isinstance(raw_rich_ui, bool) else None
                     elif rec_type == "message":
                         has_msgs = True
                         if not preview:
@@ -303,7 +314,7 @@ class Session:
                         break
         except (OSError, json.JSONDecodeError):
             return _SessionFacts(False, None, ORIGIN_CLI, "")
-        return _SessionFacts(has_msgs, session_cwd, origin, preview, sandbox)
+        return _SessionFacts(has_msgs, session_cwd, origin, preview, sandbox, rich_ui)
 
     @classmethod
     def _inspect_session(cls, jsonl_path: Path) -> _SessionFacts:
@@ -351,6 +362,15 @@ class Session:
         if not path.is_file():
             return None
         return cls._inspect_session(path).sandbox
+
+    @classmethod
+    def recorded_rich_ui(cls, session_id: str, sessions_dir: Path | None = None) -> bool | None:
+        """The ``rich_ui`` boolean a session's own `meta` record names, or ``None``."""
+        root = (sessions_dir or default_sessions_dir()).resolve()
+        path = _resolve_session_jsonl(session_id, root)
+        if not path.is_file():
+            return None
+        return cls._inspect_session(path).rich_ui
 
     @classmethod
     def resolve_resume_target(
@@ -528,6 +548,8 @@ class Session:
                 session.origin = raw_origin if raw_origin in _ORIGINS else ORIGIN_CLI
                 raw_name = record.get("name")
                 session.name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else None
+                raw_rich_ui = record.get("rich_ui")
+                session.rich_ui = raw_rich_ui if isinstance(raw_rich_ui, bool) else None
             elif rec_type == "message" and isinstance(record.get("message"), dict):
                 messages.append(record["message"])
                 ui_meta = record.get("ui_meta")

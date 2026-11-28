@@ -30,7 +30,7 @@ import { SessionTile, type SessionTileHandle } from "./components/SessionTile";
 import { authFetch } from "./lib/authToken";
 import { apiUrl } from "./lib/serverUrl";
 import { useCommandPalette } from "./lib/useCommandPalette";
-import { useOpenUISystemPrompt, useRichUiMode } from "./lib/useRichUi";
+
 import { useNotifications } from "./lib/useNotifications";
 import { useSidebar } from "./lib/useSidebar";
 import { useBots } from "./lib/useBots";
@@ -39,7 +39,7 @@ import { displayTitle, EMPTY_SIDEBAR, type SessionActivity } from "./lib/sidebar
 import { useMediaQuery } from "./lib/useMediaQuery";
 import { useOpenUIThemeMirror } from "./lib/theme";
 import { useNativeShell } from "./lib/useNativeShell";
-import { wantsRichUi } from "./lib/richUi";
+import type { RichUiMode } from "./lib/richUi";
 import { initialState } from "./lib/transcript";
 import type { ActiveSessionItem, ServerMessage } from "./protocol";
 import type { BotConfig } from "./types/bots";
@@ -111,8 +111,6 @@ export function App(): React.ReactElement {
 }
 
 function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.ReactElement {
-  const richUi = useRichUiMode();
-  const systemPromptAppend = useOpenUISystemPrompt(richUi.mode);
   const markNotificationsReadRef = React.useRef<() => void>(() => undefined);
   const notifications = useNotifications({
     onNotificationsRead: () => markNotificationsReadRef.current(),
@@ -124,8 +122,6 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     readonly ActiveSessionItem[]
   >([]);
 
-  const richUiRef = React.useRef(richUi);
-  richUiRef.current = richUi;
   const notificationsRef = React.useRef(notifications);
   notificationsRef.current = notifications;
   const sidebarReloadRef = React.useRef<() => void>(() => {});
@@ -141,7 +137,6 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
       );
     }
     if (message.type === "settings_state") {
-      richUiRef.current.applySyncedMode(message.richUi ? "rich" : "markdown");
       void notificationsRef.current.applySyncedEnabled(message.notifications, {
         turn: message.notifyTurn,
         approval: message.notifyApproval,
@@ -151,7 +146,6 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
       return;
     }
     if (message.type === "session_state" && message.settings) {
-      richUiRef.current.applySyncedMode(message.settings.richUi ? "rich" : "markdown");
       void notificationsRef.current.applySyncedEnabled(message.settings.notifications, {
         turn: message.settings.notifyTurn,
         approval: message.settings.notifyApproval,
@@ -496,6 +490,13 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
     [focusedHandle, activeSession.sandboxed],
   );
 
+  const handleRichUiModeChange = React.useCallback(
+    (mode: RichUiMode) => {
+      focusedHandle?.setRichUi(mode === "rich");
+    },
+    [focusedHandle],
+  );
+
   const tileControls = React.useMemo(
     () =>
       !narrow ? (
@@ -528,8 +529,8 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
         <HeaderBar
           session={activeSession}
           status={activeStatus}
-          richUiMode={richUi.mode}
-          onRichUiModeChange={richUi.setMode}
+          richUiMode={activeSession.richUi ? "rich" : "markdown"}
+          onRichUiModeChange={handleRichUiModeChange}
           onToggleSandbox={handleToggleSandbox}
           turnRunning={focusedHandle?.turnRunning ?? false}
           sidebarOpen={sidebarOpen}
@@ -604,8 +605,6 @@ function AuthenticatedApp({ onAuthError }: { onAuthError: () => void }): React.R
                   requestedSessionId={tile.sessionId}
                   initialCwd={tile.initialCwd}
                   createFreshOnConnect={tile.sessionId === null && tile.id !== primarySessionTileId}
-                  systemPromptAppend={systemPromptAppend}
-                  richUi={wantsRichUi(richUi.mode)}
                   sessionTitle={resolvedTitle}
                   bots={bots.bots}
                   botRuns={bots.runs}

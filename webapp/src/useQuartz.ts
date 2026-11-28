@@ -35,6 +35,8 @@ export interface QuartzApi {
   trustProject: () => void;
   /** Toggle OS sandbox for the active session. */
   setSandbox: (enabled: boolean) => void;
+  /** Toggle Rich UI for the active session. */
+  setRichUi: (enabled: boolean, systemPromptAppend?: string) => void;
   respondPermission: (requestId: string, decision: PermissionDecision) => void;
   /** Persist an OpenUI surface's form state onto the row that rendered it. */
   setFormState: (id: string, formState: Record<string, unknown>) => void;
@@ -228,6 +230,10 @@ export function useQuartz(
     connectionRef.current?.sendSetSandbox(enabled);
   }, []);
 
+  const setRichUi = React.useCallback((enabled: boolean, systemPromptAppend = "") => {
+    connectionRef.current?.sendSetRichUi(enabled, systemPromptAppend);
+  }, []);
+
   const respondPermission = React.useCallback(
     (requestId: string, decision: PermissionDecision) => {
       connectionRef.current?.sendPermissionResponse(requestId, decision);
@@ -287,6 +293,7 @@ export function useQuartz(
       loadSession,
       trustProject,
       setSandbox,
+      setRichUi,
       respondPermission,
       setFormState,
       clearBgFailed,
@@ -307,6 +314,7 @@ export function useQuartz(
       loadSession,
       trustProject,
       setSandbox,
+      setRichUi,
       respondPermission,
       setFormState,
       clearBgFailed,

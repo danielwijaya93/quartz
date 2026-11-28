@@ -393,6 +393,14 @@ export class Connection {
     return this.send({ type: "set_sandbox", enabled });
   }
 
+  sendSetRichUi(enabled: boolean, systemPromptAppend = ""): boolean {
+    return this.send({
+      type: "set_rich_ui",
+      enabled,
+      ...(enabled && systemPromptAppend ? { systemPromptAppend } : {}),
+    });
+  }
+
   sendPermissionResponse(
     requestId: string,
     decision: "allow_once" | "allow_session" | "reject",
