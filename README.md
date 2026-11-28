@@ -4,9 +4,9 @@ Minimal coding agent with a stateless, sandboxed Python execution tool.
 
 ## Why Quartz
 
-- **Stateless `bwrap` Python cells:** Each `ipython` call runs in a fresh, OS-sandboxed Python 3.14 worker (`~/.quartz` masked) with 0 MB idle worker memory.
+- **Sandboxed Python cells:** Each `ipython` call runs in a fresh `bwrap` Python 3.14 worker (`~/.quartz` masked, 0 MB idle RAM) with a per-session `/tmp` scratch directory and shared `~/.quartz/sandbox-cache`.
 - **Fast & lightweight:** ~162 ms CLI startup, ~120 MB shared `asyncio` web server across concurrent sessions, and SQLite WAL + FTS5 session search.
-- **Token-efficient on complex tasks:** Native Python stdlib (`ast`, `pathlib`, `re`, `json`) lets the model chain multi-file analysis in a single cell instead of dozens of shell round-trips.
+- **Token-efficient on complex tasks:** Native Python stdlib plus built-in REPL helpers (`read`, `edit`, `rg`, `outline`, `env_info`, `bash`) let the model chain multi-step work in fewer round-trips.
 - **Multi-provider, login-only auth:** Supports Google Antigravity (OAuth), OpenAI, OpenRouter, DeepSeek, and custom OpenAI-compatible endpoints via `~/.quartz/auth.json`.
 - **TUI, Web & Headless:** Terminal UI (`quartz`), browser/mobile UI (`quartz web`) with optional Rich UI (OpenUI), single-prompt `-p` mode, and MCP tool support.
 
