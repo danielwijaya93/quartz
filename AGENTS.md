@@ -5,17 +5,11 @@
 - **AI Agent** owns implementation, unit tests (`tests/`), Git/PRs, CI checks, and releases.
 - **Repo**: `danielwijaya93/quartz` | **PyPI**: `quartz-agent` | **CLI**: `quartz` (`uv tool install --editable .`) | **Default branch**: `main` | **Git Author**: `Daniel Wijaya <danielwijaya93@gmail.com>`
 
-## Engineering Standards (DE Bar)
-- **Strict layering**: Preserve the acyclic package DAG enforced by `tests/core/test_import_boundaries.py`. Put shared logic in `core/` (`SessionController`, `core/commands/`) — never duplicate across `tui/`, `web/`, or `cli/`.
-- **Small, focused modules**: Split files before ~500 lines (`<= 500` LOC / `<= 80` LOC per function, enforced by `tests/core/test_module_modularity.py`). Add HTTP/WS endpoints as `APIRouter` modules under `web/routes/` (never inline in `web/app.py`). Group >5 config params into dataclasses (`ModelConfig`, `RuntimeOptions`).
-- **Async-first & SQLite WAL**: Prefer native `asyncio` (`astream_provider`, `exec_cell_async`, `agent_loop_async`, `run_turn_async`, `KernelClient`) over new `threading.Thread`s, locks, or `asyncio.to_thread` bridges. Operational stores and FTS5 live in `~/.quartz/quartz.db` via `src/quartz/storage/`.
-- **Schema-first contracts**: Define web wire payloads in `src/quartz/web/schemas.py` and regenerate `webapp/src/protocol.generated.ts` via `uv run python scripts/export_web_schema.py` (verified by `test_protocol_parity.py`).
-- **Real types, zero shortcuts**: Maintain 0 `pyright` (`standard`) and 0 `ruff` errors, and typed `TypedDict` boundaries (`tests/core/test_typed_boundaries.py`). Avoid `# type: ignore`, `# noqa`, `@ts-ignore`, or new `dict[str, Any]` boundaries unless narrowly justified.
-- **Explicit errors**: Never silently swallow `except Exception: pass`. Narrow expected cleanup with `contextlib.suppress(...)` or log best-effort failures at `logger.debug(..., exc_info=True)`.
-- **Fail closed on security & governance**: Keep web token auth (`~/.quartz/web-token`), strict `/api/fs/*` path checks, fail-closed OS sandbox (`~/.quartz` masked except `AGENTS.md`/`helpers.py`/`skills`), host-bridge approvals (`git`/`gh`/`quartz`), atomic `bwrap` PID-namespace teardown (`--info-fd`), stateless per-cell isolation, and `/api/metrics` + `/api/audit` intact.
-- **Design paths & Red-first tests**: For any new feature or non-trivial change, map **happy paths**, **unhappy paths**, and **edge/corner cases** first, ask the user for decisions on ambiguous behaviors (numbered list with recommended options), then write failing tests for those agreed paths before implementing (Red-Green-Refactor).
-- **Test behavior & comment why**: Test happy paths plus edge/error/cancellation paths. Write comments explaining *why* a non-obvious invariant exists, not *what* the code does.
-- **Fast navigation**: Check `docs/CODEBASE_MAP.md` and `docs/SYMBOL_INDEX.md` before broad searches so you can jump straight to the right file and line.
+## Engineering Standards
+- **Smallest complete change**: Reuse existing helpers, layers (`core/`), and conventions (`asyncio`, SQLite WAL, `schemas.py` -> `export_web_schema.py`); skip unrequested abstractions, wrappers, or boilerplate. Deletion beats addition.
+- **Finish the whole scope**: Check `docs/CODEBASE_MAP.md` and callers before editing; fix root causes once in shared code and keep `0` `ruff`/`pyright` errors.
+- **Test non-trivial logic**: Map happy, unhappy, and edge paths first; ask on ambiguous behavior, write failing tests before implementing, and comment only *why* in one line.
+- **Never cut**: Trust-boundary validation, explicit error handling (no silent `except Exception: pass`), security/sandbox invariants, or anything the user asked for.
 
 ## PR Workflow (Features, Fixes, Refactors)
 1. **Branch**: `git checkout main && git pull && git checkout -b <type>/<short-description>` (`feat/`, `fix/`, `perf/`, `refactor/`, `chore/`).
