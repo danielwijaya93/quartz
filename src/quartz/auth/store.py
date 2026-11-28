@@ -156,87 +156,6 @@ def delete_google_credentials(path: Path | None = None) -> bool:
 
 
 @dataclasses.dataclass
-class GoogleAiPlanCredentials:
-    """Stored Google AI Plan OAuth2 + DPoP credentials."""
-
-    access: str
-    refresh: str
-    expires_ms: int
-    dpop_key: dict[str, str]
-    dpop_nonce: str | None = None
-
-    def is_expired(self, now_ms: int | None = None) -> bool:
-        current = int(time.time() * 1000) if now_ms is None else now_ms
-        return current >= self.expires_ms
-
-    def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {
-            "access": self.access,
-            "refresh": self.refresh,
-            "expires_ms": self.expires_ms,
-            "dpop_key": dict(self.dpop_key),
-        }
-        if self.dpop_nonce:
-            out["dpop_nonce"] = self.dpop_nonce
-        return out
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> GoogleAiPlanCredentials | None:
-        access = data.get("access")
-        refresh = data.get("refresh")
-        dpop_key = data.get("dpop_key")
-        expires_ms = data.get("expires_ms")
-        if not (isinstance(access, str) and access and isinstance(refresh, str) and refresh):
-            return None
-        if not isinstance(dpop_key, dict) or not all(
-            isinstance(dpop_key.get(k), str) and dpop_key.get(k) for k in ("kty", "crv", "x", "y", "d")
-        ):
-            return None
-        nonce = data.get("dpop_nonce")
-        return cls(
-            access=access,
-            refresh=refresh,
-            expires_ms=int(expires_ms or 0),
-            dpop_key={str(k): str(v) for k, v in dpop_key.items()},
-            dpop_nonce=nonce if isinstance(nonce, str) and nonce else None,
-        )
-
-
-def load_google_ai_plan_credentials(path: Path | None = None) -> GoogleAiPlanCredentials | None:
-    """Load stored Google AI Plan OAuth credentials from auth.json."""
-    with _AUTH_LOCK:
-        data = read_auth_json(path)
-        entry = data.get("google-ai-plan")
-        if not isinstance(entry, dict):
-            return None
-        return GoogleAiPlanCredentials.from_dict(entry)
-
-
-def save_google_ai_plan_credentials(
-    creds: GoogleAiPlanCredentials, path: Path | None = None
-) -> Path:
-    """Save Google AI Plan OAuth credentials to auth.json."""
-    with _AUTH_LOCK:
-        data = read_auth_json(path)
-        data["google-ai-plan"] = creds.to_dict()
-        return write_auth_json(data, path)
-
-
-def delete_google_ai_plan_credentials(path: Path | None = None) -> bool:
-    """Remove stored Google AI Plan OAuth credentials from auth.json."""
-    with _AUTH_LOCK:
-        cfg = path or auth_file_path()
-        if not cfg.is_file():
-            return False
-        data = read_auth_json(cfg)
-        if "google-ai-plan" not in data:
-            return False
-        del data["google-ai-plan"]
-        write_auth_json(data, cfg)
-        return True
-
-
-@dataclasses.dataclass
 class ApiKeyCredentials:
     """Stored API-key credentials for an OpenAI-compatible provider."""
 
@@ -308,11 +227,9 @@ def list_logged_in_providers(path: Path | None = None) -> dict[str, str]:
         result: dict[str, str] = {}
         if load_google_credentials(path) is not None:
             result["google"] = "oauth"
-        if load_google_ai_plan_credentials(path) is not None:
-            result["google-ai-plan"] = "oauth"
         data = read_auth_json(path)
         for name, entry in data.items():
-            if name in ("google", "google-ai-plan") or not isinstance(entry, dict):
+            if name == "google" or not isinstance(entry, dict):
                 continue
             if ApiKeyCredentials.from_dict(entry) is not None:
                 result[name] = str(entry.get("auth_type") or "api_key")
