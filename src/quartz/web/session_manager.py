@@ -147,6 +147,10 @@ class SessionManager:
             return loop
         return None
 
+    @property
+    def _push_hook(self) -> Callable[[WebSession, Frame], None] | None:
+        return self._activity._push_hook
+
     def set_push_hook(self, hook: Callable[[WebSession, Frame], None] | None) -> None:
         self._activity.set_push_hook(hook)
 
