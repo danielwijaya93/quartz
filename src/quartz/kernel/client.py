@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import os
+import shutil
 import signal
+import tempfile
 import time
 import uuid
 from collections import deque
@@ -72,12 +75,14 @@ class KernelClient(KernelClientTransport):
         self._closed = False
         self._interrupted_cells = set()
         self._bridge_server = None
+        self._owned_scratch_dir: Path | None = None
         if isinstance(sandbox, SandboxConfig):
             self._sandbox_config = sandbox
         elif isinstance(sandbox, bool):
             self._sandbox_config = SandboxConfig(enabled=sandbox)
         else:
             self._sandbox_config = SandboxConfig(enabled=False)
+        self._configure_sandbox_dirs()
         self._host_mcp_override = host_mcp
         self._host_bridge_override = host_bridge
         self._bash_manager = HostBashManager(
@@ -117,8 +122,30 @@ class KernelClient(KernelClientTransport):
     def set_permission_handler(self, handler: PermissionHandler | None) -> None:
         self._host_rpc.permission_handler = handler
 
+    def _configure_sandbox_dirs(self) -> None:
+        if not self._sandbox_config.enabled:
+            return
+        updates: dict[str, Path] = {}
+        if self._sandbox_config.scratch_tmp_dir is None:
+            if self._owned_scratch_dir is None or not self._owned_scratch_dir.exists():
+                self._owned_scratch_dir = Path(tempfile.mkdtemp(prefix="quartz-scratch-"))
+            updates["scratch_tmp_dir"] = self._owned_scratch_dir
+        if self._sandbox_config.cache_dir is None:
+            cache_dir = Path.home() / ".quartz" / "sandbox-cache"
+            with contextlib.suppress(OSError):
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                updates["cache_dir"] = cache_dir
+        if updates:
+            self._sandbox_config = dataclasses.replace(self._sandbox_config, **updates)
+
+    def _cleanup_scratch_dir(self) -> None:
+        if self._owned_scratch_dir is not None:
+            shutil.rmtree(self._owned_scratch_dir, ignore_errors=True)
+            self._owned_scratch_dir = None
+
     def enable_sandbox(self, config: SandboxConfig | None = None) -> None:
         self._sandbox_config = config or SandboxConfig(enabled=True)
+        self._configure_sandbox_dirs()
 
     def _get_host_mcp(self) -> Any:
         return self._host_rpc.get_host_mcp()
@@ -271,6 +298,7 @@ class KernelClient(KernelClientTransport):
         self._bash_manager.close_all()
         self._close_bridge_server()
         await self._host_rpc.aclose()
+        self._cleanup_scratch_dir()
         self.wake_event_waiters(result=False)
 
     def close(self) -> None:
@@ -295,6 +323,7 @@ class KernelClient(KernelClientTransport):
             self._bash_manager.close_all()
         self._close_bridge_server()
         self._host_rpc.close_mcp()
+        self._cleanup_scratch_dir()
         self.wake_event_waiters(result=False)
 
     async def _aclose_bash_on_loop(self) -> None:
