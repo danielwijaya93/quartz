@@ -1,15 +1,17 @@
 import * as React from "react";
 import { cn } from "@heroui/react";
-import { formatTokenWindow } from "./composerHelpers";
+import { formatCostUsd, formatTokenWindow } from "./composerHelpers";
 
 export function ContextRing({
   pct,
   maxTokens,
   cacheHitPct,
+  totalCostUsd,
 }: {
   pct: number;
   maxTokens?: number;
   cacheHitPct?: number;
+  totalCostUsd?: number;
 }): React.ReactElement {
   const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement | null>(null);
@@ -23,9 +25,11 @@ export function ContextRing({
       ? `${pct.toFixed(1)}% of ${formatTokenWindow(maxTokens)}`
       : `${pct.toFixed(1)}%`;
   const cacheText = cacheHitPct !== undefined ? `${cacheHitPct.toFixed(1)}%` : null;
-  const label = cacheText
-    ? `Context: ${contextText} · Cache hit: ${cacheText}`
-    : `Context: ${contextText}`;
+  const costText = totalCostUsd !== undefined ? formatCostUsd(totalCostUsd) : null;
+  const labelParts = [`Context: ${contextText}`];
+  if (cacheText !== null) labelParts.push(`Cache hit: ${cacheText}`);
+  if (costText !== null) labelParts.push(`Total cost: ${costText}`);
+  const label = labelParts.join(" · ");
   const toneClass =
     clamped >= 90 ? "text-danger" : clamped >= 75 ? "text-warning" : "text-foreground/75";
 
@@ -96,6 +100,12 @@ export function ContextRing({
             <div className="mt-1 flex items-center justify-between gap-4">
               <span className="text-muted">Cache hit</span>
               <span className="font-medium tabular-nums">{cacheText}</span>
+            </div>
+          ) : null}
+          {costText !== null ? (
+            <div className="mt-1 flex items-center justify-between gap-4">
+              <span className="text-muted">Total cost</span>
+              <span className="font-medium tabular-nums">{costText}</span>
             </div>
           ) : null}
         </div>

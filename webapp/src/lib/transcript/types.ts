@@ -149,6 +149,7 @@ export interface SessionMeta {
   contextPct?: number;
   maxContextTokens?: number;
   cacheHitPct?: number;
+  totalCostUsd?: number;
   commands: Command[];
   projectTrust: ProjectTrustState | null;
   bgCount?: number;
@@ -191,6 +192,8 @@ export const EMPTY_SESSION: SessionMeta = {
   effort: "",
   contextPct: 0,
   maxContextTokens: 0,
+  cacheHitPct: 0,
+  totalCostUsd: 0,
   commands: [],
   projectTrust: null,
   gitBranch: null,

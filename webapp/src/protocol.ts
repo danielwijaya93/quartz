@@ -187,6 +187,7 @@ export interface SessionStateMessage {
   contextPct?: number;
   maxContextTokens?: number;
   cacheHitPct?: number;
+  totalCostUsd?: number;
   messages: Message[];
   cellFiles?: Record<string, FileAttachment[]>;
   turnRunning: boolean;
@@ -253,6 +254,7 @@ export type ServerMessage =
       contextPct?: number;
       maxContextTokens?: number;
       cacheHitPct?: number;
+      totalCostUsd?: number;
       error?: string;
     }
   | {
