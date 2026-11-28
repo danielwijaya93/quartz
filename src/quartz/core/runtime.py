@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import threading
-import warnings
 from pathlib import Path
 from typing import Any, overload
 
@@ -224,8 +222,6 @@ class AgentRuntime:
         self.view_config = view_config
         self.options = options
         self.pending_images = pending_images
-        self._snapshot_thread: threading.Thread | None = None
-        self._snapshot_lock = threading.Lock()
 
     @classmethod
     def from_configs(
@@ -253,47 +249,13 @@ class AgentRuntime:
         )
         return runtime
 
-    def wait_snapshot(self) -> None:
-        """Wait for any in-flight background kernel snapshot to complete."""
-        with self._snapshot_lock:
-            t = self._snapshot_thread
-            if t is not None and t.is_alive():
-                t.join(timeout=30.0)
-            self._snapshot_thread = None
-
     def persist(self, *, compacted: bool = False) -> None:
-        """Persist messages, UI metadata, usage, and (in interactive mode) kernel snapshot."""
+        """Persist conversation messages, UI metadata, and usage statistics."""
         self.active_session.save_messages(self.messages, compacted=compacted)
         if hasattr(self.active_session, "save_ui_meta"):
             self.active_session.save_ui_meta()
         if self.usage_stats.prompt_tokens > 0 or self.usage_stats.total_prompt_tokens > 0:
             self.active_session.save_usage(self.usage_stats.to_dict())
-        if not self.headless and getattr(self.kernel, "dirty", True):
-            with self._snapshot_lock:
-                prev = self._snapshot_thread
-                if prev is not None and prev.is_alive():
-                    prev.join(timeout=30.0)
-                session, kernel = self.active_session, self.kernel
-
-                def _save_kernel_bg() -> None:
-                    try:
-                        manifest = session.save_kernel(kernel)
-                    except Exception as exc:
-                        warnings.warn(f"Background kernel snapshot failed: {exc}", RuntimeWarning, stacklevel=2)
-                        return
-                    skipped = manifest.get("skipped") or []
-                    if skipped:
-                        logger.debug(
-                            "Kernel snapshot skipped %d value%s: %s%s",
-                            len(skipped),
-                            "s" if len(skipped) != 1 else "",
-                            "; ".join(skipped[:5]),
-                            " ..." if len(skipped) > 5 else "",
-                        )
-
-                t = threading.Thread(target=_save_kernel_bg, daemon=True)
-                self._snapshot_thread = t
-                t.start()
 
     async def compact(self, focus: str | None = None) -> CompactionResult:
         """Compact older messages while keeping the kernel alive."""

@@ -15,21 +15,17 @@ from quartz.core.prompt import build_system_prompt
 from quartz.kernel.client import KernelClient
 
 
-async def test_kernel_persistence_and_trailing_expr(tmp_path: Path) -> None:
+async def test_kernel_trailing_expr_and_stateless_isolation(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        r1 = await kernel.exec_cell("x = 21 * 2\ndef double(n): return n * 2")
+        r1 = await kernel.exec_cell("x = 21 * 2\ndef double(n): return n * 2\ndouble(x)")
         assert r1.ok
-        assert r1.result is None
+        assert r1.result == "84"
 
-        r2 = await kernel.exec_cell("double(x)")
+        r2 = await kernel.exec_cell("'x' in globals()")
         assert r2.ok
-        assert r2.result == "84"
-
-        vars_info = kernel.list_vars()
-        assert vars_info["x"] == "int"
-        assert vars_info["double"] == "function"
+        assert r2.result == "False"
     finally:
         kernel.close()
 
@@ -171,21 +167,13 @@ def test_compaction_safe_split_and_python_state() -> None:
     # A budget larger than the whole conversation leaves everything intact.
     assert _find_safe_split_index(messages, 10_000) == 0
 
-    notice = format_python_state_notice({"df": "DataFrame", "helper": "function"})
+    notice = format_python_state_notice()
     assert "[python-state]" in notice
-    assert "df (DataFrame)" in notice
-    assert "helper (function)" in notice
+    assert "stateless" in notice.lower()
 
-    notice_with_helpers = format_python_state_notice(
-        {"df": "DataFrame"}, helper_names=["read_json", "sh"]
-    )
+    notice_with_helpers = format_python_state_notice(helper_names=["read_json", "sh"])
     assert "[python-state]" in notice_with_helpers
-    assert "df (DataFrame)" in notice_with_helpers
-    assert "Loaded REPL helpers are also still available: read_json(), sh()." in notice_with_helpers
-
-    empty_notice_with_helpers = format_python_state_notice({}, helper_names=["my_helper"])
-    assert "[python-state]" in empty_notice_with_helpers
-    assert "Loaded REPL helpers are also still available: my_helper()." in empty_notice_with_helpers
+    assert "Loaded REPL helpers are available in every cell: read_json(), sh()." in notice_with_helpers
 
 
 def test_turn_usage_telemetry() -> None:
@@ -414,7 +402,7 @@ async def test_compact_messages_summarizes_and_keeps_kernel(tmp_path: Path) -> N
         assert result.reason is CompactionReason.SUMMARIZED
         assert "[compaction-summary]" in result.messages[0]["content"]
         assert "Summary of earlier work." in result.messages[0]["content"]
-        assert "answer (int)" in result.messages[0]["content"]
+        assert "[python-state]" in result.messages[0]["content"]
     finally:
         kernel.close()
 
@@ -431,19 +419,15 @@ async def test_bash_handle_pruned_and_output_preserved(tmp_path: Path) -> None:
         kernel.close()
 
 
-def test_kernel_wait_for_events_returns_fast_on_exit(tmp_path: Path) -> None:
-
+def test_kernel_wait_for_events_returns_fast_on_close(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
-    assert kernel._proc is not None
-    kernel._proc.kill()
-    kernel._proc.wait(timeout=2.0)
+    kernel.close()
     t0 = time.monotonic()
     events = kernel.wait_for_events(timeout=30.0)
     elapsed = time.monotonic() - t0
     assert events == []
     assert elapsed < 2.0
-    kernel.close()
 
 
 async def test_kernel_spill_large_output(tmp_path: Path) -> None:
@@ -640,14 +624,6 @@ async def test_agent_loop_records_explicit_abort_reason_on_tool_message(tmp_path
     assert tool_msgs[0]["content"] == "[aborted: server shutdown]"
 
 
-def test_kernel_snapshot_rejects_empty_dir() -> None:
-    from quartz.kernel.worker import KernelWorker
-
-    worker = KernelWorker()
-    with pytest.raises(ValueError, match="snapshot_dir"):
-        worker.snapshot_vars("")
-
-
 async def test_agent_loop_streaming_steering_preemption(tmp_path: Path) -> None:
     import asyncio
 
@@ -731,63 +707,6 @@ async def test_kernel_fd1_write_does_not_corrupt_protocol(tmp_path: Path) -> Non
         kernel.close()
 
 
-async def test_kernel_snapshot_restore_function_kwdefaults_doc_annotations(tmp_path: Path) -> None:
-    snap_dir = tmp_path / "snap"
-    k1 = KernelClient(cwd=tmp_path)
-    k1.start()
-    try:
-        r1 = await k1.exec_cell(
-            'def greet(name: str, *, excited: bool = False) -> str:\n'
-            '    """Return greeting."""\n'
-            '    return f"hi {name}" + ("!" if excited else "")\n'
-        )
-        assert r1.ok
-        manifest = k1.snapshot(snap_dir)
-        assert "greet" in manifest["saved"]
-    finally:
-        k1.close()
-
-    k2 = KernelClient(cwd=tmp_path)
-    k2.start()
-    try:
-        restored = k2.restore(snap_dir)
-        assert "greet" in restored["restored"]
-        r_default = await k2.exec_cell('greet("alice")')
-        assert r_default.ok
-        assert r_default.result == "'hi alice'"
-        r_kw = await k2.exec_cell('greet("alice", excited=True)')
-        assert r_kw.ok
-        assert r_kw.result == "'hi alice!'"
-        r_meta = await k2.exec_cell('(greet.__doc__, list(greet.__annotations__.keys()))')
-        assert r_meta.ok
-        assert r_meta.result == "('Return greeting.', ['name', 'excited', 'return'])"
-    finally:
-        k2.close()
-
-
-async def test_kernel_corrupt_manifest_and_invalid_snapshot_keep_kernel_alive(tmp_path: Path) -> None:
-    bad_snap = tmp_path / "bad_snap"
-    bad_snap.mkdir()
-    (bad_snap / "manifest.json").write_text("{not valid json", encoding="utf-8")
-
-    kernel = KernelClient(cwd=tmp_path)
-    kernel.start()
-    try:
-        restored = kernel.restore(bad_snap)
-        assert restored == {"restored": [], "skipped": []}
-
-        not_a_dir = tmp_path / "not_a_dir"
-        not_a_dir.write_text("x", encoding="utf-8")
-        snap_res = kernel.snapshot(not_a_dir / "snap")
-        assert snap_res == {"saved": [], "skipped": []}
-
-        alive = await kernel.exec_cell("40 + 2")
-        assert alive.ok
-        assert alive.result == "42"
-    finally:
-        kernel.close()
-
-
 async def test_bash_handle_api_zero_threads_and_dropped_lines(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
@@ -811,35 +730,3 @@ async def test_bash_handle_api_zero_threads_and_dropped_lines(tmp_path: Path) ->
         kernel.close()
 
 
-async def test_snapshot_skips_modules_and_restore_reimports(tmp_path: Path) -> None:
-    kernel = KernelClient(cwd=tmp_path)
-    kernel.start()
-    try:
-        assert (await kernel.exec_cell("import textwrap as tw\nimport math\nvalue = 5\nfrom json import dumps as jd")).ok
-        manifest = kernel.snapshot(tmp_path / "snap")
-        assert "tw" not in manifest["saved"] and "value" in manifest["saved"]
-        assert manifest["modules"]["tw"] == "textwrap"
-        kernel.restart()
-        out = kernel.restore(tmp_path / "snap")
-        assert "tw" in out["restored"] and "value" in out["restored"]
-        res = await kernel.exec_cell("(tw.dedent(' a'), value, jd({}))")
-        assert res.ok, res.stderr
-        assert res.result == "('a', 5, '{}')"
-    finally:
-        kernel.close()
-
-
-async def test_restore_does_not_rebind_library_function_globals(tmp_path: Path) -> None:
-    kernel = KernelClient(cwd=tmp_path)
-    kernel.start()
-    try:
-        assert (await kernel.exec_cell("from textwrap import dedent as d\ndef mine():\n    return 7")).ok
-        manifest = kernel.snapshot(tmp_path / "snap2")
-        assert "mine" in manifest["saved"]
-        out = kernel.restore(tmp_path / "snap2")
-        assert "mine" in out["restored"]
-        res = await kernel.exec_cell("import textwrap\n(d.__globals__ is textwrap.__dict__, mine.__globals__ is globals())")
-        assert res.ok, res.stderr
-        assert res.result == "(True, True)"
-    finally:
-        kernel.close()

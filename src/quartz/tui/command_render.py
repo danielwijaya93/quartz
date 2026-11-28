@@ -41,7 +41,6 @@ __all__ = [
     "_render_mcp",
     "_render_reset",
     "_render_settings",
-    "_render_vars",
     "render_command_result",
 ]
 
@@ -70,21 +69,6 @@ def render_command_result(result: CommandResult) -> None:
         return
 
     _print(f"[dim]{escape(result.message)}[/dim]")
-
-
-def _render_vars(rt: AgentRuntime, result: CommandResult) -> None:
-    del rt
-    if not result.items:
-        _printer().block(Text(result.body, style="dim"))
-        return
-    out = Text()
-    for i, item in enumerate(result.items):
-        if i > 0:
-            out.append("\n")
-        out.append("  ")
-        out.append(str(item["name"]), style="cyan")
-        out.append(f": {item['type']}")
-    _printer().block(out)
 
 
 def _render_helpers(rt: AgentRuntime, result: CommandResult) -> None:
@@ -188,7 +172,6 @@ def _render_mcp(rt: AgentRuntime, result: CommandResult) -> None:
 
 
 _RENDERERS: dict[str, Callable[[AgentRuntime, CommandResult], None]] = {
-    "/vars": _render_vars,
     "/helpers": _render_helpers,
     "/jobs": _render_jobs,
     "/expand": _render_expand,

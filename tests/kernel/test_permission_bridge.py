@@ -171,7 +171,7 @@ async def test_exec_cell_does_not_timeout_while_waiting_for_permission(tmp_path:
     repo, _remote = _init_git_repo_with_bare_remote(tmp_path)
 
     def slow_handler(_req: PermissionRequest):
-        time.sleep(0.6)
+        time.sleep(1.2)
         return "allow_once"
 
     kc = KernelClient(cwd=repo, sandbox=False, host_bridge=True, permission_handler=slow_handler)
@@ -179,7 +179,7 @@ async def test_exec_cell_does_not_timeout_while_waiting_for_permission(tmp_path:
     try:
         res = await kc.exec_cell(
             "r = await bash('git push -u origin HEAD')\nprint('DONE', r.exit_code)",
-            timeout=0.3,
+            timeout=0.6,
         )
         assert res.ok, res.stderr
         assert "DONE 0" in res.stdout
@@ -229,12 +229,13 @@ async def test_killed_bridge_command_cancels_permission_and_unblocks_retry(tmp_p
         kc.close()
 
 
-async def test_bridge_sets_waiting_env_while_inflight(tmp_path: Path) -> None:
+async def test_bridge_tracks_permission_wait_while_inflight(tmp_path: Path) -> None:
     import threading
 
     repo, _remote = _init_git_repo_with_bare_remote(tmp_path)
     handler_entered = threading.Event()
     release_handler = threading.Event()
+    observed: list[bool] = []
 
     def handler(_req: PermissionRequest):
         handler_entered.set()
@@ -246,25 +247,22 @@ async def test_bridge_sets_waiting_env_while_inflight(tmp_path: Path) -> None:
     try:
         def _release_after_check() -> None:
             handler_entered.wait(timeout=5.0)
-            # Give the cell a moment to observe QUARTZ_BRIDGE_WAITING while subprocess is blocked
-            threading.Event().wait(0.15)
+            observed.append(kc._host_rpc.is_waiting_permission())
             release_handler.set()
 
         t = threading.Thread(target=_release_after_check, daemon=True)
         t.start()
         res = await kc.exec_cell(
-            "import os, subprocess, time\n"
-            "p = subprocess.Popen(['git', 'push', '-u', 'origin', 'HEAD'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n"
-            "time.sleep(0.1)\n"
-            "during = os.environ.get('QUARTZ_BRIDGE_WAITING')\n"
-            "p.communicate(timeout=5)\n"
-            "after = os.environ.get('QUARTZ_BRIDGE_WAITING')\n"
-            "print('DURING', during, 'AFTER', after)\n",
+            "import subprocess\n"
+            "r = subprocess.run(['git', 'push', '-u', 'origin', 'HEAD'], capture_output=True, text=True)\n"
+            "print('EXIT', r.returncode)\n",
             timeout=10.0,
         )
         t.join(timeout=2.0)
         assert res.ok, res.stderr
-        assert "DURING 1 AFTER None" in res.stdout
+        assert "EXIT 0" in res.stdout
+        assert observed == [True]
+        assert kc._host_rpc.is_waiting_permission() is False
     finally:
         kc.close()
 

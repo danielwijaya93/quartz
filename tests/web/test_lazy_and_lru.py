@@ -142,18 +142,16 @@ def test_session_manager_lru_hibernates_idle_sessions_and_restores(tmp_path: Pat
     ws3._last_active_at = 300.0
 
     assert k1.closed is True
-    assert k1.snapshot_calls == 1
     assert k2.closed is False
     assert mgr.get_session(sid1) is None
     assert mgr.get_session(sid2) is ws2
     assert mgr.get_session(sid3) is ws3
 
-    # Clicking sid1 transparently restores it from disk and hibernates sid2 (now oldest).
+    # Clicking sid1 transparently reloads it from disk and hibernates sid2 (now oldest).
     restored = mgr.get_or_load_session(sid1)
     assert restored.built
     assert restored.runtime.active_session.id == sid1
     assert k2.closed is True
-    assert k2.snapshot_calls == 1
     mgr.close_all()
 
 

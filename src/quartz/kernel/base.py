@@ -1,4 +1,4 @@
-"""Protocols, value types, and shared event/lifecycle mixin for Python kernels."""
+"""Protocols, value types, and shared event/lifecycle mixin for stateless Python kernels."""
 
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ __all__ = [
     "CellResult",
     "Kernel",
     "KernelIntrospector",
-    "KernelSnapshotter",
 ]
 
 STATUS_TAIL_LINES = 10
@@ -60,27 +59,14 @@ class CellExecutor(Protocol):
 
 @runtime_checkable
 class KernelIntrospector(Protocol):
-    """Introspects variables and helper functions inside the execution environment."""
+    """Introspects helper functions available inside the execution environment."""
 
-    def list_vars(self, timeout: float = 5.0) -> dict[str, str]: ...
     def list_helpers(self, timeout: float = 5.0) -> dict[str, Any]: ...
 
 
 @runtime_checkable
-class KernelSnapshotter(Protocol):
-    """Saves and restores execution environment state snapshots."""
-
-    dirty: bool
-
-    def snapshot(self, snapshot_dir: Path, timeout: float = 30.0) -> dict[str, Any]: ...
-    def restore(
-        self, snapshot_dir: Path, timeout: float = 30.0, root: Path | None = None
-    ) -> dict[str, list[str]]: ...
-
-
-@runtime_checkable
-class Kernel(CellExecutor, KernelIntrospector, KernelSnapshotter, Protocol):
-    """Full execution engine combining execution, introspection, snapshotting, and process lifecycle."""
+class Kernel(CellExecutor, KernelIntrospector, Protocol):
+    """Execution engine combining stateless cell execution, helpers, and lifecycle."""
 
     cwd: Path
 
@@ -97,7 +83,6 @@ class BaseKernel:
 
     def __init__(self, cwd: Path | None = None) -> None:
         self.cwd = (cwd or Path.cwd()).resolve()
-        self.dirty = False
         self._events: list[dict[str, Any]] = []
         self._event_waiters: list[tuple[asyncio.AbstractEventLoop, asyncio.Future[bool]]] = []
         self._events_cond = threading.Condition()
@@ -188,7 +173,7 @@ class BaseKernel:
         return False
 
     def set_bg_count_callback(self, callback: Callable[[int], None] | None) -> None:
-        """Register a listener notified whenever the worker's running bash job count changes."""
+        """Register a listener notified whenever the running bash job count changes."""
         self._on_bg_count = callback
 
     def _live_bash_jobs(self) -> list[dict[str, Any]]:
@@ -243,7 +228,7 @@ class BaseKernel:
         return events
 
     def consume_restart_notice(self) -> str | None:
-        """Return (and clear) the notice describing an unexpected kernel exit + auto-restart."""
+        """Return (and clear) any pending kernel restart notice."""
         notice, self._restart_notice = self._restart_notice, None
         return notice
 

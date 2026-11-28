@@ -1,8 +1,8 @@
-"""Single-process Python REPL kernel driving :class:`KernelWorker` in-process.
+"""Single-process stateless Python execution kernel driving :class:`KernelWorker` in-process.
 
-Eliminates the second Python interpreter subprocess (~25–75 MB RSS) for headless
-``quartz -p`` workers running without OS sandboxing (e.g. ``--sandbox-off`` or
-``QUARTZ_SANDBOX=0`` on memory-constrained 1 GB VPS hosts).
+Eliminates the second Python interpreter subprocess for headless ``quartz -p``
+workers running without OS sandboxing (e.g. ``--sandbox-off`` or
+``QUARTZ_SANDBOX=0`` on memory-constrained hosts).
 
 Never selected when OS sandboxing (``bwrap``) is enabled: sandboxing always uses
 the isolated subprocess :class:`~quartz.kernel.client.KernelClient`.
@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
-import inspect
 import json
 import os
 import threading
@@ -52,7 +51,7 @@ class _ProtoSink:
 
 
 class InProcessKernel(BaseKernel):
-    """In-process implementation of the :class:`~quartz.kernel.base.Kernel` protocol."""
+    """In-process stateless implementation of the :class:`~quartz.kernel.base.Kernel` protocol."""
 
     def __init__(self, cwd: Path | None = None) -> None:
         super().__init__(cwd)
@@ -97,6 +96,8 @@ class InProcessKernel(BaseKernel):
                 self._worker = KernelWorker(
                     proto_out=_ProtoSink(self._handle_common_proto_message),
                     isolate_stdio=False,
+                    host_bash=False,
+                    base_cwd=self.cwd,
                 )
                 if self._configured:
                     self._worker.headless = self._headless
@@ -121,131 +122,100 @@ class InProcessKernel(BaseKernel):
         self._thread = threading.Thread(target=_runner, name="quartz-inprocess-kernel", daemon=True)
         self._thread.start()
         if not ready.wait(timeout=timeout):
-            raise TimeoutError("Timed out starting in-process kernel")
+            raise RuntimeError("Timed out starting in-process kernel")
         if err_box:
-            raise err_box[0]
+            raise RuntimeError(f"In-process kernel failed to start: {err_box[0]}") from err_box[0]
         self._loop = loop_box[0]
         self._register_atexit()
+
+    def _ensure_started(self) -> None:
+        if self._loop is None or not self._loop.is_running() or self._worker is None:
+            self.start()
+
+    def _run_coro(self, coro: Any, timeout: float | None = None) -> Any:
+        self._ensure_started()
+        assert self._loop is not None
+        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return fut.result(timeout=timeout)
 
     def configure(
         self, *, headless: bool | None = None, background_check_every: float | None = None
     ) -> None:
         self._apply_config_values(headless=headless, background_check_every=background_check_every)
-        if self._worker is not None:
-            self._worker.headless = self._headless
-            self._worker.background_check_every = self._background_check_every
-
-    def _run_on_worker(
-        self, fn: Callable[[Any], Any], *, locked: bool = False, timeout: float | None = None
-    ) -> Any:
-        if self._worker is None or self._loop is None or not self._loop.is_running():
-            self.start()
-        assert self._worker is not None and self._loop is not None
-        worker = self._worker
-
-        async def _call() -> Any:
-            if locked:
-                async with worker._exec_lock:
-                    return fn(worker)
-            return fn(worker)
-
-        fut = asyncio.run_coroutine_threadsafe(_call(), self._loop)
-        try:
-            return fut.result(timeout=timeout)
-        except concurrent.futures.TimeoutError as exc:
-            fut.cancel()
-            raise TimeoutError(f"Kernel operation timed out after {timeout}s") from exc
+        if self._worker is not None and self._loop is not None and self._loop.is_running():
+            self._loop.call_soon_threadsafe(
+                lambda: self._worker.configure(
+                    headless=headless, background_check_every=background_check_every
+                )
+            )
 
     async def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
-        if self._worker is None or self._loop is None or not self._loop.is_running():
-            await asyncio.to_thread(self.start)
-        assert self._worker is not None and self._loop is not None
+        self._ensure_started()
+        assert self._loop is not None and self._worker is not None
+        cell_id = uuid.uuid4().hex[:8]
 
-        cell_id = uuid.uuid4().hex
-        self.dirty = True
-
-        async def _run() -> dict[str, Any]:
-            task = asyncio.current_task()
+        async def _run_tracked() -> dict[str, Any]:
+            task = asyncio.create_task(self._worker._exec_cell(cell_id, code))
             with self._task_lock:
                 self._active_task = task
             try:
-                async with self._worker._exec_lock:
-                    return await self._worker._exec_cell_locked(cell_id, code)
+                return await task
             finally:
                 with self._task_lock:
                     if self._active_task is task:
                         self._active_task = None
 
-        cfut = asyncio.run_coroutine_threadsafe(_run(), self._loop)
-        afut = asyncio.wrap_future(cfut)
+        cfut = asyncio.run_coroutine_threadsafe(_run_tracked(), self._loop)
         try:
-            resp = await afut if timeout is None else await asyncio.wait_for(asyncio.shield(afut), timeout=timeout)
+            resp = await asyncio.wait_for(asyncio.wrap_future(cfut), timeout=timeout)
         except TimeoutError:
             self.interrupt()
-            return CellResult(ok=False, stdout="", stderr=f"TimeoutError: cell exceeded {timeout}s", result=None)
-        except asyncio.CancelledError:
-            self.interrupt()
-            cfut.cancel()
-            raise
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(asyncio.wrap_future(cfut), timeout=1.0)
+            return CellResult(
+                ok=False, stdout="", stderr=f"Cell execution timed out after {timeout}s\n", result=None
+            )
         except concurrent.futures.CancelledError:
             return CellResult(
-                ok=False, stdout="", stderr="KeyboardInterrupt: cell execution interrupted\n", result=None
+                ok=False, stdout="", stderr="KeyboardInterrupt: cell execution cancelled\n", result=None
             )
         return self._format_exec_response(resp)
 
     def interrupt(self) -> None:
-        loop = self._loop
         with self._task_lock:
             task = self._active_task
-        if loop is not None and loop.is_running() and task is not None:
-            loop.call_soon_threadsafe(task.cancel)
-
-    def list_vars(self, timeout: float = 5.0) -> dict[str, str]:
-        return self._run_on_worker(lambda w: w.list_vars(), timeout=timeout)
+        if task is not None and self._loop is not None and self._loop.is_running():
+            with contextlib.suppress(RuntimeError):
+                self._loop.call_soon_threadsafe(task.cancel)
 
     def list_helpers(self, timeout: float = 5.0) -> dict[str, Any]:
-        return self._run_on_worker(lambda w: w.list_helpers(), timeout=timeout)
-
-    def snapshot(self, snapshot_dir: Path, timeout: float = 30.0) -> dict[str, Any]:
-        manifest = self._run_on_worker(lambda w: w.snapshot_vars(str(snapshot_dir)), locked=True, timeout=timeout)
-        self.dirty = False
-        return manifest
-
-    def restore(
-        self, snapshot_dir: Path, timeout: float = 30.0, root: Path | None = None
-    ) -> dict[str, list[str]]:
-        root_str = str(root) if root is not None else None
-        return self._run_on_worker(
-            lambda w: w.restore_vars(str(snapshot_dir), root=root_str), locked=True, timeout=timeout
-        )
+        del timeout
+        self._ensure_started()
+        assert self._worker is not None
+        return self._worker.list_helpers()
 
     def close(self) -> None:
-        self._unregister_atexit()
         self._closed = True
-        self._running_bash_count = 0
-        self._running_bash_jobs.clear()
-        self.dirty = False
-        self.wake_event_waiters()
-
-        loop, worker, thread = self._loop, self._worker, self._thread
-        self._loop = self._worker = self._thread = None
-
-        if loop is not None and loop.is_running():
-            async def _cleanup() -> None:
-                if worker is None:
-                    return
-                for h in list(getattr(worker, "_handles", ())):
+        self._unregister_atexit()
+        self.interrupt()
+        worker, self._worker = self._worker, None
+        loop, self._loop = self._loop, None
+        thread, self._thread = self._thread, None
+        if worker is not None and loop is not None and loop.is_running():
+            async def _kill_jobs() -> None:
+                for h in list(worker._handles):
+                    h._awaited = True
                     with contextlib.suppress(Exception):
                         h.kill()
-                close_mcp = getattr(getattr(worker, "mcp", None), "close", None)
-                if callable(close_mcp):
-                    with contextlib.suppress(Exception):
-                        res = close_mcp()
-                        if inspect.isawaitable(res):
-                            await res
+                worker._handles.clear()
 
             with contextlib.suppress(Exception):
-                asyncio.run_coroutine_threadsafe(_cleanup(), loop).result(timeout=2.0)
-            loop.call_soon_threadsafe(loop.stop)
+                asyncio.run_coroutine_threadsafe(_kill_jobs(), loop).result(timeout=2.0)
+        if loop is not None and loop.is_running():
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(loop.stop)
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=2.0)
+        self._running_bash_count = 0
+        self._running_bash_jobs.clear()
+        self.wake_event_waiters(result=False)

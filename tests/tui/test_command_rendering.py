@@ -109,19 +109,6 @@ def test_needs_terminal_says_where_to_run_it(output: io.StringIO) -> None:
     assert "Run /model in the terminal." in drawn
 
 
-def test_vars_renderer_keeps_the_cyan_list(output: io.StringIO) -> None:
-    rt = SimpleNamespace()
-    commands._render_vars(rt, CommandResult.listing([{"name": "total", "type": "int"}]))
-    drawn = output.getvalue()
-    assert "total: int" in drawn
-
-
-def test_vars_renderer_says_when_the_kernel_is_empty(output: io.StringIO) -> None:
-    rt = SimpleNamespace()
-    commands._render_vars(rt, CommandResult.text("No user-defined variables in the kernel."))
-    assert "No user-defined variables" in output.getvalue()
-
-
 def test_settings_renderer_frames_the_show_and_styles_the_save(output: io.StringIO) -> None:
     rt = SimpleNamespace()
     commands._render_settings(rt, CommandResult.text("reserve_tokens: 16,384", title="Settings"))

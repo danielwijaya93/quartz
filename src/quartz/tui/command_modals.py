@@ -202,11 +202,7 @@ def _terminal_continue(rt: AgentRuntime, arg: str) -> None:
     rt.cell_history.clear()
     rt.total_elapsed_s = 0.0
     rt.turn_count = 0
-    rt.wait_snapshot()
     rt.kernel.restart()
-    restored_notice = rt.active_session.restore_kernel(rt.kernel, root=rt.cwd)
-    if restored_notice:
-        rt.messages.append({"role": "user", "content": restored_notice})
     rt.usage_stats = TurnUsage.from_dict(rt.active_session.last_usage)
     c.console_print(f"\n[bold cyan]Switched to session {rt.active_session.id}[/bold cyan]")
     _replay_session(

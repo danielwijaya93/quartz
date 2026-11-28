@@ -120,7 +120,6 @@ async def test_headless_bash_runs_inline_and_returns_output(tmp_path: Path) -> N
         # By the time the cell answered, the job it started is over: nothing is
         # left running for the turn to lose track of.
         assert kernel.running_bash_count() == 0
-        assert (await kernel.exec_cell("h.running")).result == "False"
     finally:
         kernel.close()
 

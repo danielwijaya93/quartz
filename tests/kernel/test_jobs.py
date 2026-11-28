@@ -465,12 +465,12 @@ def test_non_immediate_command_queues_and_says_so(tmp_path: Path, monkeypatch) -
     queued: list[Any] = []
     dock._launch_worker = lambda fn: queued.append(fn)  # type: ignore[assignment]
 
-    dock._handle_local_command("/vars")
+    dock._handle_local_command("/helpers")
 
-    assert len(queued) == 1, "/vars needs the kernel, so it queues behind the turn"
+    assert len(queued) == 1, "/helpers queues behind the turn"
     assert len(printed) == 1
-    assert "queued" in printed[0] and "/vars" in printed[0]
-    assert commands.COMMAND_REGISTRY.get("/vars").immediate is False  # type: ignore[union-attr]
+    assert "queued" in printed[0] and "/helpers" in printed[0]
+    assert commands.COMMAND_REGISTRY.get("/helpers").immediate is False  # type: ignore[union-attr]
     assert commands.COMMAND_REGISTRY.get("/settings").immediate is True  # type: ignore[union-attr]
     assert commands.COMMAND_REGISTRY.get("/help").immediate is True  # type: ignore[union-attr]
     assert commands.COMMAND_REGISTRY.get("/jobs").immediate is True  # type: ignore[union-attr]

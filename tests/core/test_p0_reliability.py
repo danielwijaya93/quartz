@@ -87,17 +87,17 @@ async def test_running_bash_count_push_does_not_kill_sync_cell(tmp_path: Path) -
         kernel.close()
 
 
-async def test_request_timeout_does_not_interrupt_non_exec(tmp_path: Path) -> None:
-    """_request() must not send SIGINT when a non-exec request times out."""
+async def test_list_helpers_does_not_block_or_interrupt_running_cell(tmp_path: Path) -> None:
+    """Host-side list_helpers() answers immediately without touching a running cell."""
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
         interrupts: list[bool] = []
         kernel.interrupt = lambda: interrupts.append(True)  # type: ignore[method-assign]
-        task = asyncio.create_task(kernel.exec_cell("import time; time.sleep(0.6); 'ok'"))
-        await asyncio.sleep(0.1)
-        with pytest.raises(TimeoutError):
-            await asyncio.to_thread(kernel.list_vars, timeout=0.05)
+        task = asyncio.create_task(kernel.exec_cell("import time; time.sleep(0.3); 'ok'"))
+        await asyncio.sleep(0.05)
+        helpers = kernel.list_helpers()
+        assert "helpers" in helpers
         res = await asyncio.wait_for(task, timeout=5.0)
         assert res.ok
         assert res.result == "'ok'"
@@ -407,31 +407,22 @@ def test_serialize_for_summary_respects_max_total_chars_and_clear_old_tool_resul
     assert cleared_msgs == conv
 
 
-async def test_kernel_crash_restart_surfaces_notice(tmp_path: Path) -> None:
+async def test_kernel_crash_leaves_next_cell_clean(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
     try:
-        assert (await kernel.exec_cell("x = 1")).ok
-        assert kernel._proc is not None
-        kernel._proc.kill()
-        kernel._proc.wait(timeout=2.0)
+        crashed = await kernel.exec_cell("import os; os._exit(2)")
+        assert not crashed.ok
         res = await kernel.exec_cell("1 + 1")
         assert res.ok
         assert res.result == "2"
-        assert "kernel exited unexpectedly" in res.stderr
-        assert kernel.consume_restart_notice() is None
-        # A clean second call carries no notice
-        assert "unexpectedly" not in (await kernel.exec_cell("2")).stderr
     finally:
         kernel.close()
 
 
-def test_kernel_close_is_idempotent_and_takes_write_lock(tmp_path: Path) -> None:
+def test_kernel_close_is_idempotent(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
-    proc = kernel._proc
-    assert proc is not None
+    assert kernel._active_proc is None
     kernel.close()
-    assert proc.poll() is not None
     kernel.close()
-    assert not kernel._write_lock.locked()

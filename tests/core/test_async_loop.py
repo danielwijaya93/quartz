@@ -225,7 +225,7 @@ async def test_compact_messages_and_loop_compaction() -> None:
     )
     assert res.reason is CompactionReason.SUMMARIZED
     assert "Concise summary." in res.messages[0]["content"]
-    assert "x (int)" in res.messages[0]["content"]
+    assert "[python-state]" in res.messages[0]["content"]
     assert "sh()" in res.messages[0]["content"]
 
     stream = _FakeAsyncStreamHandle([TextDelta("All good")])

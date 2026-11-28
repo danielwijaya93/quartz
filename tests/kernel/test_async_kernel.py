@@ -60,8 +60,8 @@ async def test_kernel_client_exec_cell_nonblocking_and_errors(tmp_path: Path) ->
 
         # Concurrent exec_cell calls both complete cleanly
         c1, c2 = await asyncio.gather(
-            client.exec_cell("x + 1"),
-            client.exec_cell("x + 2"),
+            client.exec_cell("42 + 1"),
+            client.exec_cell("42 + 2"),
         )
         assert c1.ok is True and c1.result == "43"
         assert c2.ok is True and c2.result == "44"
@@ -72,15 +72,13 @@ async def test_kernel_client_exec_cell_nonblocking_and_errors(tmp_path: Path) ->
 async def test_kernel_client_exec_cell_timeout_and_cancel(tmp_path: Path) -> None:
     client = KernelClient(cwd=tmp_path)
     try:
-        await client.exec_cell("ready = 1")
-
         # Timeout interrupts the long-running cell and returns KeyboardInterrupt result
         res = await client.exec_cell("import time; time.sleep(5.0)", timeout=0.2)
         assert res.ok is False
         assert "KeyboardInterrupt" in res.stderr
-        assert client._pending_async == {}
+        assert client._active_procs == {}
 
-        # Task cancellation cleans up _pending_async and leaves kernel usable
+        # Task cancellation leaves kernel usable and cleans up active processes
         task = asyncio.create_task(client.exec_cell("import time; time.sleep(5.0)", timeout=10.0))
         await asyncio.sleep(0.1)
         task.cancel()
@@ -89,13 +87,12 @@ async def test_kernel_client_exec_cell_timeout_and_cancel(tmp_path: Path) -> Non
             await task
             cancelled = True
         assert cancelled is False
-        assert client._pending_async == {}
 
         # Kernel still works after interrupt
         await asyncio.sleep(0.05)
-        r_after = await client.exec_cell("ready + 1")
+        r_after = await client.exec_cell("1 + 1")
         assert r_after.ok is True
-        assert r_after.result == "2"
+        assert r_after.result == "2" 
     finally:
         client.close()
 

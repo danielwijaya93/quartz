@@ -45,7 +45,7 @@ def test_session_state_advertises_every_command(app_client: AppClient, wire: Any
     names = {command["name"] for command in state["commands"]}
     expected = {
         "login", "logout", "model", "session", "continue", "image", "paste",
-        "vars", "helpers", "usage", "expand", "compact", "settings", "reset",
+        "helpers", "usage", "expand", "compact", "settings", "reset",
         "jobs", "help", "prompt", "exit",
     }
     assert expected <= names
@@ -71,7 +71,7 @@ def test_every_advertised_command_says_whether_it_needs_a_terminal(
     assert flags["login"] is True
     assert flags["model"] is False
     assert flags["session"] is False
-    assert flags["vars"] is False
+    assert flags["helpers"] is False
 
 
 # -- the parity claim --------------------------------------------------
@@ -315,7 +315,6 @@ def test_command_session_prints_the_paths_in_the_browser(app_client: AppClient, 
     assert result["kind"] == "text"
     assert session.id in result["body"]
     assert str(session.jsonl_path) in result["body"]
-    assert str(session.snapshot_dir) in result["body"]
 
 
 def test_command_model_answers_in_the_browser(app_client: AppClient, wire: Any) -> None:

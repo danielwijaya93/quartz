@@ -326,12 +326,6 @@ class WebSession:
         runtime, self._runtime = self._runtime, None
         if runtime is None:
             return
-        try:
-            runtime.wait_snapshot()
-            if runtime.messages and not runtime.headless and runtime.kernel.dirty:
-                runtime.active_session.save_kernel(runtime.kernel)
-        except Exception:
-            logger.debug("Web session kernel save on close failed", exc_info=True)
         runtime.kernel.close()
         _close_provider_client(runtime.client)
 
@@ -362,13 +356,6 @@ class WebSession:
     def hibernate(self) -> bool:
         if not self.can_hibernate():
             return False
-        rt = self._runtime
-        if rt is not None:
-            with contextlib.suppress(Exception):
-                rt.wait_snapshot()
-            if rt.messages and getattr(rt.kernel, "dirty", False):
-                with contextlib.suppress(Exception):
-                    rt.active_session.save_kernel(rt.kernel)
         self._retire(notify_closed=False)
         return True
 

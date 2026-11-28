@@ -191,7 +191,7 @@ def test_run_command_known_unknown_and_web_filtered(tmp_path: Path) -> None:
     ok, res = ctrl.run_command("help")
     assert ok is True
     assert res.kind == "text"
-    assert "/vars" in res.body
+    assert "/helpers" in res.body
 
     # Unknown command
     ok_unk, res_unk = ctrl.run_command("does_not_exist")
@@ -212,7 +212,7 @@ def test_run_command_known_unknown_and_web_filtered(tmp_path: Path) -> None:
     assert rt.transport == "cli"  # restored after temporary transport override
 
     # Non-immediate command blocked while turn is running
-    ok_vars, res_vars = ctrl.run_command("vars", transport="web", turn_running=True)
-    assert ok_vars is False
-    assert res_vars.kind == "error"
-    assert "needs the kernel" in res_vars.message
+    ok_helpers, res_helpers = ctrl.run_command("helpers", transport="web", turn_running=True)
+    assert ok_helpers is False
+    assert res_helpers.kind == "error"
+    assert "needs the kernel" in res_helpers.message

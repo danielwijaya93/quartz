@@ -1,4 +1,4 @@
-"""Red-first tests for PR 4: native asyncio.create_subprocess_exec KernelClient, HostRpcHandler, and KernelIOLoop."""
+"""Tests for native asyncio stateless one-shot KernelClient, HostRpcHandler, and KernelIOLoop."""
 
 from __future__ import annotations
 
@@ -22,12 +22,12 @@ class TestAsyncKernelClientNativeTransport:
             assert not any(t.name.startswith("quartz-") for t in new_threads)
             assert not hasattr(client, "_reader_thread")
             assert not hasattr(client, "_stderr_thread")
-            assert client._stdout_task is not None
-            assert client._stderr_task is not None
+            assert client._active_proc is None
 
             res = await client.exec_cell("val = 6 * 7; val")
             assert res.ok is True
             assert res.result == "42"
+            assert client._active_proc is None
         finally:
             await client.aclose()
             # Idempotent second close
@@ -47,36 +47,21 @@ class TestAsyncKernelClientNativeTransport:
         finally:
             await client.aclose()
 
-    async def test_native_async_snapshot_restore_vars_and_jobs(self, tmp_path: Path) -> None:
-        snap_dir = tmp_path / "snap"
+    async def test_native_async_helpers_and_unknown_jobs(self, tmp_path: Path) -> None:
         c1 = KernelClient(cwd=tmp_path)
         try:
             await c1.astart()
-            r1 = await c1.exec_cell("answer = 99")
-            assert r1.ok is True
+            r1 = await c1.exec_cell("answer = 99; answer")
+            assert r1.ok is True and r1.result == "99"
 
-            vars_map = await c1.alist_vars()
-            assert "answer" in vars_map
+            helpers = await c1.alist_helpers()
+            assert "helpers" in helpers
 
-            manifest = await c1.asnapshot(snap_dir)
-            assert "answer" in manifest.get("saved", [])
-
-            # Unknown job tail/kill return None / False cleanly
-            assert await c1.abash_tail(999999) is None
+            # Unknown job tail/kill return (False, "") / False cleanly
+            assert await c1.abash_tail(999999) == (False, "")
             assert await c1.akill_bash(999999) is False
         finally:
             await c1.aclose()
-
-        c2 = KernelClient(cwd=tmp_path)
-        try:
-            await c2.astart()
-            restored = await c2.arestore(snap_dir, root=tmp_path)
-            assert "answer" in restored["restored"]
-            r2 = await c2.exec_cell("answer + 1")
-            assert r2.ok is True
-            assert r2.result == "100"
-        finally:
-            await c2.aclose()
 
     def test_sync_start_works_across_multiple_asyncio_run_loops(self, tmp_path: Path) -> None:
         io_loop = get_kernel_io_loop()
@@ -85,16 +70,13 @@ class TestAsyncKernelClientNativeTransport:
         client = KernelClient(cwd=tmp_path)
         client.start()
         try:
-            # First independent event loop
-            r1 = asyncio.run(client.exec_cell("counter = 10; counter"))
+            r1 = asyncio.run(client.exec_cell("10"))
             assert r1.ok is True and r1.result == "10"
 
-            # Second independent event loop reusing the same live kernel
-            r2 = asyncio.run(client.exec_cell("counter += 5; counter"))
+            r2 = asyncio.run(client.exec_cell("10 + 5"))
             assert r2.ok is True and r2.result == "15"
 
-            # Sync introspection still works
-            assert "counter" in client.list_vars()
+            assert "helpers" in client.list_helpers()
         finally:
             client.close()
 

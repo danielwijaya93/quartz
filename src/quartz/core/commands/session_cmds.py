@@ -82,18 +82,6 @@ def _cmd_paste(rt: AgentRuntime, arg: str) -> CommandResult | None:
 
 
 @COMMAND_REGISTRY.register(
-    "/vars",
-    "List live Python variables in the kernel",
-)
-def _cmd_vars(rt: AgentRuntime, arg: str) -> CommandResult | None:
-    del arg
-    vars_info = rt.kernel.list_vars()
-    if not vars_info:
-        return CommandResult.text("No user-defined variables in the kernel.")
-    return CommandResult.listing([{"name": name, "type": typ} for name, typ in vars_info.items()])
-
-
-@COMMAND_REGISTRY.register(
     "/helpers",
     "List available REPL helper functions (built-in and custom)",
 )
@@ -148,11 +136,10 @@ def _cmd_session(rt: AgentRuntime, arg: str) -> CommandResult | None:
         return CommandResult.text(
             f"Session ID: {rt.active_session.id}\n"
             f"{name_line}"
-            f"Log: {rt.active_session.jsonl_path}\n"
-            f"Snapshot: {rt.active_session.snapshot_dir}"
+            f"Log: {rt.active_session.jsonl_path}"
         )
     return CommandResult.needs_terminal(
-        "Run /session in the terminal to print the session ID, log path, and snapshot path."
+        "Run /session in the terminal to print the session ID and log path."
     )
 
 
@@ -237,7 +224,7 @@ def _cmd_expand(rt: AgentRuntime, arg: str) -> CommandResult | None:
 
 @COMMAND_REGISTRY.register(
     "/compact",
-    "Summarize older messages while keeping the kernel alive",
+    "Summarize older conversation messages to free context",
     usage="[focus]",
 )
 async def cmd_compact(rt: AgentRuntime, arg: str) -> CommandResult | None:
@@ -282,7 +269,6 @@ def _cmd_reset(rt: AgentRuntime, arg: str) -> CommandResult | None:
     rt.usage_stats = TurnUsage()
     rt.total_elapsed_s = 0.0
     rt.turn_count = 0
-    rt.wait_snapshot()
     rt.kernel.restart()
     rt.active_session = Session.create(
         rt.cwd, sessions_dir=rt.active_session.sessions_dir, origin=rt.active_session.origin

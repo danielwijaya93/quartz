@@ -235,6 +235,9 @@ def build_bwrap_command(
     *,
     home: Path | None = None,
     bwrap_bin: str = "bwrap",
+    bridge_shims_dir: Path | None = None,
+    bridge_sock_path: Path | None = None,
+    info_fd: int | None = None,
 ) -> list[str]:
     """Wrap ``cmd`` in a Linux ``bwrap`` invocation scoped to ``cwd``."""
     cfg = config or SandboxConfig()
@@ -287,6 +290,13 @@ def build_bwrap_command(
         if target.is_file():
             args.extend(["--ro-bind", "/dev/null", str(target.resolve())])
 
+    if bridge_shims_dir is not None and bridge_shims_dir.is_dir():
+        resolved_shims = bridge_shims_dir.resolve()
+        args.extend(["--ro-bind", str(resolved_shims), str(resolved_shims)])
+    if bridge_sock_path is not None and bridge_sock_path.exists():
+        resolved_sock = bridge_sock_path.resolve()
+        args.extend(["--bind", str(resolved_sock), str(resolved_sock)])
+
     if not cfg.network:
         args.append("--unshare-net")
 
@@ -296,6 +306,8 @@ def build_bwrap_command(
     # thread, so kernels started from ThreadPoolExecutor worker threads get
     # SIGKILLed as soon as that thread exits. Graceful orphan cleanup is handled
     # inside worker.py via `_reap_sandbox_pid_namespace()`.
+    if info_fd is not None:
+        args.extend(["--info-fd", str(info_fd)])
     args.extend(["--unshare-pid", "--new-session", "--", *cmd])
     return args
 
@@ -310,6 +322,8 @@ def build_seatbelt_profile(
     config: SandboxConfig | None = None,
     *,
     home: Path | None = None,
+    bridge_shims_dir: Path | None = None,
+    bridge_sock_path: Path | None = None,
 ) -> str:
     """Build a macOS Seatbelt (``sandbox-exec``) profile string scoped to ``cwd``."""
     cfg = config or SandboxConfig()
@@ -344,6 +358,13 @@ def build_seatbelt_profile(
     for raw_file in cfg.mask_files:
         target = _expand_home(raw_file, resolved_home).resolve()
         lines.append(f"(deny file-read* file-write* (literal {_seatbelt_quote(str(target))}))")
+    if bridge_shims_dir is not None:
+        resolved_shims = bridge_shims_dir.resolve()
+        lines.append(f"(allow file-read* (subpath {_seatbelt_quote(str(resolved_shims))}))")
+        lines.append(f"(deny file-write* (subpath {_seatbelt_quote(str(resolved_shims))}))")
+    if bridge_sock_path is not None:
+        resolved_sock = bridge_sock_path.resolve()
+        lines.append(f"(allow file-read* file-write* (literal {_seatbelt_quote(str(resolved_sock))}))")
     if not cfg.network:
         lines.append("(deny network*)")
     return "\n".join(lines)
@@ -356,9 +377,17 @@ def build_seatbelt_command(
     *,
     home: Path | None = None,
     sandbox_exec_bin: str = "sandbox-exec",
+    bridge_shims_dir: Path | None = None,
+    bridge_sock_path: Path | None = None,
 ) -> list[str]:
     """Wrap ``cmd`` in a macOS ``sandbox-exec -p <profile>`` invocation."""
-    profile = build_seatbelt_profile(cwd, config, home=home)
+    profile = build_seatbelt_profile(
+        cwd,
+        config,
+        home=home,
+        bridge_shims_dir=bridge_shims_dir,
+        bridge_sock_path=bridge_sock_path,
+    )
     return [sandbox_exec_bin, "-p", profile, *cmd]
 
 
@@ -370,6 +399,9 @@ def wrap_command(
     platform: str | None = None,
     which: Callable[[str], str | None] = shutil.which,
     home: Path | None = None,
+    bridge_shims_dir: Path | None = None,
+    bridge_sock_path: Path | None = None,
+    info_fd: int | None = None,
 ) -> list[str]:
     """Wrap ``cmd`` with the host OS sandbox when enabled, or fail closed."""
     cfg = config or SandboxConfig()
@@ -381,10 +413,27 @@ def wrap_command(
         raise SandboxUnavailableError(sandbox_unavailable_message(platform=platform))
     if backend == "bwrap":
         bwrap_bin = which("bwrap") or "bwrap"
-        return build_bwrap_command(cmd, cwd, cfg, home=home, bwrap_bin=bwrap_bin)
+        return build_bwrap_command(
+            cmd,
+            cwd,
+            cfg,
+            home=home,
+            bwrap_bin=bwrap_bin,
+            bridge_shims_dir=bridge_shims_dir,
+            bridge_sock_path=bridge_sock_path,
+            info_fd=info_fd,
+        )
     if backend == "sandbox-exec":
         sb_bin = which("sandbox-exec") or "/usr/bin/sandbox-exec"
-        return build_seatbelt_command(cmd, cwd, cfg, home=home, sandbox_exec_bin=sb_bin)
+        return build_seatbelt_command(
+            cmd,
+            cwd,
+            cfg,
+            home=home,
+            sandbox_exec_bin=sb_bin,
+            bridge_shims_dir=bridge_shims_dir,
+            bridge_sock_path=bridge_sock_path,
+        )
     raise SandboxUnavailableError(sandbox_unavailable_message(platform=platform))
 
 

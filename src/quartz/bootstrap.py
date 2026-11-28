@@ -42,7 +42,7 @@ from quartz.core.runtime import (
     SessionState,
     ViewConfig,
 )
-from quartz.core.session import Session, default_sessions_dir, prune_snapshots
+from quartz.core.session import Session
 from quartz.errors import SessionNotFoundError
 from quartz.kernel.client import KernelClient
 from quartz.kernel.sandbox import SandboxConfig
@@ -316,27 +316,8 @@ def build_runtime(options: BootstrapOptions) -> tuple[AgentRuntime, bool]:
             else:
                 active_session, messages = Session.load(target_id)
             resumed = True
-            if options.lazy_kernel and hasattr(kernel, "set_pending_restore"):
-                kernel.set_pending_restore(active_session.snapshot_dir, root=cwd)
-            else:
-                restored_notice = active_session.restore_kernel(kernel, root=cwd)
-                if restored_notice:
-                    messages.append({"role": "user", "content": restored_notice})
         else:
             active_session = Session.create(cwd, origin=options.origin)
-
-        # Snapshot pruning is opportunistic housekeeping, not a startup step: it runs
-        # after the session resolves and restores so a resumed session's own snapshot
-        # is never deleted, and every failure is swallowed so a read-only or vanishing
-        # sessions dir can never stop a user from starting work.
-        try:
-            prune_snapshots(
-                default_sessions_dir(),
-                older_than_days=settings.snapshot_retention_days,
-                exclude_ids={active_session.id},
-            )
-        except Exception:
-            logger.debug("Snapshot pruning failed", exc_info=True)
 
         background_check_every = resolve_interval(
             options.background_check_every,

@@ -12,7 +12,7 @@ from quartz.mcp.client import load_mcp_servers
 
 PROMPT_HEADER = """# Quartz
 
-You have one tool, `ipython`: a persistent CPython REPL with top-level `await`. Variables, `os.chdir()`, and `os.environ` persist across cells and compaction. Messages starting with `[<kind>]` come from the harness."""
+You have one tool, `ipython`: a stateless CPython execution environment with top-level `await`. Each cell starts fresh at the session working directory (variables, `os.chdir()`, and `os.environ` do not persist across cells — batch related steps in one cell, or write intermediate data to files if needed across turns). Messages starting with `[<kind>]` come from the harness."""
 
 PROMPT_RULES = """## Rules
 - Batch and chain operations generously into one cell: pass multiple paths to `read('a.py', 'b.py')`, use `gather()` for parallel async/MCP calls, and inspect/edit/verify together rather than executing piecemeal single-call turns.

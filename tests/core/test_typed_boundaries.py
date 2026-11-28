@@ -28,8 +28,6 @@ def test_typed_contract_modules_exist_and_expose_expected_types() -> None:
         HostRpcParams,
         HostRpcResult,
         KernelRpcFrame,
-        RestoreResult,
-        SnapshotManifest,
     )
     from quartz.providers.types import (
         ChatMessage,
@@ -64,8 +62,6 @@ def test_typed_contract_modules_exist_and_expose_expected_types() -> None:
         KernelRpcFrame,
         BashJobInfo,
         HelperListResult,
-        SnapshotManifest,
-        RestoreResult,
         HostRpcParams,
         HostRpcResult,
         ActiveSessionEntry,
@@ -167,14 +163,12 @@ def test_settings_and_bot_route_payloads_match_contracts() -> None:
     assert payload["queueDepth"] == 1
 
 
-def test_dead_kernel_client_returns_typed_fallbacks(tmp_path: Path) -> None:
-    from quartz.kernel.types import HelperListResult, SnapshotManifest
+def test_kernel_client_helpers_match_typed_contract(tmp_path: Path) -> None:
+    from quartz.kernel.types import HelperListResult
 
     kc = KernelClient(cwd=tmp_path)
     helpers = kc.list_helpers()
     assert set(helpers.keys()) == set(get_type_hints(HelperListResult).keys())
-    snap = kc.snapshot(tmp_path / "snap")
-    assert set(snap.keys()) <= set(get_type_hints(SnapshotManifest).keys())
 
 
 def test_hot_boundary_modules_minimize_untyped_dict_any() -> None:

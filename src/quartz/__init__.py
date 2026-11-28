@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-import importlib.metadata
 import re
 from pathlib import Path
+
+_VERSION: str | None = None
 
 
 def get_version() -> str:
     """Return the unified Quartz version from package metadata or pyproject.toml."""
+    global _VERSION
+    if _VERSION is not None:
+        return _VERSION
     pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
     if pyproject.is_file():
         match = re.search(
@@ -17,11 +21,19 @@ def get_version() -> str:
             re.MULTILINE,
         )
         if match:
-            return match.group(1)
+            ver = match.group(1)
+            _VERSION = ver
+            return ver
+    import importlib.metadata
+
     try:
-        return importlib.metadata.version("quartz-agent")
+        _VERSION = importlib.metadata.version("quartz-agent")
     except importlib.metadata.PackageNotFoundError:
-        return "0.0.0"
+        _VERSION = "0.0.0"
+    return _VERSION
 
 
-__version__ = get_version()
+def __getattr__(name: str) -> str:
+    if name == "__version__":
+        return get_version()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

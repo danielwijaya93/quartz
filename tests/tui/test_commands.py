@@ -100,9 +100,6 @@ def test_builtin_commands_in_global_registry(tmp_path: Path) -> None:
     # /session returns False
     assert _handle_slash_command(mock_rt, "/session") is False
 
-    # /vars returns False
-    assert _handle_slash_command(mock_rt, "/vars") is False
-
     # /usage returns False
     assert _handle_slash_command(mock_rt, "/usage") is False
 
@@ -115,7 +112,7 @@ def test_agent_completer_reflects_registry(tmp_path: Path) -> None:
     all_comps = list(completer.get_completions(Document("/"), CompleteEvent()))
     comp_texts = [c.text for c in all_comps]
 
-    for expected in ["/login", "/logout", "/model", "/continue", "/image", "/paste", "/vars", "/help", "/exit"]:
+    for expected in ["/login", "/logout", "/model", "/continue", "/image", "/paste", "/helpers", "/help", "/exit"]:
         assert expected in comp_texts
 
 
@@ -214,14 +211,10 @@ def test_real_runtime_cmd_continue(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         [{"role": "user", "content": "old task"}, {"role": "assistant", "content": "done"}]
     )
     target_session.save_usage({"prompt_tokens": 420, "total_prompt_tokens": 420})
-    monkeypatch.setattr(
-        Session, "restore_kernel", lambda self, k, root=None: "[restored vars]"
-    )
-
     assert _handle_slash_command(rt, f"/continue {target_session.id}") is False
     assert rt.active_session.id == target_session.id
     assert rt.messages[0]["content"] == "old task"
-    assert rt.messages[-1]["content"] == "[restored vars]"
+    assert rt.messages[-1]["content"] == "done" 
     assert rt.usage_stats.prompt_tokens == 420
     assert rt._restarted_log == [True]  # type: ignore[attr-defined]
 

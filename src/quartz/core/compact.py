@@ -241,23 +241,16 @@ def _serialize_for_summary(
 
 
 def format_python_state_notice(
-    vars_info: dict[str, str], helper_names: list[str] | None = None
+    helper_names: list[str] | None = None,
 ) -> str:
-    """Format Unharnessed's [python-state] notice for the model."""
-    parts: list[str] = ["[python-state]\n"]
-    if not vars_info:
-        parts.append(
-            "Your Python kernel persisted through compaction, and currently has no user-defined variables."
-        )
-    else:
-        names = ", ".join(f"{k} ({v})" for k, v in vars_info.items())
-        parts.append(
-            "Your Python kernel persisted through compaction; its remaining variables, imports, "
-            f"and helpers are still available. These names are still defined: {names}."
-        )
+    """Format the [python-state] notice included after conversation compaction."""
+    parts: list[str] = [
+        "[python-state]\n",
+        "Each `ipython` cell runs in a fresh stateless Python process at the session working directory.",
+    ]
     if helper_names:
         parts.append(
-            f"Loaded REPL helpers are also still available: {', '.join(f'{h}()' for h in sorted(helper_names))}."
+            f"Loaded REPL helpers are available in every cell: {', '.join(f'{h}()' for h in sorted(helper_names))}."
         )
     return "\n".join(parts)
 
@@ -337,7 +330,6 @@ async def compact_messages(
     recent = cleared_messages[split_index:]
     summary_text = await _summarize(client, model, older, focus)
 
-    vars_info = await asyncio.to_thread(kernel.list_vars)
     try:
         helpers_data = await asyncio.to_thread(kernel.list_helpers)
         custom_helpers = [
@@ -347,7 +339,7 @@ async def compact_messages(
         ]
     except Exception:
         custom_helpers = []
-    state_notice = format_python_state_notice(vars_info, helper_names=custom_helpers)
+    state_notice = format_python_state_notice(helper_names=custom_helpers)
 
     compacted_header = {
         "role": "user",
