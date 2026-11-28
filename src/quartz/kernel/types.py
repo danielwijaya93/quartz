@@ -10,8 +10,6 @@ __all__ = [
     "HostRpcParams",
     "HostRpcResult",
     "KernelRpcFrame",
-    "RestoreResult",
-    "SnapshotManifest",
 ]
 
 
@@ -19,26 +17,13 @@ class BashJobInfo(TypedDict, total=False):
     pid: int | str
     command: str
     elapsed_s: float
+    started_at: float
     status: str
 
 
 class HelperListResult(TypedDict):
     helpers: list[dict[str, Any]]
     warnings: list[str]
-
-
-class SnapshotManifest(TypedDict, total=False):
-    version: int
-    saved: list[str]
-    skipped: list[str]
-    hmac: str
-    hmac_alg: str
-    entries: dict[str, Any]
-
-
-class RestoreResult(TypedDict):
-    restored: list[str]
-    skipped: list[str]
 
 
 class HostRpcParams(TypedDict, total=False):
@@ -50,11 +35,19 @@ class HostRpcParams(TypedDict, total=False):
     arguments: dict[str, Any]
     query: str
     limit: int
+    command: str
+    timeout: float | None
+    cell_id: str | None
+    pid: int
+    n: int
+    sig: int
+    grace: float
     prompt_file: str
     session_id: str
-    provider: str
-    model: str
-    effort: str
+    provider: str | None
+    model: str | None
+    effort: str | None
+    sandbox_off: bool
 
 
 class HostRpcResult(TypedDict, total=False):
@@ -75,12 +68,11 @@ class KernelRpcFrame(TypedDict, total=False):
     type: str
     ok: bool
     code: str
-    dir: str
-    sign: bool
-    root: str
+    cwd: str
     headless: bool
     background_check_every: float
     mcp_servers: list[str]
+    host_bash: bool
     stdout: str
     stderr: str
     result: str | None
@@ -88,10 +80,6 @@ class KernelRpcFrame(TypedDict, total=False):
     files: list[dict[str, Any]]
     helpers: list[dict[str, Any]]
     warnings: list[str]
-    vars: dict[str, str]
-    manifest: SnapshotManifest
-    restored: list[str]
-    skipped: list[str]
     pid: int
     lines: int
     found: bool

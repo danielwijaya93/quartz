@@ -112,7 +112,6 @@ def test_the_registry_lists_every_command_once() -> None:
         "/continue",
         "/image",
         "/paste",
-        "/vars",
         "/helpers",
         "/session",
         "/usage",
@@ -176,7 +175,7 @@ def test_the_immediate_commands_are_exactly_the_ones_that_never_wait() -> None:
     """The dock runs these beside a live turn, so the set must not drift silently."""
     immediate = {cmd.name for cmd in COMMAND_REGISTRY.list_commands() if cmd.immediate}
     assert immediate == IMMEDIATE
-    for name in ("/vars", "/helpers"):
+    for name in ("/helpers",):
         cmd = COMMAND_REGISTRY.get(name)
         assert cmd is not None and cmd.immediate is False, f"{name} asks the kernel; it must queue"
 
@@ -238,7 +237,6 @@ def test_session_in_the_browser_prints_the_id_and_paths(
     assert result.kind == "text"
     assert rt.active_session.id in result.body
     assert str(rt.active_session.jsonl_path) in result.body
-    assert str(rt.active_session.snapshot_dir) in result.body
 
 
 #: Keys that only work in a terminal window. The web's help must not list any of
@@ -270,21 +268,6 @@ def test_help_lists_the_keybindings_of_the_transport_that_asked(
     for cmd in COMMAND_REGISTRY.list_commands():
         if cmd.name != "/help":
             assert cmd.name in browser.body
-
-
-def test_vars_returns_rows_and_says_so_when_empty(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    rt = _make_rt(tmp_path, monkeypatch)
-    empty = _run(rt, "/vars")
-    assert isinstance(empty, CommandResult)
-    assert empty.kind == "text" and "No user-defined variables" in empty.body
-
-    rt.kernel.vars = {"total": "int"}  # type: ignore[attr-defined]
-    rows = _run(rt, "/vars")
-    assert isinstance(rows, CommandResult)
-    assert rows.kind == "list"
-    assert rows.items == [{"name": "total", "type": "int"}]
 
 
 def test_helpers_put_builtins_first_and_carry_warnings(

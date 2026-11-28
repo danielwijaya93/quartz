@@ -1,12 +1,12 @@
-"""Host-side native async JSONL client managing the persistent Python REPL subprocess."""
+"""Client managing stateless one-shot Python cell subprocesses and host-managed bash jobs."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import logging
+import os
 import signal
-import threading
 import time
 import uuid
 from collections import deque
@@ -15,12 +15,10 @@ from pathlib import Path
 from typing import Any, cast
 
 from quartz.kernel.base import CellResult
-from quartz.kernel.bridge import PermissionHandler
-from quartz.kernel.client_transport import (
-    _STREAM_READER_LIMIT,
-    KernelClientTransport,
-    _AsyncProcHandle,
-)
+from quartz.kernel.bridge import PermissionHandler, PermissionPolicy
+from quartz.kernel.client_transport import KernelClientTransport, _AsyncProcHandle
+from quartz.kernel.helpers import load_helpers
+from quartz.kernel.host_bash import HostBashManager
 from quartz.kernel.host_rpc import (
     _HOST_IMAGE_SINK,
     HostRpcHandler,
@@ -29,21 +27,12 @@ from quartz.kernel.host_rpc import (
 )
 from quartz.kernel.io_loop import get_kernel_io_loop, run_on_loop
 from quartz.kernel.sandbox import SandboxConfig
-from quartz.kernel.types import (
-    BashJobInfo,
-    HelperListResult,
-    HostRpcParams,
-    HostRpcResult,
-    KernelRpcFrame,
-    RestoreResult,
-    SnapshotManifest,
-)
+from quartz.kernel.types import BashJobInfo, HelperListResult, HostRpcResult, KernelRpcFrame
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "_HOST_IMAGE_SINK",
-    "_STREAM_READER_LIMIT",
     "CellResult",
     "KernelClient",
     "_AsyncProcHandle",
@@ -53,14 +42,19 @@ __all__ = [
 
 
 class KernelClient(KernelClientTransport):
-    """Manages a persistent Python REPL subprocess over JSON lines on stdio."""
+    """Stateless one-shot Python execution kernel with host-managed background bash jobs.
+
+    Spawns a fresh Python process per ``exec_cell()`` call (0 MB idle kernel RAM,
+    no persistent namespace or dill snapshots), while keeping ``bash()`` /
+    ``launch_worker()`` jobs and the ``git``/``gh``/``quartz`` host bridge alive
+    on the host across cells.
+    """
 
     def __init__(
         self,
         cwd: Path | None = None,
         *,
-        sandbox: bool = False,
-        sandbox_config: SandboxConfig | None = None,
+        sandbox: SandboxConfig | bool | None = None,
         host_mcp: bool | None = None,
         host_bridge: bool | None = None,
         permission_handler: PermissionHandler | None = None,
@@ -68,31 +62,45 @@ class KernelClient(KernelClientTransport):
         shared_host_mcp: bool = False,
     ) -> None:
         super().__init__(cwd)
-        self._raw_proc = None
+        self._active_proc = None
+        self._active_sandbox_child_pid = None
+        self._active_procs = {}
         self._proc = None
         self._io_loop = None
-        self._stdout_task = None
-        self._stderr_task = None
         self._rpc_tasks = set()
-        self._ready_fut = None
-        self._pending_async = {}
-        self._pending_lock = threading.Lock()
-        self._write_lock = threading.Lock()
-        self._worker_exited = False
-        self._stderr_tail = deque(maxlen=200)
-        self._sandbox_config = sandbox_config or SandboxConfig(enabled=sandbox)
+        self._stderr_tail = deque(maxlen=40)
+        self._closed = False
+        self._interrupted_cells = set()
+        self._bridge_server = None
+        if isinstance(sandbox, SandboxConfig):
+            self._sandbox_config = sandbox
+        elif isinstance(sandbox, bool):
+            self._sandbox_config = SandboxConfig(enabled=sandbox)
+        else:
+            self._sandbox_config = SandboxConfig(enabled=False)
         self._host_mcp_override = host_mcp
         self._host_bridge_override = host_bridge
-        self._pending_restore: tuple[Path, Path | None] | None = None
+        self._bash_manager = HostBashManager(
+            cwd=self.cwd,
+            spawn_spec=self._build_bash_spawn_spec,
+            on_bg_update=self._on_host_bg_update,
+            on_event=self._push_event,
+            bridge_enabled=self._host_bridge_enabled,
+        )
         self._host_rpc = HostRpcHandler(
             cwd=self.cwd,
             permission_handler=permission_handler,
             preapproved_scopes=preapproved_scopes,
             shared_host_mcp=shared_host_mcp,
+            bash_manager=self._bash_manager,
         )
 
+    def _on_host_bg_update(self, count: int, jobs: list[BashJobInfo]) -> None:
+        self._update_bg_jobs(jobs)
+        self._update_bg_count(count)
+
     @property
-    def _permission_policy(self) -> Any:
+    def _permission_policy(self) -> PermissionPolicy:
         return self._host_rpc.permission_policy
 
     @property
@@ -104,273 +112,190 @@ class KernelClient(KernelClientTransport):
         self._host_rpc.permission_handler = handler
 
     def enable_shared_host_mcp(self, enabled: bool = True) -> None:
-        """Opt into the process-wide shared host MCP pool."""
         self._host_rpc.shared_host_mcp = bool(enabled)
 
     def set_permission_handler(self, handler: PermissionHandler | None) -> None:
-        """Register (or clear) the interactive approval callback for host-bridged commands."""
         self._host_rpc.permission_handler = handler
 
     def enable_sandbox(self, config: SandboxConfig | None = None) -> None:
-        """Enable OS-level sandboxing for the kernel subprocess (must be called before start)."""
         self._sandbox_config = config or SandboxConfig(enabled=True)
-
-    def set_pending_restore(self, snapshot_dir: Path, root: Path | None = None) -> None:
-        """Defer snapshot restore until the lazy kernel actually boots."""
-        if snapshot_dir.is_dir():
-            self._pending_restore = (snapshot_dir, root)
 
     def _get_host_mcp(self) -> Any:
         return self._host_rpc.get_host_mcp()
 
     def _ensure_host_loop(self) -> asyncio.AbstractEventLoop:
-        if self._host_rpc.shared_host_mcp:
-            from quartz.mcp.pool import get_shared_host_mcp_pool
-
-            return get_shared_host_mcp_pool().ensure_loop()
-        if self._io_loop is not None and self._io_loop.is_running() and not self._io_loop.is_closed():
-            return self._io_loop
-        return get_kernel_io_loop()
+        return self._ensure_io_loop()
 
     def _exec_bridge_sync(
-        self, params: HostRpcParams | Mapping[str, Any], *, cancel_event: threading.Event | None = None
+        self, params: Mapping[str, Any], *, cancel_event: Any = None
     ) -> HostRpcResult:
-        return cast(
-            HostRpcResult,
-            self._host_rpc.exec_bridge_sync(dict(params), cancel_event=cancel_event),
-        )
+        return cast(HostRpcResult, self._host_rpc.exec_bridge_sync(dict(params), cancel_event=cancel_event))
 
-    async def _apush_configure(self) -> None:
-        if not self._is_alive():
-            return
-        payload: KernelRpcFrame = {
-            "type": "configure",
-            "headless": self._headless,
-            "background_check_every": self._background_check_every,
-        }
-        if self._host_mcp_enabled():
-            payload["mcp_servers"] = self._host_rpc.get_host_mcp().list_servers()
-        try:
-            await self._request_async(payload, timeout=5.0)
-        except Exception:
-            logger.debug("Best-effort kernel configure failed", exc_info=True)
+    async def astart(self, timeout: float = 10.0) -> None:
+        """Validate sandbox readiness on the current event loop (spawns zero workers)."""
+        del timeout
+        self._closed = False
+        self._validate_sandbox()
+        self._io_loop = asyncio.get_running_loop()
+        self._register_atexit()
+
+    def start(self, timeout: float = 10.0) -> None:
+        """Validate sandbox readiness synchronously (spawns zero workers)."""
+        del timeout
+        self._closed = False
+        self._validate_sandbox()
+        self._io_loop = get_kernel_io_loop()
+        self._register_atexit()
 
     async def aconfigure(
         self, *, headless: bool | None = None, background_check_every: float | None = None
     ) -> None:
-        self._apply_config_values(
+        self._apply_config_values(headless=headless, background_check_every=background_check_every)
+        self._bash_manager.configure(
             headless=headless, background_check_every=background_check_every
         )
-        await self._apush_configure()
 
     def configure(
         self, *, headless: bool | None = None, background_check_every: float | None = None
     ) -> None:
-        """Push run options into the worker, now and after any later restart."""
-        self._apply_config_values(
+        self._apply_config_values(headless=headless, background_check_every=background_check_every)
+        self._bash_manager.configure(
             headless=headless, background_check_every=background_check_every
         )
-        if not self._is_alive():
-            return
-        assert self._io_loop is not None
-        try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:
-            running = None
-        if running is not None and running is self._io_loop:
-            running.create_task(self._apush_configure())
-        else:
-            run_on_loop(self._io_loop, self._apush_configure(), timeout=10.0)
 
-    async def _request_async(
-        self, payload: KernelRpcFrame, timeout: float | None
-    ) -> KernelRpcFrame:
-        await self._ensure_started_async()
-        loop = asyncio.get_running_loop()
-        fut: asyncio.Future[KernelRpcFrame] = loop.create_future()
-        req_id = uuid.uuid4().hex
-        payload["id"] = req_id
-        with self._pending_lock:
-            self._pending_async[req_id] = (loop, fut)
+    async def _exec_cell_on_io_loop(
+        self, cell_id: str, code: str, timeout: float | None
+    ) -> CellResult:
+        self._bash_manager.begin_cell(cell_id)
         try:
-            self._write_frame(payload)
-            if timeout is None:
-                return await fut
-            remaining, last = float(timeout), time.monotonic()
-            while True:
-                try:
-                    return await asyncio.wait_for(
-                        asyncio.shield(fut), timeout=min(0.25, max(0.01, remaining))
-                    )
-                except TimeoutError:
-                    now = time.monotonic()
-                    if not self._host_rpc.is_waiting_permission():
-                        remaining -= now - last
-                    last = now
-                    if remaining <= 0:
-                        if payload.get("type") == "exec":
-                            self.interrupt()
-                            with contextlib.suppress(TimeoutError):
-                                return await asyncio.wait_for(asyncio.shield(fut), timeout=3.0)
-                        raise TimeoutError(
-                            f"Kernel request timed out after {timeout}s"
-                        ) from None
-        except asyncio.CancelledError:
-            if payload.get("type") == "exec":
-                self.interrupt()
-            raise
+            resp = await self._run_oneshot_cell_on_loop(cell_id, code, timeout)
+            result = self._format_exec_response(resp, include_notice=True)
+            if self._headless:
+                inline_out = await self._bash_manager.run_cell_jobs_inline(cell_id)
+                if inline_out:
+                    result.stdout = f"{result.stdout}{inline_out}"
+            return result
         finally:
-            with self._pending_lock:
-                self._pending_async.pop(req_id, None)
-
-    def _request(self, payload: KernelRpcFrame, timeout: float | None) -> KernelRpcFrame:
-        if not self._is_alive():
-            if self._raw_proc is not None:
-                self._note_unexpected_exit()
-            self.start()
-        assert self._io_loop is not None
-        wait_cap = None if timeout is None else (float(timeout) + 10.0)
-        return run_on_loop(
-            self._io_loop, self._request_async(payload, timeout=timeout), timeout=wait_cap
-        )
+            self._bash_manager.end_cell(cell_id)
 
     async def exec_cell(self, code: str, timeout: float | None = 300.0) -> CellResult:
-        pending = self._pending_restore
-        if pending is not None:
-            self._pending_restore = None
-            snap_dir, snap_root = pending
-            try:
-                await self.arestore(snap_dir, root=snap_root)
-            except Exception:
-                logger.debug("Deferred kernel snapshot restore failed", exc_info=True)
-        self.dirty = True
-        if self._headless:
-            timeout = None
-        resp = await self._request_async({"type": "exec", "code": code}, timeout=timeout)
-        return self._format_exec_response(resp, include_notice=True)
+        """Execute ``code`` in a fresh one-shot Python subprocess at ``self.cwd``."""
+        cell_id = uuid.uuid4().hex[:8]
+        io_loop = self._ensure_io_loop()
+        caller_loop = asyncio.get_running_loop()
+        if caller_loop is io_loop:
+            return await self._exec_cell_on_io_loop(cell_id, code, timeout)
+        cfut = asyncio.run_coroutine_threadsafe(
+            self._exec_cell_on_io_loop(cell_id, code, timeout), io_loop
+        )
+        return await asyncio.wrap_future(cfut)
 
     async def alist_helpers(self, timeout: float = 5.0) -> HelperListResult:
-        if not self._is_alive():
-            return {"helpers": [], "warnings": []}
-        resp = await self._request_async({"type": "list_helpers"}, timeout=timeout)
-        return {
-            "helpers": list(resp.get("helpers", [])),
-            "warnings": list(resp.get("warnings", [])),
-        }
+        del timeout
+        return self.list_helpers()
 
     def list_helpers(self, timeout: float = 5.0) -> HelperListResult:
-        if not self._is_alive():
-            return {"helpers": [], "warnings": []}
-        resp = self._request({"type": "list_helpers"}, timeout=timeout)
+        """Discover built-in and custom helpers directly on the host (zero subprocesses)."""
+        del timeout
+        loaded = load_helpers(cwd=self.cwd)
         return {
-            "helpers": list(resp.get("helpers", [])),
-            "warnings": list(resp.get("warnings", [])),
-        }
-
-    async def alist_vars(self, timeout: float = 5.0) -> dict[str, str]:
-        if not self._is_alive():
-            return {}
-        resp = await self._request_async({"type": "list_vars"}, timeout=timeout)
-        return resp.get("vars", {}) if isinstance(resp.get("vars"), dict) else {}
-
-    def list_vars(self, timeout: float = 5.0) -> dict[str, str]:
-        if not self._is_alive():
-            return {}
-        resp = self._request({"type": "list_vars"}, timeout=timeout)
-        return resp.get("vars", {}) if isinstance(resp.get("vars"), dict) else {}
-
-    async def asnapshot(self, snapshot_dir: Path, timeout: float = 30.0) -> SnapshotManifest:
-        if not self._is_alive():
-            return {"saved": [], "skipped": []}
-        resp = await self._request_async(
-            {"type": "snapshot", "dir": str(snapshot_dir)}, timeout=timeout
-        )
-        self.dirty = False
-        return cast(SnapshotManifest, resp.get("manifest", {"saved": [], "skipped": []}))
-
-    def snapshot(self, snapshot_dir: Path, timeout: float = 30.0) -> SnapshotManifest:
-        if not self._is_alive():
-            return {"saved": [], "skipped": []}
-        resp = self._request(
-            {"type": "snapshot", "dir": str(snapshot_dir)}, timeout=timeout
-        )
-        self.dirty = False
-        return cast(SnapshotManifest, resp.get("manifest", {"saved": [], "skipped": []}))
-
-    async def arestore(
-        self, snapshot_dir: Path, timeout: float = 30.0, root: Path | None = None
-    ) -> RestoreResult:
-        await self._ensure_started_async()
-        frame: KernelRpcFrame = {"type": "restore", "dir": str(snapshot_dir)}
-        if root is not None:
-            frame["root"] = str(root)
-        resp = await self._request_async(frame, timeout=timeout)
-        return {
-            "restored": list(resp.get("restored", [])),
-            "skipped": list(resp.get("skipped", [])),
-        }
-
-    def restore(
-        self, snapshot_dir: Path, timeout: float = 30.0, root: Path | None = None
-    ) -> RestoreResult:
-        if not self._is_alive():
-            self.start()
-        frame: KernelRpcFrame = {"type": "restore", "dir": str(snapshot_dir)}
-        if root is not None:
-            frame["root"] = str(root)
-        resp = self._request(frame, timeout=timeout)
-        return {
-            "restored": list(resp.get("restored", [])),
-            "skipped": list(resp.get("skipped", [])),
+            "helpers": [
+                {
+                    "name": h.name,
+                    "source": h.source,
+                    "signature": h.signature,
+                    "doc": h.doc,
+                    "file_path": h.file_path,
+                }
+                for h in loaded.infos.values()
+            ],
+            "warnings": list(loaded.warnings),
         }
 
     def running_bash_count(self, timeout: float = 5.0) -> int:
         del timeout
-        return self._running_bash_count if self._is_alive() else 0
+        return self._bash_manager.running_count()
 
     def running_bash_jobs(self) -> list[BashJobInfo]:
-        """Return snapshots of currently running bash() jobs with live elapsed_s."""
-        return cast(list[BashJobInfo], self._live_bash_jobs()) if self._is_alive() else []
+        return cast(list[BashJobInfo], self._live_bash_jobs())
 
-    async def abash_tail(
-        self, pid: int, lines: int = 50, timeout: float = 5.0
-    ) -> str | None:
-        if not self._is_alive():
-            return None
-        resp = await self._request_async(
-            {"type": "bash_tail", "pid": pid, "lines": lines}, timeout=timeout
-        )
-        return str(resp.get("tail", "")) if resp.get("found") else None
+    async def abash_tail(self, pid: int, lines: int = 20, timeout: float = 5.0) -> tuple[bool, str]:
+        del timeout
+        return self._bash_manager.tail_job(pid, lines)
 
-    def bash_tail(self, pid: int, lines: int = 50, timeout: float = 5.0) -> str | None:
-        if not self._is_alive():
-            return None
-        resp = self._request(
-            {"type": "bash_tail", "pid": pid, "lines": lines}, timeout=timeout
-        )
-        return str(resp.get("tail", "")) if resp.get("found") else None
+    def bash_tail(self, pid: int, lines: int = 20, timeout: float = 5.0) -> tuple[bool, str]:
+        del timeout
+        return self._bash_manager.tail_job(pid, lines)
 
     async def akill_bash(self, pid: int, timeout: float = 5.0) -> bool:
-        if not self._is_alive():
-            return False
-        resp = await self._request_async({"type": "kill_bash", "pid": pid}, timeout=timeout)
-        return bool(resp.get("killed"))
+        del timeout
+        return self._bash_manager.kill_job(pid)
 
     def kill_bash(self, pid: int, timeout: float = 5.0) -> bool:
-        if not self._is_alive():
-            return False
-        resp = self._request({"type": "kill_bash", "pid": pid}, timeout=timeout)
-        return bool(resp.get("killed"))
+        del timeout
+        return self._bash_manager.kill_job(pid)
 
-    def wait_for_events(self, timeout: float | None = None) -> list[KernelRpcFrame]:
+    def wait_for_events(self, timeout: float = 1.0) -> list[KernelRpcFrame]:
+        deadline = time.monotonic() + timeout
         with self._events_cond:
-            if not self._events and not self._worker_exited and self._is_alive():
-                self._events_cond.wait(timeout=timeout)
+            while not self._events and not self._closed:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._events_cond.wait(timeout=remaining)
             events = cast(list[KernelRpcFrame], list(self._events))
             self._events.clear()
         return events
 
     def interrupt(self) -> None:
-        if self._is_alive() and self._raw_proc is not None:
-            with contextlib.suppress(ProcessLookupError):
-                self._raw_proc.send_signal(signal.SIGINT)
+        """Interrupt all currently running one-shot cell subprocesses and host RPCs."""
+        self._interrupted_cells.update(self._active_procs.keys())
+        self._host_rpc.cancel_all()
+        if self._bridge_server is not None:
+            self._bridge_server.cancel_all()
+        for proc, child_pid in list(self._active_procs.values()):
+            if child_pid is not None:
+                with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                    os.kill(child_pid, signal.SIGINT)
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                    os.killpg(proc.pid, signal.SIGINT)
+
+    async def aclose(self) -> None:
+        self._closed = True
+        self._unregister_atexit()
+        self.interrupt()
+        for proc, child_pid in list(self._active_procs.values()):
+            if proc.returncode is None:
+                self._kill_proc_group(proc, signal.SIGKILL, sandbox_child_pid=child_pid)
+        self._bash_manager.close_all()
+        self._close_bridge_server()
+        await self._host_rpc.aclose()
+        self.wake_event_waiters(result=False)
+
+    def close(self) -> None:
+        self._closed = True
+        self._unregister_atexit()
+        self.interrupt()
+        for proc, child_pid in list(self._active_procs.values()):
+            if proc.returncode is None:
+                self._kill_proc_group(proc, signal.SIGKILL, sandbox_child_pid=child_pid)
+        io_loop = self._io_loop
+        if io_loop is not None and io_loop.is_running() and not io_loop.is_closed():
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+            if running is io_loop:
+                self._bash_manager.close_all()
+            else:
+                with contextlib.suppress(Exception):
+                    run_on_loop(io_loop, self._aclose_bash_on_loop(), timeout=2.0)
+        else:
+            self._bash_manager.close_all()
+        self._close_bridge_server()
+        self._host_rpc.close_mcp()
+        self.wake_event_waiters(result=False)
+
+    async def _aclose_bash_on_loop(self) -> None:
+        self._bash_manager.close_all()

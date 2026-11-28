@@ -47,7 +47,6 @@ from quartz.tui.command_render import (
     _render_mcp,
     _render_reset,
     _render_settings,
-    _render_vars,
     render_command_result,
 )
 from quartz.tui.images import show_image_preview
@@ -74,7 +73,6 @@ __all__ = [
     "_render_mcp",
     "_render_reset",
     "_render_settings",
-    "_render_vars",
     "_resolve_command_result_sync",
     "_run_core_handler",
     "_terminal_continue",
@@ -153,8 +151,7 @@ def _terminal_session(rt: AgentRuntime, arg: str) -> None:
     console_print(
         f"Session ID: [bold]{escape(rt.active_session.id)}[/bold]\n"
         f"{name_line}"
-        f"Log:        {escape(_short_path(rt.active_session.jsonl_path))}\n"
-        f"Snapshot:   {escape(_short_path(rt.active_session.snapshot_dir))}"
+        f"Log:        {escape(_short_path(rt.active_session.jsonl_path))}"
     )
 
 

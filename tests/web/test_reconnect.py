@@ -389,10 +389,7 @@ def test_retire_waits_for_snapshot_and_closes_client(tmp_path: Path) -> None:
 
     runtime = _runtime(tmp_path)
     runtime.client = _TrackedClient()  # type: ignore[assignment]
-    runtime.wait_snapshot = lambda: events.append("wait_snapshot")  # type: ignore[method-assign]
-    runtime.kernel.dirty = True  # type: ignore[misc]
     runtime.messages.append({"role": "user", "content": "hi"})
-    runtime.active_session.save_kernel = lambda k: events.append("save_kernel")  # type: ignore[method-assign]
     orig_kernel_close = runtime.kernel.close
 
     def _kernel_close() -> None:
@@ -405,4 +402,4 @@ def test_retire_waits_for_snapshot_and_closes_client(tmp_path: Path) -> None:
     _loaded(session)
     session.close()
 
-    assert events == ["wait_snapshot", "save_kernel", "kernel_close", "client_close"]
+    assert events == ["kernel_close", "client_close"]

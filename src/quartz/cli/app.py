@@ -398,11 +398,6 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "auth":
         _get_attr("_handle_auth_cli")(sys.argv[2:])
         return
-    if len(sys.argv) > 1 and sys.argv[1] == "prune":
-        from quartz.cli.subcommands import _handle_prune_cli
-
-        _handle_prune_cli(sys.argv[2:])
-        return
     if len(sys.argv) > 1 and sys.argv[1] == "web":
         from quartz.cli.subcommands import _handle_web_cli
 
@@ -514,12 +509,6 @@ def main() -> None:
         else:
             _run_interactive(rt, resumed)
     finally:
-        rt.wait_snapshot()
-        if rt.messages and not rt.headless and rt.kernel.dirty:
-            try:
-                rt.active_session.save_kernel(rt.kernel)
-            except Exception:
-                logger.debug("Kernel snapshot save on exit failed", exc_info=True)
         rt.kernel.close()
         aclose_client = getattr(rt.client, "aclose", None)
         if callable(aclose_client):

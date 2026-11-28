@@ -67,6 +67,7 @@ class HostRpcHandler:
         permission_handler: PermissionHandler | None = None,
         preapproved_scopes: set[str] | None = None,
         shared_host_mcp: bool = False,
+        bash_manager: Any | None = None,
     ) -> None:
         self.cwd = cwd
         self.permission_policy = PermissionPolicy(preapproved_scopes=preapproved_scopes)
@@ -78,6 +79,7 @@ class HostRpcHandler:
         self._cancel_lock = threading.Lock()
         self.shared_host_mcp = shared_host_mcp
         self._host_mcp: Any = None
+        self.bash_manager: Any | None = bash_manager
 
     @staticmethod
     def _dispatch_host_image(img: dict[str, str]) -> None:
@@ -119,6 +121,48 @@ class HostRpcHandler:
         for ev in events:
             ev.set()
 
+    async def _handle_bash_rpc(self, method: str, params: Mapping[str, Any]) -> Any:
+        bm = self.bash_manager
+        if bm is None:
+            raise RuntimeError("Host bash manager is not configured")
+        if method == "bash.start":
+            return bm.start_bash(
+                str(params.get("command", "")),
+                timeout=params.get("timeout", 600.0),
+                cell_id=params.get("cell_id"),
+                cwd=params.get("cwd"),
+            )
+        if method == "bash.launch_worker":
+            return bm.start_launch_worker(
+                prompt_file=str(params.get("prompt_file", "")),
+                cwd=str(params.get("cwd", ".")),
+                session_id=str(params.get("session_id", "")),
+                timeout=params.get("timeout", 600.0),
+                provider=params.get("provider"),
+                model=params.get("model"),
+                effort=params.get("effort"),
+                sandbox_off=bool(params.get("sandbox_off", False)),
+                cell_id=params.get("cell_id"),
+            )
+        if method == "bash.wait":
+            return await bm.wait_job(int(params["pid"]))
+        if method == "bash.poll":
+            return bm.poll_job(int(params["pid"]))
+        if method == "bash.tail":
+            found, tail = bm.tail_job(int(params["pid"]), int(params.get("n", 50)))
+            return {"found": found, "tail": tail}
+        if method == "bash.output":
+            found, output = bm.output_job(int(params["pid"]))
+            return {"found": found, "output": output}
+        if method == "bash.kill":
+            killed = bm.kill_job(
+                int(params["pid"]),
+                sig=int(params.get("sig", 15)),
+                grace=float(params.get("grace", 5.0)),
+            )
+            return {"killed": killed}
+        raise ValueError(f"Unknown bash host RPC method: {method!r}")
+
     async def handle_request(
         self,
         msg: Mapping[str, Any],
@@ -127,6 +171,21 @@ class HostRpcHandler:
         req_id = str(msg.get("id") or "")
         method = str(msg.get("method") or "")
         params = msg.get("params") or {}
+        if method.startswith("bash."):
+            try:
+                result = await self._handle_bash_rpc(method, params)
+                write_frame({"type": "host_response", "id": req_id, "ok": True, "result": result})
+            except Exception as exc:
+                write_frame(
+                    {
+                        "type": "host_response",
+                        "id": req_id,
+                        "ok": False,
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                    }
+                )
+            return
         mgr = self.get_host_mcp()
         images: list[dict[str, str]] = []
         token = _HOST_IMAGE_SINK.set(images)
@@ -290,3 +349,17 @@ class HostRpcHandler:
         if mgr is not None and not self.shared_host_mcp:
             with contextlib.suppress(Exception):
                 await mgr.close()
+
+    def close_mcp(self) -> None:
+        self.cancel_all()
+        mgr, self._host_mcp = self._host_mcp, None
+        if mgr is not None and not self.shared_host_mcp:
+            with contextlib.suppress(Exception):
+                close_coro = mgr.close()
+                if asyncio.iscoroutine(close_coro):
+                    try:
+                        loop = asyncio.get_running_loop()
+                        task = loop.create_task(close_coro)
+                        task.add_done_callback(lambda _t: None)
+                    except RuntimeError:
+                        asyncio.run(close_coro)

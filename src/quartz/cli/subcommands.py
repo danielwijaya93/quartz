@@ -32,7 +32,7 @@ from quartz.mcp.client import (
 from quartz.providers.registry import PROVIDERS
 from quartz.tui.render import console
 
-__all__ = ["_handle_auth_cli", "_handle_mcp_cli", "_handle_prune_cli", "_handle_web_cli"]
+__all__ = ["_handle_auth_cli", "_handle_mcp_cli", "_handle_web_cli"]
 
 
 def _handle_auth_cli(argv: list[str]) -> None:
@@ -368,66 +368,6 @@ def _is_addr_in_use(exc: BaseException) -> bool:
             return True
         current = current.__cause__ or current.__context__
     return False
-
-
-def _handle_prune_cli(argv: list[str]) -> None:
-    """Run `quartz prune`: delete aged-out kernel snapshots, keep every transcript."""
-    from quartz.core.session import default_sessions_dir, prune_snapshots
-    from quartz.settings import load_settings
-
-    parser = argparse.ArgumentParser(
-        prog="quartz prune",
-        description=(
-            "Delete kernel snapshots for sessions not touched in N days. "
-            "Conversation transcripts are never removed."
-        ),
-    )
-    parser.add_argument(
-        "--days",
-        type=int,
-        default=None,
-        metavar="N",
-        help=(
-            "Age in days before a snapshot may be removed "
-            f"(default: snapshot_retention_days, {load_settings().snapshot_retention_days}). 0 prunes nothing."
-        ),
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Report what would be removed without deleting anything.",
-    )
-    args = parser.parse_args(argv)
-
-    days = load_settings().snapshot_retention_days if args.days is None else args.days
-    if days < 0:
-        console.print("[red]Error: --days must be 0 or greater.[/red]")
-        sys.exit(2)
-
-    root = default_sessions_dir()
-    result = prune_snapshots(root, older_than_days=days, dry_run=args.dry_run)
-
-    verb = "Would remove" if args.dry_run else "Removed"
-
-    if days == 0:
-        console.print("Retention is 0 days, which disables pruning. Pass --days N to prune.")
-        return
-
-    if result.snapshots_removed == 0:
-        console.print(
-            f"No snapshots older than {days} day{'s' if days != 1 else ''} in {escape(str(root))}."
-        )
-        return
-
-    console.print(
-        f"{verb} [bold]{result.snapshots_removed}[/bold] snapshot"
-        f"{'s' if result.snapshots_removed != 1 else ''} "
-        f"older than {days} day{'s' if days != 1 else ''}, "
-        f"freeing [bold]{result.freed_mb} MB[/bold]."
-    )
-    if result.errors:
-        console.print(f"[yellow]{result.errors} snapshot(s) could not be removed.[/yellow]")
-    console.print("Transcripts were kept: every session can still be resumed and replayed.")
 
 
 def _handle_web_cli(argv: list[str]) -> None:

@@ -130,42 +130,8 @@ async def test_kernel_preimported_stdlib_available_without_imports(tmp_path: Pat
         assert res.ok
         assert "('file.txt', '{\"key\": 42}', True, 'a/b', True)" in (res.result or "")
 
-        # Default bindings should not be listed as user variables in list_vars IPC
-        vars_info = kernel.list_vars()
-        assert "Path" not in vars_info
-        assert "os" not in vars_info
-        assert "json" not in vars_info
-        assert "p" in vars_info
-        assert "d" in vars_info
     finally:
         kernel.close()
-
-
-async def test_kernel_preimported_stdlib_preserved_across_snapshot(tmp_path: Path) -> None:
-    kernel1 = KernelClient(cwd=tmp_path)
-    kernel1.start()
-    snap_dir = tmp_path / "snap"
-    try:
-        await kernel1.exec_cell("user_num = 99")
-        snap_res = kernel1.snapshot(snap_dir)
-        assert "user_num" in snap_res.get("saved", [])
-        # Pre-imported stdlibs should not be serialized into snapshot
-        assert "Path" not in snap_res.get("saved", [])
-        assert "os" not in snap_res.get("saved", [])
-    finally:
-        kernel1.close()
-
-    kernel2 = KernelClient(cwd=tmp_path)
-    kernel2.start()
-    try:
-        rest_res = kernel2.restore(snap_dir)
-        assert "user_num" in rest_res.get("restored", [])
-        # Check both restored user var and pre-imported stdlibs work in restored kernel
-        res = await kernel2.exec_cell("user_num == 99 and Path('.').is_dir() and os.name is not None and json.loads('1') == 1")
-        assert res.ok
-        assert res.result == "True"
-    finally:
-        kernel2.close()
 
 
 async def test_kernel_lazy_stdlib_auto_import_modules_and_symbols(tmp_path: Path) -> None:
@@ -216,10 +182,9 @@ async def test_kernel_lazy_auto_import_guards_against_false_positives(tmp_path: 
         kernel.close()
 
 
-async def test_kernel_lazy_auto_import_shadowing_list_vars_and_snapshot(tmp_path: Path) -> None:
+async def test_kernel_lazy_auto_import_shadowing(tmp_path: Path) -> None:
     kernel = KernelClient(cwd=tmp_path)
     kernel.start()
-    snap_dir = tmp_path / "snap_lazy"
     try:
         res = await kernel.exec_cell(
             "math = 42\n"
@@ -229,16 +194,6 @@ async def test_kernel_lazy_auto_import_shadowing_list_vars_and_snapshot(tmp_path
         )
         assert res.ok, res.stderr
         assert "(42, 64, 2)" in (res.result or "")
-
-        vars_info = kernel.list_vars()
-        assert vars_info.get("math") == "int"
-        assert "hashlib" not in vars_info
-        assert "Counter" not in vars_info
-
-        snap_res = kernel.snapshot(snap_dir)
-        assert "math" in snap_res.get("saved", [])
-        assert "hashlib" not in snap_res.get("saved", [])
-        assert "Counter" not in snap_res.get("saved", [])
     finally:
         kernel.close()
 

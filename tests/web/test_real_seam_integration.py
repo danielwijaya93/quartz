@@ -118,9 +118,6 @@ def _make_real_builder(
                 bwrap_unavailable(f"bwrap cannot start in this environment: {exc}")
             raise
 
-        if resumed:
-            session.restore_kernel(kernel)
-
         runtime = AgentRuntime(
             cwd=cwd,
             kernel=kernel,
@@ -183,6 +180,7 @@ def test_real_seam_turn_disconnect_reconnect_and_state_preserved(tmp_path: Path)
                     "import time\n"
                     "from pathlib import Path\n"
                     "x = 41 + 1\n"
+                    "Path('val.txt').write_text(str(x))\n"
                     f"Path({str(started_flag)!r}).write_text('go')\n"
                     f"deadline = time.monotonic() + 10\n"
                     f"while not Path({str(release_flag)!r}).exists() and time.monotonic() < deadline:\n"
@@ -191,7 +189,7 @@ def test_real_seam_turn_disconnect_reconnect_and_state_preserved(tmp_path: Path)
                 )
                 return _tool_events("tc-compute", code)
             if "double" in text:
-                return _tool_events("tc-double", "print(f'doubled={x * 2}')")
+                return _tool_events("tc-double", "x = int(Path('val.txt').read_text()); print(f'doubled={x * 2}')")
         assert last["role"] == "tool"
         return _text_events(f"Result: {last['content']}")
 
@@ -374,15 +372,15 @@ def test_real_seam_multi_session_lru_hibernation_restore_and_bg_guard(tmp_path: 
         if last["role"] == "user":
             text = str(last["content"])
             if "store-a" in text:
-                return _tool_events(f"tc-{idx}", "magic_val = {'answer': 42}; print('saved-a')")
+                return _tool_events(f"tc-{idx}", "Path('magic.json').write_text(json.dumps({'answer': 42})); print('saved-a')")
             if "check-a" in text:
                 return _tool_events(
-                    f"tc-{idx}", "import os; print(f'ans={magic_val[\"answer\"]} cwd={os.getcwd()}')"
+                    f"tc-{idx}", "import os; val = json.loads(Path('magic.json').read_text()); print(f'ans={val[\"answer\"]} cwd={os.getcwd()}')"
                 )
             if "start-bg-b" in text:
-                return _tool_events(f"tc-{idx}", "_bg = bash('sleep 15'); print(f'pid={_bg.pid}')")
+                return _tool_events(f"tc-{idx}", "_bg = bash('sleep 15'); Path('bg.pid').write_text(str(_bg.pid)); print(f'pid={_bg.pid}')")
             if "stop-bg-b" in text:
-                return _tool_events(f"tc-{idx}", "_bg.kill(); print('killed')")
+                return _tool_events(f"tc-{idx}", "import os, signal; pid = int(Path('bg.pid').read_text()); os.kill(pid, signal.SIGKILL); print('killed')")
             return _tool_events(f"tc-{idx}", "other = 'beta'; print('saved-b')")
         return _text_events(f"Done: {last['content']}")
 
@@ -516,9 +514,13 @@ def test_real_seam_bwrap_session_manager_close_all_leaves_no_orphans(tmp_path: P
                 f"time.sleep(30)"
             )
             code = (
-                "import subprocess, sys\n"
-                f"_p = subprocess.Popen([sys.executable, '-c', {child_code!r}], stdout=subprocess.PIPE, text=True)\n"
-                "assert _p.stdout.readline().strip() == 'locked'\n"
+                "import shlex, sys, time\n"
+                f"cmd = f'{{sys.executable}} -c {{shlex.quote({child_code!r})}}'\n"
+                "h = bash(cmd)\n"
+                "deadline = time.monotonic() + 5.0\n"
+                "while 'locked' not in h.output() and time.monotonic() < deadline:\n"
+                "    time.sleep(0.05)\n"
+                "assert 'locked' in h.output(), h.output()\n"
                 "print('child-running')\n"
             )
             return _tool_events("tc-spawn", code)

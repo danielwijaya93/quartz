@@ -1,4 +1,4 @@
-"""JSONL session persistence, dill kernel snapshots, and snapshot pruning."""
+"""JSONL session persistence for Quartz conversations."""
 
 from __future__ import annotations
 
@@ -7,10 +7,8 @@ import copy
 import dataclasses
 import json
 import os
-import shutil
 import tempfile
 import threading
-import time
 import uuid
 import warnings
 from datetime import UTC, datetime
@@ -18,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 from quartz.core.images import content_to_text
-from quartz.kernel.base import KernelSnapshotter
 
 
 def default_sessions_dir() -> Path:
@@ -33,10 +30,6 @@ def _new_session_id() -> str:
     return f"{stamp}-{uuid.uuid4().hex[:6]}"
 
 
-#: Long variable lists make the resume notice unreadable and burn context, so a
-#: snapshot with hundreds of variables is summarised rather than enumerated.
-_NOTICE_NAME_LIMIT = 40
-
 #: Which transport created a session. Only the web transport cares: its sidebar
 #: lists sessions the browser started, and hides everything else until the user
 #: imports it. Sessions written before this field existed have no `origin`, and
@@ -46,113 +39,6 @@ ORIGIN_WEB = "web"
 ORIGIN_CLI = "cli"
 ORIGIN_BOT = "bot"
 _ORIGINS = frozenset({ORIGIN_WEB, ORIGIN_CLI, ORIGIN_BOT})
-
-
-def _summarise_names(names: list[str], limit: int = _NOTICE_NAME_LIMIT) -> str:
-    if len(names) <= limit:
-        return ", ".join(names)
-    shown = ", ".join(names[:limit])
-    return f"{shown} ... and {len(names) - limit} more"
-
-
-def format_python_state_restored(restored: list[str], skipped: list[str]) -> str | None:
-    """Format Unharnessed-style [python-state-restored] notice for resumed sessions.
-
-    Every skipped value carries the reason it was skipped (see
-    `worker._skip_reason`), because "Skipped: f (function)" leaves the user with
-    nothing to act on. The notice names at most `_NOTICE_NAME_LIMIT` entries: a big
-    session can hold hundreds of variables, and a wall of names is context spent on
-    bookkeeping.
-    """
-    if not restored and not skipped:
-        return None
-    parts = ["[python-state-restored]\n"]
-    if restored:
-        parts.append(
-            f"Restored {len(restored)} Python variable"
-            f"{'s' if len(restored) != 1 else ''}/function"
-            f"{'s' if len(restored) != 1 else ''} from the previous session: "
-            f"{_summarise_names(restored)}."
-        )
-    if skipped:
-        parts.append(
-            f"Skipped {len(skipped)} with a reason (not serializable, or over the size limit): "
-            f"{_summarise_names(skipped)}."
-        )
-    else:
-        parts.append("Nothing was skipped.")
-    return "\n".join(parts)
-
-
-@dataclasses.dataclass(frozen=True)
-class PruneResult:
-    """What a prune pass removed, and what it left behind."""
-
-    snapshots_removed: int = 0
-    bytes_freed: int = 0
-    errors: int = 0
-
-    @property
-    def freed_mb(self) -> float:
-        return round(self.bytes_freed / (1024 * 1024), 1)
-
-
-def prune_snapshots(
-    sessions_dir: Path,
-    older_than_days: int = 7,
-    *,
-    dry_run: bool = False,
-    now: float | None = None,
-    exclude_ids: set[str] | frozenset[str] = frozenset(),
-) -> PruneResult:
-    """Delete kernel snapshots whose session has not been touched in `older_than_days`.
-
-    A snapshot is a pickled copy of a session's whole Python namespace, so it is by
-    far the largest thing Quartz writes and the least often read: on this machine 89%
-    of snapshot bytes belonged to sessions that were never resumed. Transcripts are
-    the part people come back to, so they are never removed here -- resuming a session
-    whose snapshot has aged out still replays the conversation, it just starts with a
-    clean kernel and says so.
-
-    ``older_than_days=0`` disables pruning entirely. Failures are counted and
-    swallowed: one unreadable directory must not stop a user from starting work.
-    """
-    root = sessions_dir.resolve()
-    if older_than_days <= 0 or not root.is_dir():
-        return PruneResult()
-
-    cutoff = (now if now is not None else time.time()) - older_than_days * 86400
-    removed = 0
-    freed = 0
-    errors = 0
-
-    for snap in sorted(root.glob("*.snapshot")):
-        if not snap.is_dir() or snap.is_symlink() or snap.stem in exclude_ids:
-            continue
-        # The session's own mtime, not the snapshot's: a session resumed yesterday
-        # rewrites its snapshot but its `.jsonl` is what a user would call "recent".
-        transcript = root / f"{snap.stem}.jsonl"
-        try:
-            last_used = transcript.stat().st_mtime if transcript.exists() else snap.stat().st_mtime
-        except OSError:
-            errors += 1
-            continue
-        if last_used >= cutoff:
-            continue
-        try:
-            size = sum(f.stat().st_size for f in snap.rglob("*") if f.is_file())
-        except OSError:
-            size = 0
-        if not dry_run:
-            try:
-                shutil.rmtree(snap)
-            except OSError:
-                errors += 1
-                continue
-        removed += 1
-        freed += size
-
-    return PruneResult(snapshots_removed=removed, bytes_freed=freed, errors=errors)
 
 
 def _is_dir(path: str) -> bool:
@@ -212,8 +98,8 @@ def _preview_from_message(msg: Any) -> str:
     return ""
 
 
-def _resolve_session_paths(session_id: str, sessions_dir: Path) -> tuple[Path, Path]:
-    """Validate `session_id` and return `(jsonl_path, snapshot_dir)` strictly inside `sessions_dir`."""
+def _resolve_session_jsonl(session_id: str, sessions_dir: Path) -> Path:
+    """Validate `session_id` and return its JSONL path strictly inside `sessions_dir`."""
     if not isinstance(session_id, str) or not session_id or not session_id.strip():
         raise ValueError(f"Invalid session ID: {session_id!r}")
     if (
@@ -227,15 +113,9 @@ def _resolve_session_paths(session_id: str, sessions_dir: Path) -> tuple[Path, P
 
     root = sessions_dir.resolve()
     jsonl_path = (root / f"{session_id}.jsonl").resolve()
-    snapshot_dir = (root / f"{session_id}.snapshot").resolve()
-    if (
-        not jsonl_path.is_relative_to(root)
-        or jsonl_path.parent != root
-        or not snapshot_dir.is_relative_to(root)
-        or snapshot_dir.parent != root
-    ):
+    if not jsonl_path.is_relative_to(root) or jsonl_path.parent != root:
         raise ValueError(f"Invalid session ID {session_id!r}: path escapes sessions directory")
-    return jsonl_path, snapshot_dir
+    return jsonl_path
 
 
 def repair_dangling_tool_calls(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -283,11 +163,11 @@ def repair_dangling_tool_calls(messages: list[dict[str, Any]]) -> list[dict[str,
 
 
 class Session:
-    """Append-only JSONL conversation log paired with a dill kernel snapshot."""
+    """Append-only JSONL conversation log for a Quartz session."""
 
     def __init__(self, session_id: str, sessions_dir: Path | None = None) -> None:
         self.sessions_dir = (sessions_dir or default_sessions_dir()).resolve()
-        jsonl_path, snapshot_dir = _resolve_session_paths(session_id, self.sessions_dir)
+        jsonl_path = _resolve_session_jsonl(session_id, self.sessions_dir)
         self.id = session_id
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.jsonl_path = jsonl_path
@@ -296,7 +176,6 @@ class Session:
         # same seat (`/new` must not turn a browser session into a terminal one).
         self.origin = ORIGIN_CLI
         self.name: str | None = None
-        self.snapshot_dir = snapshot_dir
         self._persisted_count = 0
         self._persisted_refs: list[dict[str, Any]] = []
         self._pending_meta: dict[str, Any] | None = None
@@ -459,7 +338,7 @@ class Session:
         written is a fallback, not an error -- worktrees get removed.
         """
         root = (sessions_dir or default_sessions_dir()).resolve()
-        path, _ = _resolve_session_paths(session_id, root)
+        path = _resolve_session_jsonl(session_id, root)
         if not path.is_file():
             return None
         return cls._inspect_session(path).cwd
@@ -468,7 +347,7 @@ class Session:
     def recorded_sandbox(cls, session_id: str, sessions_dir: Path | None = None) -> bool | None:
         """The ``sandbox`` boolean a session's own `meta` record names, or ``None``."""
         root = (sessions_dir or default_sessions_dir()).resolve()
-        path, _ = _resolve_session_paths(session_id, root)
+        path = _resolve_session_jsonl(session_id, root)
         if not path.is_file():
             return None
         return cls._inspect_session(path).sandbox
@@ -488,7 +367,7 @@ class Session:
         if not root.is_dir():
             return None
         try:
-            jsonl_path, _ = _resolve_session_paths(cleaned, root)
+            jsonl_path = _resolve_session_jsonl(cleaned, root)
             if jsonl_path.is_file():
                 return cleaned
         except ValueError:
@@ -705,8 +584,6 @@ class Session:
             forked._persisted_refs = [copy.deepcopy(m) for m in messages]
         if src.last_usage:
             forked.save_usage(src.last_usage)
-        if src.snapshot_dir.is_dir():
-            shutil.copytree(src.snapshot_dir, forked.snapshot_dir, dirs_exist_ok=True)
         return forked, messages
 
     def _ensure_meta_written(self) -> None:
@@ -791,17 +668,3 @@ class Session:
         self._ensure_meta_written()
         self.last_usage = dict(usage)
         self._append_record({"type": "usage", "usage": self.last_usage})
-
-    def save_kernel(self, kernel: KernelSnapshotter) -> dict[str, Any]:
-        return kernel.snapshot(self.snapshot_dir)
-
-    def restore_kernel(self, kernel: KernelSnapshotter, root: Path | None = None) -> str | None:
-        """Put this session's kernel state back, in `root` when the caller says where.
-
-        ``root`` is the folder the session is being resumed in. Without it the
-        snapshot's own directory wins, which is only right when nothing moved.
-        """
-        if not self.snapshot_dir.is_dir():
-            return None
-        res = kernel.restore(self.snapshot_dir, root=root)
-        return format_python_state_restored(res["restored"], res["skipped"])

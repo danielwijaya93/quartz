@@ -15,12 +15,10 @@ class FakeKernel:
         self.cwd = (cwd or Path.cwd()).resolve()
         self.started = False
         self.closed = False
-        self.dirty = False
         self.configured: dict[str, Any] = {}
         self.events: list[dict[str, Any]] = []
         self.cells: list[tuple[str, CellResult]] = []
         self.restart_notice: str | None = None
-        self.vars: dict[str, str] = {}
         self.helpers: dict[str, Any] = {}
 
     def start(self, timeout: float = 10.0) -> None:
@@ -71,20 +69,5 @@ class FakeKernel:
         self.restart_notice = None
         return notice
 
-    def list_vars(self, timeout: float = 5.0) -> dict[str, str]:
-        return dict(self.vars)
-
     def list_helpers(self, timeout: float = 5.0) -> dict[str, Any]:
         return dict(self.helpers)
-
-    def snapshot(self, snapshot_dir: Path, timeout: float = 30.0) -> dict[str, Any]:
-        self.dirty = False
-        return {}
-
-    def restore(
-        self,
-        snapshot_dir: Path,
-        timeout: float = 30.0,
-        root: Path | None = None,
-    ) -> dict[str, list[str]]:
-        return {"restored": [], "skipped": []}

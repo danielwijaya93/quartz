@@ -29,7 +29,7 @@ def test_slash_command_autocomplete(tmp_path: Path) -> None:
     assert texts == ["/continue", "/compact"]
 
     all_comps = list(completer.get_completions(Document("/"), CompleteEvent()))
-    assert "/vars" in [c.text for c in all_comps]
+    assert "/helpers" in [c.text for c in all_comps]
     assert "/usage" in [c.text for c in all_comps]
 
 

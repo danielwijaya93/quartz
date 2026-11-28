@@ -6,6 +6,7 @@ import asyncio
 import codecs
 import contextlib
 import dataclasses
+import json
 import logging
 import os
 import re
@@ -23,6 +24,28 @@ from quartz.kernel.helpers import _truncate
 logger = logging.getLogger(__name__)
 
 MAX_OUTPUT_CHARS = 24_000
+
+
+def _read_bwrap_child_pid(read_fd: int) -> int | None:
+    """Read bwrap's ``--info-fd`` JSON payload and return its ``child-pid`` (PID-ns init)."""
+    chunks: list[bytes] = []
+    try:
+        while True:
+            data = os.read(read_fd, 4096)
+            if not data:
+                break
+            chunks.append(data)
+    except OSError:
+        return None
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(read_fd)
+    try:
+        info = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
+        pid = info.get("child-pid")
+        return int(pid) if isinstance(pid, int) and pid > 0 else None
+    except Exception:
+        return None
 
 
 def spill_or_truncate(text: str, limit: int, kind: str, cell_id: str) -> str:
@@ -71,6 +94,11 @@ class BashHandle:
         on_done_callback: Callable[[BashHandle], None],
         check_every: float | None = None,
         on_status_callback: Callable[[BashHandle], None] | None = None,
+        *,
+        argv: list[str] | None = None,
+        cwd: str | Path | None = None,
+        env: dict[str, str] | None = None,
+        bwrap_info_fds: tuple[int, int] | None = None,
     ) -> None:
         self.command = command
         self._timeout = timeout
@@ -87,16 +115,28 @@ class BashHandle:
         self._awaited = False
         self._timed_out = False
 
-        self._proc = subprocess.Popen(
-            command,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-            cwd=os.getcwd(),
-            env=os.environ.copy(),
-        )
+        self._sandbox_child_pid: int | None = None
+        spawn_cmd: str | list[str] = argv if argv is not None else command
+        use_shell = argv is None
+        pass_fds: tuple[int, ...] = (bwrap_info_fds[1],) if bwrap_info_fds is not None else ()
+        try:
+            self._proc = subprocess.Popen(
+                spawn_cmd,
+                shell=use_shell,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+                cwd=str(cwd) if cwd is not None else os.getcwd(),
+                env=env if env is not None else os.environ.copy(),
+                pass_fds=pass_fds,
+            )
+        finally:
+            if bwrap_info_fds is not None:
+                with contextlib.suppress(OSError):
+                    os.close(bwrap_info_fds[1])
+        if bwrap_info_fds is not None:
+            self._sandbox_child_pid = _read_bwrap_child_pid(bwrap_info_fds[0])
         self.pid = self._proc.pid
         self._task = asyncio.create_task(self._monitor())
         self._status_task: asyncio.Task[None] | None = None
@@ -129,22 +169,25 @@ class BashHandle:
     def poll(self) -> BashResult | None:
         return self._result
 
+    def _signal_targets(self, sig: int) -> None:
+        if self._sandbox_child_pid is not None:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.kill(self._sandbox_child_pid, sig)
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            os.killpg(self.pid, sig)
+
     def kill(self, sig: int = signal.SIGTERM, grace: float = 5.0) -> None:
-        """Send `sig` to the process group, escalating to SIGKILL after `grace` seconds."""
+        """Send `sig` to the process group (and sandbox init if bwrap), escalating to SIGKILL."""
         if not self.running:
             return
-        try:
-            os.killpg(self.pid, sig)
-        except ProcessLookupError:
-            return
+        self._signal_targets(sig)
         if sig != signal.SIGKILL and grace > 0:
             self._escalate_task = asyncio.create_task(self._escalate_kill(grace))
 
     async def _escalate_kill(self, grace: float) -> None:
         await asyncio.sleep(grace)
         if self.running:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(self.pid, signal.SIGKILL)
+            self._signal_targets(signal.SIGKILL)
 
     def _append_line(self, line: str) -> None:
         if len(self._lines) == self._lines.maxlen:
@@ -251,4 +294,91 @@ class BashHandle:
 
     def __repr__(self) -> str:
         status = "running" if self.running or self._result is None else f"exit={self._result.exit_code}"
+        return f"<BashHandle pid={self.pid} {status} command={self.command!r}>"
+
+
+class RemoteBashHandle:
+    """Proxy handle to a host-managed background bash job inside a stateless cell."""
+
+    def __init__(
+        self,
+        *,
+        pid: int,
+        command: str,
+        rpc_sync: Callable[[str, dict[str, Any], float | None], dict[str, Any]],
+        rpc_async: Callable[[str, dict[str, Any], float | None], Any],
+    ) -> None:
+        self.pid = pid
+        self.command = command
+        self._rpc_sync = rpc_sync
+        self._rpc_async = rpc_async
+        self._result: BashResult | None = None
+        self.dropped_lines: int = 0
+
+    @staticmethod
+    def _to_result(data: dict[str, Any]) -> BashResult:
+        return BashResult(
+            exit_code=int(data.get("exit_code", -1)),
+            output=str(data.get("output", "")),
+            duration=float(data.get("duration", 0.0)),
+            timed_out=bool(data.get("timed_out", False)),
+        )
+
+    def poll(self) -> BashResult | None:
+        if self._result is not None:
+            return self._result
+        resp = self._rpc_sync("bash.poll", {"pid": self.pid}, 15.0)
+        if isinstance(resp, dict) and "dropped_lines" in resp:
+            self.dropped_lines = int(resp["dropped_lines"])
+        res = resp.get("result") if isinstance(resp, dict) else None
+        if isinstance(res, dict):
+            self._result = self._to_result(res)
+        return self._result
+
+    @property
+    def running(self) -> bool:
+        return self.poll() is None
+
+    @property
+    def exit_code(self) -> int:
+        res = self.poll()
+        if res is None:
+            raise RuntimeError("Command still running; use `await handle` to wait for BashResult")
+        return res.exit_code
+
+    def output(self) -> str:
+        if self._result is not None:
+            return self._result.output
+        resp = self._rpc_sync("bash.output", {"pid": self.pid}, 15.0)
+        return str(resp.get("output", "")) if isinstance(resp, dict) else ""
+
+    def tail(self, n: int = 50) -> str:
+        if n <= 0:
+            return ""
+        if self._result is not None:
+            return "".join(self._result.output.splitlines(keepends=True)[-n:])
+        resp = self._rpc_sync("bash.tail", {"pid": self.pid, "n": n}, 15.0)
+        return str(resp.get("tail", "")) if isinstance(resp, dict) else ""
+
+    def kill(self, sig: int = signal.SIGTERM, grace: float = 5.0) -> None:
+        if self._result is not None:
+            return
+        self._rpc_sync("bash.kill", {"pid": self.pid, "sig": int(sig), "grace": float(grace)}, 15.0)
+
+    async def _wait(self) -> BashResult:
+        if self._result is not None:
+            return self._result
+        resp = await self._rpc_async("bash.wait", {"pid": self.pid}, None)
+        if not isinstance(resp, dict):
+            raise RuntimeError("Invalid bash.wait response from host")
+        if "dropped_lines" in resp:
+            self.dropped_lines = int(resp["dropped_lines"])
+        self._result = self._to_result(resp)
+        return self._result
+
+    def __await__(self) -> Any:
+        return self._wait().__await__()
+
+    def __repr__(self) -> str:
+        status = "running" if self._result is None else f"exit={self._result.exit_code}"
         return f"<BashHandle pid={self.pid} {status} command={self.command!r}>"
