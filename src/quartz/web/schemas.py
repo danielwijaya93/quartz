@@ -94,11 +94,17 @@ class CommandFrame(_WireModel):
 class NewSessionFrame(_WireModel):
     type: Literal["new_session"]
     cwd: str | None = None
+    system_prompt_append: Annotated[str | None, BeforeValidator(_coerce_optional_str)] = Field(
+        default=None, alias="systemPromptAppend"
+    )
 
 
 class LoadSessionFrame(_WireModel):
     type: Literal["load_session"]
     session_id: str = Field(default="", alias="sessionId")
+    system_prompt_append: Annotated[str | None, BeforeValidator(_coerce_optional_str)] = Field(
+        default=None, alias="systemPromptAppend"
+    )
 
 
 class TrustProjectFrame(_WireModel):

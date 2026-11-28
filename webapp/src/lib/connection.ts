@@ -382,7 +382,12 @@ export class Connection {
   /** Start a fresh session, in `cwd` when the sidebar picked a folder. */
   sendNewSession(cwd?: string): boolean {
     this.currentSessionId = undefined;
-    return this.send(cwd === undefined ? { type: "new_session" } : { type: "new_session", cwd });
+    const append = this.systemPromptAppend;
+    return this.send({
+      type: "new_session",
+      ...(cwd === undefined ? {} : { cwd }),
+      ...(append === "" ? {} : { systemPromptAppend: append }),
+    });
   }
 
   sendTrustProject(): boolean {
@@ -410,7 +415,12 @@ export class Connection {
 
   sendLoadSession(sessionId: string): boolean {
     this.currentSessionId = sessionId;
-    return this.send({ type: "load_session", sessionId });
+    const append = this.systemPromptAppend;
+    return this.send({
+      type: "load_session",
+      sessionId,
+      ...(append === "" ? {} : { systemPromptAppend: append }),
+    });
   }
 
   sendActiveSessionDismiss(sessionId: string): boolean {

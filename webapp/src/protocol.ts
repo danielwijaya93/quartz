@@ -150,8 +150,8 @@ export type ClientMessage =
   | { type: "cancel" }
   | { type: "command"; name: string; arg?: string }
   /** `cwd` is the folder picked in the sidebar; omit it for the server's own. */
-  | { type: "new_session"; cwd?: string }
-  | { type: "load_session"; sessionId: string }
+  | { type: "new_session"; cwd?: string; systemPromptAppend?: string }
+  | { type: "load_session"; sessionId: string; systemPromptAppend?: string }
   | { type: "trust_project" }
   | { type: "set_sandbox"; enabled: boolean }
   | { type: "set_rich_ui"; enabled: boolean; systemPromptAppend?: string }

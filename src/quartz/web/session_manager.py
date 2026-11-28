@@ -54,6 +54,7 @@ class SessionManager:
         self._current_id: str | None = None
         self._placeholder: WebSession | None = None
         self._system_prompt_append = ""
+        self._rich_ui_prompt = ""
         self._global_sinks: set[Push] = set()
         self._notification_listeners: set[Push] = set()
         self._active_sessions: dict[str, ActiveSessionEntry] = {}
@@ -140,6 +141,18 @@ class SessionManager:
 
     def session_title(self, ws: WebSession) -> str | None:
         return self._session_title(ws)
+
+    @property
+    def rich_ui_prompt(self) -> str:
+        with self._lock:
+            return self._rich_ui_prompt
+
+    def cache_rich_ui_prompt(self, prompt: str) -> None:
+        cleaned = prompt.strip()
+        if not cleaned:
+            return
+        with self._lock:
+            self._rich_ui_prompt = cleaned
 
     def set_system_prompt_append(self, append: str) -> None:
         cleaned = append.strip()

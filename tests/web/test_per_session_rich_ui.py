@@ -163,3 +163,77 @@ def test_per_session_rich_ui_persists_across_reload_and_overrides_global_default
                 snap_new = ws_new.receive_json()
             assert snap_new["sessionId"] != sid1
             assert snap_new["richUi"] is True
+
+
+def test_new_session_and_load_session_apply_rich_ui_prompt_when_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, runtimes = _make_app(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        r = client.post("/api/settings", json={"key": "rich_ui", "value": "on"})
+        assert r.status_code == 200
+
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "hello", "clientVersion": 1, "systemPromptAppend": "OPENUI_PROMPT"})
+            snap1 = ws.receive_json()
+            _ = ws.receive_json()
+            sid1 = snap1["sessionId"]
+            assert snap1["richUi"] is True
+            assert "OPENUI_PROMPT" in runtimes[sid1].system_prompt
+
+            # Save a message on sid1 so it can be reloaded later, and mark sid1 rich_ui=False
+            ws.send_json({"type": "set_rich_ui", "enabled": False})
+            _ = ws.receive_json()
+            runtimes[sid1].active_session.save_messages([{"role": "user", "content": "hi"}])
+
+            # Starting a new_session without repeating systemPromptAppend must still apply OPENUI_PROMPT
+            # because global rich_ui is on and the client already supplied the prompt.
+            ws.send_json({"type": "new_session"})
+            snap2 = ws.receive_json()
+            while snap2["type"] != "session_state":
+                snap2 = ws.receive_json()
+            sid2 = snap2["sessionId"]
+            assert sid2 != sid1
+            assert snap2["richUi"] is True
+            assert "OPENUI_PROMPT" in runtimes[sid2].system_prompt
+            runtimes[sid2].active_session.save_messages([{"role": "user", "content": "hi2"}])
+
+            # Loading sid1 (which has rich_ui=False) must NOT apply OPENUI_PROMPT even if passed on load_session
+            ws.send_json({"type": "load_session", "sessionId": sid1, "systemPromptAppend": "OPENUI_PROMPT"})
+            loaded1 = ws.receive_json()
+            while loaded1["type"] != "session_state":
+                loaded1 = ws.receive_json()
+            assert loaded1["sessionId"] == sid1
+            assert loaded1["richUi"] is False
+            assert "OPENUI_PROMPT" not in runtimes[sid1].system_prompt
+
+            # Loading sid2 (which has rich_ui=None -> inherits global on) MUST apply OPENUI_PROMPT
+            ws.send_json({"type": "load_session", "sessionId": sid2})
+            loaded2 = ws.receive_json()
+            while loaded2["type"] != "session_state":
+                loaded2 = ws.receive_json()
+            assert loaded2["sessionId"] == sid2
+            assert loaded2["richUi"] is True
+            assert "OPENUI_PROMPT" in runtimes[sid2].system_prompt
+
+
+def test_new_session_carries_explicit_system_prompt_append(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, runtimes = _make_app(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        r = client.post("/api/settings", json={"key": "rich_ui", "value": "on"})
+        assert r.status_code == 200
+
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "hello", "clientVersion": 1})
+            _ = ws.receive_json()
+            _ = ws.receive_json()
+
+            ws.send_json({"type": "new_session", "systemPromptAppend": "EXPLICIT_OPENUI"})
+            snap = ws.receive_json()
+            while snap["type"] != "session_state":
+                snap = ws.receive_json()
+            sid = snap["sessionId"]
+            assert snap["richUi"] is True
+            assert "EXPLICIT_OPENUI" in runtimes[sid].system_prompt
