@@ -18,6 +18,7 @@ import { Composer } from "./Composer";
 import { TrustFolderDialog } from "./TrustFolderDialog";
 import { ModelPickerDialog } from "./ModelPickerDialog";
 import { useQuartz } from "@/useQuartz";
+import { useOpenUISystemPrompt } from "@/lib/useRichUi";
 import { directoryLabel, type SessionActivity } from "@/lib/sidebar";
 import type { ConnectionStatus } from "@/lib/connection";
 import type { SessionMeta } from "@/lib/transcript";
@@ -35,6 +36,7 @@ export interface SessionTileHandle {
   loadSession: (sessionId: string) => void;
   newSession: (cwd?: string) => void;
   setSandbox: (enabled: boolean) => void;
+  setRichUi: (enabled: boolean) => void;
   runCommand: (name: string, arg?: string) => void;
   dismissActiveSession: (sessionId: string) => void;
   clearReadActiveSessions: () => void;
@@ -58,8 +60,6 @@ export interface SessionTileProps {
   requestedSessionId: string | null;
   initialCwd?: string;
   createFreshOnConnect: boolean;
-  systemPromptAppend: string;
-  richUi: boolean;
   sessionTitle?: string;
   bots: readonly BotConfig[];
   botRuns: readonly BotRunRecord[];
@@ -95,8 +95,6 @@ export const SessionTile = React.memo(function SessionTile({
   requestedSessionId,
   initialCwd,
   createFreshOnConnect,
-  systemPromptAppend,
-  richUi,
   sessionTitle,
   bots,
   botRuns,
@@ -121,6 +119,8 @@ export const SessionTile = React.memo(function SessionTile({
   onRerunBot,
 }: SessionTileProps): React.ReactElement {
   const composerRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const [tileRichUi, setTileRichUi] = React.useState(false);
+  const systemPromptAppend = useOpenUISystemPrompt(tileRichUi ? "rich" : "markdown");
   const [jobsOpen, setJobsOpen] = React.useState(false);
   const [modelPickerOpen, setModelPickerOpen] = React.useState(false);
   const [dismissedTrustCwds, setDismissedTrustCwds] = React.useState<ReadonlySet<string>>(
@@ -165,6 +165,7 @@ export const SessionTile = React.memo(function SessionTile({
     loadSession: qLoadSession,
     trustProject: qTrustProject,
     setSandbox: qSetSandbox,
+    setRichUi: qSetRichUi,
     respondPermission: qRespondPermission,
     setFormState: qSetFormState,
     clearBgFailed: qClearBgFailed,
@@ -175,6 +176,30 @@ export const SessionTile = React.memo(function SessionTile({
 
   const sessionId = qState.session.sessionId;
   const lastRequestedRef = React.useRef<string | null>(requestedSessionId);
+
+  React.useEffect(() => {
+    if (typeof qState.session.richUi === "boolean") {
+      setTileRichUi(qState.session.richUi);
+    }
+  }, [qState.session.richUi]);
+
+  const handleSetRichUi = React.useCallback(
+    (enabled: boolean) => {
+      setTileRichUi(enabled);
+      if (!enabled) {
+        qSetRichUi(false, "");
+        return;
+      }
+      void import("@/lib/openui/prompt")
+        .then((module) => {
+          qSetRichUi(true, module.getOpenUISystemPrompt());
+        })
+        .catch(() => {
+          qSetRichUi(true, "");
+        });
+    },
+    [qSetRichUi],
+  );
 
   // When the user selects a different session in the sidebar for this tile, load it.
   React.useEffect(() => {
@@ -274,6 +299,7 @@ export const SessionTile = React.memo(function SessionTile({
       loadSession: qLoadSession,
       newSession: qNewSession,
       setSandbox: qSetSandbox,
+      setRichUi: handleSetRichUi,
       runCommand: handleRunCommand,
       dismissActiveSession: qDismissActiveSession,
       clearReadActiveSessions: qClearReadActiveSessions,
@@ -296,6 +322,7 @@ export const SessionTile = React.memo(function SessionTile({
       qLoadSession,
       qNewSession,
       qSetSandbox,
+      handleSetRichUi,
       handleRunCommand,
       qDismissActiveSession,
       qClearReadActiveSessions,
@@ -471,7 +498,7 @@ export const SessionTile = React.memo(function SessionTile({
         rows={qState.rows}
         turnRunning={qState.turnRunning}
         cwd={qState.session.cwd}
-        richUi={richUi}
+        richUi={tileRichUi}
         onPrompt={onPrompt}
         onFormState={qSetFormState}
         onRunCommand={handleRunCommand}

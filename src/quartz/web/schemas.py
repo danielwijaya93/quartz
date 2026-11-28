@@ -110,6 +110,14 @@ class SetSandboxFrame(_WireModel):
     enabled: StrictBool
 
 
+class SetRichUiFrame(_WireModel):
+    type: Literal["set_rich_ui"]
+    enabled: StrictBool
+    system_prompt_append: Annotated[str | None, BeforeValidator(_coerce_optional_str)] = Field(
+        default=None, alias="systemPromptAppend"
+    )
+
+
 class PermissionResponseFrame(_WireModel):
     type: Literal["permission_response"]
     request_id: str = Field(default="", alias="requestId")
@@ -153,6 +161,7 @@ ClientFrame = Annotated[
     | LoadSessionFrame
     | TrustProjectFrame
     | SetSandboxFrame
+    | SetRichUiFrame
     | PermissionResponseFrame
     | ActiveSessionDismissFrame
     | ActiveSessionsClearReadFrame
@@ -173,6 +182,7 @@ CLIENT_FRAME_TYPES: frozenset[str] = frozenset(
         "load_session",
         "trust_project",
         "set_sandbox",
+        "set_rich_ui",
         "permission_response",
         "active_session_dismiss",
         "active_sessions_clear_read",

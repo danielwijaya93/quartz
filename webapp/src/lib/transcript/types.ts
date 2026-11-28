@@ -155,6 +155,7 @@ export interface SessionMeta {
   bgFailed?: number;
   gitBranch?: string | null;
   sandboxed?: boolean;
+  richUi?: boolean;
   pendingPermission?: PendingPermission | null;
   watcher?: WatcherState | null;
 }

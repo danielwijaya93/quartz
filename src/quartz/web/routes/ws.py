@@ -34,6 +34,7 @@ from quartz.web.schemas import (
     NotificationsReadFrame,
     PermissionResponseFrame,
     PromptFrame,
+    SetRichUiFrame,
     SetSandboxFrame,
     SteerFrame,
     TrustProjectFrame,
@@ -119,7 +120,6 @@ async def _dispatch(
 
     try:
         if isinstance(frame, HelloFrame):
-            manager.set_system_prompt_append(frame.system_prompt_append or "")
             session: WebSession | None = None
             if isinstance(frame.session_id, str) and frame.session_id.strip():
                 with contextlib.suppress(Exception):
@@ -131,10 +131,15 @@ async def _dispatch(
             await asyncio.to_thread(remember_workspace, sidebar, session)
             from quartz.settings import load_settings
 
-            loaded, snapshot = await asyncio.gather(
-                asyncio.to_thread(load_settings),
-                session.asnapshot(),
-            )
+            loaded = await asyncio.to_thread(load_settings)
+            session_rich_ui = getattr(session.runtime.active_session, "rich_ui", None)
+            if session_rich_ui is False:
+                session.set_system_prompt_append("")
+            elif frame.system_prompt_append is not None:
+                session.set_system_prompt_append(frame.system_prompt_append)
+            elif not loaded.rich_ui:
+                session.set_system_prompt_append("")
+            snapshot = await session.asnapshot()
             snapshot["settings"] = {
                 "notifications": loaded.notifications,
                 "notifyTurn": loaded.notify_turn,
@@ -223,6 +228,11 @@ async def _dispatch(
         elif isinstance(frame, SetSandboxFrame):
             session = await _ensure_conn_session(manager, conn, push, app)
             await session.aset_sandbox(frame.enabled)
+            session.emit(await session.asnapshot())
+
+        elif isinstance(frame, SetRichUiFrame):
+            session = await _ensure_conn_session(manager, conn, push, app)
+            await session.aset_rich_ui(frame.enabled, frame.system_prompt_append or "")
             session.emit(await session.asnapshot())
 
         elif isinstance(frame, PermissionResponseFrame):

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from quartz.core.commands import COMMAND_REGISTRY, serves_web
 from quartz.core.turn import TurnOutcome
-from quartz.settings import project_trust_status
+from quartz.settings import load_settings, project_trust_status
 from quartz.web.bridge import Frame
 
 if TYPE_CHECKING:
@@ -125,6 +125,11 @@ def build_session_snapshot(
         "bgCount": int(getattr(runtime.kernel, "running_bash_count", lambda: 0)()),
         "gitBranch": _git_branch(runtime.cwd),
         "sandboxed": bool(getattr(getattr(runtime.kernel, "_sandbox_config", None), "enabled", False)),
+        "richUi": (
+            runtime.active_session.rich_ui
+            if getattr(runtime.active_session, "rich_ui", None) is not None
+            else load_settings().rich_ui
+        ),
         "pendingPermission": pending_permission,
     }
 

@@ -75,6 +75,12 @@ export interface SetSandboxFrame {
   enabled: boolean;
 }
 
+export interface SetRichUiFrame {
+  type: "set_rich_ui";
+  enabled: boolean;
+  systemPromptAppend?: string | null;
+}
+
 export interface PermissionResponseFrame {
   type: "permission_response";
   requestId?: string;
@@ -118,6 +124,7 @@ export type GeneratedClientFrame =
   | LoadSessionFrame
   | TrustProjectFrame
   | SetSandboxFrame
+  | SetRichUiFrame
   | PermissionResponseFrame
   | ActiveSessionDismissFrame
   | ActiveSessionsClearReadFrame

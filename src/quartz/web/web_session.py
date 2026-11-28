@@ -247,6 +247,15 @@ class WebSession:
         self.bind_loop(asyncio.get_running_loop())
         await asyncio.to_thread(self.set_sandbox, enabled)
 
+    def set_rich_ui(self, enabled: bool, system_prompt_append: str = "") -> None:
+        """Persist per-session Rich UI toggle and update only this session's prompt append."""
+        self.runtime.active_session.set_rich_ui(enabled)
+        self.set_system_prompt_append(system_prompt_append if enabled else "")
+
+    async def aset_rich_ui(self, enabled: bool, system_prompt_append: str = "") -> None:
+        self.bind_loop(asyncio.get_running_loop())
+        await asyncio.to_thread(self.set_rich_ui, enabled, system_prompt_append)
+
     def _resume_cwd(self, session_id: str) -> Path:
         recorded = Session.recorded_cwd(session_id)
         return self._cwd if recorded is None else resolve_cwd(recorded, self._cwd)

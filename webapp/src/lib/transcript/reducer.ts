@@ -548,6 +548,7 @@ export function reduce(state: TranscriptState, message: ServerMessage): Transcri
           bgCount: message.bgCount ?? 0,
           gitBranch: message.gitBranch ?? null,
           sandboxed: message.sandboxed ?? false,
+          richUi: message.richUi ?? message.settings?.richUi ?? false,
           pendingPermission: message.pendingPermission ?? null,
           watcher: message.watcher ?? state.session.watcher ?? null,
         },
