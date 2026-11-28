@@ -132,15 +132,15 @@ TOOLS: list[ToolDef] = [
         "function": {
             "name": "ipython",
             "description": (
-                "Execute Python code in the persistent CPython REPL. "
-                "Top-level `await` is supported, and variables/functions persist across calls."
+                "Execute Python code in a fresh stateless CPython process with top-level `await`. "
+                "Variables do not persist across calls; batch related steps in one cell."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "code": {
                         "type": "string",
-                        "description": "Python code to execute in the REPL.",
+                        "description": "Python code to execute in a stateless CPython cell.",
                     }
                 },
                 "required": ["code"],

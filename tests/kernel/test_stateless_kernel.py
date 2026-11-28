@@ -264,3 +264,15 @@ def test_snapshots_module_and_dill_removed(tmp_path: Path) -> None:
     assert not hasattr(client, "snapshot")
     assert not hasattr(client, "restore")
     assert not hasattr(client, "list_vars")
+
+
+def test_tool_description_and_prompt_describe_stateless_execution() -> None:
+    from quartz.core.loop import TOOLS
+    from quartz.core.prompt import PROMPT_HEADER
+
+    tool_desc = TOOLS[0]["function"]["description"].lower()
+    header = PROMPT_HEADER.lower()
+    assert "stateless" in tool_desc
+    assert "persist across calls" not in tool_desc or "do not persist" in tool_desc
+    assert "stateless" in header
+    assert "do not persist" in header

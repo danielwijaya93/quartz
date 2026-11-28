@@ -412,7 +412,7 @@ def main() -> None:
     from quartz import __version__
 
     providers = _get_attr("PROVIDERS")
-    parser = argparse.ArgumentParser(description="quartz — minimal coding agent with a persistent Python REPL.")
+    parser = argparse.ArgumentParser(description="quartz — minimal coding agent with a stateless Python execution tool.")
     parser.add_argument("-V", "--version", action="version", version=f"quartz {__version__}")
     parser.add_argument("-p", "--prompt", help="Run a single prompt in headless mode and exit.")
     parser.add_argument(
