@@ -192,6 +192,8 @@ class TestHostBridgeServerSideValidation:
             ("gh", ["pr", "checks", "214", "--watch"]),
             ("gh", ["pr", "merge", "214", "--squash", "--delete-branch"]),
             ("gh", ["api", "repos/org/repo/issues"]),
+            ("gh", ["--help"]),
+            ("gh", ["--version"]),
             ("quartz", ["-p", "do task", "--cwd", ".", "--model", "gemini-4-hydrogen"]),
         ],
     )
@@ -204,6 +206,10 @@ class TestHostBridgeServerSideValidation:
             # Git flag & protocol RCE vectors
             ("git", ["-c", "core.sshCommand=id", "push"]),
             ("git", ["-ccore.sshCommand=id", "push"]),
+            ("git", ["-C", "evil_repo", "push"]),
+            ("git", ["-Cevil_repo", "push"]),
+            ("git", ["clone", "--config", "core.sshCommand=id", "https://example.com/r.git"]),
+            ("git", ["clone", "--config=core.sshCommand=id", "https://example.com/r.git"]),
             ("git", ["--config-env=core.sshCommand=X", "push"]),
             ("git", ["--exec-path=/tmp/evil", "fetch"]),
             ("git", ["--git-dir=/tmp/evil", "push"]),
@@ -223,6 +229,10 @@ class TestHostBridgeServerSideValidation:
             # gh token exfiltration & host RCE vectors
             ("gh", ["auth", "token"]),
             ("gh", ["auth", "login"]),
+            ("gh", ["auth", "--hostname", "github.com", "token"]),
+            ("gh", ["-R", "owner/repo", "auth", "token"]),
+            ("gh", ["--hostname", "github.com", "extension", "install", "evil/ext"]),
+            ("gh", ["--repo", "owner/repo", "config", "set", "editor", "evil"]),
             ("gh", ["extension", "install", "evil/ext"]),
             ("gh", ["alias", "set", "pwn", "!sh"]),
             ("gh", ["config", "set", "editor", "sh"]),
@@ -250,6 +260,43 @@ class TestHostBridgeServerSideValidation:
         res = handler.exec_bridge_sync({"tool": tool, "argv": argv, "cwd": str(tmp_path)})
         assert res["exit_code"] == 126
         assert prompted is False
+
+    def test_nested_git_subdir_rejected_before_prompt_or_spawn(self, tmp_path: Path) -> None:
+        (tmp_path / ".git").mkdir()
+        evil_sub = tmp_path / "sub"
+        (evil_sub / ".git").mkdir(parents=True)
+        (evil_sub / ".git" / "config").write_text("[core]\n\tsshCommand = id\n", encoding="utf-8")
+        deep_sub = evil_sub / "deep"
+        deep_sub.mkdir()
+        normal_sub = tmp_path / "normal_sub"
+        normal_sub.mkdir()
+
+        prompted = False
+
+        def _track_prompt(_req: object) -> str:
+            nonlocal prompted
+            prompted = True
+            return "reject"
+
+        handler = HostRpcHandler(
+            cwd=tmp_path,
+            permission_handler=_track_prompt,  # type: ignore[arg-type]
+            preapproved_scopes={"git_remote"},
+        )
+        for bad_dir in (evil_sub, deep_sub):
+            res = handler.exec_bridge_sync({"tool": "git", "argv": ["push"], "cwd": str(bad_dir)})
+            assert res["exit_code"] == 126
+            assert "nested .git" in res["stderr"]
+            assert prompted is False
+
+        # Normal subdirectory inheriting root .git is not rejected by nested-.git check
+        handler_reject = HostRpcHandler(cwd=tmp_path, permission_handler=_track_prompt)  # type: ignore[arg-type]
+        res_normal = handler_reject.exec_bridge_sync(
+            {"tool": "git", "argv": ["push"], "cwd": str(normal_sub)}
+        )
+        assert res_normal["exit_code"] == 126
+        assert "Permission rejected" in res_normal["stderr"]
+        assert prompted is True
 
 
 async def test_real_bwrap_hides_quartz_secrets_and_scrubs_env(

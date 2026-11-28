@@ -22,6 +22,7 @@ from quartz.kernel.bridge import (
     classify_bridge_scope,
     find_real_binary,
     format_command_display,
+    has_nested_git_dir,
     validate_bridge_command,
     validate_bridge_cwd,
 )
@@ -265,6 +266,12 @@ class HostRpcHandler:
             logger.warning("Host bridge rejected tool=%s argv=%s: %s", tool, argv[:20], validation_error)
             return _bridge_err(126, f"{validation_error}\n")
         target_cwd = validate_bridge_cwd(params.get("cwd"), self.cwd)
+        if tool == "git" and has_nested_git_dir(target_cwd, self.cwd):
+            logger.warning("Host bridge rejected git in nested .git subdir: %s", target_cwd)
+            return _bridge_err(
+                126,
+                "Host bridge rejected git command in subdirectory containing nested .git.\n",
+            )
         scope = classify_bridge_scope(tool, argv)
         req = PermissionRequest(
             tool=tool,
