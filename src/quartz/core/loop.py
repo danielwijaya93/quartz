@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import json
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
@@ -30,6 +29,7 @@ from quartz.core.loop_model import (
 )
 from quartz.core.loop_model import _call_model as _model_call
 from quartz.core.loop_model import _call_model_once as _model_call_once
+from quartz.core.pricing import TurnUsage
 from quartz.core.progress import ProgressCheckpointer, announced_to_user
 from quartz.core.session import repair_dangling_tool_calls
 from quartz.errors import ContextOverflowError
@@ -52,78 +52,6 @@ __all__ = [
     "agent_loop",
     "drain_bash_events",
 ]
-
-
-@dataclasses.dataclass
-class TurnUsage:
-    """Cumulative token usage across turns in a session."""
-
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    cached_tokens: int = 0
-    total_prompt_tokens: int = 0
-    total_completion_tokens: int = 0
-    total_cached_tokens: int = 0
-
-    def update(self, usage: Any) -> None:
-        if usage is None:
-            return
-        pt = getattr(usage, "input_tokens", None)
-        if pt is None:
-            pt = getattr(usage, "prompt_tokens", 0) or 0
-        ct = getattr(usage, "output_tokens", None)
-        if ct is None:
-            ct = getattr(usage, "completion_tokens", 0) or 0
-        cached = getattr(usage, "cached_tokens", None)
-        if cached is None:
-            cached = 0
-            details = getattr(usage, "prompt_tokens_details", None)
-            if details is not None:
-                cached = getattr(details, "cached_tokens", 0) or 0
-        pt, ct, cached = int(pt or 0), int(ct or 0), int(cached or 0)
-        if pt:
-            self.prompt_tokens = pt
-            self.cached_tokens = cached
-        if ct:
-            self.completion_tokens = ct
-        self.total_prompt_tokens += pt
-        self.total_completion_tokens += ct
-        self.total_cached_tokens += cached
-
-    @property
-    def cache_hit_rate(self) -> float:
-        if self.prompt_tokens <= 0:
-            return 0.0
-        return min(1.0, max(0.0, self.cached_tokens / self.prompt_tokens))
-
-    def context_pct(self, max_tokens: int) -> float:
-        return (self.prompt_tokens / max_tokens * 100.0) if max_tokens > 0 else 0.0
-
-    def is_overflowing(self, max_tokens: int) -> bool:
-        return max_tokens > 0 and self.prompt_tokens > max_tokens
-
-    def to_dict(self) -> dict[str, int]:
-        return {
-            "prompt_tokens": self.prompt_tokens,
-            "completion_tokens": self.completion_tokens,
-            "cached_tokens": self.cached_tokens,
-            "total_prompt_tokens": self.total_prompt_tokens,
-            "total_completion_tokens": self.total_completion_tokens,
-            "total_cached_tokens": self.total_cached_tokens,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, int] | None) -> TurnUsage:
-        if not data:
-            return cls()
-        return cls(
-            prompt_tokens=int(data.get("prompt_tokens", 0)),
-            completion_tokens=int(data.get("completion_tokens", 0)),
-            cached_tokens=int(data.get("cached_tokens", 0)),
-            total_prompt_tokens=int(data.get("total_prompt_tokens", 0)),
-            total_completion_tokens=int(data.get("total_completion_tokens", 0)),
-            total_cached_tokens=int(data.get("total_cached_tokens", 0)),
-        )
 
 
 TOOLS: list[ToolDef] = [
@@ -460,7 +388,7 @@ async def agent_loop(
             last_prompt_tokens = int(usage.input_tokens)
         measured_count = len(messages)
         if usage_stats is not None and usage is not None:
-            usage_stats.update(usage)
+            usage_stats.update(usage, model=model)
 
         tool_calls = assistant_dict.get("tool_calls") or []
         if not tool_calls and assistant_dict.get("content") is None and _drain_steering(steering_queue, messages, observer):

@@ -18,6 +18,7 @@ from quartz.core.commands import parse_expand_range
 # name stays here because this is where callers (and tests) look for it.
 from quartz.core.compact import CompactionReason, CompactionResult
 from quartz.core.loop import TurnUsage
+from quartz.core.pricing import format_cost_usd
 from quartz.kernel.actions import describe_cell_actions, describe_cell_intent
 from quartz.kernel.client import CellResult
 from quartz.tui.banner import _fmt_k, format_usage_metrics
@@ -743,4 +744,7 @@ def _format_turn_timing(
 
 def _format_turn_footer(usage: TurnUsage, max_context_tokens: int) -> str:
     ctx_value, cache_value = format_usage_metrics(usage, max_context_tokens)
-    return f"ctx {ctx_value} · CH {cache_value}"
+    base = f"ctx {ctx_value} · CH {cache_value}"
+    if usage.total_cost_usd > 0:
+        return f"{base} · {format_cost_usd(usage.total_cost_usd)}"
+    return base

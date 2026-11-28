@@ -144,10 +144,15 @@ def _parse_usage(raw: Any) -> Usage | None:
         # normalizes to ``prompt_tokens_details.cached_tokens``, so this is
         # only a fallback for the direct-DeepSeek shape.
         cached = int(raw.get("prompt_cache_hit_tokens") or 0)
+    raw_cost = raw.get("cost")
+    cost_usd: float | None = None
+    if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool):
+        cost_usd = float(raw_cost)
     return Usage(
         input_tokens=int(raw.get("prompt_tokens") or 0),
         output_tokens=int(raw.get("completion_tokens") or 0),
         cached_tokens=cached,
+        cost_usd=cost_usd,
     )
 
 
