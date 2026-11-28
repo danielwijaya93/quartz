@@ -13,11 +13,9 @@ from __future__ import annotations
 import os
 
 from quartz.auth.google import load_google_credentials
-from quartz.auth.google_ai_plan import load_google_ai_plan_credentials
 from quartz.errors import CredentialError, EndpointConfigError
 from quartz.providers.base import LLMProvider
 from quartz.providers.google import GoogleAntigravityProvider
-from quartz.providers.google_interactions import GoogleInteractionsProvider
 from quartz.providers.registry import (
     PROVIDERS,
     list_logged_in_providers,
@@ -34,8 +32,6 @@ def _provider_ready(provider: str) -> bool:
     if not pspec:
         return False
     if pspec.auth_type == "oauth":
-        if provider == "google-ai-plan":
-            return load_google_ai_plan_credentials() is not None
         return load_google_credentials() is not None
     api_key, _, _ = resolve_provider_credentials(provider)
     return bool(api_key)
@@ -44,12 +40,7 @@ def _provider_ready(provider: str) -> bool:
 def _provider_status_label(provider: str) -> str:
     pspec = PROVIDERS[provider]
     if pspec.auth_type == "oauth":
-        logged_in = (
-            load_google_ai_plan_credentials() is not None
-            if provider == "google-ai-plan"
-            else load_google_credentials() is not None
-        )
-        return "logged in • oauth" if logged_in else "not logged in • oauth"
+        return "logged in • oauth" if load_google_credentials() is not None else "not logged in • oauth"
     _, _, source = resolve_provider_credentials(provider)
     if source == "auth.json":
         return "logged in • api key"
@@ -69,7 +60,6 @@ def build_provider(
     required credentials are missing.
     """
     has_google = load_google_credentials() is not None
-    has_google_ai_plan = load_google_ai_plan_credentials() is not None
     logged_in = list_logged_in_providers()
     saved = load_model_config()
     env_model = model_override or os.getenv("MODEL")
@@ -78,16 +68,10 @@ def build_provider(
         saved_provider = saved.get("provider")
         if saved_provider in PROVIDERS and _provider_ready(saved_provider):
             chosen_provider = saved_provider
-        elif env_model and env_model.startswith("gemini-") and has_google_ai_plan:
-            chosen_provider = "google-ai-plan"
         elif env_model and env_model.startswith("gemini-") and has_google:
             chosen_provider = "google"
-        elif any(p in PROVIDERS and p not in ("google", "google-ai-plan") for p in logged_in):
-            chosen_provider = next(
-                p for p in PROVIDERS if p not in ("google", "google-ai-plan") and p in logged_in
-            )
-        elif has_google_ai_plan:
-            chosen_provider = "google-ai-plan"
+        elif any(p in PROVIDERS and p != "google" for p in logged_in):
+            chosen_provider = next(p for p in PROVIDERS if p != "google" and p in logged_in)
         elif has_google:
             chosen_provider = "google"
         else:
@@ -133,15 +117,6 @@ def build_provider(
                 "Not logged in to Google. Run `/login google` or `quartz auth login google` first."
             )
         return GoogleAntigravityProvider(
-            shared_http=shared_http,
-        ), chosen_provider, model, effort
-
-    if spec.backend == "google_interactions":
-        if not has_google_ai_plan:
-            raise CredentialError(
-                "Not logged in to Google AI Plan. Run `/login google-ai-plan` or `quartz auth login google-ai-plan` first."
-            )
-        return GoogleInteractionsProvider(
             shared_http=shared_http,
         ), chosen_provider, model, effort
 
