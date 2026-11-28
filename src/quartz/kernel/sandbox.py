@@ -140,6 +140,8 @@ class SandboxConfig:
     allow_ro_paths: tuple[str, ...] = DEFAULT_ALLOW_RO_PATHS
     mask_files: tuple[str, ...] = DEFAULT_MASK_FILES
     env_passthrough: tuple[str, ...] = ()
+    scratch_tmp_dir: Path | None = None
+    cache_dir: Path | None = None
 
 
 def _expand_home(raw: str, home: Path) -> Path:
@@ -244,6 +246,20 @@ def build_bwrap_command(
     resolved_cwd = cwd.resolve()
     resolved_home = (home or Path.home()).resolve()
 
+    tmp_mount: list[str] = ["--tmpfs", "/tmp"]
+    if cfg.scratch_tmp_dir is not None:
+        resolved_scratch = cfg.scratch_tmp_dir.resolve()
+        resolved_scratch.mkdir(parents=True, exist_ok=True)
+        tmp_mount = ["--bind", str(resolved_scratch), "/tmp"]
+
+    cache_mount: list[str] = []
+    if cfg.cache_dir is not None:
+        resolved_cache = cfg.cache_dir.resolve()
+        resolved_cache.mkdir(parents=True, exist_ok=True)
+        if cfg.scratch_tmp_dir is not None:
+            (cfg.scratch_tmp_dir.resolve() / "quartz-cache").mkdir(parents=True, exist_ok=True)
+        cache_mount = ["--bind", str(resolved_cache), _SANDBOX_CACHE_ROOT]
+
     args: list[str] = [
         bwrap_bin,
         "--ro-bind",
@@ -253,8 +269,8 @@ def build_bwrap_command(
         "/dev",
         "--proc",
         "/proc",
-        "--tmpfs",
-        "/tmp",
+        *tmp_mount,
+        *cache_mount,
         "--bind",
         str(resolved_cwd),
         str(resolved_cwd),
