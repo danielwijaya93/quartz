@@ -1,14 +1,18 @@
 # Quartz
 
-Minimal coding agent with a stateless, sandboxed Python execution tool.
+A lightweight, token-efficient coding agent built around sandboxed Python cells.
 
 ## Why Quartz
 
-- **Sandboxed Python cells:** Each `ipython` call runs in a fresh `bwrap` Python 3.14 worker (`~/.quartz` masked, 0 MB idle RAM) with a per-session `/tmp` scratch directory and shared `~/.quartz/sandbox-cache`.
-- **Fast & lightweight:** ~162 ms CLI startup, ~120 MB shared `asyncio` web server across concurrent sessions, and SQLite WAL + FTS5 session search.
-- **Token-efficient on complex tasks:** Native Python stdlib plus built-in REPL helpers (`read`, `edit`, `rg`, `outline`, `env_info`, `bash`) let the model chain multi-step work in fewer round-trips.
-- **Multi-provider, login-only auth:** Supports Google Antigravity (OAuth), OpenAI, OpenRouter, DeepSeek, and custom OpenAI-compatible endpoints via `~/.quartz/auth.json`.
-- **TUI, Web & Headless:** Terminal UI (`quartz`), browser/mobile UI (`quartz web`) with optional Rich UI (OpenUI), single-prompt `-p` mode, and MCP tool support.
+- **Token-efficient by design:** Gives the model a Python 3.14 REPL (`ipython`) with built-in helpers (`read`, `edit`, `rg`, `outline`, `env_info`, `bash`), chaining multi-step work into fewer round-trips instead of burning tokens on dozens of shell calls.
+- **Fast and light on resources:** ~162 ms CLI startup, ~43 MB per headless run, and a shared ~120 MB `asyncio` web server across concurrent sessions—defying Python's heavy-runtime reputation.
+- **Toggleable Generative UI (OpenUI):** Switch between clean Markdown and rich interactive UI (charts, tables, forms, KPIs) per session in the web/mobile interface.
+- **Built-in non-blocking subagents:** Delegate parallel tasks to background `quartz -p` workers without blocking the main session.
+- **Built-in agent automation:** Schedule recurring or event-driven agents via cron jobs and webhooks directly in `quartz web`.
+- **Autonomous & anti-stall:** Goal mode, background job tracking, and enforced progress check-ins keep long-running coding sessions moving without silent stalls.
+- **Toggleable OS sandbox:** Runs inside `bwrap` (Linux) / Seatbelt (macOS) by default with per-session `/tmp` and shared cache, or disable with `--sandbox-off` on dedicated machines.
+- **Self-improving workflow:** Instant session search via SQLite WAL + FTS5 and user-extensible `~/.quartz/helpers.py` / `.quartz/helpers.py` functions.
+- **Modern agent standard:** Progressive `SKILL.md` and MCP loading, global + repo `AGENTS.md` discovery, and multi-provider login-only auth (`~/.quartz/auth.json`) for Google Antigravity, OpenAI, OpenRouter, DeepSeek, and custom endpoints.
 
 ## Installation
 
@@ -20,8 +24,7 @@ cd quartz
 uv tool install --editable .
 ```
 
-> After pulling dependency changes in `pyproject.toml` or `uv.lock`, refresh the global tool with:
-> `uv tool install --editable . --force`
+> After pulling dependency changes in `pyproject.toml` or `uv.lock`, refresh with `uv tool install --editable . --force`.
 
 ## First-Time Usage
 
@@ -40,7 +43,7 @@ uv tool install --editable .
    # Web UI (prints the local URL + auth token)
    quartz web
 
-   # Headless single-turn prompt
+   # Headless single-turn prompt (or disable sandbox with --sandbox-off)
    quartz -p "Summarize this repository."
    ```
 
