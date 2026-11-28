@@ -109,6 +109,21 @@ PROVIDERS: dict[str, ProviderSpec] = {
         default_model="gemini-3.8-flash-medium",
         default_effort="medium",
     ),
+    "google-ai-plan": ProviderSpec(
+        label="Google AI Plan (OAuth)",
+        backend="google_interactions",
+        auth_type="oauth",
+        models=(
+            "gemini-4-hydrogen",
+            "gemini-4-neon",
+            "gemini-4-carbon",
+            "gemini-3.5-flash-lite",
+        ),
+        efforts=("low", "medium", "high", "xhigh"),
+        default_model="gemini-4-hydrogen",
+        default_effort="medium",
+        default_context_tokens=1_048_576,
+    ),
     "custom": ProviderSpec(
         label="Custom OpenAI-Compatible (API Key)",
         backend="openai",
@@ -316,6 +331,8 @@ def discover_models(
 
         discovered = discover_antigravity_models(use_cache=use_cache, timeout=timeout_s)
         return (discovered, None) if discovered else (fallback, None)
+    if spec is not None and spec.backend == "google_interactions":
+        return fallback, None
 
     owned_client: LLMProvider | None = None
     cache_key: tuple[str, str] | None = None
