@@ -858,7 +858,7 @@ def format_helpers_for_prompt(loaded: LoadedHelpers) -> str:
         "## REPL Functions",
         "- `bash(command, timeout=600) -> BashHandle`: background shell (`await handle -> BashResult(.exit_code, .output, .duration)`, "
         "`.pid`, `.running`, `.tail(n=50)`, `.output()`, `.poll()`, `.kill()`). Emits `[bash-done]` on completion and `[bash-status]` while running "
-        "(update user, don't kill). Use `launch_worker(prompt_file, cwd, session_id)` or `bash()` (never `Popen`/`sh()`) for `quartz -p` workers. "
+        "(update user, don't kill). Use `launch_worker(prompt_file, cwd, session_id)` or `bash()` (never `Popen`/`run()`) for `quartz -p` workers. "
         "In `-p` runs, `bash()` runs synchronously and `launch_worker` is refused.",
         "- `ls(path='.')`, `find(pattern='*', path='.', limit=200)`, `rg(pattern, path='.', glob=None, max_hits=100, fixed=False, context=0)` "
         "(use raw strings r'...' for regex patterns with backslashes, fixed=True for literal string search, context=3 for surrounding lines)",
