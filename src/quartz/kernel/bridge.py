@@ -91,7 +91,9 @@ def is_quartz_local_only(argv: list[str] | tuple[str, ...]) -> bool:
 
 _FORBIDDEN_GIT_FLAGS: frozenset[str] = frozenset(
     {
+        "-C",
         "-c",
+        "--config",
         "--config-env",
         "--exec-path",
         "--git-dir",
@@ -119,7 +121,7 @@ def _validate_git_bridge_argv(argv: list[str] | tuple[str, ...]) -> str | None:
         if arg == "--":
             break
         flag = arg.split("=", 1)[0]
-        if flag in _FORBIDDEN_GIT_FLAGS or (arg.startswith("-c") and len(arg) > 2):
+        if flag in _FORBIDDEN_GIT_FLAGS or (arg.startswith(("-c", "-C")) and len(arg) > 2):
             return f"Host bridge rejected forbidden git flag: {flag!r}"
     for arg in argv:
         lower = arg.lower()
@@ -159,17 +161,28 @@ def _validate_quartz_bridge_argv(argv: list[str] | tuple[str, ...]) -> str | Non
     return None
 
 
+_GH_BENIGN_LEADING_FLAGS: frozenset[str] = frozenset({"-h", "--help", "--version"})
+
+
 def _validate_gh_bridge_argv(argv: list[str] | tuple[str, ...]) -> str | None:
-    positionals = [a for a in argv if not a.startswith("-")]
-    if not positionals:
+    if not argv:
         return None
-    top = positionals[0]
+    if argv[0].startswith("-"):
+        if all(arg in _GH_BENIGN_LEADING_FLAGS for arg in argv):
+            return None
+        return f"Host bridge rejected leading gh flag before subcommand: {argv[0]!r}"
+    top = argv[0]
     if top in _FORBIDDEN_GH_TOP_SUBCOMMANDS:
         return f"Host bridge rejected forbidden gh subcommand: 'gh {top}'"
-    if top == "auth" and len(positionals) >= 2 and positionals[1] in _FORBIDDEN_GH_AUTH_SUBCOMMANDS:
-        return f"Host bridge rejected forbidden gh auth subcommand: 'gh auth {positionals[1]}'"
-    if top == "config" and len(positionals) >= 2 and positionals[1] == "set":
-        return "Host bridge rejected forbidden gh subcommand: 'gh config set'"
+    if top in ("auth", "config") and len(argv) >= 2:
+        if argv[1].startswith("-"):
+            if all(arg in ("-h", "--help") for arg in argv[1:]):
+                return None
+            return f"Host bridge rejected leading gh {top} flag before subcommand: {argv[1]!r}"
+        if top == "auth" and argv[1] in _FORBIDDEN_GH_AUTH_SUBCOMMANDS:
+            return f"Host bridge rejected forbidden gh auth subcommand: 'gh auth {argv[1]}'"
+        if top == "config" and argv[1] == "set":
+            return "Host bridge rejected forbidden gh subcommand: 'gh config set'"
     return None
 
 
@@ -214,6 +227,19 @@ def validate_bridge_cwd(requested_cwd: str | None, workspace_cwd: Path) -> Path:
     if candidate == root or root in candidate.parents:
         return candidate if candidate.is_dir() else root
     return root
+
+
+def has_nested_git_dir(target_cwd: Path, workspace_cwd: Path) -> bool:
+    """True if ``target_cwd`` or any ancestor below ``workspace_cwd`` contains a ``.git`` entry."""
+    root = workspace_cwd.resolve()
+    cur = target_cwd.resolve()
+    if cur != root and root not in cur.parents:
+        return False
+    while cur != root:
+        if os.path.lexists(cur / ".git"):
+            return True
+        cur = cur.parent
+    return False
 
 
 def find_real_binary(name: str, *, exclude_dir: Path | None = None) -> str | None:
