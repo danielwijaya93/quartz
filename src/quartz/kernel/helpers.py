@@ -685,6 +685,65 @@ def find_skills(
     return matches
 
 
+_DEFAULT_ENV_TOOLS = (
+    "uv",
+    "python3",
+    "python",
+    "pytest",
+    "ruff",
+    "pyright",
+    "node",
+    "npm",
+    "bun",
+    "cargo",
+    "go",
+    "git",
+    "rg",
+)
+_ENV_MANIFESTS = (
+    "pyproject.toml",
+    "uv.lock",
+    "package.json",
+    "Cargo.toml",
+    "go.mod",
+    "Makefile",
+    "justfile",
+)
+
+
+def env_info(*tools: str, cwd: str | Path = ".") -> str:
+    """Inspect available runtimes, local venvs, project manifests, and PATH tools in one call."""
+    base = _require_dir(str(cwd))
+    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    lines = [f"cwd: {base}", f"python: {py_ver} ({sys.executable})"]
+
+    probe_tools = list(dict.fromkeys([*_DEFAULT_ENV_TOOLS, *tools]))
+    found_tools: list[str] = []
+    missing_extra: list[str] = []
+    extra_set = set(tools)
+    for name in probe_tools:
+        resolved = shutil.which(name)
+        if resolved:
+            found_tools.append(f"{name}={resolved}")
+        elif name in extra_set:
+            missing_extra.append(f"{name}: not found")
+    lines.append(f"tools: {', '.join(found_tools) if found_tools else 'none'}")
+    if missing_extra:
+        lines.extend(missing_extra)
+
+    venv_parts: list[str] = []
+    for rel in (".venv/bin", "venv/bin", "node_modules/.bin"):
+        vdir = base / rel
+        if vdir.is_dir():
+            bins = sorted(p.name for p in vdir.iterdir() if p.is_file() or p.is_symlink())[:20]
+            venv_parts.append(f"{rel} [{', '.join(bins)}]")
+    lines.append(f"venvs: {'; '.join(venv_parts) if venv_parts else 'none'}")
+
+    manifests = [name for name in _ENV_MANIFESTS if (base / name).is_file()]
+    lines.append(f"manifests: {', '.join(manifests) if manifests else 'none'}")
+    return "\n".join(lines)
+
+
 BUILTIN_HELPERS: dict[str, Callable[..., Any]] = {
     "ls": ls,
     "find": find,
@@ -696,6 +755,7 @@ BUILTIN_HELPERS: dict[str, Callable[..., Any]] = {
     "view_image": view_image,
     "attach_file": attach_file,
     "find_skills": find_skills,
+    "env_info": env_info,
 }
 
 def _check_python_source(path: Path, content: str) -> list[str]:
@@ -863,7 +923,7 @@ def format_helpers_for_prompt(loaded: LoadedHelpers) -> str:
         "- `ls(path='.')`, `find(pattern='*', path='.', limit=200)`, `rg(pattern, path='.', glob=None, max_hits=100, fixed=False, context=0)` "
         "(use raw strings r'...' for regex patterns with backslashes, fixed=True for literal string search, context=3 for surrounding lines)",
         "- `outline(path)` (compact class/function line-range map for navigating files before reading), "
-        "`read(*paths, start=1, end=200, raw=False)` (pass multiple paths to batch; pass `raw=True` for unnumbered lines before `edit()`), `edit(path, old, new)`, `write(path, content)`, `view_image(path)`, `attach_file(path, label=None)`, `find_skills(query='', limit=20)`, `gather(*coros)`",
+        "`read(*paths, start=1, end=200, raw=False)` (pass multiple paths to batch; pass `raw=True` for unnumbered lines before `edit()`), `edit(path, old, new)`, `write(path, content)`, `view_image(path)`, `attach_file(path, label=None)`, `find_skills(query='', limit=20)`, `env_info(*tools, cwd='.')` (inspect available runtimes, PATH tools, local venvs, and project manifests in one call), `gather(*coros)`",
         "- Python stdlib modules (e.g. `Path`, `os`, `json`, `re`, `datetime`, `subprocess`, `collections`, etc.) "
         "are auto-imported on attribute access in `<ipython>` cells, while explicit imports are still required "
         "when writing or editing project `.py` files.",
