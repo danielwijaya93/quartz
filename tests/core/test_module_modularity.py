@@ -22,6 +22,10 @@ DECOMPOSED_MODULES = (
     "src/quartz/web/routes/settings_ops.py",
     "src/quartz/web/routes/bots.py",
     "src/quartz/web/routes/bots_helpers.py",
+    "src/quartz/web/session_manager.py",
+    "src/quartz/web/session_fanout.py",
+    "src/quartz/web/session_reaper.py",
+    "src/quartz/web/session_activity.py",
 )
 
 
