@@ -147,6 +147,22 @@ describe("Connection", () => {
     ]);
   });
 
+  it("carries systemPromptAppend on new_session and load_session when set", () => {
+    const { connection, sockets } = makeConnection();
+    connection.setSystemPromptAppend("USE_OPENUI");
+    connection.connect();
+    sockets[0]?.open();
+    sockets[0]!.sent.length = 0;
+
+    connection.sendNewSession("/tmp/proj");
+    connection.sendLoadSession("s-10");
+
+    expect(sockets[0]?.sent.map((frame) => JSON.parse(frame))).toEqual([
+      { type: "new_session", cwd: "/tmp/proj", systemPromptAppend: "USE_OPENUI" },
+      { type: "load_session", sessionId: "s-10", systemPromptAppend: "USE_OPENUI" },
+    ]);
+  });
+
   it("returns false instead of throwing when the socket is not open", () => {
     const { connection } = makeConnection();
     expect(connection.sendPrompt("x")).toBe(false);

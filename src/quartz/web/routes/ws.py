@@ -97,6 +97,36 @@ def _replay_live_turn(
         push({"type": "status", "label": session.turn_status})
 
 
+def _sync_session_rich_ui_prompt(
+    session: WebSession,
+    manager: SessionManager,
+    loaded: Any,
+    explicit_append: str | None = None,
+    *,
+    allow_explicit: bool = False,
+    clear_when_off: bool = True,
+) -> None:
+    session_rich_ui = getattr(session.runtime.active_session, "rich_ui", None)
+    if session_rich_ui is False:
+        session.set_system_prompt_append("")
+        return
+    effective = session_rich_ui if session_rich_ui is not None else bool(loaded.rich_ui)
+    cleaned = (explicit_append or "").strip()
+    if allow_explicit and explicit_append is not None:
+        if cleaned:
+            manager.cache_rich_ui_prompt(cleaned)
+        session.set_system_prompt_append(cleaned)
+        return
+    if effective:
+        if cleaned:
+            manager.cache_rich_ui_prompt(cleaned)
+        prompt = cleaned or manager.rich_ui_prompt
+        if prompt:
+            session.set_system_prompt_append(prompt)
+    elif clear_when_off:
+        session.set_system_prompt_append("")
+
+
 async def _dispatch(
     manager: SessionManager,
     conn: _ConnState,
@@ -132,13 +162,9 @@ async def _dispatch(
             from quartz.settings import load_settings
 
             loaded = await asyncio.to_thread(load_settings)
-            session_rich_ui = getattr(session.runtime.active_session, "rich_ui", None)
-            if session_rich_ui is False:
-                session.set_system_prompt_append("")
-            elif frame.system_prompt_append is not None:
-                session.set_system_prompt_append(frame.system_prompt_append)
-            elif not loaded.rich_ui:
-                session.set_system_prompt_append("")
+            _sync_session_rich_ui_prompt(
+                session, manager, loaded, frame.system_prompt_append, allow_explicit=True
+            )
             snapshot = await session.asnapshot()
             snapshot["settings"] = {
                 "notifications": loaded.notifications,
@@ -187,6 +213,10 @@ async def _dispatch(
             before = (session.runtime.active_session.id, session.runtime.model, session.runtime.effort)
             ok, result = await session.run_command_async(frame.name, frame.arg or "")
             push({"type": "command_result", "name": frame.name.lstrip("/"), "ok": ok, "result": command_payload(result)})
+            if session.runtime.active_session.id != before[0]:
+                from quartz.settings import load_settings
+
+                _sync_session_rich_ui_prompt(session, manager, await asyncio.to_thread(load_settings))
             if (session.runtime.active_session.id, session.runtime.model, session.runtime.effort) != before:
                 push(session.snapshot())
 
@@ -202,6 +232,12 @@ async def _dispatch(
             session = await manager.acreate_session(resolved_cwd)
             _switch_connection(conn, session, push, app)
             await asyncio.to_thread(remember_workspace, sidebar, session)
+            from quartz.settings import load_settings
+
+            loaded = await asyncio.to_thread(load_settings)
+            _sync_session_rich_ui_prompt(
+                session, manager, loaded, frame.system_prompt_append, clear_when_off=False
+            )
             snapshot = await session.asnapshot()
             snapshot["watcher"] = manager.watcher.state_payload(session.runtime.active_session.id)
             push(snapshot)
@@ -214,6 +250,10 @@ async def _dispatch(
                 return
             session = await manager.aget_or_load_session(session_id)
             _switch_connection(conn, session, push, app)
+            from quartz.settings import load_settings
+
+            loaded = await asyncio.to_thread(load_settings)
+            _sync_session_rich_ui_prompt(session, manager, loaded, frame.system_prompt_append)
             snapshot = await session.asnapshot()
             snapshot["watcher"] = manager.watcher.state_payload(session.runtime.active_session.id)
             push(snapshot)
@@ -232,7 +272,13 @@ async def _dispatch(
 
         elif isinstance(frame, SetRichUiFrame):
             session = await _ensure_conn_session(manager, conn, push, app)
-            await session.aset_rich_ui(frame.enabled, frame.system_prompt_append or "")
+            prompt = (frame.system_prompt_append or "").strip()
+            if frame.enabled:
+                if prompt:
+                    manager.cache_rich_ui_prompt(prompt)
+                else:
+                    prompt = manager.rich_ui_prompt
+            await session.aset_rich_ui(frame.enabled, prompt)
             session.emit(await session.asnapshot())
 
         elif isinstance(frame, PermissionResponseFrame):

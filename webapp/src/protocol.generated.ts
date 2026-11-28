@@ -59,11 +59,13 @@ export interface CommandFrame {
 export interface NewSessionFrame {
   type: "new_session";
   cwd?: string | null;
+  systemPromptAppend?: string | null;
 }
 
 export interface LoadSessionFrame {
   type: "load_session";
   sessionId?: string;
+  systemPromptAppend?: string | null;
 }
 
 export interface TrustProjectFrame {
