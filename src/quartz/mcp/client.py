@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -532,13 +533,17 @@ class MCPManager:
                 self._on_image(img)
         return unwrapped
 
-    async def close(self) -> None:
-        """Close all active MCP client sessions concurrently."""
+    async def close(self, timeout: float = 3.0) -> None:
+        """Close all active MCP client sessions concurrently with a bounded timeout."""
         stacks = list(self._stacks.values())
         self._stacks.clear()
         self._sessions.clear()
         if stacks:
-            await asyncio.gather(*(stack.aclose() for stack in stacks), return_exceptions=True)
+            with contextlib.suppress(TimeoutError, asyncio.CancelledError, Exception):
+                await asyncio.wait_for(
+                    asyncio.gather(*(stack.aclose() for stack in stacks), return_exceptions=True),
+                    timeout=timeout,
+                )
 
 
 class HostMCPProxy:

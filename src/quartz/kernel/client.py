@@ -309,6 +309,7 @@ class KernelClient(KernelClientTransport):
             if proc.returncode is None:
                 self._kill_proc_group(proc, signal.SIGKILL, sandbox_child_pid=child_pid)
         io_loop = self._io_loop
+        mcp_closed = False
         if io_loop is not None and io_loop.is_running() and not io_loop.is_closed():
             try:
                 running = asyncio.get_running_loop()
@@ -318,13 +319,16 @@ class KernelClient(KernelClientTransport):
                 self._bash_manager.close_all()
             else:
                 with contextlib.suppress(Exception):
-                    run_on_loop(io_loop, self._aclose_bash_on_loop(), timeout=2.0)
+                    run_on_loop(io_loop, self._aclose_on_loop(), timeout=4.0)
+                    mcp_closed = True
         else:
             self._bash_manager.close_all()
         self._close_bridge_server()
-        self._host_rpc.close_mcp()
+        if not mcp_closed:
+            self._host_rpc.close_mcp()
         self._cleanup_scratch_dir()
         self.wake_event_waiters(result=False)
 
-    async def _aclose_bash_on_loop(self) -> None:
+    async def _aclose_on_loop(self) -> None:
         self._bash_manager.close_all()
+        await self._host_rpc.aclose()
