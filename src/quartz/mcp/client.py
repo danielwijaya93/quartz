@@ -481,12 +481,29 @@ class MCPManager:
             ]
         if not terms:
             return all_tools[:limit] if limit is not None else all_tools
-        matched: list[dict[str, Any]] = []
-        for tool in all_tools:
-            args_str = " ".join(str(a) for a in tool.get("args", []))
-            haystack = f"{tool['server']} {tool['name']} {tool['description']} {args_str}".lower()
-            if all(t in haystack for t in terms):
-                matched.append(tool)
+        unique_terms = list(dict.fromkeys(terms))
+        scored: list[tuple[int, int, int, dict[str, Any]]] = []
+        for idx, tool in enumerate(all_tools):
+            name_l = tool["name"].lower()
+            server_l = tool["server"].lower()
+            desc_l = tool["description"].lower()
+            args_l = " ".join(str(a) for a in tool.get("args", [])).lower()
+            hits = 0
+            score = 0
+            for t in unique_terms:
+                term_score = (
+                    (4 if t in name_l else 0)
+                    + (3 if t in server_l else 0)
+                    + (2 if t in desc_l else 0)
+                    + (1 if t in args_l else 0)
+                )
+                if term_score > 0:
+                    hits += 1
+                    score += term_score
+            if hits > 0:
+                scored.append((-hits, -score, idx, tool))
+        scored.sort(key=lambda row: (row[0], row[1], row[2]))
+        matched = [row[3] for row in scored]
         return matched[:limit] if limit is not None else matched
 
     async def _drop_session(self, server: str, session: Any | None = None) -> None:
