@@ -12,7 +12,7 @@ For exact class/function line numbers, run `uv run python scripts/gen_index.py` 
 | `src/quartz/tui/` | Terminal UI (`prompt_toolkit` dock, rendering, modals, replay) |
 | `src/quartz/cli/` | CLI entrypoint (`app.py`) and subcommands (`subcommands.py`) |
 | `src/quartz/providers/` | LLM provider adapters (`google.py`, `openai.py`), registry, HTTP pool |
-| `src/quartz/kernel/` | Python REPL execution, OS sandbox (`bwrap`/`sandbox-exec`), bash jobs, snapshots |
+| `src/quartz/kernel/` | Stateless one-shot Python cell runner, OS sandbox (`bwrap`/`sandbox-exec`), host-managed bash jobs |
 | `src/quartz/mcp/` | MCP client and connection pool |
 | `src/quartz/storage/` | Embedded SQLite WAL database engine and schema migrations |
 | `src/quartz/auth/` | OAuth and token storage |
@@ -31,7 +31,7 @@ For exact class/function line numbers, run `uv run python scripts/gen_index.py` 
 | Web UI components | `webapp/src/components/` (`Composer.tsx`, `Transcript.tsx`, `OpenUISurface.tsx`, etc.) |
 | TUI rendering or keybindings | `src/quartz/tui/dock.py`, `dock_keys.py`, `render.py`, `turn_view.py` |
 | Model / provider config | `src/quartz/providers/registry.py`, `config.py`, `src/quartz/settings.py` |
-| Sandbox / REPL tools | `src/quartz/kernel/inprocess.py`, `sandbox.py`, `bash_jobs.py`, `helpers.py` |
+| Sandbox / cell runner | `src/quartz/kernel/worker.py`, `client.py`, `sandbox.py`, `host_bash.py`, `helpers.py` |
 
 ## Architecture Rules
 

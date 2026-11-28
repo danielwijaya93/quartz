@@ -1,7 +1,7 @@
 [project]
 name = "quartz-agent"
-version = "0.34.2"
-description = "Minimal coding agent with a persistent Python REPL"
+version = "0.34.3"
+description = "Minimal coding agent with a stateless Python execution tool"
 requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.115",
