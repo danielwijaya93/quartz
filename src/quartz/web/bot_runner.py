@@ -256,8 +256,10 @@ class BotRunner:
         now_ts: float,
         last_error: str | None,
     ) -> None:
+        state = self._store.get_state(bot.id)
+        seen_keys = set(state.seen_event_keys)
         for event_key, item in candidates:
-            if not self._store.mark_seen(bot.id, event_key):
+            if event_key in seen_keys:
                 continue
             trigger = QueuedTrigger(
                 trigger_id=uuid.uuid4().hex,
@@ -267,7 +269,10 @@ class BotRunner:
                 payload=item,
                 enqueued_at=now_ts,
             )
-            self._queue.enqueue(trigger, bot.max_queue_depth)
+            enqueued = self._queue.enqueue(trigger, bot.max_queue_depth)
+            if enqueued:
+                self._store.mark_seen(bot.id, event_key)
+                seen_keys.add(event_key)
 
         fresh_state = self._store.get_state(bot.id)
         fresh_state.last_polled_at = now_ts

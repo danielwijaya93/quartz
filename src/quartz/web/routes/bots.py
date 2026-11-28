@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import time
@@ -13,8 +14,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from quartz.bots import BotConfig, QueuedTrigger
-from quartz.web.context import AppContext, bad_request, json_body
+from quartz.bots import QueuedTrigger
+from quartz.web.context import MAX_FRAME_BYTES, AppContext, bad_request, json_body
 from quartz.web.routes.bots_helpers import (
     _config_from_create,
     _default_bot_settings,
@@ -82,22 +83,9 @@ def _register_history_routes(router: APIRouter, ctx: AppContext) -> None:
                 return None
             cfg = record.bot
             if store.get_bot(cfg.id) is not None:
-                cfg = BotConfig(
+                cfg = dataclasses.replace(
+                    cfg,
                     id=_generate_bot_id(cfg.name),
-                    name=cfg.name,
-                    watcher_type=cfg.watcher_type,
-                    instruction=cfg.instruction,
-                    cwd=cfg.cwd,
-                    provider=cfg.provider,
-                    model=cfg.model,
-                    effort=cfg.effort,
-                    enabled=cfg.enabled,
-                    use_worktree=cfg.use_worktree,
-                    max_queue_depth=cfg.max_queue_depth,
-                    github=cfg.github,
-                    cron=cfg.cron,
-                    webhook=cfg.webhook,
-                    permissions=cfg.permissions,
                     created_at=time.time(),
                     updated_at=time.time(),
                 )
@@ -270,7 +258,12 @@ def _register_webhook_route(router: APIRouter, ctx: AppContext) -> None:
         if bot.watcher_type != "webhook" or bot.webhook is None:
             return bad_request("Bot is not configured for webhooks")
 
-        raw_body = await request.body()
+        body_buf = bytearray()
+        async for chunk in request.stream():
+            body_buf.extend(chunk)
+            if len(body_buf) > MAX_FRAME_BYTES:
+                return JSONResponse({"error": "Payload too large"}, status_code=413)
+        raw_body = bytes(body_buf)
         sig = request.headers.get("x-hub-signature-256")
         if not _verify_github_signature(bot.webhook.secret, raw_body, sig):
             return JSONResponse({"error": "Invalid webhook signature"}, status_code=401)

@@ -419,3 +419,84 @@ def test_run_bot_trigger_applies_model_override_without_saving_global_config(
             {"provider": "openai", "model_override": "gpt-4o", "effort_override": "high"}
         ]
         assert saved_calls == []
+
+
+def test_webhook_rejects_oversized_payload_with_413(tmp_path: Path) -> None:
+    from quartz.web.context import MAX_FRAME_BYTES
+
+    app = create_app(
+        build=lambda _cwd: None,  # type: ignore[arg-type]
+        cwd=tmp_path,
+        bots_dir=tmp_path / "bots",
+    )
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/bots",
+            json={
+                "id": "wh-size-bot",
+                "name": "Webhook Size Bot",
+                "watcherType": "webhook",
+                "instruction": "Handle webhook",
+                "webhook": {"secret": "top-secret"},
+            },
+        )
+        assert res.status_code == 201
+
+        oversized = b"x" * (MAX_FRAME_BYTES + 1)
+        wh_res = client.post(
+            "/api/bots/wh-size-bot/webhook",
+            content=oversized,
+            headers={"Content-Type": "application/json"},
+        )
+        assert wh_res.status_code == 413
+        assert wh_res.json() == {"error": "Payload too large"}
+
+
+def test_restore_deleted_bot_with_colliding_id_preserves_max_consecutive_errors(
+    tmp_path: Path,
+) -> None:
+    from quartz.bots import BotConfig
+    from quartz.bots.models import CronConfig
+
+    app = create_app(
+        build=lambda _cwd: None,  # type: ignore[arg-type]
+        cwd=tmp_path,
+        bots_dir=tmp_path / "bots",
+    )
+    store = app.state.ctx.bot_store
+    assert store is not None
+    store.create_bot(
+        BotConfig(
+            id="collide-bot",
+            name="Collide Bot",
+            watcher_type="cron",
+            instruction="Run task",
+            max_consecutive_errors=7,
+            cron=CronConfig(expression="0 * * * *", timezone="UTC"),
+        )
+    )
+
+    with TestClient(app) as client:
+        del_res = client.delete("/api/bots/collide-bot")
+        assert del_res.status_code == 200
+
+        # Create a new bot with the same ID to force ID regeneration on restore.
+        recreate_res = client.post(
+            "/api/bots",
+            json={
+                "id": "collide-bot",
+                "name": "Replacement Bot",
+                "watcherType": "cron",
+                "instruction": "Other task",
+                "cron": {"expression": "0 * * * *", "timezone": "UTC"},
+            },
+        )
+        assert recreate_res.status_code == 201
+
+        restore_res = client.post("/api/bots/history/collide-bot/restore", json={})
+        assert restore_res.status_code == 200
+        restored_id = restore_res.json()["bot"]["id"]
+        assert restored_id != "collide-bot"
+        restored_cfg = store.get_bot(restored_id)
+        assert restored_cfg is not None
+        assert restored_cfg.max_consecutive_errors == 7

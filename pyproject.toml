@@ -12,7 +12,6 @@ dependencies = [
     "pywebpush>=2.5.0",
     "rich>=15.0.0",
     "uvicorn[standard]>=0.34",
-    "websockets>=14.0",
 ]
 
 [project.scripts]

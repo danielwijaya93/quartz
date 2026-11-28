@@ -138,3 +138,59 @@ def test_should_send_push_respects_category_toggles() -> None:
     assert should_send_push(Settings(notify_turn=False), {"type": "turn_end"}) is False
     assert should_send_push(Settings(notify_approval=False), {"type": "permission_request"}) is False
     assert should_send_push(Settings(notify_error=False), {"type": "error"}) is False
+
+
+def test_push_delivers_after_app_restart_with_sqlite_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from quartz.settings import Settings
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("QUARTZ_WEB_PUSH", raising=False)
+    monkeypatch.delenv("QUARTZ_DB_PATH", raising=False)
+
+    app1 = create_app(build=lambda _cwd: None, cwd=tmp_path)  # type: ignore[arg-type]
+    client1 = TestClient(app1)
+    sub = {
+        "endpoint": "https://push.example.com/sub/restart-test",
+        "keys": {"p256dh": "BTestKey", "auth": "AuthSecret"},
+    }
+    res = client1.post("/api/push/subscribe", json=sub)
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "subscriptions": 1}
+    assert not (tmp_path / ".quartz" / "web" / "push.json").exists()
+
+    # Simulate server restart with a fresh create_app() where push_ref starts as None.
+    app2 = create_app(build=lambda _cwd: None, cwd=tmp_path)  # type: ignore[arg-type]
+    sent_payloads: list[dict[str, str]] = []
+
+    def _capture_send(payload: dict[str, str]) -> None:
+        sent_payloads.append(payload)
+
+    hook = app2.state.manager._push_hook
+    assert hook is not None
+    with (
+        patch("quartz.settings.load_settings", return_value=Settings()),
+        patch("quartz.web.push.PushStore.send_async", side_effect=_capture_send),
+    ):
+        hook(None, {"type": "turn_end", "status": "ok"})  # type: ignore[arg-type]
+
+    assert len(sent_payloads) == 1
+    assert sent_payloads[0]["title"] == "Quartz: Turn finished"
+
+
+def test_create_app_uses_shared_sqlite_db_when_env_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from quartz.storage import default_db_path
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("QUARTZ_WEB_PUSH", raising=False)
+    monkeypatch.delenv("QUARTZ_WEB_SIDEBAR", raising=False)
+    monkeypatch.delenv("QUARTZ_DB_PATH", raising=False)
+
+    app = create_app(build=lambda _cwd: None, cwd=tmp_path)  # type: ignore[arg-type]
+    expected_db = default_db_path()
+    assert expected_db == (tmp_path / ".quartz" / "quartz.db").resolve()
+    assert app.state.ctx.push_store().db_path == expected_db
+    assert app.state.ctx.sidebar().db_path == expected_db

@@ -359,12 +359,10 @@ async def _open_ws_stream(socket: WebSocket, ctx: AppContext) -> AsyncIterator[C
         yield None
         return
     await socket.accept()
-    outbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    outbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=2048)
     loop = asyncio.get_running_loop()
-
-    def push(frame: dict[str, Any]) -> None:
-        with contextlib.suppress(RuntimeError):
-            loop.call_soon_threadsafe(outbox.put_nowait, frame)
+    closing = False
+    close_task: asyncio.Task[None] | None = None
 
     async def write() -> None:
         while True:
@@ -375,6 +373,25 @@ async def _open_ws_stream(socket: WebSocket, ctx: AppContext) -> AsyncIterator[C
                 return
 
     writer = asyncio.create_task(write())
+
+    async def _close_stalled() -> None:
+        with contextlib.suppress(Exception):
+            await socket.close(code=1013, reason="Slow consumer")
+
+    def _enqueue(frame: dict[str, Any]) -> None:
+        nonlocal closing, close_task
+        if closing:
+            return
+        try:
+            outbox.put_nowait(frame)
+        except asyncio.QueueFull:
+            closing = True
+            writer.cancel()
+            close_task = asyncio.create_task(_close_stalled())
+
+    def push(frame: dict[str, Any]) -> None:
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(_enqueue, frame)
     try:
         yield push
     finally:
